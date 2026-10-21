@@ -17,6 +17,23 @@ Status: design. Nothing here is usable yet.
 
 qinit is a standalone project. Alloy Linux consumes it as a package.
 
+## Scope
+
+qinit boots and shuts down the machine, and starts, stops, supervises and contains processes.
+A feature belongs in qinit only if it is about one of those things **and** cannot be done well
+outside it (it needs PID 1, ownership of the cgroup tree, or the fd store). Everything else is a
+separate program that uses qinit's open control protocol. The set of programs above is fixed;
+adding one is a design decision, not a patch.
+
+Not part of qinit, now or later:
+
+- a logging daemon or journal (qinit writes its own messages to the kernel log and hands service
+  output to pipes for any logger to consume);
+- device management, network configuration, name resolution or time synchronization;
+- login or session tracking;
+- timers, tmpfiles or sysusers handling, container management, home-directory, hostname or
+  locale services.
+
 ## Licensing
 
 | Part | License |
