@@ -1,0 +1,10 @@
+version = 1
+
+# Prose documentation is CC-BY-4.0. Source files carry their own SPDX headers:
+# GPL-3.0-or-later for the daemons and tools, MPL-2.0 for the client library,
+# CC-BY-4.0 for protocol specifications.
+[[annotations]]
+path = ["README.md", "AGENTS.md", "CONTRIBUTING.md", "docs/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Xota Tera"
+SPDX-License-Identifier = "CC-BY-4.0"
