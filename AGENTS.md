@@ -29,5 +29,5 @@ These rules apply to any AI agent working in this repository. Human contributors
    `reuse lint` must pass.
 5. **No agent tooling in the repository.** Never commit agent configuration, session files, skill
    outputs, plans or other working artifacts. They stay untracked.
-6. **Code provenance.** Don't copy code from other projects without checking that its license is
-   compatible with the part it goes into. Never take code from systemd or its forks.
+6. **Code provenance.** Don't use code from other projects without checking that its license is
+   compatible with the part it goes into.
