@@ -46,10 +46,14 @@ esac
 token="$(git rev-parse --path-format=absolute --git-path "$TOKEN_NAME")"
 # `git pack-refs` (also run by `gc` and `maintenance`) moves a protected ref
 # in two transactions of one process: it writes the current value into
-# packed-refs, then deletes the loose ref. The marker, "<git pid> <ref>
-# <value>" (`git_pid`), lets the second through for that process and value
-# only. Anything else that deletes a protected ref is refused.
-packing="$(git rev-parse --path-format=absolute --git-common-dir)/$TOKEN_NAME.packing"
+# packed-refs, then deletes the loose ref. A marker per ref, "<git pid> <ref>
+# <value>" (`git_pid`), lets each matching deletion through for that process
+# and value only. Anything else that deletes a protected ref is refused.
+packing_root="$(git rev-parse --path-format=absolute --git-common-dir)/$TOKEN_NAME.packing"
+packing_marker() {
+  # Git only supplies valid ref names here, so this remains below packing_root.
+  printf '%s/%s' "$packing_root" "$1"
+}
 # The git process this transaction belongs to: the nearest `git` ancestor.
 # A dispatcher that runs this hook as a child (rather than `exec`ing it)
 # sits in between, with a new pid for every transaction.
@@ -67,13 +71,17 @@ git_pid() {
 zero='^0+$'
 
 # The token is spent once a transaction on a protected ref commits or aborts,
-# so it cannot admit a later update.
+# so it cannot admit a later update. Pack markers are spent per ref, so a
+# multi-ref pack transaction leaves the other protected ref's marker intact.
 if [ "$state" != prepared ]; then
-  rm -f "$token" "$packing"
+  rm -f "$token"
   for update in "${updates[@]}"; do
     read -r old new ref <<<"$update"
+    packing="$(packing_marker "$ref")"
+    rm -f "$packing"
     current="$(git rev-parse -q --verify "$ref^{commit}" || true)"
     if [ "$state" = committed ] && [[ "$old" =~ $zero ]] && [ "$new" = "$current" ]; then
+      mkdir -p "$(dirname "$packing")"
       echo "$(git_pid) $ref $new" >"$packing"
     fi
   done
@@ -107,6 +115,7 @@ for update in "${updates[@]}"; do
   if [ -n "$current" ] && [ "$new" = "$current" ]; then
     continue
   fi
+  packing="$(packing_marker "$ref")"
   if [[ "$new" =~ $zero ]] && [ -n "$current" ] && [ "$old" = "$current" ] &&
     [ "$(cat "$packing" 2>/dev/null)" = "$(git_pid) $ref $current" ]; then
     continue

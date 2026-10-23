@@ -16,31 +16,72 @@ if [ "$effective_hooks" != "$hooks" ]; then
     exit 1
 fi
 
-# Do every collision check before creating anything. Existing hooks are part of
-# clone-local behavior and must be preserved for their owner to integrate.
+sources="$hooks/qinit"
+refresh=false
+if [ -e "$sources" ] || [ -L "$sources" ]; then
+    # A refresh may replace only the exact layout this installer created: a
+    # real qinit directory, regular source files, and relative active links.
+    # Do not follow a source-directory or source-file symlink.
+    if [ ! -d "$sources" ] || [ -L "$sources" ]; then
+        echo "refusing to refresh: $sources is not a qinit source directory." >&2
+        exit 1
+    fi
+    refresh=true
+fi
+
+# Do every collision or ownership check before writing anything. Existing hooks
+# are clone-local behavior and must be preserved for their owner to integrate.
 for f in "$top"/.githooks/*; do
     [ -f "$f" ] || continue
     name="$(basename "$f")"
     [ "$name" = setup-hooks.sh ] && continue
-    if [ -e "$hooks/$name" ] || [ -L "$hooks/$name" ]; then
+    if "$refresh"; then
+        if [ ! -f "$sources/$name" ] || [ -L "$sources/$name" ] ||
+            [ ! -L "$hooks/$name" ] ||
+            [ "$(readlink "$hooks/$name")" != "qinit/$name" ]; then
+            echo "refusing to refresh: $hooks/$name is not a qinit-installed hook." >&2
+            exit 1
+        fi
+    elif [ -e "$hooks/$name" ] || [ -L "$hooks/$name" ]; then
         echo "refusing to install: $hooks/$name already exists." >&2
         exit 1
     fi
 done
-sources="$hooks/qinit"
-if [ -e "$sources" ] || [ -L "$sources" ]; then
-    echo "refusing to install: $sources already exists." >&2
-    exit 1
+
+if "$refresh"; then
+    # Reject extra qinit entries too: this directory is ours only when its
+    # complete contents are the current set of installed hook sources.
+    for installed in "$sources"/*; do
+        [ -e "$installed" ] || [ -L "$installed" ] || continue
+        installed_name="$(basename "$installed")"
+        known=false
+        for f in "$top"/.githooks/*; do
+            [ -f "$f" ] || continue
+            [ "$(basename "$f")" = "$installed_name" ] || continue
+            [ "$installed_name" = setup-hooks.sh ] || known=true
+        done
+        if ! "$known"; then
+            echo "refusing to refresh: $installed is not a qinit hook source." >&2
+            exit 1
+        fi
+    done
+else
+    mkdir -p "$hooks"
+    mkdir "$sources"
 fi
 
-mkdir -p "$hooks"
-mkdir "$sources"
 for f in "$top"/.githooks/*; do
     [ -f "$f" ] || continue
     name="$(basename "$f")"
     [ "$name" = setup-hooks.sh ] && continue
     cp "$f" "$sources/$name"
     chmod 755 "$sources/$name"
-    ln -s "qinit/$name" "$hooks/$name"
+    if ! "$refresh"; then
+        ln -s "qinit/$name" "$hooks/$name"
+    fi
 done
-echo "installed clone-local hook sources in $sources and linked active hooks in $hooks"
+if "$refresh"; then
+    echo "refreshed clone-local hook sources in $sources"
+else
+    echo "installed clone-local hook sources in $sources and linked active hooks in $hooks"
+fi

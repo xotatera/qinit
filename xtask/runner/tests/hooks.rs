@@ -277,7 +277,7 @@ fn setup_refuses_an_inactive_hooks_path_without_changing_settings() {
 }
 
 #[test]
-fn setup_refuses_existing_hooks_without_changing_them_or_merge_settings() {
+fn setup_refuses_unrelated_active_hooks_without_changing_them_or_merge_settings() {
     let repo = Repo::uninstalled();
     let hooks = repo.hooks_dir();
     std::fs::create_dir_all(&hooks).unwrap();
@@ -304,6 +304,42 @@ fn setup_refuses_existing_hooks_without_changing_them_or_merge_settings() {
         "#!/bin/sh\nexit 0\n"
     );
     assert_eq!(repo.ok(&["config", "--get", "merge.ff"]).trim(), "only");
+}
+
+#[test]
+fn setup_refreshes_only_its_verified_installed_sources_and_links() {
+    let repo = Repo::uninstalled();
+    let setup = repo.work().join(".githooks/setup-hooks.sh");
+    let run_setup = || {
+        Command::new(&setup)
+            .current_dir(repo.work())
+            .env("HOME", &repo.dir)
+            .env("GIT_CONFIG_GLOBAL", repo.dir.join("gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap()
+    };
+
+    let installed = run_setup();
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    let source = repo.work().join(".githooks/pre-commit");
+    let refreshed = format!(
+        "{}# refreshed fixture source\n",
+        std::fs::read_to_string(&source).unwrap()
+    );
+    std::fs::write(&source, &refreshed).unwrap();
+
+    let updated = run_setup();
+    assert!(updated.status.success(), "{}", stderr(&updated));
+    let hooks = repo.hooks_dir();
+    assert_eq!(
+        std::fs::read_to_string(hooks.join("qinit/pre-commit")).unwrap(),
+        refreshed
+    );
+    assert_eq!(
+        std::fs::read_link(hooks.join("pre-commit")).unwrap(),
+        PathBuf::from("qinit/pre-commit")
+    );
 }
 
 #[test]
@@ -437,6 +473,28 @@ fn configured_extra_branch_remains_protected() {
         "{}",
         stderr(&rejected)
     );
+    assert_eq!(repo.rev("trunk"), trunk);
+}
+
+#[test]
+fn pack_refs_deletes_loose_main_and_configured_protected_refs() {
+    let repo = Repo::new();
+    repo.ok(&["branch", "trunk", "main"]);
+    let main = repo.rev("main");
+    let trunk = repo.rev("trunk");
+    let loose_main = repo.work().join(".git/refs/heads/main");
+    let loose_trunk = repo.work().join(".git/refs/heads/trunk");
+    assert!(loose_main.exists(), "main must start loose");
+    assert!(loose_trunk.exists(), "trunk must start loose");
+
+    let packed = repo.git_env(
+        &["pack-refs", "--all", "--prune"],
+        &[("DISCIPLINES_MAIN_BRANCH", "trunk")],
+    );
+    assert!(packed.status.success(), "{}", stderr(&packed));
+    assert!(!loose_main.exists(), "main loose ref was not deleted");
+    assert!(!loose_trunk.exists(), "trunk loose ref was not deleted");
+    assert_eq!(repo.rev("main"), main);
     assert_eq!(repo.rev("trunk"), trunk);
 }
 
