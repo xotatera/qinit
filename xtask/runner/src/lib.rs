@@ -195,7 +195,8 @@ fn plan_run(
         if stage.is_some_and(|requested| requested.name != candidate.name) {
             continue;
         }
-        let candidate_names = names(candidate)?;
+        let candidate_names =
+            names(candidate).map_err(|error| format!("{} proofs: {error}", candidate.name))?;
         let has =
             |predicate: &dyn Fn(&str) -> bool| candidate_names.iter().any(|name| predicate(name));
         let wanted = match (&gate, verb) {

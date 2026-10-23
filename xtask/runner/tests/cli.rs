@@ -79,12 +79,35 @@ fn empty_proofs_are_a_successful_no_op() {
 }
 
 #[test]
-fn full_gate_rejects_a_malformed_root_proof_declaration() {
+fn unknown_proof_filter_still_errors() {
+    let output = xtask(&["proofs", "--only", "missing"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("unknown gate `proof:missing`"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn full_gate_names_the_malformed_repository_proof_declaration() {
     let fixture = Fixture::malformed_root_proofs();
     let output = fixture.run(&["gate", "--no-cache"]);
     assert!(!output.status.success(), "{:?}", output.status);
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("proof: expected"),
+        String::from_utf8_lossy(&output.stderr).contains("repo proofs: proof: expected"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn proofs_names_the_malformed_repository_proof_declaration() {
+    let fixture = Fixture::malformed_root_proofs();
+    let output = fixture.run(&["proofs"]);
+    assert!(!output.status.success(), "{:?}", output.status);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("repo proofs: proof: expected"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
