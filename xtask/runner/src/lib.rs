@@ -70,6 +70,7 @@ const NO_PRODUCT_FORMAT: &str = "D3: no product package to format";
 const NO_PRODUCT_LINT: &str = "D3: no product package to lint";
 const NO_PRODUCT_LAYERS: &str = "D3: no product package to check";
 const NO_PRODUCT_NO_STD: &str = "D4: no kernel or core product crate";
+const NO_TOOLING_NO_STD: &str = "D4: no tooling kernel or core crate";
 const NO_PRODUCT_TEST: &str = "D3: no product package to test";
 const TOOLING_REPOSITORY_SCANS: &str = "D5: repository-wide scans run in the repo stage";
 
@@ -87,6 +88,19 @@ pub fn repo_registry() -> Vec<Gate> {
             ignored_inputs: &[],
             cacheable: false,
             cache_on_main: false,
+            blocked: None,
+            decl: "",
+        },
+        Gate {
+            name: "reuse",
+            run: Box::new(reuse),
+            inputs: Inputs::Tree,
+            env: &[],
+            tools: &["reuse"],
+            extra_paths: &[],
+            ignored_inputs: &[],
+            cacheable: true,
+            cache_on_main: true,
             blocked: None,
             decl: "",
         },
@@ -174,6 +188,10 @@ pub fn repo_registry() -> Vec<Gate> {
     ]
 }
 
+fn reuse(root: &Path) -> Result<(), String> {
+    xtask::gates::run(root, "reuse", &["lint"])
+}
+
 fn repo_scan(name: &'static str, run: fn(&Path) -> Result<(), String>, cacheable: bool) -> Gate {
     Gate {
         name,
@@ -199,7 +217,7 @@ pub fn xtask_registry() -> Vec<Gate> {
         gate.blocked = match gate.name {
             "placeholder-scan" // disciplines:allow-placeholder (the gate's name)
             | "sleep-scan" | "changelog" | "duplication" => Some(TOOLING_REPOSITORY_SCANS),
-            "no-std" => Some(NO_PRODUCT_NO_STD),
+            "no-std" => Some(NO_TOOLING_NO_STD),
             _ => None,
         };
     }

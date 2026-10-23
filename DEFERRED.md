@@ -35,7 +35,10 @@ Unblock each gate in the same change that adds its first product package.
 ### D4 — no-std product gate · `ACCEPTED`
 
 The repository has no kernel or core product crate. The root `no-std` gate is
-blocked until one exists; unblock it in the change that adds that crate.
+blocked until one exists; unblock it in the change that adds that crate. The
+tooling `no-std` gate is separately blocked because the `xtask` workspace also
+has no kernel or core crate. Unblock it only in the change that adds a
+primitive, kernel, or core crate to the `xtask` workspace.
 
 ### D5 — Tooling-stage repository-wide scans · `ACCEPTED`
 
