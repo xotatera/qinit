@@ -1,0 +1,415 @@
+//! The string-free core of the bridge: effect IDs, the effects in flight,
+//! and the protocol rules over them. `suite-bridge` holds the effects and
+//! results themselves (their text) and re-exports this crate. Verus proves
+//! every item here (`proof:bridge`).
+#![cfg_attr(not(test), no_std)]
+use vstd::prelude::*;
+
+verus! {
+
+/// The most effects a scenario may have in flight at once.
+pub const MAX_IN_FLIGHT: usize = 8;
+
+/// Deterministic: the command that requested the effect, and the effect's
+/// index in that command's decision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EffectId {
+    pub command: u32,
+    pub index: u8,
+}
+
+/// An effect's kind, without its arguments: what `answers` reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectKind {
+    Spawn,
+    WriteFiles,
+    FileSize,
+    Edit,
+    TreeDigest,
+    Interrupt,
+    MaskPath,
+}
+
+/// A result's kind, without its payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResultKind {
+    Exited,
+    Size,
+    Written,
+    Text,
+    Failed,
+}
+
+/// The effects requested and not yet answered, bounded by `MAX_IN_FLIGHT`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InFlight {
+    slots: [Option<EffectId>; MAX_IN_FLIGHT],
+}
+
+// ---- Specification ----
+/// What [`answers`] computes: a process gives an exit, a write `Written`,
+/// a size query a size, the rest a text, and any may fail.
+pub open spec fn answers_spec(effect: EffectKind, result: ResultKind) -> bool {
+    match (effect, result) {
+        (_, ResultKind::Failed) => true,
+        (EffectKind::Spawn, ResultKind::Exited) => true,
+        (EffectKind::WriteFiles, ResultKind::Written)
+        | (EffectKind::Edit, ResultKind::Written) => true,
+        (EffectKind::FileSize, ResultKind::Size) => true,
+        (EffectKind::TreeDigest, ResultKind::Text)
+        | (EffectKind::MaskPath, ResultKind::Text)
+        | (EffectKind::Interrupt, ResultKind::Text) => true,
+        _ => false,
+    }
+}
+
+/// Occupied slots among `s[..k]`.
+pub open spec fn occupied(s: [Option<EffectId>; MAX_IN_FLIGHT], k: int) -> int
+    decreases k,
+{
+    if k <= 0 {
+        0
+    } else {
+        occupied(s, k - 1) + if s[k - 1] is Some {
+            1int
+        } else {
+            0int
+        }
+    }
+}
+
+impl InFlight {
+    /// Whether `id` is in some slot.
+    pub closed spec fn has(self, id: EffectId) -> bool {
+        exists|i: int| 0 <= i < MAX_IN_FLIGHT && self.slots[i] == Some(id)
+    }
+
+    /// How many effects are in flight.
+    pub closed spec fn count(self) -> int {
+        occupied(self.slots, MAX_IN_FLIGHT as int)
+    }
+
+    /// The invariant every reachable set keeps: no ID in two slots.
+    pub closed spec fn wf(self) -> bool {
+        forall|i: int, j: int|
+            #![trigger self.slots[i], self.slots[j]]
+            0 <= i < j < MAX_IN_FLIGHT && self.slots[i] is Some ==> self.slots[j] != self.slots[i]
+    }
+}
+
+// ---- Lemmas ----
+proof fn lemma_occupied_bounds(s: [Option<EffectId>; MAX_IN_FLIGHT], k: int)
+    ensures
+        0 <= occupied(s, k),
+        k >= 0 ==> occupied(s, k) <= k,
+    decreases k,
+{
+    if k > 0 {
+        lemma_occupied_bounds(s, k - 1);
+    }
+}
+
+/// Setting slot `at` changes the count below `k` by the change in that slot.
+proof fn lemma_occupied_set(
+    s: [Option<EffectId>; MAX_IN_FLIGHT],
+    t: [Option<EffectId>; MAX_IN_FLIGHT],
+    k: int,
+    at: int,
+)
+    requires
+        0 <= at < MAX_IN_FLIGHT,
+        k <= MAX_IN_FLIGHT,
+        forall|i: int| 0 <= i < MAX_IN_FLIGHT && i != at ==> t[i] == s[i],
+    ensures
+        occupied(t, k) == occupied(s, k) + if at < k {
+            (if t[at] is Some {
+                1int
+            } else {
+                0int
+            }) - (if s[at] is Some {
+                1int
+            } else {
+                0int
+            })
+        } else {
+            0int
+        },
+    decreases k,
+{
+    if k > 0 {
+        lemma_occupied_set(s, t, k - 1, at);
+    }
+}
+
+/// A free slot below `k` means fewer than `k` are occupied.
+proof fn lemma_occupied_free(s: [Option<EffectId>; MAX_IN_FLIGHT], k: int, at: int)
+    requires
+        0 <= at < k <= MAX_IN_FLIGHT,
+        s[at] is None,
+    ensures
+        occupied(s, k) < k,
+    decreases k,
+{
+    lemma_occupied_bounds(s, k - 1);
+    if at < k - 1 {
+        lemma_occupied_free(s, k - 1, at);
+    }
+}
+
+/// No free slot below `k` means all `k` are occupied.
+proof fn lemma_occupied_full(s: [Option<EffectId>; MAX_IN_FLIGHT], k: int)
+    requires
+        0 <= k <= MAX_IN_FLIGHT,
+        forall|i: int| 0 <= i < k ==> s[i] is Some,
+    ensures
+        occupied(s, k) == k,
+    decreases k,
+{
+    if k > 0 {
+        lemma_occupied_full(s, k - 1);
+    }
+}
+
+// ---- Code ----
+fn same(a: Option<EffectId>, id: EffectId) -> (r: bool)
+    ensures
+        r == (a == Some(id)),
+{
+    match a {
+        Some(b) => b.command == id.command && b.index == id.index,
+        None => false,
+    }
+}
+
+/// Whether `result` is a possible answer to `effect`: a process gives an
+/// exit, a write `Written`, a size query a size, and any may fail.
+#[must_use]
+pub fn answers(effect: EffectKind, result: ResultKind) -> (r: bool)
+    ensures
+        r == answers_spec(effect, result),
+        result is Failed ==> r,
+        effect is Spawn ==> (r <==> (result is Exited || result is Failed)),
+{
+    matches!(
+        (effect, result),
+        (_, ResultKind::Failed)
+            | (EffectKind::Spawn, ResultKind::Exited)
+            | (EffectKind::WriteFiles | EffectKind::Edit, ResultKind::Written)
+            | (EffectKind::FileSize, ResultKind::Size)
+            | (
+                EffectKind::TreeDigest | EffectKind::MaskPath | EffectKind::Interrupt,
+                ResultKind::Text
+            )
+    )
+}
+
+// Not derived: a derived `Default` has no spec.
+#[allow(clippy::derivable_impls)]
+impl Default for InFlight {
+    fn default() -> (r: Self)
+        ensures
+            r.wf(),
+            r.count() == 0,
+            forall|id: EffectId| !r.has(id),
+    {
+        let r = InFlight { slots: [None;MAX_IN_FLIGHT] };
+        proof {
+            lemma_occupied_set(r.slots, r.slots, MAX_IN_FLIGHT as int, 0);
+            assert(occupied(r.slots, MAX_IN_FLIGHT as int) == 0) by {
+                reveal_with_fuel(occupied, 9);
+            }
+        }
+        r
+    }
+}
+
+impl InFlight {
+    #[must_use]
+    pub fn contains(&self, id: EffectId) -> (r: bool)
+        ensures
+            r == self.has(id),
+    {
+        let mut i = 0;
+        while i < MAX_IN_FLIGHT
+            invariant
+                i <= MAX_IN_FLIGHT,
+                forall|k: int| 0 <= k < i ==> self.slots[k] != Some(id),
+            decreases MAX_IN_FLIGHT - i,
+        {
+            if same(self.slots[i], id) {
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
+    #[must_use]
+    pub fn len(&self) -> (r: usize)
+        ensures
+            r == self.count(),
+            r <= MAX_IN_FLIGHT,
+    {
+        let mut n = 0;
+        let mut i = 0;
+        while i < MAX_IN_FLIGHT
+            invariant
+                i <= MAX_IN_FLIGHT,
+                n == occupied(self.slots, i as int),
+            decreases MAX_IN_FLIGHT - i,
+        {
+            proof {
+                lemma_occupied_bounds(self.slots, i as int);
+            }
+            if self.slots[i].is_some() {
+                n += 1;
+            }
+            i += 1;
+        }
+        proof {
+            lemma_occupied_bounds(self.slots, MAX_IN_FLIGHT as int);
+        }
+        n
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> (r: bool)
+        ensures
+            r == (self.count() == 0),
+    {
+        self.len() == 0
+    }
+
+    /// The protocol: a new effect may be requested when its ID is not in
+    /// flight and a slot is free.
+    #[must_use]
+    pub fn admits(&self, id: EffectId) -> (r: bool)
+        ensures
+            r == (!self.has(id) && self.count() < MAX_IN_FLIGHT),
+    {
+        !self.contains(id) && self.len() < MAX_IN_FLIGHT
+    }
+
+    /// Records `id`; `false` when it is already in flight or no slot is free.
+    pub fn insert(&mut self, id: EffectId) -> (r: bool)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            r == (!old(self).has(id) && old(self).count() < MAX_IN_FLIGHT),
+            final(self).has(id) == (old(self).has(id) || r),
+            final(self).count() == old(self).count() + if r {
+                1int
+            } else {
+                0int
+            },
+            forall|other: EffectId| other != id ==> final(self).has(other) == old(self).has(other),
+    {
+        if self.contains(id) {
+            return false;
+        }
+        let mut i = 0;
+        while i < MAX_IN_FLIGHT
+            invariant
+                i <= MAX_IN_FLIGHT,
+                *self == *old(self),
+                old(self).wf(),
+                !self.has(id),
+                forall|k: int| 0 <= k < i ==> self.slots[k] is Some,
+            decreases MAX_IN_FLIGHT - i,
+        {
+            if self.slots[i].is_none() {
+                let ghost before = *self;
+                self.slots[i] = Some(id);
+                proof {
+                    lemma_occupied_set(before.slots, self.slots, MAX_IN_FLIGHT as int, i as int);
+                    lemma_occupied_free(before.slots, MAX_IN_FLIGHT as int, i as int);
+                    assert(self.slots[i as int] == Some(id));
+                    assert forall|a: int, b: int|
+                        #![trigger self.slots[a], self.slots[b]]
+                        0 <= a < b < MAX_IN_FLIGHT && self.slots[a] is Some implies self.slots[b]
+                        != self.slots[a] by {
+                        if a == i {
+                            assert(before.slots[b] != Some(id));
+                        } else if b == i {
+                            assert(before.slots[a] != Some(id));
+                        }
+                    }
+                    assert forall|other: EffectId| other != id implies #[trigger] self.has(other)
+                        == before.has(other) by {
+                        if before.has(other) {
+                            let k = choose|k: int|
+                                0 <= k < MAX_IN_FLIGHT && before.slots[k] == Some(other);
+                            assert(self.slots[k] == Some(other));
+                        }
+                        if self.has(other) {
+                            let k = choose|k: int|
+                                0 <= k < MAX_IN_FLIGHT && self.slots[k] == Some(other);
+                            assert(before.slots[k] == Some(other));
+                        }
+                    }
+                }
+                return true;
+            }
+            i += 1;
+        }
+        proof {
+            lemma_occupied_full(self.slots, MAX_IN_FLIGHT as int);
+        }
+        false
+    }
+
+    /// Forgets `id`; `false` when it was not in flight.
+    pub fn remove(&mut self, id: EffectId) -> (r: bool)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            r == old(self).has(id),
+            !final(self).has(id),
+            final(self).count() == old(self).count() - if r {
+                1int
+            } else {
+                0int
+            },
+            forall|other: EffectId| other != id ==> final(self).has(other) == old(self).has(other),
+    {
+        let mut i = 0;
+        while i < MAX_IN_FLIGHT
+            invariant
+                i <= MAX_IN_FLIGHT,
+                *self == *old(self),
+                old(self).wf(),
+                forall|k: int| 0 <= k < i ==> self.slots[k] != Some(id),
+            decreases MAX_IN_FLIGHT - i,
+        {
+            if same(self.slots[i], id) {
+                let ghost before = *self;
+                self.slots[i] = None;
+                proof {
+                    lemma_occupied_set(before.slots, self.slots, MAX_IN_FLIGHT as int, i as int);
+                    assert forall|k: int| 0 <= k < MAX_IN_FLIGHT implies self.slots[k] != Some(
+                        id,
+                    ) by {
+                        if k > i {
+                            assert(before.slots[k] != before.slots[i as int]);
+                        }
+                    }
+                    assert forall|other: EffectId| other != id implies #[trigger] self.has(other)
+                        == before.has(other) by {
+                        if before.has(other) {
+                            let k = choose|k: int|
+                                0 <= k < MAX_IN_FLIGHT && before.slots[k] == Some(other);
+                            assert(self.slots[k] == Some(other));
+                        }
+                    }
+                }
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+}
+
+} // verus!

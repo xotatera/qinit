@@ -1,0 +1,261 @@
+#![cfg_attr(not(test), no_std)]
+//! The bridge: effects, their results and the protocol rules.
+//!
+//! Teeth return effect requests; the handle carries them out and feeds the
+//! results back as commands (rust.md §2). Add an `Effect` variant with its
+//! `admissible` rule, a real executor arm and a simulated one together.
+use vstd::prelude::*;
+
+verus! {
+
+/// Where an effect came from: the initial command's sequence number and
+/// the effect's ordinal across the entire drive chain (including follow-ups).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectId {
+    pub command: u64,
+    pub index: usize,
+}
+
+/// An effect a tooth asks the handle to carry out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Effect {
+    /// Wake the tooth after `millis` milliseconds.
+    Timer { millis: u32 },
+}
+
+/// What came of an effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectResult {
+    Done,
+    Failed,
+}
+
+pub const MAX_EVENTS: usize = 2;
+
+pub const MAX_EFFECTS: usize = 2;
+
+/// What `decide` returns: outcome events for `evolve` and the log, and
+/// effect requests for the handle, at fixed capacity.
+///
+/// Verus specs a derived `clone` only on a non-generic `Copy` type; nothing
+/// proved clones a `Decision`, so its `clone` goes without one.
+#[verifier::allow(autoderive_clone_without_spec)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Decision<E> {
+    pub events: [Option<E>; MAX_EVENTS],
+    pub effects: [Option<Effect>; MAX_EFFECTS],
+}
+
+impl<E: Copy> Decision<E> {
+    /// No events and no effects.
+    #[must_use]
+    pub const fn none() -> (r: Self)
+        ensures
+            forall|i: int| 0 <= i < MAX_EVENTS ==> r.events[i] is None,
+            forall|i: int| 0 <= i < MAX_EFFECTS ==> r.effects[i] is None,
+    {
+        Decision { events: [None;MAX_EVENTS], effects: [None;MAX_EFFECTS] }
+    }
+}
+
+/// One feature's pure state machine (handled haircomb, rust.md §1).
+///
+/// The spec items tie the executable methods to a proof: `decide` promises
+/// that, from a state with the invariant, every event it emits may be
+/// evolved in turn, the state reached keeps the invariant, and every effect
+/// it asks for is `admissible` (`keeps`). Each tooth proves that for its own
+/// impl; ghost items are erased from ordinary builds.
+pub trait Tooth {
+    /// Not `Copy`: `evolve` updates it in place, so it may hold large
+    /// fixed-capacity tables (model weights, windows, hash tables).
+    type State;
+
+    type Command: Copy;
+
+    type Event: Copy;
+
+    type Reject;
+
+    /// What every reachable state satisfies; `invariant` computes it.
+    spec fn inv(state: Self::State) -> bool;
+
+    /// When `evolve` may apply `event` to `state` (e.g. without overflow).
+    spec fn enabled(state: Self::State, event: Self::Event) -> bool;
+
+    /// The state `evolve` makes of `state` and `event`.
+    spec fn next(state: Self::State, event: Self::Event) -> Self::State;
+
+    fn initial() -> (r: Self::State)
+        ensures
+            Self::inv(r),
+    ;
+
+    fn invariant(state: &Self::State) -> (r: bool)
+        ensures
+            r == Self::inv(*state),
+    ;
+
+    /// # Errors
+    /// The command's rejection; nothing changes.
+    fn decide(state: &Self::State, command: Self::Command) -> (r: Result<
+        Decision<Self::Event>,
+        Self::Reject,
+    >)
+        ensures
+            Self::inv(*state) ==> (r matches Ok(d) ==> keeps(
+                |s| Self::inv(s),
+                |s, e| Self::enabled(s, e),
+                |s, e| Self::next(s, e),
+                *state,
+                d,
+            )),
+    ;
+
+    fn evolve(state: &mut Self::State, event: &Self::Event)
+        requires
+            Self::enabled(*old(state), *event),
+        ensures
+            *final(state) == Self::next(*old(state), *event),
+    ;
+
+    /// The command a finished effect comes back as.
+    fn on_result(id: EffectId, result: EffectResult) -> Self::Command;
+}
+
+/// Each event of `events` from `i` on may be evolved in turn from `state`,
+/// given a tooth's `enabled` and `next` (free of `Tooth`, so a trait method's
+/// `ensures` can name it).
+pub open spec fn evolvable<S, E>(
+    enabled: spec_fn(S, E) -> bool,
+    next: spec_fn(S, E) -> S,
+    state: S,
+    events: [Option<E>; MAX_EVENTS],
+    i: nat,
+) -> bool
+    decreases MAX_EVENTS - i,
+{
+    if i >= MAX_EVENTS {
+        true
+    } else {
+        match events[i as int] {
+            Some(e) => enabled(state, e) && evolvable(enabled, next, next(state, e), events, i + 1),
+            None => evolvable(enabled, next, state, events, i + 1),
+        }
+    }
+}
+
+/// The state reached by evolving each event of `events` from `i` on.
+pub open spec fn evolved<S, E>(
+    next: spec_fn(S, E) -> S,
+    state: S,
+    events: [Option<E>; MAX_EVENTS],
+    i: nat,
+) -> S
+    decreases MAX_EVENTS - i,
+{
+    if i >= MAX_EVENTS {
+        state
+    } else {
+        match events[i as int] {
+            Some(e) => evolved(next, next(state, e), events, i + 1),
+            None => evolved(next, state, events, i + 1),
+        }
+    }
+}
+
+/// One step from `state` with `decision` keeps the protocol: its events
+/// evolve in turn, the state reached keeps `inv`, and every effect is
+/// admissible.
+pub open spec fn keeps<S, E>(
+    inv: spec_fn(S) -> bool,
+    enabled: spec_fn(S, E) -> bool,
+    next: spec_fn(S, E) -> S,
+    state: S,
+    decision: Decision<E>,
+) -> bool {
+    &&& evolvable(enabled, next, state, decision.events, 0)
+    &&& inv(evolved(next, state, decision.events, 0))
+    &&& all_admissible(decision.effects)
+}
+
+/// Every effect requested in `effects` is admissible.
+pub open spec fn all_admissible(effects: [Option<Effect>; MAX_EFFECTS]) -> bool {
+    forall|i: int|
+        0 <= i < MAX_EFFECTS ==> (#[trigger] effects[i] matches Some(e) ==> is_admissible(e))
+}
+
+/// One step of tooth `T`: `decide`, then `evolve` each event in order. From
+/// a state with the invariant, the state reached keeps it and every effect
+/// returned is admissible; on a rejection `state` is unchanged. Proved here
+/// once, from the trait's contracts, for every tooth.
+///
+/// # Errors
+/// The command's rejection.
+pub fn step<T: Tooth>(state: &mut T::State, command: T::Command) -> (r: Result<
+    Decision<T::Event>,
+    T::Reject,
+>)
+    requires
+        T::inv(*old(state)),
+    ensures
+        T::inv(*final(state)),
+        r is Err ==> *final(state) == *old(state),
+        r matches Ok(d) ==> all_admissible(d.effects),
+{
+    let decision = T::decide(state, command)?;
+    let ghost start = *state;
+    for i in 0..MAX_EVENTS
+        invariant
+            evolvable(
+                |s, e| T::enabled(s, e),
+                |s, e| T::next(s, e),
+                *state,
+                decision.events,
+                i as nat,
+            ),
+            evolved(|s, e| T::next(s, e), *state, decision.events, i as nat) == evolved(
+                |s, e| T::next(s, e),
+                start,
+                decision.events,
+                0,
+            ),
+            T::inv(evolved(|s, e| T::next(s, e), start, decision.events, 0)),
+    {
+        if let Some(event) = &decision.events[i] {
+            T::evolve(state, event);
+        }
+    }
+    Ok(decision)
+}
+
+/// The protocol rule, as a spec: a timer is positive and at most a minute.
+pub open spec fn is_admissible(effect: Effect) -> bool {
+    match effect {
+        Effect::Timer { millis } => 1 <= millis <= 60_000,
+    }
+}
+
+/// The protocol rule: a timer is positive and at most a minute.
+#[must_use]
+pub fn admissible(effect: &Effect) -> (ok: bool)
+    ensures
+        ok == is_admissible(*effect),
+{
+    match effect {
+        Effect::Timer { millis } => 1 <= *millis && *millis <= 60_000,
+    }
+}
+
+} // verus!
+
+#[cfg(test)]
+mod tests {
+    use super::{Effect, admissible};
+
+    #[test]
+    fn timers_are_positive_and_at_most_a_minute() {
+        assert!(admissible(&Effect::Timer { millis: 1 }));
+        assert!(!admissible(&Effect::Timer { millis: 0 }));
+        assert!(!admissible(&Effect::Timer { millis: 60_001 }));
+    }
+}

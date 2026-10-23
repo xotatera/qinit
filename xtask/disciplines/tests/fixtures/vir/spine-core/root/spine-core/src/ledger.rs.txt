@@ -1,0 +1,364 @@
+//! The string-free core of a scenario that requests one effect per check
+//! at the start and reports each check when its result arrives (plan P26).
+//! Effect `i` is `EffectId { command: 0, index: i }`. Teeth decide with
+//! these functions; Verus proves their contracts, and teeth's proofs use
+//! the contracts, not the bodies.
+//!
+//! In flight is derived, not stored: once started, every check not yet
+//! reported is in flight.
+use suite_bridge_core::{EffectId, MAX_IN_FLIGHT};
+use vstd::prelude::*;
+
+use crate::Reject;
+
+verus! {
+
+/// The command that requests every effect.
+pub const START: u32 = 0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ledger {
+    pub started: bool,
+    /// How many checks; at most `MAX_IN_FLIGHT`, since all are requested
+    /// at once.
+    pub checks: u8,
+    /// Bit `i`: check `i` was reported.
+    pub reported: u8,
+}
+
+// ---- Specification ----
+/// What [`id`] computes.
+pub open spec fn id_spec(index: u8) -> EffectId {
+    EffectId { command: START, index }
+}
+
+/// What [`bit`] computes.
+pub open spec fn bit_spec(index: u8) -> u8 {
+    if index < 8 {
+        1u8 << index
+    } else {
+        0
+    }
+}
+
+/// What [`all_bits`] computes.
+pub open spec fn all_bits_spec(checks: u8) -> u8 {
+    if checks >= 8 {
+        u8::MAX
+    } else {
+        ((1u8 << checks) - 1) as u8
+    }
+}
+
+/// What [`in_flight`] computes.
+pub open spec fn in_flight_spec(l: Ledger) -> u8 {
+    if l.started {
+        all_bits_spec(l.checks) & !l.reported
+    } else {
+        0
+    }
+}
+
+/// What [`invariant`] computes.
+pub open spec fn inv(l: Ledger) -> bool {
+    &&& l.checks <= MAX_IN_FLIGHT
+    &&& l.reported & !all_bits_spec(l.checks) == 0
+    &&& l.started || l.reported == 0
+}
+
+/// What [`done`] computes.
+pub open spec fn done_spec(l: Ledger) -> bool {
+    l.started && l.reported == all_bits_spec(l.checks)
+}
+
+/// What [`admit`] promises, given the invariant: the start only once, and
+/// a result only for an effect in flight.
+pub open spec fn admit_spec(
+    l: Ledger,
+    result: Option<EffectId>,
+    r: Result<Option<u8>, Reject>,
+) -> bool {
+    match (r, result) {
+        (Ok(None), None) => !l.started,
+        (Ok(Some(i)), Some(e)) => e == id_spec(i) && i < l.checks && in_flight_spec(l) & bit_spec(i)
+            != 0,
+        (Ok(_), _) => false,
+        (Err(_), None) => l.started,
+        (Err(_), Some(e)) => e.command != START || e.index >= l.checks || in_flight_spec(l)
+            & bit_spec(e.index) == 0,
+    }
+}
+
+// ---- Lemmas ----
+/// A bit below `checks` is one of `all_bits(checks)`.
+proof fn lemma_bit_within(i: u8, checks: u8)
+    requires
+        i < checks <= 8,
+    ensures
+        bit_spec(i) != 0,
+        bit_spec(i) & !all_bits_spec(checks) == 0,
+{
+    if checks == 8 {
+        assert((1u8 << i) != 0 && (1u8 << i) & !0xffu8 == 0) by (bit_vector)
+            requires
+                i < 8,
+        ;
+    } else {
+        assert((1u8 << i) != 0 && (1u8 << i) & !(((1u8 << checks) - 1) as u8) == 0) by (bit_vector)
+            requires
+                i < checks < 8,
+        ;
+    }
+}
+
+/// Before the start, nothing is in flight.
+proof fn lemma_zero_and(x: u8)
+    ensures
+        0u8 & x == 0,
+{
+    assert(0u8 & x == 0) by (bit_vector);
+}
+
+/// Every check reported: nothing in flight.
+proof fn lemma_done_empty(all: u8, reported: u8, b: u8)
+    requires
+        reported == all,
+    ensures
+        all & !reported & b == 0,
+{
+    assert(all & !all & b == 0) by (bit_vector);
+}
+
+// ---- Code ----
+#[must_use]
+pub fn id(index: u8) -> (r: EffectId)
+    ensures
+        r == id_spec(index),
+{
+    EffectId { command: START, index }
+}
+
+/// Bit `index`; zero past the width.
+#[must_use]
+pub fn bit(index: u8) -> (r: u8)
+    ensures
+        r == bit_spec(index),
+{
+    if index < 8 {
+        1u8 << index
+    } else {
+        0
+    }
+}
+
+/// Bits `0..checks`.
+#[must_use]
+pub fn all_bits(checks: u8) -> (r: u8)
+    ensures
+        r == all_bits_spec(checks),
+{
+    if checks >= 8 {
+        u8::MAX
+    } else {
+        assert((1u8 << checks) >= 1) by (bit_vector)
+            requires
+                checks < 8,
+        ;
+        bit(checks) - 1
+    }
+}
+
+/// The checks whose effects are in flight.
+#[must_use]
+pub fn in_flight(l: Ledger) -> (r: u8)
+    ensures
+        r == in_flight_spec(l),
+{
+    if l.started {
+        all_bits(l.checks) & !l.reported
+    } else {
+        0
+    }
+}
+
+/// The invariant: at most `MAX_IN_FLIGHT` checks, only those reported,
+/// and none before the start.
+#[must_use]
+pub fn invariant(l: &Ledger) -> (r: bool)
+    ensures
+        r == inv(*l),
+{
+    usize::from(l.checks) <= MAX_IN_FLIGHT && l.reported & !all_bits(l.checks) == 0 && (l.started
+        || l.reported == 0)
+}
+
+/// A ledger of `checks` checks, not started.
+#[must_use]
+pub fn new(checks: u8) -> (r: Ledger)
+    ensures
+        r == (Ledger { started: false, checks, reported: 0 }),
+        checks <= MAX_IN_FLIGHT ==> inv(r),
+{
+    let r = Ledger { started: false, checks, reported: 0 };
+    assert(0u8 & !all_bits_spec(checks) == 0) by {
+        let a = all_bits_spec(checks);
+        assert(0u8 & !a == 0) by (bit_vector);
+    }
+    r
+}
+
+/// Whether the ledger admits a command: the start (`None`) or the result
+/// of effect `Some(id)`. `Ok` carries the check a result reports.
+///
+/// # Errors
+/// A second start, a result before the start or after the end, or a
+/// result for an effect not in flight.
+pub fn admit(l: Ledger, result: Option<EffectId>) -> (r: Result<Option<u8>, Reject>)
+    requires
+        inv(l),
+    ensures
+        admit_spec(l, result, r),
+{
+    match result {
+        None if l.started => Err(Reject::AlreadyStarted),
+        None => Ok(None),
+        Some(_) if !l.started => {
+            proof {
+                lemma_zero_and(bit_spec(result->0.index));
+            }
+            Err(Reject::NotStarted)
+        },
+        Some(_) if done(l) => {
+            proof {
+                lemma_done_empty(all_bits_spec(l.checks), l.reported, bit_spec(result->0.index));
+            }
+            Err(Reject::Finished)
+        },
+        Some(e) if e.command == START && e.index < l.checks && in_flight(l) & bit(e.index) != 0 => {
+            Ok(Some(e.index))
+        },
+        Some(_) => Err(Reject::NotInFlight),
+    }
+}
+
+/// Every effect requested.
+#[must_use]
+pub fn start(l: Ledger) -> (r: Ledger)
+    requires
+        inv(l),
+        !l.started,
+    ensures
+        inv(r),
+        r.started,
+        r.checks == l.checks,
+        r.reported == l.reported,
+        in_flight_spec(r) == all_bits_spec(l.checks),
+{
+    let mut r = l;
+    r.started = true;
+    assert(all_bits_spec(l.checks) & !0u8 == all_bits_spec(l.checks)) by {
+        let a = all_bits_spec(l.checks);
+        assert(a & !0u8 == a) by (bit_vector);
+    }
+    r
+}
+
+/// Check `index` reported: its effect leaves the flight.
+#[must_use]
+pub fn reported(l: Ledger, index: u8) -> (r: Ledger)
+    requires
+        inv(l),
+        index < l.checks,
+        in_flight_spec(l) & bit_spec(index) != 0,
+    ensures
+        inv(r),
+        r.started,
+        r.checks == l.checks,
+        r.reported == l.reported | bit_spec(index),
+        in_flight_spec(r) == in_flight_spec(l) & !bit_spec(index),
+{
+    proof {
+        lemma_zero_and(bit_spec(index));
+        lemma_bit_within(index, l.checks);
+        let a = all_bits_spec(l.checks);
+        let p = l.reported;
+        let b = bit_spec(index);
+        assert((p | b) & !a == 0 && a & !(p | b) == (a & !p) & !b) by (bit_vector)
+            requires
+                p & !a == 0,
+                b & !a == 0,
+        ;
+    }
+    let mut r = l;
+    r.reported = l.reported | bit(index);
+    r
+}
+
+/// Started and every check reported: nothing is in flight.
+#[must_use]
+pub fn done(l: Ledger) -> (r: bool)
+    ensures
+        r == done_spec(l),
+{
+    l.started && l.reported == all_bits(l.checks)
+}
+
+/// Liveness, one step at a time: every check in flight is admitted, and a
+/// started ledger with nothing in flight is done. (Safety alone holds for
+/// a ledger that admits nothing.)
+pub proof fn lemma_live(l: Ledger, i: u8)
+    requires
+        inv(l),
+    ensures
+        in_flight_spec(l) & bit_spec(i) != 0 ==> i < l.checks && !done_spec(l),
+        l.started && in_flight_spec(l) == 0 ==> done_spec(l),
+{
+    let a = all_bits_spec(l.checks);
+    let p = l.reported;
+    let b = bit_spec(i);
+    lemma_zero_and(b);
+    if in_flight_spec(l) & b != 0 {
+        if i >= l.checks {
+            if i >= 8 {
+                assert(b == 0);
+                assert(a & !p & 0u8 == 0) by (bit_vector);
+            } else if l.checks == 8 {
+            } else {
+                let c = l.checks;
+                assert((1u8 << i) & (((1u8 << c) - 1) as u8) == 0) by (bit_vector)
+                    requires
+                        c <= i < 8,
+                ;
+                assert(a & !p & b == 0) by (bit_vector)
+                    requires
+                        b & a == 0,
+                ;
+            }
+        }
+        if done_spec(l) {
+            lemma_done_empty(a, p, b);
+        }
+    }
+    if l.started && in_flight_spec(l) == 0 {
+        assert(p == a) by (bit_vector)
+            requires
+                p & !a == 0,
+                a & !p == 0,
+        ;
+    }
+}
+
+/// The other half of the liveness harness: `admit`'s contract leaves it
+/// one answer for the result of a check in flight, the report of that check.
+pub proof fn lemma_in_flight_admitted(l: Ledger, i: u8, r: Result<Option<u8>, Reject>)
+    requires
+        inv(l),
+        in_flight_spec(l) & bit_spec(i) != 0,
+        admit_spec(l, Some(id_spec(i)), r),
+    ensures
+        r == Ok::<Option<u8>, Reject>(Some(i)),
+{
+    lemma_live(l, i);
+}
+
+} // verus!

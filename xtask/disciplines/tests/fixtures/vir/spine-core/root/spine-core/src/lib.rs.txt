@@ -1,0 +1,24 @@
+//! The string-free core of the spine: the ledger a scenario keeps of its
+//! checks, and the script interpreter's scheduler. `suite-spine` re-exports
+//! both modules and holds the text. Verus proves every item here
+//! (`proof:spine`).
+#![cfg_attr(not(test), no_std)]
+use vstd::prelude::*;
+
+pub mod ledger;
+pub mod sched;
+
+verus! {
+
+/// Why a scenario refused a command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reject {
+    AlreadyStarted,
+    NotStarted,
+    NotInFlight,
+    Finished,
+    /// A decision would hold more events than it has room for.
+    Overflow,
+}
+
+} // verus!

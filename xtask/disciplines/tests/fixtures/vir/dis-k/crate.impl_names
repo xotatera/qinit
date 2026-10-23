@@ -1,0 +1,2 @@
+dis_k::impl&%1   ###   core::cmp::PartialEq   ###   dis_k::S, dis_k::S   ###   k/src/lib.rs:22:15: 22:24 (#14)
+dis_k::impl&%0   ###   dis_k::One   ###   dis_k::S   ###   k/src/lib.rs:22:10: 22:13 (#11)
