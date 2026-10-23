@@ -343,6 +343,72 @@ fn setup_refreshes_only_its_verified_installed_sources_and_links() {
 }
 
 #[test]
+fn setup_refuses_hardlinked_source_without_mutating_the_foreign_file() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let repo = Repo::uninstalled();
+    let setup = repo.work().join(".githooks/setup-hooks.sh");
+    let run_setup = || {
+        Command::new(&setup)
+            .current_dir(repo.work())
+            .env("HOME", &repo.dir)
+            .env("GIT_CONFIG_GLOBAL", repo.dir.join("gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap()
+    };
+    let installed = run_setup();
+    assert!(installed.status.success(), "{}", stderr(&installed));
+
+    let foreign = repo.dir.join("foreign-hook");
+    std::fs::write(&foreign, "foreign hook\n").unwrap();
+    std::fs::set_permissions(&foreign, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let installed_source = repo.hooks_dir().join("qinit/pre-commit");
+    std::fs::remove_file(&installed_source).unwrap();
+    std::fs::hard_link(&foreign, &installed_source).unwrap();
+    let mode = std::fs::metadata(&foreign).unwrap().mode();
+
+    let refused = run_setup();
+    assert!(!refused.status.success(), "{}", stderr(&refused));
+    assert!(
+        stderr(&refused).contains("not a qinit-owned hook source"),
+        "{}",
+        stderr(&refused)
+    );
+    assert_eq!(std::fs::read_to_string(&foreign).unwrap(), "foreign hook\n");
+    assert_eq!(std::fs::metadata(&foreign).unwrap().mode(), mode);
+}
+
+#[test]
+fn setup_refuses_hidden_foreign_qinit_source_entries() {
+    let repo = Repo::uninstalled();
+    let setup = repo.work().join(".githooks/setup-hooks.sh");
+    let run_setup = || {
+        Command::new(&setup)
+            .current_dir(repo.work())
+            .env("HOME", &repo.dir)
+            .env("GIT_CONFIG_GLOBAL", repo.dir.join("gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap()
+    };
+    let installed = run_setup();
+    assert!(installed.status.success(), "{}", stderr(&installed));
+
+    let hidden = repo.hooks_dir().join("qinit/.foreign");
+    std::fs::write(&hidden, "foreign source\n").unwrap();
+
+    let refused = run_setup();
+    assert!(!refused.status.success(), "{}", stderr(&refused));
+    assert!(
+        stderr(&refused).contains("not a qinit hook source"),
+        "{}",
+        stderr(&refused)
+    );
+    assert_eq!(std::fs::read_to_string(hidden).unwrap(), "foreign source\n");
+}
+
+#[test]
 fn commit_guards_refuse_main_and_unprefixed_branches_but_accept_prefixed_work() {
     let repo = Repo::new();
     std::fs::write(repo.work().join("a"), "2\n").unwrap();

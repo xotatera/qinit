@@ -31,13 +31,19 @@ fi
 
 # Do every collision or ownership check before writing anything. Existing hooks
 # are clone-local behavior and must be preserved for their owner to integrate.
+is_owned_source() {
+    [ -f "$1" ] && [ ! -L "$1" ] && [ "$(stat -c %h "$1")" -eq 1 ]
+}
 for f in "$top"/.githooks/*; do
     [ -f "$f" ] || continue
     name="$(basename "$f")"
     [ "$name" = setup-hooks.sh ] && continue
     if "$refresh"; then
-        if [ ! -f "$sources/$name" ] || [ -L "$sources/$name" ] ||
-            [ ! -L "$hooks/$name" ] ||
+        if ! is_owned_source "$sources/$name"; then
+            echo "refusing to refresh: $sources/$name is not a qinit-owned hook source." >&2
+            exit 1
+        fi
+        if [ ! -L "$hooks/$name" ] ||
             [ "$(readlink "$hooks/$name")" != "qinit/$name" ]; then
             echo "refusing to refresh: $hooks/$name is not a qinit-installed hook." >&2
             exit 1
@@ -49,9 +55,9 @@ for f in "$top"/.githooks/*; do
 done
 
 if "$refresh"; then
-    # Reject extra qinit entries too: this directory is ours only when its
-    # complete contents are the current set of installed hook sources.
-    for installed in "$sources"/*; do
+    # Reject extra qinit entries too, including dotfiles: this directory is
+    # ours only when its complete contents are the installed hook sources.
+    for installed in "$sources"/.[!.]* "$sources"/..?* "$sources"/*; do
         [ -e "$installed" ] || [ -L "$installed" ] || continue
         installed_name="$(basename "$installed")"
         known=false
@@ -70,12 +76,23 @@ else
     mkdir "$sources"
 fi
 
+staged=''
+cleanup_staged() {
+    [ -z "$staged" ] || rm -f "$staged"
+}
+trap cleanup_staged 0 HUP INT TERM
+
 for f in "$top"/.githooks/*; do
     [ -f "$f" ] || continue
     name="$(basename "$f")"
     [ "$name" = setup-hooks.sh ] && continue
-    cp "$f" "$sources/$name"
-    chmod 755 "$sources/$name"
+    # Replacing a staged file never truncates or chmods the verified source
+    # inode, including if a hard link appears after the ownership check.
+    staged="$(mktemp "$sources/.qinit-hook.XXXXXX")"
+    cp "$f" "$staged"
+    chmod 755 "$staged"
+    mv -f "$staged" "$sources/$name"
+    staged=''
     if ! "$refresh"; then
         ln -s "qinit/$name" "$hooks/$name"
     fi
