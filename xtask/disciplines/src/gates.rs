@@ -134,12 +134,18 @@ pub fn preflight(root: &Path) -> Result<(), String> {
             if !gone.is_empty() {
                 errors.push(tools::report(&gone));
             }
-            if d.proofs.iter().any(|p| p.kind == proofs::Kind::Verus)
-                && let Some(cargo_verus) = std::env::var_os("PATH")
-                    .and_then(|path| tools::resolve_in(&path, "cargo-verus"))
-                && let Err(error) = tools::cargo_verus_version(&cargo_verus)
-            {
-                errors.push(error);
+            if d.proofs.iter().any(|p| p.kind == proofs::Kind::Verus) {
+                let path = std::env::var_os("PATH").unwrap_or_default();
+                if let Some(cargo_verus) = tools::resolve_in(&path, "cargo-verus")
+                    && let Err(error) = tools::cargo_verus_version(&cargo_verus)
+                {
+                    errors.push(error);
+                }
+                if let Some(verusfmt) = tools::resolve_in(&path, "verusfmt")
+                    && let Err(error) = tools::verusfmt_version(&verusfmt)
+                {
+                    errors.push(error);
+                }
             }
         }
     }

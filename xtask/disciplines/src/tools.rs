@@ -11,6 +11,12 @@ pub const VERUS_VERSION: &str = "0.2026.10.04.426d8b0";
 /// `verus` command.
 pub const VERUS_INSTALL: &str = "the selected Verus 0.2026.10.04.426d8b0 release";
 
+/// The verusfmt release paired with [`VERUS_VERSION`]: the latest release
+/// published before that Verus release.
+pub const VERUSFMT_VERSION: &str = "0.7.4";
+/// How a contributor installs the pinned verusfmt.
+pub const VERUSFMT_INSTALL: &str = "cargo install --locked verusfmt --version 0.7.4";
+
 /// (binary, install line). List the tools of planned gates too.
 pub const REQUIRED: &[(&str, &str)] = &[
     ("cargo", "https://rustup.rs"),
@@ -129,6 +135,48 @@ pub fn cargo_verus_version(cargo_verus: &Path) -> Result<(), String> {
             "Verus driver `{}` used by cargo-verus driver `{}` did not report a Verus version; expected {VERUS_VERSION}",
             verus.display(),
             cargo_verus.display()
+        )),
+    }
+}
+
+/// Verifies that `verusfmt` is the pinned [`VERUSFMT_VERSION`]; it prints
+/// `verusfmt <version>` for `--version`.
+///
+/// # Errors
+/// When it cannot run, exits unsuccessfully, does not report a version, or
+/// reports a different release.
+pub fn verusfmt_version(verusfmt: &Path) -> Result<(), String> {
+    let output = Command::new(verusfmt)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("cannot run verusfmt `{}`: {e}", verusfmt.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr
+            .trim()
+            .is_empty()
+            .then(String::new)
+            .unwrap_or_else(|| format!(": {}", stderr.trim()));
+        return Err(format!(
+            "verusfmt `{}` --version failed ({}){detail}",
+            verusfmt.display(),
+            output.status,
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let actual = stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("verusfmt "));
+    match actual {
+        Some(version) if version.trim() == VERUSFMT_VERSION => Ok(()),
+        Some(version) => Err(format!(
+            "verusfmt `{}` reported verusfmt {}; expected {VERUSFMT_VERSION} (install: {VERUSFMT_INSTALL})",
+            verusfmt.display(),
+            version.trim()
+        )),
+        None => Err(format!(
+            "verusfmt `{}` did not report a version; expected {VERUSFMT_VERSION} (install: {VERUSFMT_INSTALL})",
+            verusfmt.display()
         )),
     }
 }

@@ -112,6 +112,7 @@ fn scratch(tag: &str) -> Scratch {
         &bin.join("verus"),
         "#!/bin/sh\nprintf '%s\\n' 'Verus' '  Version: 0.2026.10.04.426d8b0'\n",
     );
+    exe(&bin.join("verusfmt"), "#!/bin/sh\necho 'verusfmt 0.7.4'\n");
     exe(&bin.join("atc"), "#!/bin/sh\nexit 1\n");
     write(&root.join("ctl/out"), PASS);
     write(&root.join("ctl/rc"), "0");
@@ -381,7 +382,7 @@ fn a_declared_verus_proof_requires_the_selected_verus_release() {
             let real = xtask::tools::resolve_in(&path, tool).unwrap();
             std::os::unix::fs::symlink(real, dir.join(tool)).unwrap();
         }
-        exe(&dir.join("verusfmt"), "#!/bin/sh\nexit 0\n");
+        exe(&dir.join("verusfmt"), "#!/bin/sh\necho 'verusfmt 0.7.4'\n");
         exe(&dir.join("atc"), "#!/bin/sh\nexit 1\n");
         let out = Proc::new(std::env::current_exe().unwrap())
             .args([
@@ -424,6 +425,60 @@ fn a_declared_verus_proof_requires_the_selected_verus_release() {
     assert!(
         gate_scoped(&root, Scope::All),
         "an empty workspace does not require Verus"
+    );
+}
+
+const WRONG_VERUSFMT: &str = "XTASK_WRONG_VERUSFMT_ROOT";
+
+/// The scratch workspace's tools, with a `verusfmt` that reports another
+/// release: the declared Verus proof makes preflight reject it, and an empty
+/// workspace does not check it.
+#[test]
+fn a_declared_verus_proof_requires_the_pinned_verusfmt() {
+    let Some(root) = std::env::var_os(WRONG_VERUSFMT).map(PathBuf::from) else {
+        let s = scratch("wrong-verusfmt");
+        exe(
+            &s.0.join("bin/verusfmt"),
+            "#!/bin/sh\necho 'verusfmt 0.7.3'\n",
+        );
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![s.0.join("bin")];
+        dirs.extend(std::env::split_paths(&path));
+        let out = Proc::new(std::env::current_exe().unwrap())
+            .args([
+                "a_declared_verus_proof_requires_the_pinned_verusfmt",
+                "--exact",
+                "--nocapture",
+            ])
+            .env(WRONG_VERUSFMT, &s.0)
+            .env("PATH", std::env::join_paths(dirs).unwrap())
+            .env("CARGO_BUILD_BUILD_DIR", s.0.join("build"))
+            .env_remove("DISCIPLINES_GATE_CONTEXT")
+            .env_remove("DISCIPLINES_GATE_NO_CACHE")
+            .env_remove("ATC_HELD")
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "{}{err}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(err.contains("FAIL preflight ("), "{err}");
+        assert!(
+            err.contains("reported verusfmt 0.7.3; expected 0.7.4"),
+            "{err}"
+        );
+        return;
+    };
+    assert!(
+        !gate_scoped(&root, Scope::All),
+        "a declared Verus proof checks the pinned verusfmt"
+    );
+    fs::write(root.join("Cargo.toml"), "[workspace]\nresolver = \"3\"\n").unwrap();
+    assert!(
+        gate_scoped(&root, Scope::All),
+        "an empty workspace does not check verusfmt"
     );
 }
 

@@ -1643,7 +1643,8 @@ pub fn verus_install_files(cargo_verus: &std::path::Path) -> Vec<std::path::Path
 
 /// Tools `preflight` requires once a Verus proof is declared: the selected
 /// `verus` release, the `cargo-verus` driver, and `verusfmt`, which formats
-/// `verus!` bodies. The driver is version-checked separately; an empty
+/// `verus!` bodies. The driver and verusfmt are version-checked separately
+/// (`tools::cargo_verus_version`, `tools::verusfmt_version`); an empty
 /// workspace does not require Verus.
 #[must_use]
 pub fn required_tools(proofs: &[Proof]) -> Vec<(&'static str, &'static str)> {
@@ -1651,7 +1652,7 @@ pub fn required_tools(proofs: &[Proof]) -> Vec<(&'static str, &'static str)> {
         vec![
             ("verus", crate::tools::VERUS_INSTALL),
             ("cargo-verus", crate::tools::VERUS_INSTALL),
-            ("verusfmt", "cargo install --locked verusfmt"),
+            ("verusfmt", crate::tools::VERUSFMT_INSTALL),
         ]
     } else {
         Vec::new()

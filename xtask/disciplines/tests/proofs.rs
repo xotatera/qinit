@@ -1835,6 +1835,10 @@ fn verus_entries_require_cargo_verus() {
         names(proofs::required_tools(&[one(VERUS_A)])),
         ["verus", "cargo-verus", "verusfmt"]
     );
+    assert!(
+        proofs::required_tools(&[one(VERUS_A)])
+            .contains(&("verusfmt", xtask::tools::VERUSFMT_INSTALL))
+    );
 }
 
 /// Two passes: `--no-cheating` rejected lines 3 and 7 of a tooth (Verus

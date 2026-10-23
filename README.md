@@ -55,7 +55,8 @@ The first implementation sub-project is repository disciplines setup. The pinned
 [Rust toolchain](rust-toolchain.toml) is Rust 1.98.1 with `rustfmt` and `clippy`.
 The selected Verus release is `0.2026.10.04.426d8b0`; when a `kind = "verus"`
 proof is declared, tooling verifies the Verus driver selected by the
-`cargo-verus` command that `cargo verus` invokes.
+`cargo-verus` command that `cargo verus` invokes, and that `verusfmt` is the
+paired release `0.7.4` (`cargo install --locked verusfmt --version 0.7.4`).
 This keeps the empty-workspace full gate portable: it declares no proof and
 therefore does not require Verus. Run the complete local gate from the
 repository root:
