@@ -103,6 +103,7 @@ fn a_gate_sees_what_the_run_will_run_and_shares_one_result() {
         let root = std::env::temp_dir().join(format!("xtask-run-scope-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("Cargo.toml"), "[workspace]\nresolver = \"3\"\n").unwrap();
         fs::write(root.join("b.txt"), "b\n").unwrap();
         git(&root, &["init", "-q", "-b", "feat/x"]);
         git(&root, &["add", "-A"]);

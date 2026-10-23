@@ -1,0 +1,91 @@
+// SPDX-FileCopyrightText: 2026 Xota Tera
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! qinit's binary preserves proof declaration errors and treats no proofs as a no-op.
+
+use std::path::PathBuf;
+use std::process::{Command, Output};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn xtask(arguments: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_qinit-xtask"))
+        .args(arguments)
+        .output()
+        .expect("spawn qinit-xtask")
+}
+
+struct Fixture {
+    root: PathBuf,
+}
+
+impl Fixture {
+    fn malformed_root_proofs() -> Self {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("qinit-xtask-cli-{nonce}"));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = qinit_xtask::repo_root().join("xtask");
+        let copied = Command::new("cp")
+            .args(["-a", source.to_str().unwrap(), root.to_str().unwrap()])
+            .status()
+            .expect("copy xtask fixture");
+        assert!(copied.success());
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nresolver = \"3\"\n\n[workspace.metadata.disciplines]\nproof = \"not a table\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("README.md"),
+            "> [!IMPORTANT]\n> Remove these two lines to confirm that a human has reviewed this change.\n",
+        )
+        .unwrap();
+        Self { root }
+    }
+
+    fn run(&self, arguments: &[&str]) -> Output {
+        Command::new("cargo")
+            .args([
+                "run",
+                "--manifest-path",
+                self.root.join("xtask/Cargo.toml").to_str().unwrap(),
+                "--package",
+                "qinit-xtask",
+                "--quiet",
+                "--locked",
+                "--offline",
+                "--",
+            ])
+            .args(arguments)
+            .current_dir(&self.root)
+            .env("CARGO_TARGET_DIR", self.root.join("target"))
+            .output()
+            .expect("run fixture qinit-xtask")
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+#[test]
+fn empty_proofs_are_a_successful_no_op() {
+    let output = xtask(&["proofs"]);
+    assert!(output.status.success(), "{:?}", output.status);
+}
+
+#[test]
+fn full_gate_rejects_a_malformed_root_proof_declaration() {
+    let fixture = Fixture::malformed_root_proofs();
+    let output = fixture.run(&["gate", "--no-cache"]);
+    assert!(!output.status.success(), "{:?}", output.status);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("proof: expected"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

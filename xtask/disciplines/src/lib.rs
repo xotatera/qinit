@@ -330,23 +330,27 @@ fn contract_key(
     cache::key::key(root, &spec, probe)
 }
 
-/// The static registry, then the proof gates. A declaration error leaves
-/// the proof gates out here; `preflight` fails with it.
-#[must_use]
-pub fn all_gates(root: &Path, skip: Option<&'static str>) -> Vec<Gate> {
+/// The static registry, then the proof gates.
+///
+/// # Errors
+/// A malformed proof declaration. It must fail the gate instead of leaving
+/// the proof gates out.
+pub fn all_gates(root: &Path, skip: Option<&'static str>) -> Result<Vec<Gate>, String> {
     all_gates_with(registry, root, skip)
 }
 
 /// [`all_gates`] for a project runner's own registry.
-#[must_use]
+///
+/// # Errors
+/// As for [`all_gates`].
 pub fn all_gates_with(
     registry: fn() -> Vec<Gate>,
     root: &Path,
     skip: Option<&'static str>,
-) -> Vec<Gate> {
+) -> Result<Vec<Gate>, String> {
     let mut gates = registry();
-    gates.extend(proof_gates(root, skip).unwrap_or_default());
-    gates
+    gates.extend(proof_gates(root, skip)?);
+    Ok(gates)
 }
 
 /// From this crate's directory to the workspace root: `..` for
@@ -580,12 +584,15 @@ fn select(
                 eprintln!("no proofs declared");
                 return Err(true);
             }
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("proofs: {e}");
-                return Err(false);
-            }
+            result => result,
         },
+    };
+    let gates = match gates {
+        Ok(gates) => gates,
+        Err(error) => {
+            eprintln!("proofs: {error}");
+            return Err(false);
+        }
     };
     if let Some(o) = only
         && !gates.iter().any(|g| g.name == o)
@@ -686,11 +693,23 @@ fn run_gates(
     // The probe runs rustc, so build it only when some cache is in use.
     // `run_gate` never asks for a key under `Off`, so `key`'s `Err` is
     // unreachable; if it were reached the gate would just run.
-    let specs: BTreeMap<&'static str, ProofSpec> = proof_specs(root)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| (leak(s.proof.gate_name()), s))
-        .collect();
+    let specs: BTreeMap<&'static str, ProofSpec> = match proof_specs(root) {
+        Ok(specs) => specs
+            .into_iter()
+            .map(|s| (leak(s.proof.gate_name()), s))
+            .collect(),
+        Err(error) => {
+            eprintln!("proofs: {error}");
+            return false;
+        }
+    };
+    let proof_gates: BTreeMap<&'static str, Gate> = match proof_gates(root, None) {
+        Ok(gates) => gates.into_iter().map(|gate| (gate.name, gate)).collect(),
+        Err(error) => {
+            eprintln!("proofs: {error}");
+            return false;
+        }
+    };
     let ctx = RunCtx {
         root,
         store: store.as_ref(),
@@ -699,11 +718,7 @@ fn run_gates(
         probe: store
             .is_some()
             .then(|| cache::key::Probe::from_env(root, runner.dirs.clone())),
-        proof_gates: proof_gates(root, None)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|g| (g.name, g))
-            .collect(),
+        proof_gates,
         specs,
     };
     let selected: Vec<Gate> = gates
@@ -988,12 +1003,18 @@ impl Runner {
 #[must_use]
 pub fn execute_with(runner: &Runner, cmd: &Command, root: &Path) -> bool {
     match cmd {
-        Command::List => {
-            for gate in all_gates_with(runner.registry, root, None) {
-                println!("{}", gate.name);
+        Command::List => match all_gates_with(runner.registry, root, None) {
+            Ok(gates) => {
+                for gate in gates {
+                    println!("{}", gate.name);
+                }
+                true
             }
-            true
-        }
+            Err(error) => {
+                eprintln!("proofs: {error}");
+                false
+            }
+        },
         Command::Gate {
             only,
             no_cache,

@@ -18,6 +18,7 @@ fn list_prints_the_registry_in_order() {
     // The binary's root is the project it was built in, which may declare
     // proofs: `--list` prints every gate there, proof gates included.
     let names: Vec<String> = xtask::all_gates(&xtask::workspace_root(), None)
+        .unwrap()
         .iter()
         .map(|g| g.name.to_string())
         .collect();

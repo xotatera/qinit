@@ -6,6 +6,10 @@
 #[test]
 fn repository_root_is_the_empty_product_workspace() {
     let root = qinit_xtask::repo_root();
+    let expected =
+        std::fs::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .unwrap();
+    assert_eq!(root, expected);
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
     assert!(manifest.contains("[workspace]"));
     assert!(!manifest.contains("[package]"));

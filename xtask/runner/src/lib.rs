@@ -127,7 +127,10 @@ pub enum Plan {
 ///
 /// # Errors
 /// For usage errors, an unknown stage, or a gate no selected stage has.
-pub fn plan(args: &[String], names: &dyn Fn(&Stage) -> Vec<String>) -> Result<Plan, String> {
+pub fn plan(
+    args: &[String],
+    names: &dyn Fn(&Stage) -> Result<Vec<String>, String>,
+) -> Result<Plan, String> {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
         ["gate", "--list"] => Ok(Plan::List),
@@ -160,7 +163,7 @@ fn stage_named(name: &str) -> Result<&'static Stage, String> {
 fn plan_run(
     verb: &str,
     rest: &[&str],
-    names: &dyn Fn(&Stage) -> Vec<String>,
+    names: &dyn Fn(&Stage) -> Result<Vec<String>, String>,
 ) -> Result<Plan, String> {
     let mut only = None;
     let mut forwarded = vec![verb.to_string()];
@@ -192,8 +195,9 @@ fn plan_run(
         if stage.is_some_and(|requested| requested.name != candidate.name) {
             continue;
         }
+        let candidate_names = names(candidate)?;
         let has =
-            |predicate: &dyn Fn(&str) -> bool| names(candidate).iter().any(|name| predicate(name));
+            |predicate: &dyn Fn(&str) -> bool| candidate_names.iter().any(|name| predicate(name));
         let wanted = match (&gate, verb) {
             (Some(gate), _) => has(&|name| name == gate),
             (None, "proofs") => has(&|name| name.starts_with("proof:")),
@@ -212,23 +216,24 @@ fn plan_run(
         ));
     }
     if selected.is_empty() {
-        return Err(match gate {
-            Some(gate) => {
-                format!("unknown gate `{gate}`; `cargo xtask gate --list` names them all")
-            }
-            None => "no stage declares a proof gate".to_string(),
-        });
+        return match (verb, gate) {
+            ("proofs", None) => Ok(Plan::Run(Vec::new())),
+            (_, Some(gate)) => Err(format!(
+                "unknown gate `{gate}`; `cargo xtask gate --list` names them all"
+            )),
+            _ => Err("no stage declares a proof gate".to_string()),
+        };
     }
     Ok(Plan::Run(selected))
 }
 
 /// Every gate of `stage` at `root`, including declared proofs.
-#[must_use]
-pub fn gate_names(stage: &Stage, root: &Path) -> Vec<String> {
+///
+/// # Errors
+/// A malformed proof declaration for the stage.
+pub fn gate_names(stage: &Stage, root: &Path) -> Result<Vec<String>, String> {
     xtask::all_gates_with(stage.registry, &root.join(stage.dir), None)
-        .iter()
-        .map(|gate| gate.name.to_string())
-        .collect()
+        .map(|gates| gates.iter().map(|gate| gate.name.to_string()).collect())
 }
 
 /// Runs a plan; `true` only if every selected stage passes.
@@ -237,7 +242,14 @@ pub fn execute(plan: Plan, root: &Path) -> bool {
     match plan {
         Plan::List => {
             for stage in STAGES {
-                for name in gate_names(stage, root) {
+                let names = match gate_names(stage, root) {
+                    Ok(names) => names,
+                    Err(error) => {
+                        eprintln!("{} proofs: {error}", stage.name);
+                        return false;
+                    }
+                };
+                for name in names {
                     println!("{}/{name}", stage.name);
                 }
             }
