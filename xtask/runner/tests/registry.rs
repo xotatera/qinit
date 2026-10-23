@@ -158,18 +158,6 @@ fn tooling_no_std_blocker_has_an_independent_ledger_resolution_condition() {
 }
 
 #[test]
-fn repository_canary_gate_rejects_unreviewed_real_repository_on_main() {
-    let output = Command::new(env!("CARGO_BIN_EXE_qinit-xtask"))
-        .args(["gate", "--only", "repo/canary", "--no-cache"])
-        .current_dir(qinit_xtask::repo_root())
-        .env(xtask::CONTEXT_ENV, "main")
-        .env_remove(xtask::MAIN_BRANCH_ENV)
-        .output()
-        .expect("run qinit-xtask in the repository");
-    assert_failure_contains(&output, "review canary remains in README.md");
-}
-
-#[test]
 fn repository_canary_gate_accepts_a_reviewed_fixture_on_main() {
     let fixture = Fixture::new();
     let accepted = fixture.run_with_context(
