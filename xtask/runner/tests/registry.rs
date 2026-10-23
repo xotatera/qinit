@@ -194,10 +194,14 @@ fn repository_canary_gate_rejects_a_seeded_canary_in_main_context() {
 }
 
 #[test]
-fn repository_canary_gate_rejects_a_seeded_canary_on_literal_main() {
+fn repository_canary_gate_rejects_a_seeded_canary_on_configured_main_branch() {
     let fixture = Fixture::new();
     fixture.seed_review_canary();
-    git(&fixture.root, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    git(&fixture.root, &["symbolic-ref", "HEAD", "refs/heads/trunk"]);
+
+    let without_override = fixture.run(&["gate", "--only", "repo/canary", "--no-cache"]);
+    assert_success(&without_override);
+
     let rejected =
         fixture.run_with_main_branch(&["gate", "--only", "repo/canary", "--no-cache"], "trunk");
     assert_failure_contains(&rejected, "review canary remains in README.md");
