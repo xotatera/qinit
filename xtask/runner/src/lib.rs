@@ -66,28 +66,144 @@ fn canary_gate(root: &Path) -> Result<(), String> {
     canary(main, present)
 }
 
+const NO_PRODUCT_FORMAT: &str = "D3: no product package to format";
+const NO_PRODUCT_LINT: &str = "D3: no product package to lint";
+const NO_PRODUCT_LAYERS: &str = "D3: no product package to check";
+const NO_PRODUCT_NO_STD: &str = "D4: no kernel or core product crate";
+const NO_PRODUCT_TEST: &str = "D3: no product package to test";
+const TOOLING_REPOSITORY_SCANS: &str = "D5: repository-wide scans run in the repo stage";
+
 /// Repository gates available before qinit has product packages.
 #[must_use]
 pub fn repo_registry() -> Vec<Gate> {
-    vec![Gate {
-        name: "canary",
-        run: Box::new(canary_gate),
-        inputs: Inputs::Globs(&["README.md"]),
-        env: &[xtask::CONTEXT_ENV, xtask::MAIN_BRANCH_ENV],
+    vec![
+        Gate {
+            name: "canary",
+            run: Box::new(canary_gate),
+            inputs: Inputs::Globs(&["README.md"]),
+            env: &[xtask::CONTEXT_ENV, xtask::MAIN_BRANCH_ENV],
+            tools: &["git"],
+            extra_paths: &[],
+            ignored_inputs: &[],
+            cacheable: false,
+            cache_on_main: false,
+            blocked: None,
+            decl: "",
+        },
+        Gate {
+            name: "fmt",
+            run: Box::new(xtask::gates::fmt),
+            inputs: Inputs::Tree,
+            env: &["RUSTFMT"],
+            tools: &["cargo", "rustfmt", "verusfmt"],
+            extra_paths: &[],
+            ignored_inputs: &[],
+            cacheable: true,
+            cache_on_main: false,
+            blocked: Some(NO_PRODUCT_FORMAT),
+            decl: "",
+        },
+        repo_scan("placeholder-scan", xtask::gates::stub_scan, true), // disciplines:allow-placeholder (the gate's name)
+        repo_scan("sleep-scan", xtask::gates::sleep_scan, true),
+        repo_scan("changelog", xtask::gates::changelog, false),
+        Gate {
+            name: "lint",
+            run: Box::new(xtask::gates::lint),
+            inputs: Inputs::Tree,
+            env: xtask::RUST_ENV,
+            tools: &["cargo", "cargo-clippy", "rustc"],
+            extra_paths: &[],
+            ignored_inputs: &[],
+            cacheable: true,
+            cache_on_main: false,
+            blocked: Some(NO_PRODUCT_LINT),
+            decl: "",
+        },
+        Gate {
+            name: "layers",
+            run: Box::new(xtask::gates::layers),
+            inputs: Inputs::Tree,
+            env: xtask::RUST_ENV,
+            tools: &["cargo"],
+            extra_paths: &[],
+            ignored_inputs: &[],
+            cacheable: true,
+            cache_on_main: false,
+            blocked: Some(NO_PRODUCT_LAYERS),
+            decl: "",
+        },
+        Gate {
+            name: "no-std",
+            run: Box::new(xtask::gates::no_std),
+            inputs: Inputs::Tree,
+            env: xtask::RUST_ENV,
+            tools: &["cargo", "rustc"],
+            extra_paths: &[],
+            ignored_inputs: &[],
+            cacheable: true,
+            cache_on_main: false,
+            blocked: Some(NO_PRODUCT_NO_STD),
+            decl: "",
+        },
+        Gate {
+            name: "duplication",
+            run: Box::new(xtask::gates::duplication),
+            inputs: Inputs::Globs(&["**/*.rs", "gates/duplication-baseline.txt"]),
+            env: &[],
+            tools: &["git"],
+            extra_paths: &[],
+            ignored_inputs: &[],
+            cacheable: true,
+            cache_on_main: true,
+            blocked: None,
+            decl: "",
+        },
+        Gate {
+            name: "test",
+            run: Box::new(xtask::gates::test),
+            inputs: Inputs::Tree,
+            env: xtask::RUST_ENV,
+            tools: &["cargo", "rustc"],
+            extra_paths: &[],
+            ignored_inputs: &[],
+            cacheable: true,
+            cache_on_main: false,
+            blocked: Some(NO_PRODUCT_TEST),
+            decl: "",
+        },
+    ]
+}
+
+fn repo_scan(name: &'static str, run: fn(&Path) -> Result<(), String>, cacheable: bool) -> Gate {
+    Gate {
+        name,
+        run: Box::new(run),
+        inputs: Inputs::Tree,
+        env: &[],
         tools: &["git"],
         extra_paths: &[],
         ignored_inputs: &[],
-        cacheable: false,
-        cache_on_main: false,
+        cacheable,
+        cache_on_main: cacheable,
         blocked: None,
         decl: "",
-    }]
+    }
 }
 
-/// The tooling workspace uses the reviewed disciplines template unchanged.
+/// Tooling-only checks run in the xtask workspace. Repository-wide scans run
+/// once in the repository stage, where their policy files and ledger live.
 #[must_use]
 pub fn xtask_registry() -> Vec<Gate> {
-    xtask::registry()
+    let mut gates = xtask::registry();
+    for gate in &mut gates {
+        gate.blocked = match gate.name {
+            "placeholder-scan" // disciplines:allow-placeholder (the gate's name)
+            | "sleep-scan" | "changelog" | "duplication" => Some(TOOLING_REPOSITORY_SCANS),
+            "no-std" => Some(NO_PRODUCT_NO_STD),
+            _ => None,
+        };
+    }
+    gates
 }
 
 fn current_branch(root: &Path) -> Option<String> {

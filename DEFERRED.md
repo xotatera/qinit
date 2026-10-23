@@ -24,3 +24,22 @@ project.
 
 Deferred by the approved design, §9. None of these may enter qinit without an
 approved design amendment.
+
+### D3 — Product workspace gates · `ACCEPTED`
+
+The repository has no product package while disciplines are being set up.
+The root `fmt`, `lint`, `layers`, and `test` gates are therefore blocked:
+running them would format, lint, inspect, or test an empty virtual workspace.
+Unblock each gate in the same change that adds its first product package.
+
+### D4 — no-std product gate · `ACCEPTED`
+
+The repository has no kernel or core product crate. The root `no-std` gate is
+blocked until one exists; unblock it in the change that adds that crate.
+
+### D5 — Tooling-stage repository-wide scans · `ACCEPTED`
+
+The repository stage runs the placeholder, sleep, changelog, and duplication
+scans over the whole tree, including `xtask/`. The tooling stage blocks its
+copies so they do not run without the root policy files and ledger; unblock
+only if it gains a separate, reviewed tooling policy.

@@ -13,3 +13,7 @@ xtask = { path = "../disciplines" }
 
 [lints]
 workspace = true
+
+[package.metadata.disciplines]
+layer = "tooling"
+allow = ["xtask"]
