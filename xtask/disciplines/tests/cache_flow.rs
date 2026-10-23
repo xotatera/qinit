@@ -57,6 +57,7 @@ fn gate(name: &'static str, run: fn(&Path) -> Result<(), String>) -> Gate {
         env: &[],
         tools: &[],
         extra_paths: &[],
+        cache_paths: &[],
         ignored_inputs: &[],
         cacheable: true,
         cache_on_main: true,

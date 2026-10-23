@@ -50,6 +50,8 @@ pub struct Gate {
     /// (`build.rs`, `include_str!`): absolute, `~/`-prefixed or relative to
     /// the root.
     pub extra_paths: &'static [&'static str],
+    /// Absolute paths added at runtime without losing non-UTF-8 bytes.
+    pub cache_paths: &'static [PathBuf],
     /// Globs matched against ignored files, for generated inputs.
     pub ignored_inputs: &'static [&'static str],
     /// `false` for wall-clock benchmarks and network or supply-chain gates.
@@ -73,6 +75,7 @@ impl Gate {
             env: self.env,
             tools: self.tools,
             extra_paths: self.extra_paths,
+            cache_paths: self.cache_paths,
             ignored_inputs: self.ignored_inputs,
             decl: self.decl,
         }
@@ -97,9 +100,8 @@ pub const RUST_ENV: &[&str] = &[
 #[must_use]
 pub fn registry() -> Vec<Gate> {
     let path = std::env::var_os("PATH").unwrap_or_default();
-    let preflight_extra_paths: Vec<&'static str> = crate::tools::resolve_in(&path, "cargo-verus")
+    let preflight_cache_paths: Vec<PathBuf> = crate::tools::resolve_in(&path, "cargo-verus")
         .and_then(|cargo_verus| crate::tools::cargo_verus_sibling(&cargo_verus))
-        .map(|verus| leak(verus.to_string_lossy().into_owned()))
         .into_iter()
         .collect();
     vec![
@@ -121,7 +123,8 @@ pub fn registry() -> Vec<Gate> {
             ],
             // `cargo-verus` runs this sibling, not the unrelated `verus`
             // selected from PATH. Its contents decide the pin check.
-            extra_paths: Box::leak(preflight_extra_paths.into_boxed_slice()),
+            extra_paths: &[],
+            cache_paths: Box::leak(preflight_cache_paths.into_boxed_slice()),
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: true,
@@ -140,6 +143,7 @@ pub fn registry() -> Vec<Gate> {
             env: &["RUSTFMT"],
             tools: &["cargo", "rustfmt", "verusfmt"],
             extra_paths: &[],
+            cache_paths: &[],
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: false,
@@ -158,6 +162,7 @@ pub fn registry() -> Vec<Gate> {
             env: RUST_ENV,
             tools: &["cargo", "cargo-clippy", "rustc"],
             extra_paths: &[],
+            cache_paths: &[],
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: false,
@@ -171,6 +176,7 @@ pub fn registry() -> Vec<Gate> {
             env: RUST_ENV,
             tools: &["cargo"],
             extra_paths: &[],
+            cache_paths: &[],
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: false,
@@ -184,6 +190,7 @@ pub fn registry() -> Vec<Gate> {
             env: RUST_ENV,
             tools: &["cargo", "rustc"],
             extra_paths: &[],
+            cache_paths: &[],
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: false,
@@ -197,6 +204,7 @@ pub fn registry() -> Vec<Gate> {
             env: &[],
             tools: &["git"],
             extra_paths: &[],
+            cache_paths: &[],
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: true,
@@ -210,6 +218,7 @@ pub fn registry() -> Vec<Gate> {
             env: RUST_ENV,
             tools: &["cargo", "rustc"],
             extra_paths: &[],
+            cache_paths: &[],
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: false,
@@ -229,6 +238,7 @@ fn scan(name: &'static str, run: fn(&Path) -> Result<(), String>, cacheable: boo
         env: &[],
         tools: &["git"],
         extra_paths: &[],
+        cache_paths: &[],
         ignored_inputs: &[],
         cacheable,
         cache_on_main: cacheable,
@@ -250,16 +260,17 @@ pub fn proof_gate(p: proofs::Proof, budget: u64, skip: Option<&'static str>) -> 
     let globs: Vec<&'static str> = p.globs().into_iter().map(leak).collect();
     let mut tools = vec!["cargo", "prlimit", "timeout"];
     tools.extend(p.tools.iter().cloned().map(leak));
-    let mut extra_paths: Vec<&'static str> = p.extra_paths.iter().cloned().map(leak).collect();
+    let extra_paths: Vec<&'static str> = p.extra_paths.iter().cloned().map(leak).collect();
+    let mut cache_paths = Vec::new();
     let mut env: Vec<&'static str> = RUST_ENV.to_vec();
     if p.kind == proofs::Kind::Verus {
         env.extend(proofs::VERUS_ENV);
         let path = std::env::var_os("PATH").unwrap_or_default();
         if let Some(bin) = crate::tools::resolve_in(&path, "cargo-verus") {
             if let Some(verus) = crate::tools::cargo_verus_sibling(&bin) {
-                extra_paths.push(leak(verus.to_string_lossy().into_owned()));
+                cache_paths.push(verus);
             }
-            extra_paths.extend(proofs::verus_install_files(&bin).into_iter().map(leak));
+            cache_paths.extend(proofs::verus_install_files(&bin));
         }
     }
     Gate {
@@ -270,6 +281,7 @@ pub fn proof_gate(p: proofs::Proof, budget: u64, skip: Option<&'static str>) -> 
         env: Box::leak(env.into_boxed_slice()),
         tools: Box::leak(tools.into_boxed_slice()),
         extra_paths: Box::leak(extra_paths.into_boxed_slice()),
+        cache_paths: Box::leak(cache_paths.into_boxed_slice()),
         ignored_inputs: &[],
         cacheable: true,
         cache_on_main: true,

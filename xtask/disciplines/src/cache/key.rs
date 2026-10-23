@@ -84,6 +84,8 @@ pub struct KeySpec<'a> {
     pub tools: &'a [&'a str],
     /// Files or directories outside the tree the gate reads.
     pub extra_paths: &'a [&'a str],
+    /// Absolute runtime paths kept byte-for-byte in the cache key.
+    pub cache_paths: &'a [PathBuf],
     /// Globs over ignored files the gate reads.
     pub ignored_inputs: &'a [&'a str],
     /// A runtime declaration's text; empty adds no line.
@@ -422,10 +424,15 @@ fn extra_paths(
 ) -> Result<(BTreeSet<PathBuf>, Vec<String>), String> {
     let mut missing = Vec::new();
     let mut files = BTreeSet::new();
-    for entry in spec.extra_paths {
-        match outside::extra_path(entry, canonical, probe.home.as_deref())? {
+    for entry in spec
+        .extra_paths
+        .iter()
+        .map(PathBuf::from)
+        .chain(spec.cache_paths.iter().cloned())
+    {
+        match outside::extra_path(&entry, canonical, probe.home.as_deref())? {
             Some(found) => files.extend(found),
-            None => missing.push(format!("extra-path-missing {entry}")),
+            None => missing.push(format!("extra-path-missing {}", shown(&entry))),
         }
     }
     Ok((files, missing))

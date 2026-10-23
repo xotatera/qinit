@@ -1627,10 +1627,10 @@ fn approx(bytes: u64) -> String {
 }
 
 /// The [`VERUS_INSTALL_FILES`] beside `cargo_verus` (resolved through its
-/// symlinks), as absolute paths for a proof gate's `extra_paths`; empty when
+/// symlinks), as absolute paths for a proof gate's cache inputs; empty when
 /// it does not resolve.
 #[must_use]
-pub fn verus_install_files(cargo_verus: &std::path::Path) -> Vec<String> {
+pub fn verus_install_files(cargo_verus: &std::path::Path) -> Vec<std::path::PathBuf> {
     let Some(dir) = cargo_verus
         .canonicalize()
         .ok()
@@ -1638,10 +1638,7 @@ pub fn verus_install_files(cargo_verus: &std::path::Path) -> Vec<String> {
     else {
         return Vec::new();
     };
-    VERUS_INSTALL_FILES
-        .iter()
-        .map(|f| dir.join(f).to_string_lossy().into_owned())
-        .collect()
+    VERUS_INSTALL_FILES.iter().map(|f| dir.join(f)).collect()
 }
 
 /// Tools `preflight` requires once a Verus proof is declared: the selected

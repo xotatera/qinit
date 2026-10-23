@@ -1792,12 +1792,12 @@ fn verus_install_files_are_found_beside_cargo_verus() {
     let missing = proofs::verus_install_files(&dir.join("bin/none"));
     let opt = dir.join("opt/verus-1").canonicalize().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
-    let want: Vec<String> = ["rust_verify", "z3", "vstd.vir"]
+    let want: Vec<std::path::PathBuf> = ["rust_verify", "z3", "vstd.vir"]
         .iter()
-        .map(|f| opt.join(f).to_string_lossy().into_owned())
+        .map(|f| opt.join(f))
         .collect();
     assert_eq!(found, want);
-    assert_eq!(missing, Vec::<String>::new());
+    assert_eq!(missing, Vec::<std::path::PathBuf>::new());
 }
 
 #[test]

@@ -44,6 +44,7 @@ fn gate(name: &'static str, cacheable: bool, run: xtask::Body) -> Gate {
         env: &[],
         tools: &[],
         extra_paths: &[],
+        cache_paths: &[],
         ignored_inputs: &[],
         cacheable,
         cache_on_main: true,

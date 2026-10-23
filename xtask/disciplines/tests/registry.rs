@@ -4,6 +4,7 @@
 //! The registry's exact order is pinned: a gate removed, renamed or reordered
 //! retires a layer while every remaining gate keeps passing.
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use xtask::Inputs;
 
@@ -50,6 +51,7 @@ type Decl = (
     &'static [&'static str],
     &'static [&'static str],
     &'static [&'static str],
+    &'static [PathBuf],
     &'static [&'static str],
     bool,
     bool,
@@ -76,6 +78,7 @@ fn cache_declarations_are_pinned() {
                 g.env,
                 g.tools,
                 g.extra_paths,
+                g.cache_paths,
                 g.ignored_inputs,
                 g.cacheable,
                 g.cache_on_main,
@@ -84,16 +87,11 @@ fn cache_declarations_are_pinned() {
         .collect();
     let preflight_driver = std::env::var_os("PATH")
         .and_then(|path| xtask::tools::resolve_in(&path, "cargo-verus"))
-        .and_then(|cargo_verus| xtask::tools::cargo_verus_sibling(&cargo_verus))
-        .map(|verus| verus.to_string_lossy().into_owned());
+        .and_then(|cargo_verus| xtask::tools::cargo_verus_sibling(&cargo_verus));
     assert_eq!(
-        got[0]
-            .4
-            .iter()
-            .map(|path| (*path).to_string())
-            .collect::<Vec<_>>(),
-        preflight_driver.into_iter().collect::<Vec<_>>(),
-        "preflight fingerprints the resolved cargo-verus sibling"
+        got[0].5,
+        preflight_driver.as_slice(),
+        "preflight fingerprints the resolved cargo-verus sibling byte-for-byte"
     );
     let mut want: Vec<Decl> = vec![
         (
@@ -101,7 +99,8 @@ fn cache_declarations_are_pinned() {
             Inputs::Globs(&["**/Cargo.toml"]),
             &[],
             PREFLIGHT_TOOLS,
-            got[0].4,
+            &[],
+            got[0].5,
             &[],
             true,
             true,
@@ -118,6 +117,7 @@ fn cache_declarations_are_pinned() {
             &["cargo", "rustfmt", "verusfmt"],
             &[],
             &[],
+            &[],
             true,
             false,
         ),
@@ -126,6 +126,7 @@ fn cache_declarations_are_pinned() {
             Inputs::Tree,
             RUST_ENV,
             &["cargo", "cargo-clippy", "rustc"],
+            &[],
             &[],
             &[],
             true,
@@ -138,6 +139,7 @@ fn cache_declarations_are_pinned() {
             &["cargo"],
             &[],
             &[],
+            &[],
             true,
             false,
         ),
@@ -146,6 +148,7 @@ fn cache_declarations_are_pinned() {
             Inputs::Tree,
             RUST_ENV,
             &["cargo", "rustc"],
+            &[],
             &[],
             &[],
             true,
@@ -158,6 +161,7 @@ fn cache_declarations_are_pinned() {
             &["git"],
             &[],
             &[],
+            &[],
             true,
             true,
         ),
@@ -166,6 +170,7 @@ fn cache_declarations_are_pinned() {
             Inputs::Tree,
             RUST_ENV,
             &["cargo", "rustc"],
+            &[],
             &[],
             &[],
             true,
@@ -187,6 +192,7 @@ fn scan_declarations() -> Vec<Decl> {
             &["git"],
             &[],
             &[],
+            &[],
             true,
             true,
         ),
@@ -195,6 +201,7 @@ fn scan_declarations() -> Vec<Decl> {
             Inputs::Tree,
             &[],
             &["git"],
+            &[],
             &[],
             &[],
             true,
@@ -206,6 +213,7 @@ fn scan_declarations() -> Vec<Decl> {
             Inputs::Tree,
             &[],
             &["git"],
+            &[],
             &[],
             &[],
             false,

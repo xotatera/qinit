@@ -15,6 +15,7 @@
 //! The tests re-run themselves as a child with that environment (`set_var`
 //! is `unsafe`, which the workspace forbids); llvm-cov counts the child too.
 use std::fs;
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command as Proc;
@@ -428,11 +429,21 @@ fn a_declared_verus_proof_requires_the_selected_verus_release() {
 
 const DRIVER: &str = "XTASK_VERUS_DRIVER_ROOT";
 const DRIVER_CASE: &str = "XTASK_VERUS_DRIVER_CASE";
+const DRIVER_DIR: &str = "XTASK_VERUS_DRIVER_DIR";
 
-fn cargo_verus_driver_parent() {
-    let s = scratch("cargo-verus-driver");
+fn cargo_verus_driver_parent(non_utf8: bool) {
+    let s = scratch(if non_utf8 {
+        "cargo-verus-driver-nonutf"
+    } else {
+        "cargo-verus-driver"
+    });
     fs::remove_file(s.0.join("bin/cargo-verus")).unwrap();
-    let driver = s.0.join("driver-bin");
+    let driver = if non_utf8 {
+        s.0.join("ctl")
+            .join(std::ffi::OsStr::from_bytes(b"driver-\xff"))
+    } else {
+        s.0.join("driver-bin")
+    };
     exe(&driver.join("cargo-verus"), FAKE);
     exe(&driver.join("verus"), &driver_verus("0.2026.10.04.426d8b0"));
     for install in ["rust_verify", "z3", "vstd.vir"] {
@@ -443,14 +454,16 @@ fn cargo_verus_driver_parent() {
     dirs.extend(std::env::split_paths(&path));
     let path = std::env::join_paths(dirs).unwrap();
     let run = |case: &str, child_path: &std::ffi::OsStr| {
+        let test = if non_utf8 && case == "cache" {
+            "a_non_utf8_cargo_verus_sibling_invalidates_cached_scopes"
+        } else {
+            "a_verus_proof_requires_the_selected_cargo_verus_driver"
+        };
         Proc::new(std::env::current_exe().unwrap())
-            .args([
-                "a_verus_proof_requires_the_selected_cargo_verus_driver",
-                "--exact",
-                "--nocapture",
-            ])
+            .args([test, "--exact", "--nocapture"])
             .env(DRIVER, &s.0)
             .env(DRIVER_CASE, case)
+            .env(DRIVER_DIR, &driver)
             .env("PATH", child_path)
             .env("VERUS_LOG", s.0.join("verus.log"))
             .env("VERUS_DRIVER_LOG", s.0.join("driver.log"))
@@ -493,6 +506,9 @@ fn cargo_verus_driver_parent() {
         String::from_utf8_lossy(&cache.stdout),
         String::from_utf8_lossy(&cache.stderr)
     );
+    if non_utf8 {
+        return;
+    }
 
     let tools = s.0.join("missing-tools");
     fs::create_dir_all(&tools).unwrap();
@@ -526,7 +542,7 @@ fn cargo_verus_driver_parent() {
 #[test]
 fn a_verus_proof_requires_the_selected_cargo_verus_driver() {
     let Some(root) = std::env::var_os(DRIVER).map(PathBuf::from) else {
-        cargo_verus_driver_parent();
+        cargo_verus_driver_parent(false);
         return;
     };
 
@@ -549,7 +565,7 @@ fn a_verus_proof_requires_the_selected_cargo_verus_driver() {
         Ok("exact") => {
             assert_eq!(
                 xtask::tools::resolve_in(&std::env::var_os("PATH").unwrap(), "cargo-verus"),
-                Some(root.join("driver-bin/cargo-verus"))
+                Some(PathBuf::from(std::env::var_os(DRIVER_DIR).unwrap()).join("cargo-verus"))
             );
             assert!(
                 gate(&root),
@@ -563,13 +579,16 @@ fn a_verus_proof_requires_the_selected_cargo_verus_driver() {
                 "Cargo invoked the selected cargo-verus driver"
             );
         }
-        Ok("cache") => cached_driver_sibling_must_invalidate(&root),
+        Ok("cache") => cached_driver_sibling_must_invalidate(
+            &root,
+            &PathBuf::from(std::env::var_os(DRIVER_DIR).unwrap()),
+        ),
         Ok(other) => panic!("unknown cargo-verus driver test case: {other}"),
         Err(error) => panic!("missing cargo-verus driver test case: {error}"),
     }
 }
 
-fn cached_driver_sibling_must_invalidate(root: &Path) {
+fn cached_driver_sibling_must_invalidate(root: &Path, driver: &Path) {
     xtask::cache::store::Store::open(root)
         .unwrap()
         .clear()
@@ -583,22 +602,29 @@ fn cached_driver_sibling_must_invalidate(root: &Path) {
         "the selected no-proofs run is cached"
     );
     let proofs_before = log(root).len();
-    assert!(gate(root), "a selected driver passes before caching");
+    assert!(
+        gate_scoped(root, Scope::All),
+        "a full registry run passes before caching"
+    );
     assert_eq!(log(root).len(), proofs_before + 1);
-    assert!(gate(root), "the selected full run is cached");
+    assert!(
+        gate_scoped(root, Scope::All),
+        "the selected full registry run is cached"
+    );
     assert_eq!(
         log(root).len(),
         proofs_before + 1,
         "the cached proof did not run"
     );
 
-    let driver = root.join("driver-bin");
     let sibling = driver.join("verus").canonicalize().unwrap();
-    let sibling = sibling.to_string_lossy().into_owned();
-    assert_eq!(preflight_only()[0].extra_paths, [sibling.as_str()]);
+    assert_eq!(
+        preflight_only()[0].cache_paths,
+        std::slice::from_ref(&sibling)
+    );
     let proof = xtask::proof_gates(root, None).unwrap().remove(0);
     assert!(
-        proof.extra_paths.contains(&sibling.as_str()),
+        proof.cache_paths.contains(&sibling),
         "proof cache input includes cargo-verus's resolved sibling"
     );
     let path_verus = fs::read(root.join("bin/verus")).unwrap();
@@ -624,8 +650,8 @@ fn cached_driver_sibling_must_invalidate(root: &Path) {
         "preflight must not serve its old cache entry"
     );
     assert!(
-        !gate(root),
-        "a full run must not serve cached preflight or proof success"
+        !gate_scoped(root, Scope::All),
+        "a full registry run must not serve cached preflight or proof success"
     );
     assert!(
         !proofs_only(root),
@@ -636,4 +662,21 @@ fn cached_driver_sibling_must_invalidate(root: &Path) {
         proofs_before + 1,
         "the mismatched driver did not prove"
     );
+}
+
+/// A non-UTF-8 cargo-verus install path still fingerprints its real sibling,
+/// rather than a lossy replacement path.
+#[cfg(not(windows))]
+#[test]
+fn a_non_utf8_cargo_verus_sibling_invalidates_cached_scopes() {
+    let Some(root) = std::env::var_os(DRIVER).map(PathBuf::from) else {
+        cargo_verus_driver_parent(true);
+        return;
+    };
+    let driver = PathBuf::from(std::env::var_os(DRIVER_DIR).unwrap());
+    assert!(
+        driver.as_os_str().as_bytes().contains(&0xff),
+        "the regression uses a non-UTF-8 cargo-verus install path"
+    );
+    cached_driver_sibling_must_invalidate(&root, &driver);
 }

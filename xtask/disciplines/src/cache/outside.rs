@@ -590,16 +590,17 @@ pub(crate) fn dir_files(
 /// A `~/` entry without a home, an unreadable entry, one that is neither a regular file nor a directory
 /// (hashing a FIFO would block), or a directory `dir_files` refuses.
 pub fn extra_path(
-    entry: &str,
+    entry: &Path,
     root: &CanonicalRoot,
     home: Option<&Path>,
 ) -> Result<Option<Vec<PathBuf>>, String> {
-    let path = match entry.strip_prefix("~/") {
+    let path = match entry.to_str().and_then(|entry| entry.strip_prefix("~/")) {
         Some(rest) => match home {
             Some(home) => home.join(rest),
             None => {
                 return Err(format!(
-                    "{entry}: HOME is unset or empty; the cache cannot resolve it"
+                    "{}: HOME is unset or empty; the cache cannot resolve it",
+                    entry.display()
                 ));
             }
         },
@@ -608,14 +609,15 @@ pub fn extra_path(
     let path = match path.canonicalize() {
         Ok(path) => path,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("{entry}: {e}")),
+        Err(e) => return Err(format!("{}: {e}", entry.display())),
     };
     if path.is_file() {
         return Ok(Some(vec![path]));
     }
     if !path.is_dir() {
         return Err(format!(
-            "{entry}: not a regular file or directory; the cache cannot fingerprint it"
+            "{}: not a regular file or directory; the cache cannot fingerprint it",
+            entry.display()
         ));
     }
     let files = dir_files(&path, root, OUTSIDE_FILE_LIMIT, Walk::Full)?;

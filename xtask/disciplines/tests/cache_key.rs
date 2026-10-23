@@ -74,6 +74,7 @@ const TREE: KeySpec = KeySpec {
     env: &["RUSTFLAGS"],
     tools: &["cargo"],
     extra_paths: &[],
+    cache_paths: &[],
     ignored_inputs: &[],
     decl: "",
 };
@@ -83,6 +84,7 @@ const RS: KeySpec = KeySpec {
     env: &[],
     tools: &["cargo"],
     extra_paths: &[],
+    cache_paths: &[],
     ignored_inputs: &[],
     decl: "",
 };
@@ -319,6 +321,7 @@ const NO_CARGO: KeySpec = KeySpec {
     env: &[],
     tools: &["git"],
     extra_paths: &[],
+    cache_paths: &[],
     ignored_inputs: &[],
     decl: "",
 };

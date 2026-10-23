@@ -157,6 +157,7 @@ fn registry() -> Vec<Gate> {
         env: &[],
         tools: &["sh"],
         extra_paths: &[],
+        cache_paths: &[],
         ignored_inputs: &[],
         cacheable: true,
         cache_on_main: true,
