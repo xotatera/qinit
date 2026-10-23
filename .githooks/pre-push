@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Refuse any outgoing ref whose tree retains the review canary. Git supplies
+# the proposed local and remote refs on stdin, so this checks the object being
+# pushed rather than the currently checked out worktree. Ref deletions have a
+# zero local object and are safe: no tree reaches the remote.
+set -euo pipefail
+
+# A hook may inherit repository-local variables from Git. The tree objects
+# named on stdin must be resolved in this repository, not a linked worktree.
+# shellcheck disable=SC2046
+unset $(git rev-parse --local-env-vars)
+
+canary='> [!IMPORTANT]
+> Remove these two lines to confirm that a human has reviewed this change.'
+zero='^0+$'
+refused=0
+while read -r local_ref local_sha remote_ref _remote_sha; do
+    if [[ "$local_sha" =~ $zero ]]; then
+        continue
+    fi
+    first_two="$(git show "$local_sha:README.md" 2>/dev/null | sed -n '1,2p')"
+    if [ "$first_two" = "$canary" ]; then
+        echo "pre-push: refusing $local_ref -> $remote_ref: review canary remains in its README.md." >&2
+        echo "Remove these two lines to confirm that a human has reviewed this change." >&2
+        refused=1
+    fi
+done
+exit "$refused"
