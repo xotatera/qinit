@@ -25,6 +25,7 @@ fn repository_gate_policy_is_pinned() {
     assert_eq!(
         names,
         [
+            "preflight",
             "canary",
             "reuse",
             "fmt",
@@ -45,6 +46,7 @@ fn repository_gate_policy_is_pinned() {
     assert_eq!(
         declarations,
         [
+            ("preflight", Inputs::Globs(&["**/Cargo.toml"]), None),
             ("canary", Inputs::Globs(&["README.md"]), None),
             ("reuse", Inputs::Tree, None),
             (
@@ -81,6 +83,37 @@ fn repository_gate_policy_is_pinned() {
     assert_eq!(reuse.tools, ["reuse"]);
     assert!(reuse.cacheable);
     assert!(reuse.cache_on_main);
+    let preflight = &gates[0];
+    let template = xtask::registry();
+    let template = template
+        .iter()
+        .find(|gate| gate.name == "preflight")
+        .unwrap();
+    let mut tools = template.tools.to_vec();
+    tools.push("reuse");
+    assert_eq!(preflight.tools, tools);
+    assert!(preflight.cacheable);
+    assert!(preflight.cache_on_main);
+}
+
+#[test]
+fn repository_preflight_names_a_missing_repository_tool() {
+    let scratch = Scratch::new("preflight-path");
+    for program in ["cargo", "rustc", "rustfmt", "cargo-clippy", "git"] {
+        let source = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|directory| directory.join(program))
+            .find(|candidate| candidate.is_file())
+            .unwrap();
+        std::os::unix::fs::symlink(source, scratch.0.join(program)).unwrap();
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_qinit-xtask"))
+        .args(["gate", "--only", "repo/preflight", "--no-cache"])
+        .env("PATH", &scratch.0)
+        .env_remove(xtask::CONTEXT_ENV)
+        .env_remove(xtask::MAIN_BRANCH_ENV)
+        .output()
+        .expect("run qinit-xtask without reuse");
+    assert_failure_contains(&output, "missing: reuse");
 }
 
 #[test]

@@ -74,10 +74,55 @@ const NO_TOOLING_NO_STD: &str = "D4: no tooling kernel or core crate";
 const NO_PRODUCT_TEST: &str = "D3: no product package to test";
 const TOOLING_REPOSITORY_SCANS: &str = "D5: repository-wide scans run in the repo stage";
 
+/// Tools only the repository stage's own gates run, beyond the template's:
+/// (binary, install line).
+const REPO_TOOLS: &[(&str, &str)] = &[("reuse", "the REUSE tool, from your package manager")];
+
+/// The template preflight's fingerprinted tools plus [`REPO_TOOLS`].
+/// `tests/registry.rs` pins this against the template.
+const REPO_PREFLIGHT_TOOLS: &[&str] = &[
+    "cargo",
+    "rustfmt",
+    "cargo-clippy",
+    "git",
+    "verus",
+    "cargo-verus",
+    "verusfmt",
+    "reuse",
+];
+
+/// The template preflight over the root workspace (tools, proof
+/// declarations, the selected Verus release), then the repository's tools.
+fn repo_preflight(root: &Path) -> Result<(), String> {
+    let mut errors = Vec::new();
+    if let Err(error) = xtask::gates::preflight(root) {
+        errors.push(error);
+    }
+    let gone = xtask::tools::missing(REPO_TOOLS, &xtask::tools::on_path);
+    if !gone.is_empty() {
+        errors.push(xtask::tools::report(&gone));
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
 /// Repository gates available before qinit has product packages.
+///
+/// # Panics
+/// When the template registry no longer has a `preflight` gate.
 #[must_use]
 pub fn repo_registry() -> Vec<Gate> {
+    let mut preflight = xtask::registry()
+        .into_iter()
+        .find(|gate| gate.name == "preflight")
+        .unwrap_or_else(|| panic!("the template registry has no `preflight` gate"));
+    preflight.run = Box::new(repo_preflight);
+    preflight.tools = REPO_PREFLIGHT_TOOLS;
     vec![
+        preflight,
         Gate {
             name: "canary",
             run: Box::new(canary_gate),
