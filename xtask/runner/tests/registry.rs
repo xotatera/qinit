@@ -118,6 +118,95 @@ fn tooling_registry_blocks_only_repository_wide_checks() {
     );
 }
 
+/// Repository files outside `xtask/` that the tooling tests read.
+const TOOLING_TEST_EXTRA_PATHS: &[&str] = &[
+    "../.githooks",
+    "../.cargo/config.toml",
+    "../.gitignore",
+    "../Cargo.toml",
+    "../DEFERRED.md",
+    "../LICENSES",
+    "../README.md",
+    "../REUSE.toml",
+    "../gates",
+    "../rust-toolchain.toml",
+];
+
+#[test]
+fn tooling_test_gate_declares_the_repository_files_its_tests_read() {
+    let gates = qinit_xtask::xtask_registry();
+    let test = gates
+        .iter()
+        .find(|gate| gate.name == "test")
+        .expect("the tooling stage runs its tests");
+    assert_eq!(test.inputs, Inputs::Tree);
+    assert_eq!(test.extra_paths, TOOLING_TEST_EXTRA_PATHS);
+    let others: Vec<&str> = gates
+        .iter()
+        .filter(|gate| gate.name != "test" && !gate.extra_paths.is_empty())
+        .map(|gate| gate.name)
+        .collect();
+    assert!(others.is_empty(), "{others:?}");
+}
+
+#[test]
+fn a_changed_hook_invalidates_the_tooling_test_cache_key() {
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+
+    let scratch = Scratch::new("hook-key");
+    let root = scratch.0.join("repo");
+    let stage = root.join("xtask");
+    std::fs::create_dir_all(stage.join("src")).unwrap();
+    std::fs::create_dir_all(root.join(".githooks")).unwrap();
+    std::fs::write(stage.join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+    std::fs::write(root.join(".githooks/pre-push"), "#!/bin/sh\nexit 1\n").unwrap();
+    git(&root, &["init", "-q", "--initial-branch=fixture"]);
+    git(&root, &["add", "--all"]);
+    let runner = scratch.0.join("runner");
+    std::fs::create_dir_all(&runner).unwrap();
+    let probe = xtask::cache::key::Probe {
+        runner_dirs: vec![runner],
+        path: Some(OsString::new()),
+        sysroot: None,
+        vars: HashMap::new(),
+        home: Some(scratch.0.join("home")),
+    };
+    let gates = qinit_xtask::xtask_registry();
+    let test = gates.iter().find(|gate| gate.name == "test").unwrap();
+    let spec = test.key_spec();
+    let before = xtask::cache::key::key(&stage, &spec, &probe).unwrap();
+    assert_eq!(
+        before,
+        xtask::cache::key::key(&stage, &spec, &probe).unwrap()
+    );
+    std::fs::write(root.join(".githooks/pre-push"), "#!/bin/sh\nexit 0\n").unwrap();
+    assert_ne!(
+        before,
+        xtask::cache::key::key(&stage, &spec, &probe).unwrap()
+    );
+}
+
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("qinit-registry-{name}-{nonce}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn repository_declares_no_proofs_before_product_crates_exist() {
     let root = qinit_xtask::repo_root();

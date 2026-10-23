@@ -217,12 +217,31 @@ fn repo_scan(name: &'static str, run: fn(&Path) -> Result<(), String>, cacheable
     }
 }
 
+/// Repository files outside `xtask/` that the tooling tests read (hooks,
+/// policy files, ledgers, manifests): a change to any of them must re-run the
+/// tooling `test` gate instead of serving a cached pass.
+const TOOLING_TEST_EXTRA_PATHS: &[&str] = &[
+    "../.githooks",
+    "../.cargo/config.toml",
+    "../.gitignore",
+    "../Cargo.toml",
+    "../DEFERRED.md",
+    "../LICENSES",
+    "../README.md",
+    "../REUSE.toml",
+    "../gates",
+    "../rust-toolchain.toml",
+];
+
 /// Tooling-only checks run in the xtask workspace. Repository-wide scans run
 /// once in the repository stage, where their policy files and ledger live.
 #[must_use]
 pub fn xtask_registry() -> Vec<Gate> {
     let mut gates = xtask::registry();
     for gate in &mut gates {
+        if gate.name == "test" {
+            gate.extra_paths = TOOLING_TEST_EXTRA_PATHS;
+        }
         gate.blocked = match gate.name {
             "placeholder-scan" // disciplines:allow-placeholder (the gate's name)
             | "sleep-scan" | "changelog" | "duplication" => Some(TOOLING_REPOSITORY_SCANS),
