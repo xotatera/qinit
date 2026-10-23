@@ -61,6 +61,10 @@ cat \"$o\"
 exit \"$(cat \"$r\")\"
 ";
 
+fn driver_verus(version: &str) -> String {
+    format!("#!/bin/sh\nprintf '%s\\n' 'Verus' '  Version: {version}'\n")
+}
+
 fn write(path: &Path, text: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, text).unwrap();
@@ -430,12 +434,12 @@ fn cargo_verus_driver_parent() {
     fs::remove_file(s.0.join("bin/cargo-verus")).unwrap();
     let driver = s.0.join("driver-bin");
     exe(&driver.join("cargo-verus"), FAKE);
-    exe(
-        &driver.join("verus"),
-        "#!/bin/sh\nprintf '%s\\n' 'Verus' \"  Version: $(cat \"$(dirname \"$VERUS_OUT\")/driver-version\")\"\n",
-    );
+    exe(&driver.join("verus"), &driver_verus("0.2026.10.04.426d8b0"));
+    for install in ["rust_verify", "z3", "vstd.vir"] {
+        write(&driver.join(install), "selected installation input\n");
+    }
     let path = std::env::var_os("PATH").unwrap_or_default();
-    let mut dirs = vec![s.0.join("bin"), driver];
+    let mut dirs = vec![s.0.join("bin"), driver.clone()];
     dirs.extend(std::env::split_paths(&path));
     let path = std::env::join_paths(dirs).unwrap();
     let run = |case: &str, child_path: &std::ffi::OsStr| {
@@ -461,7 +465,7 @@ fn cargo_verus_driver_parent() {
             .unwrap()
     };
 
-    write(&s.0.join("ctl/driver-version"), "0.2026.10.05.next");
+    exe(&driver.join("verus"), &driver_verus("0.2026.10.05.next"));
     let mismatch = run("mismatch", &path);
     let mismatch_log = String::from_utf8_lossy(&mismatch.stderr);
     assert!(mismatch.status.success(), "{mismatch_log}");
@@ -472,7 +476,7 @@ fn cargo_verus_driver_parent() {
         "{mismatch_log}"
     );
 
-    write(&s.0.join("ctl/driver-version"), "0.2026.10.04.426d8b0");
+    exe(&driver.join("verus"), &driver_verus("0.2026.10.04.426d8b0"));
     let exact = run("exact", &path);
     let driver_log = fs::read_to_string(s.0.join("driver.log")).unwrap_or_default();
     assert!(
@@ -480,6 +484,14 @@ fn cargo_verus_driver_parent() {
         "{}{}driver log:\n{driver_log}",
         String::from_utf8_lossy(&exact.stdout),
         String::from_utf8_lossy(&exact.stderr)
+    );
+
+    let cache = run("cache", &path);
+    assert!(
+        cache.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&cache.stdout),
+        String::from_utf8_lossy(&cache.stderr)
     );
 
     let tools = s.0.join("missing-tools");
@@ -551,7 +563,77 @@ fn a_verus_proof_requires_the_selected_cargo_verus_driver() {
                 "Cargo invoked the selected cargo-verus driver"
             );
         }
+        Ok("cache") => cached_driver_sibling_must_invalidate(&root),
         Ok(other) => panic!("unknown cargo-verus driver test case: {other}"),
         Err(error) => panic!("missing cargo-verus driver test case: {error}"),
     }
+}
+
+fn cached_driver_sibling_must_invalidate(root: &Path) {
+    xtask::cache::store::Store::open(root)
+        .unwrap()
+        .clear()
+        .unwrap();
+    assert!(
+        gate_scoped(root, Scope::NoProofs),
+        "a selected preflight passes before caching"
+    );
+    assert!(
+        gate_scoped(root, Scope::NoProofs),
+        "the selected no-proofs run is cached"
+    );
+    let proofs_before = log(root).len();
+    assert!(gate(root), "a selected driver passes before caching");
+    assert_eq!(log(root).len(), proofs_before + 1);
+    assert!(gate(root), "the selected full run is cached");
+    assert_eq!(
+        log(root).len(),
+        proofs_before + 1,
+        "the cached proof did not run"
+    );
+
+    let driver = root.join("driver-bin");
+    let sibling = driver.join("verus").canonicalize().unwrap();
+    let sibling = sibling.to_string_lossy().into_owned();
+    assert_eq!(preflight_only()[0].extra_paths, [sibling.as_str()]);
+    let proof = xtask::proof_gates(root, None).unwrap().remove(0);
+    assert!(
+        proof.extra_paths.contains(&sibling.as_str()),
+        "proof cache input includes cargo-verus's resolved sibling"
+    );
+    let path_verus = fs::read(root.join("bin/verus")).unwrap();
+    let cargo_verus = fs::read(driver.join("cargo-verus")).unwrap();
+    let install: Vec<Vec<u8>> = ["rust_verify", "z3", "vstd.vir"]
+        .iter()
+        .map(|name| fs::read(driver.join(name)).unwrap())
+        .collect();
+    exe(&driver.join("verus"), &driver_verus("0.2026.10.05.next"));
+    assert_eq!(fs::read(root.join("bin/verus")).unwrap(), path_verus);
+    assert_eq!(fs::read(driver.join("cargo-verus")).unwrap(), cargo_verus);
+    assert_eq!(
+        ["rust_verify", "z3", "vstd.vir"]
+            .iter()
+            .map(|name| fs::read(driver.join(name)).unwrap())
+            .collect::<Vec<_>>(),
+        install,
+        "only the sibling Verus executable changed"
+    );
+
+    assert!(
+        !gate_scoped(root, Scope::NoProofs),
+        "preflight must not serve its old cache entry"
+    );
+    assert!(
+        !gate(root),
+        "a full run must not serve cached preflight or proof success"
+    );
+    assert!(
+        !proofs_only(root),
+        "proofs must not serve their old cache entry"
+    );
+    assert_eq!(
+        log(root).len(),
+        proofs_before + 1,
+        "the mismatched driver did not prove"
+    );
 }

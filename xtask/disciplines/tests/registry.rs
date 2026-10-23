@@ -82,13 +82,26 @@ fn cache_declarations_are_pinned() {
             )
         })
         .collect();
+    let preflight_driver = std::env::var_os("PATH")
+        .and_then(|path| xtask::tools::resolve_in(&path, "cargo-verus"))
+        .and_then(|cargo_verus| xtask::tools::cargo_verus_sibling(&cargo_verus))
+        .map(|verus| verus.to_string_lossy().into_owned());
+    assert_eq!(
+        got[0]
+            .4
+            .iter()
+            .map(|path| (*path).to_string())
+            .collect::<Vec<_>>(),
+        preflight_driver.into_iter().collect::<Vec<_>>(),
+        "preflight fingerprints the resolved cargo-verus sibling"
+    );
     let mut want: Vec<Decl> = vec![
         (
             "preflight",
             Inputs::Globs(&["**/Cargo.toml"]),
             &[],
             PREFLIGHT_TOOLS,
-            &[],
+            got[0].4,
             &[],
             true,
             true,

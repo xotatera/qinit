@@ -57,6 +57,23 @@ pub fn report(missing: &[&(&str, &str)]) -> String {
         .join("\n")
 }
 
+/// The `verus` sibling Cargo's resolved `cargo-verus` driver will invoke.
+///
+/// The returned path need not exist: callers that fingerprint it must record
+/// its absence too, and [`cargo_verus_version`] reports the execution error.
+#[must_use]
+pub fn cargo_verus_sibling(cargo_verus: &Path) -> Option<std::path::PathBuf> {
+    Some(cargo_verus_sibling_path(&cargo_verus.canonicalize().ok()?))
+}
+
+fn cargo_verus_sibling_path(cargo_verus: &Path) -> std::path::PathBuf {
+    let mut verus = cargo_verus.with_file_name("verus");
+    if cfg!(windows) {
+        verus.set_extension("exe");
+    }
+    verus
+}
+
 /// Verifies the release of the `verus` sibling Cargo's `cargo-verus` driver
 /// will invoke. `cargo-verus` has no version subcommand; its own driver path
 /// is the executable beside the resolved `cargo-verus` binary.
@@ -72,10 +89,7 @@ pub fn cargo_verus_version(cargo_verus: &Path) -> Result<(), String> {
             cargo_verus.display()
         )
     })?;
-    let mut verus = cargo_verus.with_file_name("verus");
-    if cfg!(windows) {
-        verus.set_extension("exe");
-    }
+    let verus = cargo_verus_sibling_path(&cargo_verus);
     let output = Command::new(&verus)
         .arg("--version")
         .output()

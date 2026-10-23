@@ -96,6 +96,12 @@ pub const RUST_ENV: &[&str] = &[
 /// pinned by `tests/registry.rs`.
 #[must_use]
 pub fn registry() -> Vec<Gate> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let preflight_extra_paths: Vec<&'static str> = crate::tools::resolve_in(&path, "cargo-verus")
+        .and_then(|cargo_verus| crate::tools::cargo_verus_sibling(&cargo_verus))
+        .map(|verus| leak(verus.to_string_lossy().into_owned()))
+        .into_iter()
+        .collect();
     vec![
         Gate {
             name: "preflight",
@@ -113,7 +119,9 @@ pub fn registry() -> Vec<Gate> {
                 "cargo-verus",
                 "verusfmt",
             ],
-            extra_paths: &[],
+            // `cargo-verus` runs this sibling, not the unrelated `verus`
+            // selected from PATH. Its contents decide the pin check.
+            extra_paths: Box::leak(preflight_extra_paths.into_boxed_slice()),
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: true,
@@ -248,6 +256,9 @@ pub fn proof_gate(p: proofs::Proof, budget: u64, skip: Option<&'static str>) -> 
         env.extend(proofs::VERUS_ENV);
         let path = std::env::var_os("PATH").unwrap_or_default();
         if let Some(bin) = crate::tools::resolve_in(&path, "cargo-verus") {
+            if let Some(verus) = crate::tools::cargo_verus_sibling(&bin) {
+                extra_paths.push(leak(verus.to_string_lossy().into_owned()));
+            }
             extra_paths.extend(proofs::verus_install_files(&bin).into_iter().map(leak));
         }
     }
