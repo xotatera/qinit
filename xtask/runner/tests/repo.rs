@@ -75,3 +75,10 @@ fn readme_documents_the_setup_without_claiming_more() {
         );
     }
 }
+
+#[test]
+fn root_manifest_sets_the_strict_clippy_policy() {
+    let manifest = read("Cargo.toml");
+    let policy = "[workspace.lints.clippy]\nall = { level = \"warn\", priority = -1 }\npedantic = { level = \"warn\", priority = -1 }\n";
+    assert!(manifest.contains(policy), "{manifest}");
+}
