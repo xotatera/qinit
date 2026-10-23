@@ -26,26 +26,25 @@ impl Fixture {
             .as_nanos();
         let root = std::env::temp_dir().join(format!("qinit-xtask-cli-{nonce}"));
         std::fs::create_dir_all(&root).unwrap();
-        let archive = root.join("xtask.tar");
-        let archived = Command::new("git")
-            .args(["archive", "--format=tar", "--output"])
-            .arg(&archive)
-            .args(["HEAD", "xtask"])
-            .current_dir(qinit_xtask::repo_root())
-            .status()
-            .expect("archive checked-in xtask fixture");
-        assert!(archived.success());
-        let extracted = Command::new("tar")
-            .args([
-                "-xf",
-                archive.to_str().unwrap(),
-                "-C",
-                root.to_str().unwrap(),
-            ])
-            .status()
-            .expect("extract xtask fixture");
-        assert!(extracted.success());
-        std::fs::remove_file(archive).unwrap();
+        // The tracked files on disk, not a commit: while a merge is being
+        // concluded HEAD is the old main, and worktree-clean.sh guarantees the
+        // disk matches the tree being gated.
+        let repo = qinit_xtask::repo_root();
+        let listed = Command::new("git")
+            .args(["ls-files", "-z", "--", "xtask"])
+            .current_dir(&repo)
+            .output()
+            .expect("list tracked xtask files");
+        assert!(listed.status.success());
+        for path in listed.stdout.split(|&byte| byte == 0) {
+            if path.is_empty() {
+                continue;
+            }
+            let path = std::str::from_utf8(path).expect("UTF-8 tracked path");
+            let destination = root.join(path);
+            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            std::fs::copy(repo.join(path), &destination).unwrap();
+        }
         std::fs::write(root.join("Cargo.toml"), "[workspace]\nresolver = \"3\"\n").unwrap();
         std::fs::write(
             root.join("README.md"),
