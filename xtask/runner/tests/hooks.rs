@@ -803,3 +803,319 @@ fn setup_installs_behind_a_declared_dispatcher_and_names_the_chain_targets() {
         "{stdout}"
     );
 }
+
+// --- worktree-clean.sh -------------------------------------------------------
+
+fn assert_refused(output: &Output, expected: &str) {
+    assert!(!output.status.success(), "unexpectedly passed");
+    assert!(stderr(output).contains(expected), "{}", stderr(output));
+}
+
+#[test]
+fn worktree_clean_accepts_a_clean_tree_with_ignored_files() {
+    let repo = Repo::new();
+    std::fs::create_dir_all(repo.work().join("target")).unwrap();
+    std::fs::write(repo.work().join("target/out"), "build output\n").unwrap();
+    let clean = repo.run_hook("worktree-clean.sh", "");
+    assert!(clean.status.success(), "{}", stderr(&clean));
+}
+
+#[test]
+fn worktree_clean_refuses_unstaged_untracked_and_hidden_entries() {
+    let repo = Repo::new();
+    std::fs::write(repo.work().join("a"), "unstaged\n").unwrap();
+    assert_refused(&repo.run_hook("worktree-clean.sh", ""), "unstaged changes");
+    repo.ok(&["checkout", "--", "a"]);
+
+    std::fs::write(repo.work().join("stray"), "untracked\n").unwrap();
+    assert_refused(&repo.run_hook("worktree-clean.sh", ""), "untracked: stray");
+    std::fs::remove_file(repo.work().join("stray")).unwrap();
+
+    repo.ok(&["update-index", "--assume-unchanged", "a"]);
+    std::fs::write(repo.work().join("a"), "hidden edit\n").unwrap();
+    let hidden = repo.run_hook("worktree-clean.sh", "");
+    assert_refused(&hidden, "assume-unchanged or skip-worktree): a");
+    repo.ok(&["update-index", "--no-assume-unchanged", "a"]);
+    repo.ok(&["checkout", "--", "a"]);
+
+    repo.ok(&["update-index", "--skip-worktree", "a"]);
+    let skipped = repo.run_hook("worktree-clean.sh", "");
+    assert_refused(&skipped, "assume-unchanged or skip-worktree): a");
+    repo.ok(&["update-index", "--no-skip-worktree", "a"]);
+
+    let clean = repo.run_hook("worktree-clean.sh", "");
+    assert!(clean.status.success(), "{}", stderr(&clean));
+}
+
+// --- pre-commit concluding a merge into main ---------------------------------
+
+impl Repo {
+    /// A branch from main that changes `file`, and main checked out again.
+    fn branch_changing(&self, branch: &str, file: &str, text: &str) {
+        self.ok(&["switch", "-q", "-c", branch, "main"]);
+        std::fs::write(self.work().join(file), text).unwrap();
+        self.ok(&["add", file]);
+        self.ok(&["commit", "-qm", branch]);
+        self.ok(&["switch", "-q", "main"]);
+    }
+
+    fn assert_merge_commit_on_main(&self, before: &str) {
+        let parents = self.ok(&["rev-list", "--parents", "-n", "1", "main"]);
+        let parents: Vec<&str> = parents.split_whitespace().collect();
+        assert_eq!(parents.len(), 3, "main is a merge commit");
+        assert_eq!(parents[1], before, "the first parent is the old main");
+    }
+}
+
+#[test]
+fn concluding_a_no_commit_merge_runs_the_full_gate_in_pre_commit() {
+    let repo = Repo::new();
+    repo.branch_changing("feat/no-commit", "b", "b\n");
+    let before = repo.rev("main");
+    repo.ok(&["merge", "-q", "--no-commit", "feat/no-commit"]);
+    repo.clear_log();
+    repo.ok(&["commit", "-q", "--no-edit"]);
+    assert!(
+        repo.log().contains("xtask gate|context=main|gitdir=unset"),
+        "{}",
+        repo.log()
+    );
+    repo.assert_merge_commit_on_main(&before);
+}
+
+#[test]
+fn concluding_a_conflicted_merge_runs_the_full_gate_in_pre_commit() {
+    let repo = Repo::new();
+    repo.branch_changing("feat/conflict", "a", "branch\n");
+    // main moves too, through a gated merge, so the two edits conflict.
+    repo.branch_changing("feat/main-side", "a", "main\n");
+    repo.ok(&["merge", "-q", "--no-edit", "feat/main-side"]);
+    let before = repo.rev("main");
+
+    let conflicted = repo.git(&["merge", "-q", "--no-edit", "feat/conflict"]);
+    assert!(
+        !conflicted.status.success(),
+        "the merge must stop on a conflict"
+    );
+    std::fs::write(repo.work().join("a"), "resolved\n").unwrap();
+    repo.ok(&["add", "a"]);
+    repo.clear_log();
+    repo.ok(&["commit", "-q", "--no-edit"]);
+    assert!(
+        repo.log().contains("xtask gate|context=main|gitdir=unset"),
+        "{}",
+        repo.log()
+    );
+    repo.assert_merge_commit_on_main(&before);
+}
+
+#[test]
+fn concluding_a_merge_refuses_a_dirty_tree_and_leaves_main() {
+    let repo = Repo::new();
+    repo.branch_changing("feat/dirty-conclusion", "b", "b\n");
+    let before = repo.rev("main");
+    repo.ok(&["merge", "-q", "--no-commit", "feat/dirty-conclusion"]);
+    std::fs::write(repo.work().join("stray"), "untracked\n").unwrap();
+    repo.clear_log();
+    let refused = repo.git(&["commit", "-q", "--no-edit"]);
+    assert_refused(&refused, "untracked: stray");
+    assert!(!repo.log().contains("xtask gate|"), "{}", repo.log());
+    assert_eq!(repo.rev("main"), before);
+}
+
+#[test]
+fn concluding_a_merge_with_a_failing_gate_leaves_main() {
+    let repo = Repo::new();
+    repo.branch_changing("feat/failing-conclusion", "b", "b\n");
+    let before = repo.rev("main");
+    repo.ok(&["merge", "-q", "--no-commit", "feat/failing-conclusion"]);
+    repo.fail_on("xtask gate");
+    let refused = repo.git(&["commit", "-q", "--no-edit"]);
+    assert_refused(&refused, "MERGE BLOCKED");
+    assert_eq!(repo.rev("main"), before);
+}
+
+// --- main-ref refusals -------------------------------------------------------
+
+#[test]
+fn main_guard_refuses_a_fast_forward_merge() {
+    let repo = Repo::new();
+    repo.branch_changing("feat/fast-forward", "b", "b\n");
+    let before = repo.rev("main");
+    let refused = repo.git(&["merge", "-q", "--ff-only", "feat/fast-forward"]);
+    assert_refused(&refused, "main guard: refusing to update refs/heads/main");
+    assert_eq!(repo.rev("main"), before);
+}
+
+#[test]
+fn main_guard_refuses_reset_hard() {
+    let repo = Repo::new();
+    let before = repo.rev("main");
+    let refused = repo.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    assert_refused(&refused, "main guard: refusing to update refs/heads/main");
+    assert_eq!(repo.rev("main"), before);
+}
+
+#[test]
+fn main_guard_refuses_commit_amend_even_without_commit_hooks() {
+    let repo = Repo::new();
+    let before = repo.rev("main");
+    let guarded = repo.git(&["commit", "-q", "--amend", "-m", "amended"]);
+    assert_refused(&guarded, "Direct commits to main");
+    assert_eq!(repo.rev("main"), before);
+
+    let unverified = repo.git(&["commit", "-q", "--amend", "--no-verify", "-m", "amended"]);
+    assert_refused(
+        &unverified,
+        "main guard: refusing to update refs/heads/main",
+    );
+    assert_eq!(repo.rev("main"), before);
+}
+
+// --- pre-push through a real push --------------------------------------------
+
+#[test]
+fn pre_push_refuses_a_real_push_with_the_canary_and_allows_a_reviewed_branch() {
+    let repo = Repo::new();
+    let remote = repo.dir.join("remote.git");
+    repo.ok(&["init", "-q", "--bare", remote.to_str().unwrap()]);
+    repo.ok(&["remote", "add", "origin", remote.to_str().unwrap()]);
+    let remote_ref = |name: &str| {
+        Command::new("git")
+            .args([
+                "--git-dir",
+                remote.to_str().unwrap(),
+                "rev-parse",
+                "-q",
+                "--verify",
+                name,
+            ])
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", repo.dir.join("gitconfig"))
+            .output()
+            .unwrap()
+    };
+
+    let refused = repo.git(&["push", "-q", "origin", "main"]);
+    assert_refused(
+        &refused,
+        "pre-push: refusing refs/heads/main -> refs/heads/main",
+    );
+    assert!(!remote_ref("refs/heads/main").status.success());
+
+    repo.reviewed_commit("feat/reviewed");
+    let pushed = repo.git(&["push", "-q", "origin", "feat/reviewed"]);
+    assert!(pushed.status.success(), "{}", stderr(&pushed));
+    let remote_head = remote_ref("refs/heads/feat/reviewed");
+    assert_eq!(
+        String::from_utf8_lossy(&remote_head.stdout).trim(),
+        repo.rev("feat/reviewed")
+    );
+}
+
+// --- a real main merge through the hooks and the real canary gate ------------
+
+/// Logs like `STAND_IN`, but hands the full gate (`cargo xtask gate`, no
+/// further arguments) to the real runner built from the fixture, with the
+/// caller's PATH (`REAL_PATH`, so its cargo children are real), limited to
+/// its canary gate: the only gate this end-to-end test is about, and one that
+/// does not recurse into this test suite.
+const FORWARDING_STAND_IN: &str = r#"#!/usr/bin/env bash
+printf '%s|context=%s|gitdir=%s\n' "$*" "${DISCIPLINES_GATE_CONTEXT:-}" "${GIT_DIR-unset}" >>"$LOG"
+if [ "$#" = 2 ] && [ "$1" = xtask ] && [ "$2" = gate ]; then
+  PATH="$REAL_PATH" exec cargo run --manifest-path xtask/Cargo.toml --package qinit-xtask \
+    --quiet --locked --offline -- gate --only repo/canary --no-cache
+fi
+"#;
+
+impl Repo {
+    /// A copy of this repository's tracked files (the runner and the hooks
+    /// included) with the review canary at the top of README.md and the
+    /// hooks installed. `cargo xtask gate` runs the real canary gate.
+    fn with_real_runner() -> Self {
+        let repo = Self::new_with_hooks(false);
+        let source = qinit_xtask::repo_root();
+        let listed = Command::new("git")
+            .args(["ls-files", "-z"])
+            .current_dir(&source)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .unwrap();
+        assert!(listed.status.success());
+        for path in listed.stdout.split(|byte| *byte == 0) {
+            let path = std::str::from_utf8(path).unwrap();
+            let from = source.join(path);
+            if path.is_empty() || !from.is_file() {
+                continue;
+            }
+            let to = repo.work().join(path);
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::copy(&from, &to).unwrap();
+        }
+        let readme = std::fs::read_to_string(repo.work().join("README.md")).unwrap();
+        if !readme.starts_with(CANARY) {
+            std::fs::write(repo.work().join("README.md"), format!("{CANARY}\n{readme}")).unwrap();
+        }
+        write_exec(&repo.dir.join("bin/cargo"), FORWARDING_STAND_IN);
+        repo.ok(&["rm", "-q", "--cached", "a"]);
+        std::fs::remove_file(repo.work().join("a")).unwrap();
+        repo.ok(&["add", "-A"]);
+        repo.ok(&["commit", "-qm", "copy of the repository"]);
+        let hooks = repo.hooks_dir();
+        copy_hooks(&repo.work().join(".githooks"), &hooks);
+        repo.ok(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+        repo.ok(&["config", "merge.ff", "false"]);
+        repo.clear_log();
+        repo
+    }
+
+    fn real_runner_env(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("REAL_PATH", std::env::var("PATH").unwrap()),
+            (
+                "CARGO_TARGET_DIR",
+                self.dir.join("target").display().to_string(),
+            ),
+            (
+                "CARGO_BUILD_BUILD_DIR",
+                self.dir.join("build").display().to_string(),
+            ),
+        ]
+    }
+
+    fn git_real_runner(&self, args: &[&str]) -> Output {
+        let env = self.real_runner_env();
+        let env: Vec<(&str, &str)> = env
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect();
+        self.git_env(args, &env)
+    }
+}
+
+#[test]
+fn a_main_merge_with_the_canary_is_refused_end_to_end_and_a_reviewed_one_lands() {
+    let repo = Repo::with_real_runner();
+    repo.branch_changing("feat/unreviewed", "b", "b\n");
+    let before = repo.rev("main");
+    let refused = repo.git_real_runner(&["merge", "-q", "--no-edit", "feat/unreviewed"]);
+    assert_refused(&refused, "review canary remains in README.md");
+    assert_refused(&refused, "MERGE BLOCKED");
+    assert_eq!(repo.rev("main"), before);
+    repo.ok(&["merge", "--abort"]);
+
+    repo.ok(&["switch", "-q", "-c", "feat/reviewed", "main"]);
+    let readme = std::fs::read_to_string(repo.work().join("README.md")).unwrap();
+    std::fs::write(
+        repo.work().join("README.md"),
+        readme.strip_prefix(CANARY).unwrap(),
+    )
+    .unwrap();
+    repo.ok(&["add", "README.md"]);
+    repo.ok(&["commit", "-qm", "reviewed"]);
+    repo.ok(&["switch", "-q", "main"]);
+    let landed = repo.git_real_runner(&["merge", "-q", "--no-edit", "feat/reviewed"]);
+    assert!(landed.status.success(), "{}", stderr(&landed));
+    repo.assert_merge_commit_on_main(&before);
+}
