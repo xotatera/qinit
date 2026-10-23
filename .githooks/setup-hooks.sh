@@ -3,17 +3,41 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Installs clone-local hook sources and links the active hooks to them. Run once
 # per clone, after main's first commit (the main guard refuses creating main).
+# Behind a hook dispatcher (core.hooksPath elsewhere), it installs only when
+# `git config qinit.hooksDispatcher` names that same path.
 set -eu
 top="$(git rev-parse --show-toplevel)"
 hooks="$(git rev-parse --path-format=absolute --git-common-dir)/hooks"
 effective_hooks="$(git rev-parse --path-format=absolute --git-path hooks)"
 
+# An existing directory's absolute physical path; empty when it is missing.
+physical_dir() {
+    (cd "$1" 2>/dev/null && pwd -P) || true
+}
+
 # A configured dispatcher can choose to chain to these hooks, but Git has no
-# way to verify that relationship. Refuse rather than claim protection is on.
+# way to verify that relationship. Refuse rather than claim protection is on,
+# unless the clone's owner declares the dispatcher as trusted with
+# `git config qinit.hooksDispatcher <path>` naming the effective hooks path.
+dispatcher=''
 if [ "$effective_hooks" != "$hooks" ]; then
-    echo "refusing to install: effective core.hooksPath is $effective_hooks, not $hooks." >&2
-    echo "Configure core.hooksPath to $hooks or integrate these hooks with the dispatcher yourself." >&2
-    exit 1
+    declared="$(git config --type=path --get qinit.hooksDispatcher || true)"
+    if [ -z "$declared" ]; then
+        echo "refusing to install: effective core.hooksPath is $effective_hooks, not $hooks." >&2
+        echo "Configure core.hooksPath to $hooks, or, if that path is a dispatcher that chains" >&2
+        echo "to $hooks/<hook>, declare it:  git config qinit.hooksDispatcher '$effective_hooks'" >&2
+        exit 1
+    fi
+    case "$declared" in
+        /*) ;;
+        *) declared="$top/$declared" ;;
+    esac
+    declared_dir="$(physical_dir "$declared")"
+    dispatcher="$(physical_dir "$effective_hooks")"
+    if [ -z "$declared_dir" ] || [ -z "$dispatcher" ] || [ "$declared_dir" != "$dispatcher" ]; then
+        echo "refusing to install: qinit.hooksDispatcher ($declared) is not the effective hooks path ($effective_hooks)." >&2
+        exit 1
+    fi
 fi
 
 sources="$hooks/qinit"
@@ -101,4 +125,8 @@ if "$refresh"; then
     echo "refreshed clone-local hook sources in $sources"
 else
     echo "installed clone-local hook sources in $sources and linked active hooks in $hooks"
+fi
+if [ -n "$dispatcher" ]; then
+    echo "core.hooksPath is the declared dispatcher $dispatcher. It must chain to $hooks/<hook>"
+    echo "for pre-commit, pre-merge-commit, pre-push and reference-transaction; otherwise these hooks never run."
 fi

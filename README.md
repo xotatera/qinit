@@ -77,7 +77,12 @@ sh .githooks/setup-hooks.sh
 ```
 
 The installer refuses a non-default effective `core.hooksPath` and conflicting
-existing hooks rather than claiming they are protected. It copies qinit-owned
+existing hooks rather than claiming they are protected. If `core.hooksPath`
+points to a hook dispatcher you trust, declare it first with
+`git config qinit.hooksDispatcher <path>`, naming the same directory as
+`core.hooksPath`. The installer then installs as usual and reminds you that the
+dispatcher must chain to `<git-common-dir>/hooks/<hook>`; without that chaining
+the hooks never run. It copies qinit-owned
 sources into that clone's common Git directory and links the active hooks; rerun
 it only to refresh an installation it already recognizes. The hooks enforce the
 review canary locally on protected branches and refuse to push a ref whose

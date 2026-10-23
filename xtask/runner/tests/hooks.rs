@@ -722,3 +722,84 @@ fn pre_push_refuses_a_ref_without_a_readme_with_a_clear_message() {
         stderr(&refused)
     );
 }
+
+impl Repo {
+    fn setup(&self) -> Output {
+        Command::new(self.work().join(".githooks/setup-hooks.sh"))
+            .current_dir(self.work())
+            .env("HOME", &self.dir)
+            .env("GIT_CONFIG_GLOBAL", self.dir.join("gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap()
+    }
+
+    /// A dispatcher directory configured as `core.hooksPath`.
+    fn dispatcher(&self) -> PathBuf {
+        let dispatcher = self.dir.join("dispatcher");
+        std::fs::create_dir_all(&dispatcher).unwrap();
+        self.ok(&["config", "core.hooksPath", dispatcher.to_str().unwrap()]);
+        dispatcher
+    }
+}
+
+#[test]
+fn setup_refuses_a_dispatcher_that_is_not_declared() {
+    let repo = Repo::uninstalled();
+    repo.dispatcher();
+    let refused = repo.setup();
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("qinit.hooksDispatcher"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(!repo.hooks_dir().join("qinit").exists());
+}
+
+#[test]
+fn setup_refuses_a_declared_dispatcher_that_is_not_the_effective_hooks_path() {
+    let repo = Repo::uninstalled();
+    repo.dispatcher();
+    let other = repo.dir.join("other-dispatcher");
+    std::fs::create_dir_all(&other).unwrap();
+    repo.ok(&["config", "qinit.hooksDispatcher", other.to_str().unwrap()]);
+    let refused = repo.setup();
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("is not the effective hooks path"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(!repo.hooks_dir().join("qinit").exists());
+}
+
+#[test]
+fn setup_installs_behind_a_declared_dispatcher_and_names_the_chain_targets() {
+    let repo = Repo::uninstalled();
+    let dispatcher = repo.dispatcher();
+    // Not normalised: a `..` component and a trailing slash.
+    let declared = format!("{}/../dispatcher/", dispatcher.display());
+    repo.ok(&["config", "qinit.hooksDispatcher", &declared]);
+    let installed = repo.setup();
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    let hooks = repo.hooks_dir();
+    for hook in [
+        "pre-commit",
+        "pre-merge-commit",
+        "pre-push",
+        "reference-transaction",
+    ] {
+        assert_eq!(
+            std::fs::read_link(hooks.join(hook)).unwrap(),
+            PathBuf::from(format!("qinit/{hook}"))
+        );
+    }
+    assert_eq!(std::fs::read_dir(&dispatcher).unwrap().count(), 0);
+    let stdout = String::from_utf8_lossy(&installed.stdout);
+    let common = std::fs::canonicalize(repo.work().join(".git/hooks")).unwrap();
+    assert!(
+        stdout.contains(&format!("must chain to {}/<hook>", common.display())),
+        "{stdout}"
+    );
+}
