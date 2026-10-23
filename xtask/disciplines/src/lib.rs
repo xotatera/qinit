@@ -102,10 +102,17 @@ pub fn registry() -> Vec<Gate> {
             run: Box::new(gates::preflight),
             inputs: Inputs::Globs(&["**/Cargo.toml"]),
             env: &[],
-            // verusfmt too: preflight checks it once a Verus entry is
-            // declared, and is cached on main. The provers are the proof
-            // gates' own.
-            tools: &["cargo", "rustfmt", "cargo-clippy", "git", "verusfmt"],
+            // Verus and verusfmt too: preflight checks them once a Verus
+            // entry is declared, and is cached on main. The prover command
+            // itself remains the proof gate's own.
+            tools: &[
+                "cargo",
+                "rustfmt",
+                "cargo-clippy",
+                "git",
+                "verus",
+                "verusfmt",
+            ],
             extra_paths: &[],
             ignored_inputs: &[],
             cacheable: true,

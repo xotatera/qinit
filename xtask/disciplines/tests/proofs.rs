@@ -1829,8 +1829,12 @@ fn verus_entries_require_cargo_verus() {
         names(proofs::gate_tools(&one(VERUS_A))),
         ["prlimit", "timeout", "cargo-verus", "verus"]
     );
-    // preflight keeps verusfmt: fmt needs it with or without `--no-proofs`.
-    assert_eq!(names(proofs::required_tools(&[one(VERUS_A)])), ["verusfmt"]);
+    // Preflight validates the selected Verus release and keeps verusfmt for
+    // `verus!` bodies once a Verus proof is declared.
+    assert_eq!(
+        names(proofs::required_tools(&[one(VERUS_A)])),
+        ["verus", "verusfmt"]
+    );
 }
 
 /// Two passes: `--no-cheating` rejected lines 3 and 7 of a tooth (Verus

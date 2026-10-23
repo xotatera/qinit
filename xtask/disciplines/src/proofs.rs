@@ -1644,13 +1644,17 @@ pub fn verus_install_files(cargo_verus: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
-/// Tools `preflight` requires once proofs are declared, with install hints:
-/// `verusfmt`, which fmt needs for `verus!` bodies. The provers are each
-/// proof gate's own ([`gate_tools`]), so `--no-proofs` needs none.
+/// Tools `preflight` requires once a Verus proof is declared: the selected
+/// `verus` release and `verusfmt`, which formats `verus!` bodies. The prover
+/// command itself remains the proof gate's own ([`gate_tools`]), so an empty
+/// workspace does not require Verus.
 #[must_use]
 pub fn required_tools(proofs: &[Proof]) -> Vec<(&'static str, &'static str)> {
     if proofs.iter().any(|p| p.kind == Kind::Verus) {
-        vec![("verusfmt", "cargo install --locked verusfmt")]
+        vec![
+            ("verus", crate::tools::VERUS_INSTALL),
+            ("verusfmt", "cargo install --locked verusfmt"),
+        ]
     } else {
         Vec::new()
     }

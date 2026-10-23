@@ -50,9 +50,12 @@ Every file carries an SPDX header, or is covered by `REUSE.toml`. The license te
 Status: design only. qinit is not usable yet.
 
 The first implementation sub-project is repository disciplines setup. The pinned
-[Rust toolchain](rust-toolchain.toml) is Rust 1.98.1 with `rustfmt` and `clippy`;
-the pin also keeps future Rust and Verus work aligned. Run the complete local
-gate from the repository root:
+[Rust toolchain](rust-toolchain.toml) is Rust 1.98.1 with `rustfmt` and `clippy`.
+The selected Verus release is `0.2026.10.04.426d8b0`; the tooling preflight
+verifies it with `verus --version` when a `kind = "verus"` proof is declared.
+This keeps the empty-workspace full gate portable: it declares no proof and
+therefore does not require Verus. Run the complete local gate from the
+repository root:
 
 ```sh
 cargo xtask gate --no-cache
@@ -69,8 +72,8 @@ The committed hooks are opt-in; install them only in a clone where you want loca
 sh .githooks/setup-hooks.sh
 ```
 
-The installer refuses a non-default effective `core.hooksPath` and existing
-foreign hooks rather than claiming they are protected. It copies qinit-owned
+The installer refuses a non-default effective `core.hooksPath` and conflicting
+existing hooks rather than claiming they are protected. It copies qinit-owned
 sources into that clone's common Git directory and links the active hooks; rerun
 it only to refresh an installation it already recognizes. The hooks enforce the
 review canary locally on protected branches and refuse to push a ref whose
@@ -100,11 +103,11 @@ must be resolved with the stated implementation change rather than hidden:
 | Relevant design clause | Setup status | Repository evidence |
 |---|---|---|
 | Approved qinit design §1 fixes qinit's public component scope and keeps unrelated services out. | No product component or additional binary is introduced by this setup. | [DEFERRED.md](DEFERRED.md) D2. |
-| Approved qinit design §2 requires Rust, Verus, four layers, event-driven waits, and bounded operations. | The toolchain is pinned; implementation, transition tests, and proofs wait for product crates. | `rust-toolchain.toml`; `Cargo.toml`. |
+| Approved qinit design §2 requires Rust, Verus, four layers, event-driven waits, and bounded operations. | Rust is pinned; the selected Verus release is asserted when a Verus proof is declared; implementation and transition tests wait for product crates. | `rust-toolchain.toml`; `xtask/disciplines/src/tools.rs`; `Cargo.toml`. |
 | Approved qinit design §§3–7 define the queen, colony, overseer, zero, graph, logging, protocol, and shutdown behavior. | These product behaviors remain design-only; this task adds no daemon, protocol, or systemd-derived code. | [Scope](#scope); [DEFERRED.md](DEFERRED.md). |
-| Approved qinit design §8 makes disciplines setup the first sub-project: pinned tools; portable format, test, proof, REUSE, and canary gates; opt-in hooks; and no CI. | `cargo xtask gate --no-cache` is the fresh full check; the hook installation above is local and optional. | `.githooks/setup-hooks.sh`; `xtask/runner/src/lib.rs`; `tests/bootstrap-metadata.sh`. |
+| Approved qinit design §8 makes disciplines setup the first sub-project: pinned tools; portable format, test, proof, REUSE, and canary gates; opt-in hooks; and no CI. | `cargo xtask gate --no-cache` is the fresh full check; Rust is pinned and declared Verus proofs assert their selected release without blocking the empty workspace; the hook installation above is local and optional. | `rust-toolchain.toml`; `xtask/disciplines/src/gates.rs`; `.githooks/setup-hooks.sh`; `xtask/runner/src/lib.rs`; `tests/bootstrap-metadata.sh`. |
 | Approved qinit design §9 defers user-session work, adoption/additional binaries/live upgrade, CI, and size budgets. | D1–D2 remain open design deferrals; no CI or size-budget commitment is made. | [DEFERRED.md](DEFERRED.md). |
-| Approved qinit design §10 records the research provenance for later implementation. | This documentation records the setup references and the accepted D3–D5 gate blockers separately from product research. | `REUSE.toml`; [DEFERRED.md](DEFERRED.md). |
+| Approved qinit design §10 records the research provenance for later implementation. | This public documentation records repository setup evidence and the accepted D3–D5 gate blockers; product research provenance remains for later implementation. | [Development](#development); [DEFERRED.md](DEFERRED.md). |
 
 qinit is developed with AI assistance. A human reviews every change and takes responsibility for it.
 See [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -134,6 +134,13 @@ pub fn preflight(root: &Path) -> Result<(), String> {
             if !gone.is_empty() {
                 errors.push(tools::report(&gone));
             }
+            if d.proofs.iter().any(|p| p.kind == proofs::Kind::Verus)
+                && let Some(verus) =
+                    std::env::var_os("PATH").and_then(|path| tools::resolve_in(&path, "verus"))
+                && let Err(error) = tools::verus_version(&verus)
+            {
+                errors.push(error);
+            }
         }
     }
     let manifest = root.join("Cargo.toml");

@@ -34,7 +34,14 @@ fn names_are_unique_and_non_empty() {
     assert_eq!(names.iter().collect::<HashSet<_>>().len(), names.len());
 }
 
-const PREFLIGHT_TOOLS: &[&str] = &["cargo", "rustfmt", "cargo-clippy", "git", "verusfmt"];
+const PREFLIGHT_TOOLS: &[&str] = &[
+    "cargo",
+    "rustfmt",
+    "cargo-clippy",
+    "git",
+    "verus",
+    "verusfmt",
+];
 
 type Decl = (
     &'static str,
@@ -201,7 +208,7 @@ fn preflight_fingerprints_every_required_tool() {
         .unwrap();
     let mut required: Vec<&str> = xtask::tools::REQUIRED.iter().map(|(t, _)| *t).collect();
     // The tool preflight requires once a Verus entry is declared.
-    required.push("verusfmt");
+    required.extend(["verus", "verusfmt"]);
     assert_eq!(preflight.tools, required.as_slice());
     let declared = xtask::proofs::parse(PROOF_METADATA).unwrap();
     for (tool, _) in xtask::proofs::required_tools(&declared.proofs) {

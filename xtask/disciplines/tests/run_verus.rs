@@ -102,7 +102,10 @@ fn scratch(tag: &str) -> Scratch {
     write(&root.join("tooth/src/lib.rs"), "#![no_std]\n");
     let bin = root.join("bin");
     exe(&bin.join("cargo-verus"), FAKE);
-    exe(&bin.join("verus"), "#!/bin/sh\nexit 0\n");
+    exe(
+        &bin.join("verus"),
+        "#!/bin/sh\nprintf '%s\\n' 'Verus' '  Version: 0.2026.10.04.426d8b0'\n",
+    );
     exe(&bin.join("atc"), "#!/bin/sh\nexit 1\n");
     write(&root.join("ctl/out"), PASS);
     write(&root.join("ctl/rc"), "0");
@@ -336,10 +339,11 @@ fn gate_scoped(root: &Path, scope: Scope) -> bool {
     execute_with(&runner, &cmd, root)
 }
 
-/// `PATH` holds every tool but Verus's: `--no-proofs` passes, and the
-/// full gate fails on the proof gate with the install line, never a SKIP.
+/// `PATH` holds every tool but Verus's: the declared proof makes preflight
+/// reject the missing selected release before either gate scope reaches a
+/// proof gate.
 #[test]
-fn without_its_prover_the_full_gate_fails_and_no_proofs_passes() {
+fn a_declared_verus_proof_requires_the_selected_verus_release() {
     let Some(root) = std::env::var_os(NO_PROVER).map(PathBuf::from) else {
         let s = scratch("no-prover");
         let path = std::env::var_os("PATH").unwrap_or_default();
@@ -361,7 +365,7 @@ fn without_its_prover_the_full_gate_fails_and_no_proofs_passes() {
         exe(&dir.join("atc"), "#!/bin/sh\nexit 1\n");
         let out = Proc::new(std::env::current_exe().unwrap())
             .args([
-                "without_its_prover_the_full_gate_fails_and_no_proofs_passes",
+                "a_declared_verus_proof_requires_the_selected_verus_release",
                 "--exact",
                 "--nocapture",
             ])
@@ -379,17 +383,26 @@ fn without_its_prover_the_full_gate_fails_and_no_proofs_passes() {
             "{}{err}",
             String::from_utf8_lossy(&out.stdout)
         );
-        assert!(err.contains("SKIP proof:tooth: --no-proofs"), "{err}");
-        assert!(err.contains("FAIL proof:tooth ("), "{err}");
+        assert!(err.contains("FAIL preflight ("), "{err}");
         assert!(
-            err.contains("\nmissing: cargo-verus  (install: a Verus release"),
+            err.contains(
+                "\nmissing: verus  (install: the selected Verus 0.2026.10.04.426d8b0 release)"
+            ),
             "{err}"
         );
         return;
     };
     assert!(
-        gate_scoped(&root, Scope::NoProofs),
-        "--no-proofs needs no prover"
+        !gate_scoped(&root, Scope::NoProofs),
+        "a declared Verus proof validates its selected release before it is skipped"
     );
-    assert!(!gate_scoped(&root, Scope::All), "a missing prover fails");
+    assert!(
+        !gate_scoped(&root, Scope::All),
+        "a declared Verus proof validates its selected release"
+    );
+    fs::write(root.join("Cargo.toml"), "[workspace]\nresolver = \"3\"\n").unwrap();
+    assert!(
+        gate_scoped(&root, Scope::All),
+        "an empty workspace does not require Verus"
+    );
 }

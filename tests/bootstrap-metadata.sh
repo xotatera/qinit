@@ -128,6 +128,12 @@ grep -Fqx 'The committed hooks are opt-in; install them only in a clone where yo
     || fail 'README.md must explain that hooks are opt-in'
 grep -Fqx 'sh .githooks/setup-hooks.sh' README.md \
     || fail 'README.md must name the hook installation command'
+grep -Fqx "The selected Verus release is \`0.2026.10.04.426d8b0\`; the tooling preflight" README.md \
+    || fail 'README.md must state the selected Verus release'
+grep -Fqx "verifies it with \`verus --version\` when a \`kind = \"verus\"\` proof is declared." README.md \
+    || fail 'README.md must state when the selected Verus release is asserted'
+grep -Fqx 'existing hooks rather than claiming they are protected. It copies qinit-owned' README.md \
+    || fail 'README.md must describe only conflicting hook names as refused'
 
 copy_bootstrap_fixture "$alias_fixture"
 sed 's|run --manifest-path xtask/Cargo.toml --package qinit-xtask --quiet --|run --package qinit-xtask --quiet --|' \

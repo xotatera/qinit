@@ -57,3 +57,38 @@ fn resolve_in_finds_the_first_executable_only() {
     );
     assert_eq!(xtask::tools::resolve_in(&path, "absent"), None);
 }
+
+#[test]
+fn verus_version_requires_the_selected_release() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = scratch("verus_version_requires_the_selected_release");
+    std::fs::create_dir_all(&scratch.0).unwrap();
+    let verus = scratch.0.join("verus");
+    std::fs::write(
+        &verus,
+        "#!/bin/sh\nprintf '%s\\n' 'Verus' '  Version: 0.2026.10.04.426d8b0'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&verus, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(xtask::tools::verus_version(&verus), Ok(()));
+
+    std::fs::write(
+        &verus,
+        "#!/bin/sh\nprintf '%s\\n' 'Verus' '  Version: 0.2026.10.05.next'\n",
+    )
+    .unwrap();
+    let error = xtask::tools::verus_version(&verus).unwrap_err();
+    assert!(
+        error.contains("reported Verus 0.2026.10.05.next"),
+        "{error}"
+    );
+    assert!(error.contains("expected 0.2026.10.04.426d8b0"), "{error}");
+}
+
+#[test]
+fn verus_version_reports_a_missing_command() {
+    let scratch = scratch("verus_version_reports_a_missing_command");
+    let error = xtask::tools::verus_version(&scratch.0.join("missing-verus")).unwrap_err();
+    assert!(error.contains("cannot run"), "{error}");
+    assert!(error.contains("missing-verus"), "{error}");
+}

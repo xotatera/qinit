@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Xota Tera
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Verus 0.2026.10.04.426d8b0 reports Rust 1.98.1 as its toolchain, so qinit
-# pins that release to keep Rust code, rustfmt, clippy, and future proofs aligned.
+# Verus 0.2026.10.04.426d8b0 reports Rust 1.98.1 as its toolchain. The
+# disciplines proof preflight asserts that Verus release when a proof declares
+# it; this file pins only Rust, rustfmt, and clippy for the workspace.
 
 [toolchain]
 channel = "1.98.1"

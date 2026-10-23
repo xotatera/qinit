@@ -3,6 +3,13 @@
 
 //! preflight: which required tools are missing from PATH.
 use std::path::Path;
+use std::process::Command;
+
+/// The Verus release selected by qinit's approved setup design.
+pub const VERUS_VERSION: &str = "0.2026.10.04.426d8b0";
+/// How a contributor identifies the selected release when preflight finds no
+/// `verus` command.
+pub const VERUS_INSTALL: &str = "the selected Verus 0.2026.10.04.426d8b0 release";
 
 /// (binary, install line). List the tools of planned gates too.
 pub const REQUIRED: &[(&str, &str)] = &[
@@ -48,4 +55,45 @@ pub fn report(missing: &[&(&str, &str)]) -> String {
         .map(|(tool, install)| format!("missing: {tool}  (install: {install})"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Runs the selected `verus --version` command and rejects every release
+/// other than [`VERUS_VERSION`].
+///
+/// # Errors
+/// When the command cannot run, exits unsuccessfully, does not identify a
+/// Verus release, or reports a different release.
+pub fn verus_version(verus: &Path) -> Result<(), String> {
+    let output = Command::new(verus)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("cannot run `{}` --version: {e}", verus.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr
+            .trim()
+            .is_empty()
+            .then(String::new)
+            .unwrap_or_else(|| format!(": {}", stderr.trim()));
+        return Err(format!(
+            "`{} --version` failed ({}){detail}",
+            verus.display(),
+            output.status,
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let actual = stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Version: "));
+    match actual {
+        Some(version) if version == VERUS_VERSION => Ok(()),
+        Some(version) => Err(format!(
+            "`{} --version` reported Verus {version}; expected {VERUS_VERSION}",
+            verus.display()
+        )),
+        None => Err(format!(
+            "`{} --version` did not report a Verus version; expected {VERUS_VERSION}",
+            verus.display()
+        )),
+    }
 }
