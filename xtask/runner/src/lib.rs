@@ -320,7 +320,7 @@ pub fn xtask_registry() -> Vec<Gate> {
 }
 
 fn current_branch(root: &Path) -> Result<Option<String>, String> {
-    let output = std::process::Command::new("git")
+    let output = xtask::git::command()
         .args(["symbolic-ref", "--short", "-q", "HEAD"])
         .current_dir(root)
         .output()

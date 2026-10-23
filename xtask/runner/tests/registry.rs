@@ -369,6 +369,19 @@ fn repository_canary_gate_rejects_a_seeded_canary_on_configured_main_branch() {
 }
 
 #[test]
+fn repository_canary_gate_ignores_a_leaked_git_dir() {
+    let fixture = Fixture::new();
+    fixture.seed_review_canary();
+    let other = fixture.root.join("other-repository");
+    std::fs::create_dir(&other).unwrap();
+    git(&other, &["init", "--quiet", "--initial-branch=main"]);
+    let mut command = fixture.command(&["gate", "--only", "repo/canary", "--no-cache"]);
+    command.env("GIT_DIR", other.join(".git"));
+    let accepted = command.output().expect("run qinit-xtask with GIT_DIR");
+    assert_success(&accepted);
+}
+
+#[test]
 fn repository_canary_gate_rejects_git_launch_errors() {
     let fixture = Fixture::new();
     let rejected = fixture.run_without_git(&["gate", "--only", "repo/canary", "--no-cache"]);
