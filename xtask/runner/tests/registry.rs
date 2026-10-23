@@ -10,6 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use qinit_xtask::STAGES;
 use xtask::Inputs;
 
+const REVIEW_CANARY: &str = "> [!IMPORTANT]\n> Remove these two lines to confirm that a human has reviewed this change.\n\n";
+
 #[test]
 fn qinit_has_only_repository_and_tooling_stages() {
     let stages: Vec<(&str, &str)> = STAGES.iter().map(|s| (s.name, s.dir)).collect();
@@ -156,8 +158,31 @@ fn tooling_no_std_blocker_has_an_independent_ledger_resolution_condition() {
 }
 
 #[test]
-fn repository_canary_gate_rejects_the_live_main_context() {
+fn repository_canary_gate_rejects_unreviewed_real_repository_on_main() {
+    let output = Command::new(env!("CARGO_BIN_EXE_qinit-xtask"))
+        .args(["gate", "--only", "repo/canary", "--no-cache"])
+        .current_dir(qinit_xtask::repo_root())
+        .env(xtask::CONTEXT_ENV, "main")
+        .env_remove(xtask::MAIN_BRANCH_ENV)
+        .output()
+        .expect("run qinit-xtask in the repository");
+    assert_failure_contains(&output, "review canary remains in README.md");
+}
+
+#[test]
+fn repository_canary_gate_accepts_a_reviewed_fixture_on_main() {
     let fixture = Fixture::new();
+    let accepted = fixture.run_with_context(
+        &["gate", "--only", "repo/canary", "--no-cache"],
+        Some("main"),
+    );
+    assert_success(&accepted);
+}
+
+#[test]
+fn repository_canary_gate_rejects_a_seeded_canary_in_main_context() {
+    let fixture = Fixture::new();
+    fixture.seed_review_canary();
     let clean = fixture.run(&["gate", "--only", "repo/canary", "--no-cache"]);
     assert_success(&clean);
 
@@ -169,8 +194,9 @@ fn repository_canary_gate_rejects_the_live_main_context() {
 }
 
 #[test]
-fn repository_canary_gate_also_rejects_literal_main_when_trunk_is_configured() {
+fn repository_canary_gate_rejects_a_seeded_canary_on_literal_main() {
     let fixture = Fixture::new();
+    fixture.seed_review_canary();
     git(&fixture.root, &["symbolic-ref", "HEAD", "refs/heads/main"]);
     let rejected =
         fixture.run_with_main_branch(&["gate", "--only", "repo/canary", "--no-cache"], "trunk");
@@ -297,6 +323,9 @@ impl Fixture {
         copy_tree(&source.join("xtask"), &root.join("xtask"));
         copy_tree(&source.join("gates"), &root.join("gates"));
         copy_tree(&source.join("LICENSES"), &root.join("LICENSES"));
+        let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+        let readme = readme.strip_prefix(REVIEW_CANARY).unwrap_or(&readme);
+        std::fs::write(root.join("README.md"), readme).unwrap();
         let ignored = std::fs::read_to_string(root.join(".gitignore")).unwrap();
         std::fs::write(root.join(".gitignore"), format!("{ignored}\ntarget/\n")).unwrap();
         git(&root, &["init", "--initial-branch=fixture"]);
@@ -306,6 +335,19 @@ impl Fixture {
 
     fn write(&self, path: &str, text: &str) {
         std::fs::write(self.root.join(path), text).unwrap();
+    }
+
+    fn seed_review_canary(&self) {
+        let readme = std::fs::read_to_string(self.root.join("README.md")).unwrap();
+        assert!(
+            !readme.starts_with(REVIEW_CANARY),
+            "fixture unexpectedly already contains the review canary"
+        );
+        std::fs::write(
+            self.root.join("README.md"),
+            format!("{REVIEW_CANARY}{readme}"),
+        )
+        .unwrap();
     }
 
     fn run(&self, arguments: &[&str]) -> Output {
@@ -334,6 +376,8 @@ impl Fixture {
             .args(arguments)
             .current_dir(&self.root)
             .env("PATH", no_git_path)
+            .env_remove(xtask::CONTEXT_ENV)
+            .env_remove(xtask::MAIN_BRANCH_ENV)
             .output()
             .expect("run qinit-xtask without git")
     }
@@ -370,7 +414,9 @@ impl Fixture {
             ])
             .args(arguments)
             .current_dir(&self.root)
-            .env("CARGO_TARGET_DIR", self.root.join("xtask/target"));
+            .env("CARGO_TARGET_DIR", self.root.join("xtask/target"))
+            .env_remove(xtask::CONTEXT_ENV)
+            .env_remove(xtask::MAIN_BRANCH_ENV);
         command
     }
 }
