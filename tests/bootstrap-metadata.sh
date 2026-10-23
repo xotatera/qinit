@@ -118,6 +118,17 @@ if ! head -n 2 README.md | cmp -s "$canary" -; then
     fail 'README.md must begin with the review canary byte-for-byte'
 fi
 
+grep -Fqx 'Status: design only. qinit is not usable yet.' README.md \
+    || fail 'README.md must state that qinit is not usable'
+grep -Fqx 'There is no CI at this stage.' README.md \
+    || fail 'README.md must not claim that CI exists'
+grep -Fqx 'cargo xtask gate --no-cache' README.md \
+    || fail 'README.md must name the uncached full gate command'
+grep -Fqx 'The committed hooks are opt-in; install them only in a clone where you want local checks.' README.md \
+    || fail 'README.md must explain that hooks are opt-in'
+grep -Fqx 'sh .githooks/setup-hooks.sh' README.md \
+    || fail 'README.md must name the hook installation command'
+
 copy_bootstrap_fixture "$alias_fixture"
 sed 's|run --manifest-path xtask/Cargo.toml --package qinit-xtask --quiet --|run --package qinit-xtask --quiet --|' \
     "$alias_fixture/.cargo/config.toml" >"$alias_fixture/.cargo/config.toml.new"

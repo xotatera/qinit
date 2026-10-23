@@ -88,7 +88,7 @@ for f in "$top"/.githooks/*; do
     [ "$name" = setup-hooks.sh ] && continue
     # Replacing a staged file never truncates or chmods the verified source
     # inode, including if a hard link appears after the ownership check.
-    staged="$(mktemp "$sources/.qinit-hook.XXXXXX")"
+    staged="$(mktemp "$sources/.qinit-hook.XXXXXX")" # disciplines:allow-placeholder (temporary hook-source path)
     cp "$f" "$staged"
     chmod 755 "$staged"
     mv -f "$staged" "$sources/$name"
