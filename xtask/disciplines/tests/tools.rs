@@ -101,7 +101,7 @@ fn cargo_verus_version_reports_a_missing_driver() {
     assert!(error.contains("missing-cargo-verus"), "{error}");
 }
 
-fn stub(path: &std::path::Path, body: &str) {
+fn write_script(path: &std::path::Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::write(path, body).unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -121,20 +121,20 @@ fn verusfmt_version_requires_the_pinned_release() {
     let scratch = scratch("verusfmt_version_requires_the_pinned_release");
     std::fs::create_dir_all(&scratch.0).unwrap();
     let verusfmt = scratch.0.join("verusfmt");
-    stub(&verusfmt, "#!/bin/sh\necho 'verusfmt 0.7.4'\n");
+    write_script(&verusfmt, "#!/bin/sh\necho 'verusfmt 0.7.4'\n");
     assert_eq!(xtask::tools::verusfmt_version(&verusfmt), Ok(()));
 
-    stub(&verusfmt, "#!/bin/sh\necho 'verusfmt 0.7.5'\n");
+    write_script(&verusfmt, "#!/bin/sh\necho 'verusfmt 0.7.5'\n");
     let error = xtask::tools::verusfmt_version(&verusfmt).unwrap_err();
     assert!(error.contains("reported verusfmt 0.7.5"), "{error}");
     assert!(error.contains("expected 0.7.4"), "{error}");
     assert!(error.contains("--version 0.7.4"), "{error}");
 
-    stub(&verusfmt, "#!/bin/sh\necho 'something else'\n");
+    write_script(&verusfmt, "#!/bin/sh\necho 'something else'\n");
     let error = xtask::tools::verusfmt_version(&verusfmt).unwrap_err();
     assert!(error.contains("did not report a version"), "{error}");
 
-    stub(&verusfmt, "#!/bin/sh\necho broken >&2\nexit 3\n");
+    write_script(&verusfmt, "#!/bin/sh\necho broken >&2\nexit 3\n");
     let error = xtask::tools::verusfmt_version(&verusfmt).unwrap_err();
     assert!(error.contains("--version failed"), "{error}");
     assert!(error.contains("broken"), "{error}");
