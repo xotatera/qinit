@@ -15,13 +15,17 @@ hooks="$(cd "$(dirname "$0")" && pwd)"
 # --- project-specific: fill these in -----------------------------------------
 BUILD_RUNNER=(cargo build --manifest-path xtask/Cargo.toml --package qinit-xtask --quiet)
 GATE=(cargo xtask gate)
-MAIN="${DISCIPLINES_MAIN_BRANCH:-main}"
+configured_main="${DISCIPLINES_MAIN_BRANCH:-main}"
+is_protected_branch() {
+  [ "$1" = main ] || [ "$1" = "$configured_main" ]
+}
 TOKEN_NAME=disciplines-gated-tree   # same name in pre-commit and reference-transaction
 # No wait cap for the host scheduler (atc, if the host runs one): a gate step
 # waits rather than fail on a busy host. A caller's ATC_MAX_WAIT still applies.
 # ------------------------------------------------------------------------------
 
-[ "$(git symbolic-ref --short -q HEAD || true)" = "$MAIN" ] || exit 0
+branch="$(git symbolic-ref --short -q HEAD || true)"
+is_protected_branch "$branch" || exit 0
 "$hooks/worktree-clean.sh"
 
 # The tree this merge will commit, recorded below as the gate token once the

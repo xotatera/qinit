@@ -1,37 +1,38 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: 2026 Xota Tera
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Guards main. Every update of refs/heads/main must be a merge whose first
-# parent is the current main and whose tree the full gate passed:
-# pre-merge-commit, or pre-commit when it concludes a merge, records that tree
-# in the gate token after the gate passes. Anything else that moves, creates
-# or deletes main (cherry-pick, revert, reset, rebase, amend, `branch -f`,
-# `update-ref`, `push .`, fast-forward merges and pulls, `merge --no-verify`)
-# is refused in the `prepared` phase, which aborts the whole transaction.
+# Guards literal main and the optionally configured extra protected branch.
+# Every update must be a merge whose first parent is the current protected ref
+# and whose tree the full gate passed: pre-merge-commit, or pre-commit when it
+# concludes a merge, records that tree in the gate token after the gate passes.
+# Anything else that moves, creates or deletes a protected ref (cherry-pick,
+# revert, reset, rebase, amend, `branch -f`, `update-ref`, `push .`,
+# fast-forward merges and pulls, `merge --no-verify`) is refused in the
+# `prepared` phase, which aborts the whole transaction.
 #
 # `--no-verify` does not skip this hook. The override for a deliberate
 # ungated move (repairing a runner that does not build, fast-forwarding to an
 # upstream main gated elsewhere) is DISCIPLINES_ALLOW_UNGATED_MAIN='<reason>'.
 #
-# Unlike the other hooks, this one keeps GIT_DIR: here it names the
-# repository whose refs are changing, including `git push .`, which runs this
-# hook inside .git with GIT_DIR=. .
+# Unlike the other hooks, this one keeps GIT_DIR: here it names the repository
+# whose refs are changing, including `git push .`, which runs this hook inside
+# .git with GIT_DIR=. .
 set -euo pipefail
 
 # --- project-specific: fill these in -----------------------------------------
-MAIN="${DISCIPLINES_MAIN_BRANCH:-main}"
+configured_main="${DISCIPLINES_MAIN_BRANCH:-main}"
 TOKEN_NAME=disciplines-gated-tree   # same name in pre-commit and pre-merge-commit
 # ------------------------------------------------------------------------------
 
-state="${1:-}"
-main_ref="refs/heads/$MAIN"
+is_protected_ref() {
+  [ "$1" = refs/heads/main ] || [ "$1" = "refs/heads/$configured_main" ]
+}
 
-# Most transactions (fetches, branch and tag updates, ORIG_HEAD) never touch
-# main: read them once and leave before spawning anything.
+state="${1:-}"
 updates=()
 while read -r old new ref; do
-  if [ "$ref" = "$main_ref" ]; then
-    updates+=("$old $new")
+  if is_protected_ref "$ref"; then
+    updates+=("$old $new $ref")
   fi
 done
 if [ "${#updates[@]}" = 0 ]; then
@@ -43,11 +44,11 @@ case "$state" in
 esac
 
 token="$(git rev-parse --path-format=absolute --git-path "$TOKEN_NAME")"
-# `git pack-refs` (also run by `gc` and `maintenance`) moves main in two
-# transactions of one process: it writes main's current value into
-# packed-refs, then deletes the loose ref. The first is a no-op update; this
-# marker, "<git pid> <value>" (`git_pid`), lets the second through for that process and
-# value only. Anything else that deletes main is refused.
+# `git pack-refs` (also run by `gc` and `maintenance`) moves a protected ref
+# in two transactions of one process: it writes the current value into
+# packed-refs, then deletes the loose ref. The marker, "<git pid> <ref>
+# <value>" (`git_pid`), lets the second through for that process and value
+# only. Anything else that deletes a protected ref is refused.
 packing="$(git rev-parse --path-format=absolute --git-common-dir)/$TOKEN_NAME.packing"
 # The git process this transaction belongs to: the nearest `git` ancestor.
 # A dispatcher that runs this hook as a child (rather than `exec`ing it)
@@ -64,17 +65,16 @@ git_pid() {
   echo "$PPID"
 }
 zero='^0+$'
-# In `prepared` main is locked but unchanged; in `committed` it holds the new value.
-current="$(git rev-parse -q --verify "$main_ref^{commit}" || true)"
 
-# The token is spent once a transaction on main commits or aborts, so it
-# cannot admit a later update.
+# The token is spent once a transaction on a protected ref commits or aborts,
+# so it cannot admit a later update.
 if [ "$state" != prepared ]; then
   rm -f "$token" "$packing"
   for update in "${updates[@]}"; do
-    read -r old new <<<"$update"
+    read -r old new ref <<<"$update"
+    current="$(git rev-parse -q --verify "$ref^{commit}" || true)"
     if [ "$state" = committed ] && [[ "$old" =~ $zero ]] && [ "$new" = "$current" ]; then
-      echo "$(git_pid) $new" >"$packing"
+      echo "$(git_pid) $ref $new" >"$packing"
     fi
   done
   exit 0
@@ -95,23 +95,25 @@ gated_merge() {
 
 refused=0
 for update in "${updates[@]}"; do
-  read -r old new <<<"$update"
+  read -r old new ref <<<"$update"
+  branch="${ref#refs/heads/}"
+  current="$(git rev-parse -q --verify "$ref^{commit}" || true)"
   if [ -n "${DISCIPLINES_ALLOW_UNGATED_MAIN:-}" ]; then
-    echo "main guard: ungated update of $main_ref allowed: $DISCIPLINES_ALLOW_UNGATED_MAIN" >&2
+    echo "main guard: ungated update of $ref allowed: $DISCIPLINES_ALLOW_UNGATED_MAIN" >&2
     continue
   fi
   # `old` is all zeros when the caller gave no expected value (`git
-  # update-ref <ref> <new>`), even though main exists: compare with `current`.
+  # update-ref <ref> <new>`), even though the ref exists: compare with `current`.
   if [ -n "$current" ] && [ "$new" = "$current" ]; then
     continue
   fi
   if [[ "$new" =~ $zero ]] && [ -n "$current" ] && [ "$old" = "$current" ] &&
-    [ "$(cat "$packing" 2>/dev/null)" = "$(git_pid) $current" ]; then
+    [ "$(cat "$packing" 2>/dev/null)" = "$(git_pid) $ref $current" ]; then
     continue
   fi
   if [ -z "$current" ] || [[ "$new" =~ $zero ]] || ! gated_merge "$current" "$new"; then
-    echo "main guard: refusing to update $main_ref (${current:-none} -> $new) without a gated merge." >&2
-    echo "Land work with:  git switch $MAIN && git merge --no-ff <branch>" >&2
+    echo "main guard: refusing to update $ref (${current:-none} -> $new) without a gated merge." >&2
+    echo "Land work with:  git switch $branch && git merge --no-ff <branch>" >&2
     echo "Deliberate ungated move (runner repair, upstream fast-forward):  DISCIPLINES_ALLOW_UNGATED_MAIN='<reason>' git ..." >&2
     refused=1
   fi

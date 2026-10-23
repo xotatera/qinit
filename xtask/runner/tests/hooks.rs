@@ -3,6 +3,7 @@
 
 //! Exercises the installed git hooks in disposable repositories.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,7 +19,7 @@ if [ -n "${FAIL_ON:-}" ] && [[ "$*" == *"$FAIL_ON"* ]]; then exit 1; fi
 
 struct Repo {
     dir: PathBuf,
-    fail_on: String,
+    fail_on: RefCell<String>,
 }
 
 impl Drop for Repo {
@@ -29,6 +30,14 @@ impl Drop for Repo {
 
 impl Repo {
     fn new() -> Self {
+        Self::new_with_hooks(true)
+    }
+
+    fn uninstalled() -> Self {
+        Self::new_with_hooks(false)
+    }
+
+    fn new_with_hooks(install_hooks: bool) -> Self {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("qinit-hooks-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -45,7 +54,7 @@ impl Repo {
 
         let repo = Self {
             dir,
-            fail_on: String::new(),
+            fail_on: RefCell::new(String::new()),
         };
         repo.ok(&["init", "-q"]);
         std::fs::write(repo.work().join(".gitignore"), "/target/\n").unwrap();
@@ -62,11 +71,13 @@ impl Repo {
         copy_hooks(&source, &repo.work().join(".githooks"));
         repo.ok(&["add", ".githooks"]);
         repo.ok(&["commit", "-qm", "add fixture hooks"]);
-        let hooks = repo.hooks_dir();
-        std::fs::create_dir_all(&hooks).unwrap();
-        copy_hooks(&source, &hooks);
-        repo.ok(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
-        repo.ok(&["config", "merge.ff", "false"]);
+        if install_hooks {
+            let hooks = repo.hooks_dir();
+            std::fs::create_dir_all(&hooks).unwrap();
+            copy_hooks(&source, &hooks);
+            repo.ok(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+            repo.ok(&["config", "merge.ff", "false"]);
+        }
         repo.clear_log();
         repo
     }
@@ -99,7 +110,7 @@ impl Repo {
             .current_dir(self.work())
             .env("PATH", path)
             .env("LOG", self.dir.join("log"))
-            .env("FAIL_ON", &self.fail_on)
+            .env("FAIL_ON", self.fail_on.borrow().as_str())
             .env("HOME", &self.dir)
             .env("GIT_CONFIG_GLOBAL", self.dir.join("gitconfig"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -114,6 +125,10 @@ impl Repo {
 
     fn git(&self, args: &[&str]) -> Output {
         self.git_env(args, &[])
+    }
+
+    fn fail_on(&self, command: &str) {
+        self.fail_on.replace(command.to_owned());
     }
 
     fn ok(&self, args: &[&str]) -> String {
@@ -173,8 +188,8 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
-fn setup_is_opt_in_and_uses_the_common_git_dir_from_a_linked_worktree() {
-    let repo = Repo::new();
+fn setup_is_opt_in_and_uses_stable_common_hook_sources_from_a_linked_worktree() {
+    let repo = Repo::uninstalled();
     let linked = repo.dir.join("linked");
     repo.ok(&[
         "worktree",
@@ -213,8 +228,82 @@ fn setup_is_opt_in_and_uses_the_common_git_dir_from_a_linked_worktree() {
             hooks.join(hook).is_symlink(),
             "{hook} is linked in the common hooks directory"
         );
+        assert!(hooks.join("qinit").join(hook).is_file());
     }
-    assert_eq!(repo.ok(&["config", "merge.ff"]).trim(), "false");
+    assert!(
+        !repo.git(&["config", "--get", "merge.ff"]).status.success(),
+        "setup must not mutate merge.ff"
+    );
+
+    repo.ok(&["worktree", "remove", "--force", linked.to_str().unwrap()]);
+    std::fs::write(repo.work().join("a"), "2\n").unwrap();
+    repo.ok(&["add", "a"]);
+    let rejected = repo.git(&["commit", "-qm", "direct after linked worktree removal"]);
+    assert!(!rejected.status.success(), "{}", stderr(&rejected));
+    assert!(
+        stderr(&rejected).contains("Direct commits to main"),
+        "{}",
+        stderr(&rejected)
+    );
+}
+
+#[test]
+fn setup_refuses_an_inactive_hooks_path_without_changing_settings() {
+    let repo = Repo::uninstalled();
+    let alternate = repo.dir.join("alternate-hooks");
+    std::fs::create_dir_all(&alternate).unwrap();
+    repo.ok(&["config", "core.hooksPath", alternate.to_str().unwrap()]);
+    repo.ok(&["config", "merge.ff", "only"]);
+
+    let setup = repo.work().join(".githooks/setup-hooks.sh");
+    let output = Command::new(&setup)
+        .current_dir(repo.work())
+        .env("HOME", &repo.dir)
+        .env("GIT_CONFIG_GLOBAL", repo.dir.join("gitconfig"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("effective core.hooksPath"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(
+        repo.ok(&["config", "--get", "core.hooksPath"]).trim(),
+        alternate.to_str().unwrap()
+    );
+    assert_eq!(repo.ok(&["config", "--get", "merge.ff"]).trim(), "only");
+}
+
+#[test]
+fn setup_refuses_existing_hooks_without_changing_them_or_merge_settings() {
+    let repo = Repo::uninstalled();
+    let hooks = repo.hooks_dir();
+    std::fs::create_dir_all(&hooks).unwrap();
+    let existing = hooks.join("pre-commit");
+    std::fs::write(&existing, "#!/bin/sh\nexit 0\n").unwrap();
+    repo.ok(&["config", "merge.ff", "only"]);
+
+    let setup = repo.work().join(".githooks/setup-hooks.sh");
+    let output = Command::new(&setup)
+        .current_dir(repo.work())
+        .env("HOME", &repo.dir)
+        .env("GIT_CONFIG_GLOBAL", repo.dir.join("gitconfig"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("already exists"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(
+        std::fs::read_to_string(existing).unwrap(),
+        "#!/bin/sh\nexit 0\n"
+    );
+    assert_eq!(repo.ok(&["config", "--get", "merge.ff"]).trim(), "only");
 }
 
 #[test]
@@ -268,6 +357,87 @@ fn pre_merge_runs_the_full_main_gate_and_refuses_dirty_worktrees() {
         "{}",
         stderr(&rejected)
     );
+}
+
+#[test]
+fn failing_full_gate_refuses_main_merge_without_moving_main() {
+    let repo = Repo::new();
+    repo.reviewed_commit("feat/failing-gate");
+    repo.ok(&["switch", "-q", "main"]);
+    let main = repo.rev("main");
+    repo.fail_on("xtask gate");
+
+    let rejected = repo.git(&["merge", "-q", "--no-edit", "feat/failing-gate"]);
+    assert!(!rejected.status.success(), "{}", stderr(&rejected));
+    assert!(
+        stderr(&rejected).contains("MERGE BLOCKED"),
+        "{}",
+        stderr(&rejected)
+    );
+    assert_eq!(repo.rev("main"), main);
+}
+
+#[test]
+fn literal_main_is_protected_when_the_configured_branch_is_trunk() {
+    let repo = Repo::new();
+    repo.reviewed_commit("feat/literal-main");
+    repo.ok(&["switch", "-q", "main"]);
+    let main = repo.rev("main");
+    repo.fail_on("xtask gate");
+
+    let rejected = repo.git_env(
+        &["merge", "-q", "--no-edit", "feat/literal-main"],
+        &[("DISCIPLINES_MAIN_BRANCH", "trunk")],
+    );
+    assert!(!rejected.status.success(), "{}", stderr(&rejected));
+    assert!(
+        stderr(&rejected).contains("MERGE BLOCKED"),
+        "{}",
+        stderr(&rejected)
+    );
+    assert_eq!(repo.rev("main"), main);
+
+    let update_ref = repo.git_env(
+        &[
+            "update-ref",
+            "refs/heads/main",
+            &repo.rev("feat/literal-main"),
+        ],
+        &[("DISCIPLINES_MAIN_BRANCH", "trunk")],
+    );
+    assert!(!update_ref.status.success(), "{}", stderr(&update_ref));
+    assert!(
+        stderr(&update_ref).contains("main guard: refusing"),
+        "{}",
+        stderr(&update_ref)
+    );
+    assert_eq!(repo.rev("main"), main);
+}
+
+#[test]
+fn configured_extra_branch_remains_protected() {
+    let repo = Repo::new();
+    repo.ok(&["branch", "trunk", "main"]);
+    repo.ok(&["switch", "-q", "trunk"]);
+    repo.ok(&["switch", "-q", "-c", "feat/trunk", "trunk"]);
+    std::fs::write(repo.work().join("README.md"), "fixture\n").unwrap();
+    repo.ok(&["add", "README.md"]);
+    repo.ok(&["commit", "-qm", "reviewed trunk change"]);
+    repo.ok(&["switch", "-q", "trunk"]);
+    let trunk = repo.rev("trunk");
+    repo.fail_on("xtask gate");
+
+    let rejected = repo.git_env(
+        &["merge", "-q", "--no-edit", "feat/trunk"],
+        &[("DISCIPLINES_MAIN_BRANCH", "trunk")],
+    );
+    assert!(!rejected.status.success(), "{}", stderr(&rejected));
+    assert!(
+        stderr(&rejected).contains("MERGE BLOCKED"),
+        "{}",
+        stderr(&rejected)
+    );
+    assert_eq!(repo.rev("trunk"), trunk);
 }
 
 #[test]

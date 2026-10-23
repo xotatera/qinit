@@ -406,17 +406,19 @@ pub const NO_CACHE_ENV: &str = "DISCIPLINES_GATE_NO_CACHE";
 /// cache.
 pub const CONTEXT_ENV: &str = "DISCIPLINES_GATE_CONTEXT";
 
-/// Whether this run decides what lands on main: the hooks say so through
-/// [`CONTEXT_ENV`], and the runner also checks HEAD itself so hooks copied
-/// before the variable existed are covered. With no branch (detached HEAD,
-/// or `git` failed) only the variable decides.
+/// Whether this run decides what lands on a protected branch: the hooks say so
+/// through [`CONTEXT_ENV`], and the runner also checks HEAD itself so hooks
+/// copied before the variable existed are covered. Literal `main` is always
+/// protected; `main_branch` may name one additional protected branch. With no
+/// branch (detached HEAD, or `git` failed) only the variable decides.
 #[must_use]
 pub fn is_main_context(
     env_value: Option<&std::ffi::OsStr>,
     branch: Option<&str>,
     main_branch: &str,
 ) -> bool {
-    env_value.is_some_and(|v| v == "main") || branch.is_some_and(|b| b == main_branch)
+    env_value.is_some_and(|v| v == "main")
+        || branch.is_some_and(|b| b == "main" || b == main_branch)
 }
 
 /// Names the main branch for the runner's own check, like the hooks'

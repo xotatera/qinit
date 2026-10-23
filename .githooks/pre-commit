@@ -21,7 +21,10 @@ hooks="$(cd "$(dirname "$0")" && pwd)"
 # --- project-specific: fill these in -----------------------------------------
 BUILD_RUNNER=(cargo build --manifest-path xtask/Cargo.toml --package qinit-xtask --quiet)   # builds the gate runner
 GATE=(cargo xtask gate)                              # runs the gate registry
-MAIN="${DISCIPLINES_MAIN_BRANCH:-main}"
+configured_main="${DISCIPLINES_MAIN_BRANCH:-main}"
+is_protected_branch() {
+  [ "$1" = main ] || [ "$1" = "$configured_main" ]
+}
 TOKEN_NAME=disciplines-gated-tree   # same name in pre-merge-commit and reference-transaction
 # No wait cap for the host scheduler (atc, if the host runs one): a gate step
 # waits rather than fail on a busy host. A caller's ATC_MAX_WAIT still applies.
@@ -30,10 +33,10 @@ TOKEN_NAME=disciplines-gated-tree   # same name in pre-merge-commit and referenc
 "$hooks/branch-guard.sh"
 
 full_gate=false
-if [ "$(git symbolic-ref --short -q HEAD || true)" = "$MAIN" ] &&
-  git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+branch="$(git symbolic-ref --short -q HEAD || true)"
+if is_protected_branch "$branch" && git rev-parse -q --verify MERGE_HEAD >/dev/null; then
   full_gate=true
-  echo "Concluding a merge into $MAIN: running the full gate." >&2
+  echo "Concluding a merge into $branch: running the full gate." >&2
   "$hooks/worktree-clean.sh" "$commit_index"
   if [ -n "$commit_index" ]; then
     tree="$(GIT_INDEX_FILE="$commit_index" git write-tree)"

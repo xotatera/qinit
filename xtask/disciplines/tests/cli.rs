@@ -118,7 +118,7 @@ fn main_context_is_the_variable_or_head_on_the_main_branch() {
         );
     }
     assert!(xtask::is_main_context(None, Some("trunk"), "trunk"));
-    assert!(!xtask::is_main_context(None, Some("main"), "trunk"));
+    assert!(xtask::is_main_context(None, Some("main"), "trunk"));
 }
 
 #[test]

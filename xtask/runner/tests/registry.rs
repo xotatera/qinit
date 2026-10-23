@@ -169,6 +169,15 @@ fn repository_canary_gate_rejects_the_live_main_context() {
 }
 
 #[test]
+fn repository_canary_gate_also_rejects_literal_main_when_trunk_is_configured() {
+    let fixture = Fixture::new();
+    git(&fixture.root, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    let rejected =
+        fixture.run_with_main_branch(&["gate", "--only", "repo/canary", "--no-cache"], "trunk");
+    assert_failure_contains(&rejected, "review canary remains in README.md");
+}
+
+#[test]
 fn repository_placeholder_gate_rejects_a_temporary_violation() {
     let fixture = Fixture::new();
     let clean = fixture.run(&[
@@ -263,10 +272,23 @@ impl Fixture {
     }
 
     fn run(&self, arguments: &[&str]) -> Output {
-        self.run_with_context(arguments, None)
+        self.run_with_context_and_main_branch(arguments, None, None)
     }
 
     fn run_with_context(&self, arguments: &[&str], context: Option<&str>) -> Output {
+        self.run_with_context_and_main_branch(arguments, context, None)
+    }
+
+    fn run_with_main_branch(&self, arguments: &[&str], main_branch: &str) -> Output {
+        self.run_with_context_and_main_branch(arguments, None, Some(main_branch))
+    }
+
+    fn run_with_context_and_main_branch(
+        &self,
+        arguments: &[&str],
+        context: Option<&str>,
+        main_branch: Option<&str>,
+    ) -> Output {
         let mut command = Command::new("cargo");
         command
             .args([
@@ -285,6 +307,9 @@ impl Fixture {
             .env("CARGO_TARGET_DIR", self.root.join("xtask/target"));
         if let Some(context) = context {
             command.env(xtask::CONTEXT_ENV, context);
+        }
+        if let Some(main_branch) = main_branch {
+            command.env(xtask::MAIN_BRANCH_ENV, main_branch);
         }
         command.output().expect("run isolated qinit-xtask fixture")
     }

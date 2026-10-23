@@ -16,7 +16,10 @@ set -euo pipefail
 # shellcheck disable=SC2046
 unset $(git rev-parse --local-env-vars)
 
-MAIN="${DISCIPLINES_MAIN_BRANCH:-main}"
+configured_main="${DISCIPLINES_MAIN_BRANCH:-main}"
+is_protected_branch() {
+  [ "$1" = main ] || [ "$1" = "$configured_main" ]
+}
 # Empty when HEAD is detached. Unlike `rev-parse --abbrev-ref HEAD`, this also
 # works on a branch with no commits yet.
 branch="$(git symbolic-ref --short -q HEAD || true)"
@@ -25,17 +28,17 @@ if [ -z "$branch" ]; then
   exit 0
 fi
 
-if [ "$branch" = "$MAIN" ]; then
+if is_protected_branch "$branch"; then
   if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
     exit 0
   fi
   if ! git rev-parse -q --verify HEAD >/dev/null; then
-    echo "$MAIN has no commits yet, and the main guard refuses to create it." >&2
+    echo "$branch has no commits yet, and the main guard refuses to create it." >&2
     echo "Make the first commit before installing the hooks, or once:" >&2
     echo "  DISCIPLINES_ALLOW_UNGATED_MAIN='initial commit' git commit --no-verify" >&2
     exit 1
   fi
-  echo "Direct commits to $MAIN are not allowed." >&2
+  echo "Direct commits to $branch are not allowed." >&2
   echo "Commit on a branch and merge it with --no-ff:  git switch -c feat/my-change" >&2
   exit 1
 fi
