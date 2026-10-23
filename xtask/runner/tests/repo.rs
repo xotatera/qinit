@@ -53,7 +53,7 @@ fn pinned_toolchain_is_selected_in_the_repository() {
 }
 
 #[test]
-fn cargo_alias_runs_the_separate_runner_workspace() {
+fn cargo_alias_points_at_the_separate_runner_workspace() {
     assert!(read(".cargo/config.toml").lines().any(|line| line
         == "xtask = \"run --manifest-path xtask/Cargo.toml --package qinit-xtask --quiet --\""));
 }
