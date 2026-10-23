@@ -51,7 +51,7 @@ pub fn canary(main: bool, present: bool) -> Result<(), String> {
 
 fn canary_gate(root: &Path) -> Result<(), String> {
     let main_branch = xtask::main_branch_name(std::env::var_os(xtask::MAIN_BRANCH_ENV));
-    let branch = current_branch(root);
+    let branch = current_branch(root)?;
     let main = xtask::is_main_context(
         std::env::var_os(xtask::CONTEXT_ENV).as_deref(),
         branch.as_deref(),
@@ -233,15 +233,36 @@ pub fn xtask_registry() -> Vec<Gate> {
     gates
 }
 
-fn current_branch(root: &Path) -> Option<String> {
+fn current_branch(root: &Path) -> Result<Option<String>, String> {
     let output = std::process::Command::new("git")
         .args(["symbolic-ref", "--short", "-q", "HEAD"])
         .current_dir(root)
         .output()
-        .ok()?;
-    let branch = String::from_utf8(output.stdout).ok()?;
+        .map_err(|error| format!("git symbolic-ref --short -q HEAD: {error}"))?;
+    if output.status.code() == Some(1) {
+        return Ok(None);
+    }
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail.trim();
+        return Err(format!(
+            "git symbolic-ref --short -q HEAD failed ({}){}",
+            output.status,
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        ));
+    }
+    let branch = String::from_utf8(output.stdout).map_err(|error| {
+        format!("git symbolic-ref --short -q HEAD returned non-UTF-8 output: {error}")
+    })?;
     let branch = branch.trim();
-    (output.status.success() && !branch.is_empty()).then(|| branch.to_string())
+    if branch.is_empty() {
+        return Err("git symbolic-ref --short -q HEAD returned an empty branch name".to_string());
+    }
+    Ok(Some(branch.to_string()))
 }
 
 /// The repository root: this crate is `<root>/xtask/runner`.

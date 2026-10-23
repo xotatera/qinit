@@ -178,6 +178,43 @@ fn repository_canary_gate_also_rejects_literal_main_when_trunk_is_configured() {
 }
 
 #[test]
+fn repository_canary_gate_rejects_git_launch_errors() {
+    let fixture = Fixture::new();
+    let rejected = fixture.run_without_git(&["gate", "--only", "repo/canary", "--no-cache"]);
+    assert_failure_contains(&rejected, "git symbolic-ref --short -q HEAD");
+}
+
+#[test]
+fn repository_canary_gate_accepts_a_detached_head() {
+    let fixture = Fixture::new();
+    git(
+        &fixture.root,
+        &[
+            "-c",
+            "user.name=qinit fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
+        ],
+    );
+    git(&fixture.root, &["checkout", "--quiet", "--detach"]);
+    let accepted = fixture.run(&["gate", "--only", "repo/canary", "--no-cache"]);
+    assert_success(&accepted);
+}
+
+#[test]
+fn readme_introduction_matches_the_approved_component_scope() {
+    let readme = std::fs::read_to_string(qinit_xtask::repo_root().join("README.md")).unwrap();
+    assert!(readme.contains("- **qctl**: the configuration compiler and administrative CLI."));
+    assert!(readme.contains("- **client library**: the library for the control protocol."));
+    assert!(readme.contains("- **zero**: one binary with early-boot and final-shutdown modes."));
+    assert!(!readme.contains("Its role will be decided during design."));
+}
+
+#[test]
 fn repository_placeholder_gate_rejects_a_temporary_violation() {
     let fixture = Fixture::new();
     let clean = fixture.run(&[
@@ -283,12 +320,41 @@ impl Fixture {
         self.run_with_context_and_main_branch(arguments, None, Some(main_branch))
     }
 
+    fn run_without_git(&self, arguments: &[&str]) -> Output {
+        let no_git_path = self.root.join("no-git-on-path");
+        std::fs::create_dir(&no_git_path).unwrap();
+        for program in ["cargo", "rustc"] {
+            let source = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+                .map(|directory| directory.join(program))
+                .find(|candidate| candidate.is_file())
+                .unwrap();
+            std::os::unix::fs::symlink(source, no_git_path.join(program)).unwrap();
+        }
+        Command::new(env!("CARGO_BIN_EXE_qinit-xtask"))
+            .args(arguments)
+            .current_dir(&self.root)
+            .env("PATH", no_git_path)
+            .output()
+            .expect("run qinit-xtask without git")
+    }
+
     fn run_with_context_and_main_branch(
         &self,
         arguments: &[&str],
         context: Option<&str>,
         main_branch: Option<&str>,
     ) -> Output {
+        let mut command = self.command(arguments);
+        if let Some(context) = context {
+            command.env(xtask::CONTEXT_ENV, context);
+        }
+        if let Some(main_branch) = main_branch {
+            command.env(xtask::MAIN_BRANCH_ENV, main_branch);
+        }
+        command.output().expect("run isolated qinit-xtask fixture")
+    }
+
+    fn command(&self, arguments: &[&str]) -> Command {
         let mut command = Command::new("cargo");
         command
             .args([
@@ -305,13 +371,7 @@ impl Fixture {
             .args(arguments)
             .current_dir(&self.root)
             .env("CARGO_TARGET_DIR", self.root.join("xtask/target"));
-        if let Some(context) = context {
-            command.env(xtask::CONTEXT_ENV, context);
-        }
-        if let Some(main_branch) = main_branch {
-            command.env(xtask::MAIN_BRANCH_ENV, main_branch);
-        }
-        command.output().expect("run isolated qinit-xtask fixture")
+        command
     }
 }
 
