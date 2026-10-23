@@ -271,6 +271,57 @@ fn canary_reports_the_human_review_instruction_only_on_main() {
     assert!(failure.contains("Remove these two lines to confirm"));
 }
 
+const CANARY_LINE_1: &str = "> [!IMPORTANT]";
+const CANARY_LINE_2: &str =
+    "> Remove these two lines to confirm that a human has reviewed this change.";
+
+#[test]
+fn canary_detection_normalises_encoding_line_endings_and_spacing() {
+    let plain = format!("{CANARY_LINE_1}\n{CANARY_LINE_2}\n\n# qinit\n");
+    assert!(qinit_xtask::canary_present(&plain));
+    for variant in [
+        format!("{CANARY_LINE_1}\r\n{CANARY_LINE_2}\r\n\r\n# qinit\r\n"),
+        format!("\u{feff}{CANARY_LINE_1}\n{CANARY_LINE_2}\n"),
+        format!("\n  \n{CANARY_LINE_1}\n{CANARY_LINE_2}\n"),
+        format!(" {CANARY_LINE_1}\n\t{CANARY_LINE_2}  \n"),
+        format!("\u{feff}\r\n {CANARY_LINE_1} \r\n{CANARY_LINE_2}\t\r\n"),
+    ] {
+        assert!(qinit_xtask::canary_present(&variant), "{variant:?}");
+    }
+    for absent in [
+        String::new(),
+        "# qinit\n".to_string(),
+        format!("{CANARY_LINE_1}\n"),
+        format!("{CANARY_LINE_1}\n\n{CANARY_LINE_2}\n"),
+        format!("# qinit\n{CANARY_LINE_1}\n{CANARY_LINE_2}\n"),
+    ] {
+        assert!(!qinit_xtask::canary_present(&absent), "{absent:?}");
+    }
+}
+
+#[test]
+fn repository_canary_gate_rejects_a_crlf_bom_canary_in_main_context() {
+    let fixture = Fixture::new();
+    let readme = std::fs::read_to_string(fixture.root.join("README.md")).unwrap();
+    fixture.write(
+        "README.md",
+        &format!("\u{feff}\r\n {CANARY_LINE_1}\r\n{CANARY_LINE_2} \r\n{readme}"),
+    );
+    let rejected = fixture.run_with_context(
+        &["gate", "--only", "repo/canary", "--no-cache"],
+        Some("main"),
+    );
+    assert_failure_contains(&rejected, "review canary remains in README.md");
+}
+
+#[test]
+fn repository_canary_gate_rejects_a_missing_readme() {
+    let fixture = Fixture::new();
+    std::fs::remove_file(fixture.root.join("README.md")).unwrap();
+    let rejected = fixture.run(&["gate", "--only", "repo/canary", "--no-cache"]);
+    assert_failure_contains(&rejected, "README.md is missing");
+}
+
 #[test]
 fn tooling_no_std_blocker_has_an_independent_ledger_resolution_condition() {
     let ledger = std::fs::read_to_string(qinit_xtask::repo_root().join("DEFERRED.md")).unwrap();

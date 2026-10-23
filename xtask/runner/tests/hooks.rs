@@ -638,3 +638,87 @@ fn pre_push_checks_each_incoming_branch_and_tag_tree_not_the_checkout_and_allows
     );
     assert!(deletion.status.success(), "{}", stderr(&deletion));
 }
+
+impl Repo {
+    /// A commit on a new branch from main whose README.md is `readme`, or has
+    /// no README.md at all for `None`.
+    fn readme_commit(&self, branch: &str, readme: Option<&str>) -> String {
+        self.ok(&["switch", "-q", "-c", branch, "main"]);
+        match readme {
+            Some(text) => std::fs::write(self.work().join("README.md"), text).unwrap(),
+            None => {
+                self.ok(&["rm", "-q", "README.md"]);
+            }
+        }
+        self.ok(&["add", "-A"]);
+        self.ok(&["commit", "-qm", "readme variant"]);
+        self.rev("HEAD")
+    }
+
+    fn pre_push(&self, branch: &str, sha: &str) -> Output {
+        let zeros = "0000000000000000000000000000000000000000";
+        self.run_hook(
+            "pre-push",
+            &format!("refs/heads/{branch} {sha} refs/heads/{branch} {zeros}\n"),
+        )
+    }
+}
+
+const CANARY_LINE_1: &str = "> [!IMPORTANT]";
+const CANARY_LINE_2: &str =
+    "> Remove these two lines to confirm that a human has reviewed this change.";
+
+#[test]
+fn pre_push_normalises_the_canary_like_the_gate() {
+    let repo = Repo::new();
+    for (index, readme) in [
+        format!("{CANARY_LINE_1}\r\n{CANARY_LINE_2}\r\n\r\nfixture\r\n"),
+        format!("\u{feff}{CANARY_LINE_1}\n{CANARY_LINE_2}\n"),
+        format!("\n  \n{CANARY_LINE_1}\n{CANARY_LINE_2}\n"),
+        format!(" {CANARY_LINE_1}\n\t{CANARY_LINE_2}  \n"),
+        format!("\u{feff}\r\n {CANARY_LINE_1} \r\n{CANARY_LINE_2}\t\r\n"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let branch = format!("feat/variant-{index}");
+        let sha = repo.readme_commit(&branch, Some(readme));
+        let refused = repo.pre_push(&branch, &sha);
+        assert!(!refused.status.success(), "{readme:?}");
+        assert!(
+            stderr(&refused).contains("review canary remains"),
+            "{readme:?}: {}",
+            stderr(&refused)
+        );
+    }
+    for (index, readme) in [
+        "fixture\n".to_string(),
+        format!("{CANARY_LINE_1}\n\n{CANARY_LINE_2}\n"),
+        format!("fixture\n{CANARY_LINE_1}\n{CANARY_LINE_2}\n"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let branch = format!("feat/reviewed-{index}");
+        let sha = repo.readme_commit(&branch, Some(readme));
+        let accepted = repo.pre_push(&branch, &sha);
+        assert!(
+            accepted.status.success(),
+            "{readme:?}: {}",
+            stderr(&accepted)
+        );
+    }
+}
+
+#[test]
+fn pre_push_refuses_a_ref_without_a_readme_with_a_clear_message() {
+    let repo = Repo::new();
+    let sha = repo.readme_commit("feat/no-readme", None);
+    let refused = repo.pre_push("feat/no-readme", &sha);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("has no README.md"),
+        "{}",
+        stderr(&refused)
+    );
+}

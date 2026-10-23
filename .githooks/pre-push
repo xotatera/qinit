@@ -5,6 +5,11 @@
 # the proposed local and remote refs on stdin, so this checks the object being
 # pushed rather than the currently checked out worktree. Ref deletions have a
 # zero local object and are safe: no tree reaches the remote.
+#
+# The README is normalised exactly like the runner's canary gate
+# (`canary_present` in xtask/runner/src/lib.rs): a leading UTF-8 BOM is
+# dropped, CRLF counts as LF, leading blank lines are skipped and each line's
+# whitespace at both ends is ignored.
 set -euo pipefail
 
 # A hook may inherit repository-local variables from Git. The tree objects
@@ -14,14 +19,28 @@ unset $(git rev-parse --local-env-vars)
 
 canary='> [!IMPORTANT]
 > Remove these two lines to confirm that a human has reviewed this change.'
+bom="$(printf '\357\273\277')"
 zero='^0+$'
+
+# The first two non-blank lines of README.md in <object>, normalised. awk
+# reads all its input, so the pipeline never sees a SIGPIPE.
+canary_lines() {
+    git show "$1:README.md" |
+        LC_ALL=C sed -e "1s/^$bom//" -e 's/[[:space:]]*$//' -e 's/^[[:space:]]*//' |
+        LC_ALL=C awk 'started || NF { started = 1; if (++n <= 2) print }'
+}
+
 refused=0
 while read -r local_ref local_sha remote_ref _remote_sha; do
     if [[ "$local_sha" =~ $zero ]]; then
         continue
     fi
-    first_two="$(git show "$local_sha:README.md" 2>/dev/null | sed -n '1,2p')"
-    if [ "$first_two" = "$canary" ]; then
+    if ! git cat-file -e "$local_sha:README.md" 2>/dev/null; then
+        echo "pre-push: refusing $local_ref -> $remote_ref: it has no README.md, so the review canary cannot be checked." >&2
+        refused=1
+        continue
+    fi
+    if [ "$(canary_lines "$local_sha")" = "$canary" ]; then
         echo "pre-push: refusing $local_ref -> $remote_ref: review canary remains in its README.md." >&2
         echo "Remove these two lines to confirm that a human has reviewed this change." >&2
         refused=1

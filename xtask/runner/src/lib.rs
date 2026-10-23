@@ -57,13 +57,35 @@ fn canary_gate(root: &Path) -> Result<(), String> {
         branch.as_deref(),
         &main_branch,
     );
-    let readme = std::fs::read_to_string(root.join("README.md"))
-        .map_err(|error| format!("README.md: {error}"))?;
-    let present = readme.lines().take(2).eq([
-        "> [!IMPORTANT]",
-        "> Remove these two lines to confirm that a human has reviewed this change.",
-    ]);
-    canary(main, present)
+    let readme = match std::fs::read_to_string(root.join("README.md")) {
+        Ok(readme) => readme,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err("README.md is missing, so the review canary cannot be checked".to_string());
+        }
+        Err(error) => return Err(format!("README.md: {error}")),
+    };
+    canary(main, canary_present(&readme))
+}
+
+/// The review canary's two lines.
+const CANARY_LINES: [&str; 2] = ["> [!IMPORTANT]", CANARY_LINE];
+const CANARY_LINE: &str =
+    "> Remove these two lines to confirm that a human has reviewed this change.";
+
+/// Whether `readme` starts with the review canary. Normalised exactly like
+/// `.githooks/pre-push`: a leading UTF-8 BOM is dropped, CRLF counts as LF,
+/// leading blank lines are skipped and each line's whitespace at both ends
+/// (`[[:space:]]` in the C locale) is ignored.
+#[must_use]
+pub fn canary_present(readme: &str) -> bool {
+    let readme = readme.strip_prefix('\u{feff}').unwrap_or(readme);
+    readme
+        .split('\n')
+        // POSIX `[[:space:]]` in the C locale: ASCII whitespace and `\v`.
+        .map(|line| line.trim_matches(|c: char| c.is_ascii_whitespace() || c == '\u{b}'))
+        .skip_while(|line| line.is_empty())
+        .take(2)
+        .eq(CANARY_LINES)
 }
 
 const NO_PRODUCT_FORMAT: &str = "D3: no product package to format";
