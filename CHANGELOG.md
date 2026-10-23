@@ -15,3 +15,16 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Repository disciplines bootstrap with a Rust/Verus-compatible pinned
   toolchain, virtual Cargo workspace, xtask alias, policy ledgers, and scan
   configuration.
+- Disciplines gate runner (`cargo xtask gate`, `cargo xtask proofs`) with a
+  repository stage (preflight, canary, REUSE, scans, duplication) and a
+  tooling stage, accepted blockers recorded in `DEFERRED.md`, and pinned
+  Verus and verusfmt releases checked once a Verus proof is declared.
+- Review canary gate: fails in the main context while `README.md` still starts
+  with the review canary, tolerant of a BOM, CRLF line endings, leading blank
+  lines and surrounding whitespace.
+- Opt-in git hooks (`sh .githooks/setup-hooks.sh`): branch guard, clean
+  worktree check, full gate on merges into main, and a main guard that admits
+  only gated merges. Installation behind a hook dispatcher is opt-in through
+  `git config qinit.hooksDispatcher`.
+- `pre-push` hook refusing any outgoing ref whose `README.md` still carries the
+  review canary, or that has no `README.md`.
