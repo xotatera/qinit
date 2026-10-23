@@ -128,10 +128,12 @@ grep -Fqx 'The committed hooks are opt-in; install them only in a clone where yo
     || fail 'README.md must explain that hooks are opt-in'
 grep -Fqx 'sh .githooks/setup-hooks.sh' README.md \
     || fail 'README.md must name the hook installation command'
-grep -Fqx "The selected Verus release is \`0.2026.10.04.426d8b0\`; the tooling preflight" README.md \
+grep -Fqx "The selected Verus release is \`0.2026.10.04.426d8b0\`; when a \`kind = \"verus\"\`" README.md \
     || fail 'README.md must state the selected Verus release'
-grep -Fqx "verifies it with \`verus --version\` when a \`kind = \"verus\"\` proof is declared." README.md \
+grep -Fqx "proof is declared, tooling verifies the Verus driver selected by the" README.md \
     || fail 'README.md must state when the selected Verus release is asserted'
+grep -Fqx "\`cargo-verus\` command that \`cargo verus\` invokes." README.md \
+    || fail 'README.md must state which driver release is asserted'
 grep -Fqx 'existing hooks rather than claiming they are protected. It copies qinit-owned' README.md \
     || fail 'README.md must describe only conflicting hook names as refused'
 

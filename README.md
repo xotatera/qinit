@@ -51,8 +51,9 @@ Status: design only. qinit is not usable yet.
 
 The first implementation sub-project is repository disciplines setup. The pinned
 [Rust toolchain](rust-toolchain.toml) is Rust 1.98.1 with `rustfmt` and `clippy`.
-The selected Verus release is `0.2026.10.04.426d8b0`; the tooling preflight
-verifies it with `verus --version` when a `kind = "verus"` proof is declared.
+The selected Verus release is `0.2026.10.04.426d8b0`; when a `kind = "verus"`
+proof is declared, tooling verifies the Verus driver selected by the
+`cargo-verus` command that `cargo verus` invokes.
 This keeps the empty-workspace full gate portable: it declares no proof and
 therefore does not require Verus. Run the complete local gate from the
 repository root:

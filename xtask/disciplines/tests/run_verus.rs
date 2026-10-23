@@ -46,6 +46,7 @@ const CHEAT: &str = "error: assume/admit not allowed with --no-cheating\n  --> t
 /// logs into `--log-dir`: `ctl/vir` and `ctl/names` when the test wrote
 /// them, else a log declaring one verified function of `tooth`.
 const FAKE: &str = "#!/bin/sh
+[ -z \"${VERUS_DRIVER_LOG-}\" ] || echo \"$*\" >> \"$VERUS_DRIVER_LOG\"
 echo \"$(pwd) ${RUSTUP_TOOLCHAIN-unset} ${CARGO_TARGET_DIR-unset} $*\" >> \"$VERUS_LOG\"
 o=\"$VERUS_OUT\"; r=\"$VERUS_RC\"
 case \"$*\" in *--no-cheating*) [ -f \"$o.nc\" ] && o=\"$o.nc\" && r=\"$r.nc\" ;; esac
@@ -339,6 +340,20 @@ fn gate_scoped(root: &Path, scope: Scope) -> bool {
     execute_with(&runner, &cmd, root)
 }
 
+/// The `cargo xtask proofs` command: proof gates without preflight.
+fn proofs_only(root: &Path) -> bool {
+    let runner = Runner {
+        registry: Vec::new,
+        dirs: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))],
+    };
+    let cmd = Command::Gate {
+        only: None,
+        no_cache: false,
+        scope: Scope::ProofsOnly,
+    };
+    execute_with(&runner, &cmd, root)
+}
+
 /// `PATH` holds every tool but Verus's: the declared proof makes preflight
 /// reject the missing selected release before either gate scope reaches a
 /// proof gate.
@@ -405,4 +420,138 @@ fn a_declared_verus_proof_requires_the_selected_verus_release() {
         gate_scoped(&root, Scope::All),
         "an empty workspace does not require Verus"
     );
+}
+
+const DRIVER: &str = "XTASK_VERUS_DRIVER_ROOT";
+const DRIVER_CASE: &str = "XTASK_VERUS_DRIVER_CASE";
+
+fn cargo_verus_driver_parent() {
+    let s = scratch("cargo-verus-driver");
+    fs::remove_file(s.0.join("bin/cargo-verus")).unwrap();
+    let driver = s.0.join("driver-bin");
+    exe(&driver.join("cargo-verus"), FAKE);
+    exe(
+        &driver.join("verus"),
+        "#!/bin/sh\nprintf '%s\\n' 'Verus' \"  Version: $(cat \"$(dirname \"$VERUS_OUT\")/driver-version\")\"\n",
+    );
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![s.0.join("bin"), driver];
+    dirs.extend(std::env::split_paths(&path));
+    let path = std::env::join_paths(dirs).unwrap();
+    let run = |case: &str, child_path: &std::ffi::OsStr| {
+        Proc::new(std::env::current_exe().unwrap())
+            .args([
+                "a_verus_proof_requires_the_selected_cargo_verus_driver",
+                "--exact",
+                "--nocapture",
+            ])
+            .env(DRIVER, &s.0)
+            .env(DRIVER_CASE, case)
+            .env("PATH", child_path)
+            .env("VERUS_LOG", s.0.join("verus.log"))
+            .env("VERUS_DRIVER_LOG", s.0.join("driver.log"))
+            .env("VERUS_OUT", s.0.join("ctl/out"))
+            .env("VERUS_RC", s.0.join("ctl/rc"))
+            .env("RUSTUP_TOOLCHAIN", "1.99.0")
+            .env("CARGO_BUILD_BUILD_DIR", s.0.join("build"))
+            .env_remove("DISCIPLINES_GATE_CONTEXT")
+            .env_remove("DISCIPLINES_GATE_NO_CACHE")
+            .env_remove("ATC_HELD")
+            .output()
+            .unwrap()
+    };
+
+    write(&s.0.join("ctl/driver-version"), "0.2026.10.05.next");
+    let mismatch = run("mismatch", &path);
+    let mismatch_log = String::from_utf8_lossy(&mismatch.stderr);
+    assert!(mismatch.status.success(), "{mismatch_log}");
+    assert!(
+        mismatch_log.contains("cargo-verus driver")
+            && mismatch_log.contains("0.2026.10.05.next")
+            && mismatch_log.contains("expected 0.2026.10.04.426d8b0"),
+        "{mismatch_log}"
+    );
+
+    write(&s.0.join("ctl/driver-version"), "0.2026.10.04.426d8b0");
+    let exact = run("exact", &path);
+    let driver_log = fs::read_to_string(s.0.join("driver.log")).unwrap_or_default();
+    assert!(
+        exact.status.success(),
+        "{}{}driver log:\n{driver_log}",
+        String::from_utf8_lossy(&exact.stdout),
+        String::from_utf8_lossy(&exact.stderr)
+    );
+
+    let tools = s.0.join("missing-tools");
+    fs::create_dir_all(&tools).unwrap();
+    for tool in [
+        "cargo",
+        "rustc",
+        "rustfmt",
+        "cargo-clippy",
+        "git",
+        "prlimit",
+        "timeout",
+        "sh",
+    ] {
+        let real = xtask::tools::resolve_in(&path, tool).unwrap();
+        std::os::unix::fs::symlink(real, tools.join(tool)).unwrap();
+    }
+    std::os::unix::fs::symlink(s.0.join("bin/verus"), tools.join("verus")).unwrap();
+    exe(&tools.join("atc"), "#!/bin/sh\nexit 1\n");
+    let missing = run("missing", tools.as_os_str());
+    let missing_log = String::from_utf8_lossy(&missing.stderr);
+    assert!(missing.status.success(), "{missing_log}");
+    assert!(
+        missing_log.contains("missing: cargo-verus"),
+        "{missing_log}"
+    );
+}
+
+/// A selected `verus` alone cannot prove the `cargo-verus` driver Cargo
+/// dispatches is the selected release. Both full preflight and `proofs` must
+/// reject a missing or different driver; the latter reaches the proof run.
+#[test]
+fn a_verus_proof_requires_the_selected_cargo_verus_driver() {
+    let Some(root) = std::env::var_os(DRIVER).map(PathBuf::from) else {
+        cargo_verus_driver_parent();
+        return;
+    };
+
+    match std::env::var(DRIVER_CASE).as_deref() {
+        Ok("mismatch") => {
+            assert!(
+                !gate_scoped(&root, Scope::All),
+                "preflight rejects a mismatched cargo-verus driver"
+            );
+            assert!(
+                !proofs_only(&root),
+                "cargo xtask proofs rejects a mismatched driver before invoking it"
+            );
+            assert!(log(&root).is_empty(), "the mismatched driver did not prove");
+        }
+        Ok("missing") => assert!(
+            !proofs_only(&root),
+            "cargo xtask proofs rejects a missing cargo-verus driver"
+        ),
+        Ok("exact") => {
+            assert_eq!(
+                xtask::tools::resolve_in(&std::env::var_os("PATH").unwrap(), "cargo-verus"),
+                Some(root.join("driver-bin/cargo-verus"))
+            );
+            assert!(
+                gate(&root),
+                "the selected cargo-verus driver runs the proof"
+            );
+            assert_eq!(log(&root).len(), 1, "the exact driver ran the proof");
+            assert!(
+                fs::read_to_string(root.join("driver.log"))
+                    .unwrap()
+                    .contains("verus focus"),
+                "Cargo invoked the selected cargo-verus driver"
+            );
+        }
+        Ok(other) => panic!("unknown cargo-verus driver test case: {other}"),
+        Err(error) => panic!("missing cargo-verus driver test case: {error}"),
+    }
 }

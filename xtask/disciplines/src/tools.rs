@@ -57,17 +57,35 @@ pub fn report(missing: &[&(&str, &str)]) -> String {
         .join("\n")
 }
 
-/// Runs the selected `verus --version` command and rejects every release
-/// other than [`VERUS_VERSION`].
+/// Verifies the release of the `verus` sibling Cargo's `cargo-verus` driver
+/// will invoke. `cargo-verus` has no version subcommand; its own driver path
+/// is the executable beside the resolved `cargo-verus` binary.
 ///
 /// # Errors
-/// When the command cannot run, exits unsuccessfully, does not identify a
-/// Verus release, or reports a different release.
-pub fn verus_version(verus: &Path) -> Result<(), String> {
-    let output = Command::new(verus)
+/// When the cargo driver cannot be resolved, its Verus driver cannot run,
+/// exits unsuccessfully, does not identify a release, or reports a different
+/// release.
+pub fn cargo_verus_version(cargo_verus: &Path) -> Result<(), String> {
+    let cargo_verus = cargo_verus.canonicalize().map_err(|e| {
+        format!(
+            "cannot resolve cargo-verus driver `{}` to locate its Verus driver: {e}",
+            cargo_verus.display()
+        )
+    })?;
+    let mut verus = cargo_verus.with_file_name("verus");
+    if cfg!(windows) {
+        verus.set_extension("exe");
+    }
+    let output = Command::new(&verus)
         .arg("--version")
         .output()
-        .map_err(|e| format!("cannot run `{}` --version: {e}", verus.display()))?;
+        .map_err(|e| {
+            format!(
+                "cannot run Verus driver `{}` used by cargo-verus driver `{}`: {e}",
+                verus.display(),
+                cargo_verus.display()
+            )
+        })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = stderr
@@ -76,8 +94,9 @@ pub fn verus_version(verus: &Path) -> Result<(), String> {
             .then(String::new)
             .unwrap_or_else(|| format!(": {}", stderr.trim()));
         return Err(format!(
-            "`{} --version` failed ({}){detail}",
+            "Verus driver `{}` used by cargo-verus driver `{}` --version failed ({}){detail}",
             verus.display(),
+            cargo_verus.display(),
             output.status,
         ));
     }
@@ -88,12 +107,14 @@ pub fn verus_version(verus: &Path) -> Result<(), String> {
     match actual {
         Some(version) if version == VERUS_VERSION => Ok(()),
         Some(version) => Err(format!(
-            "`{} --version` reported Verus {version}; expected {VERUS_VERSION}",
-            verus.display()
+            "Verus driver `{}` used by cargo-verus driver `{}` reported Verus {version}; expected {VERUS_VERSION}",
+            verus.display(),
+            cargo_verus.display()
         )),
         None => Err(format!(
-            "`{} --version` did not report a Verus version; expected {VERUS_VERSION}",
-            verus.display()
+            "Verus driver `{}` used by cargo-verus driver `{}` did not report a Verus version; expected {VERUS_VERSION}",
+            verus.display(),
+            cargo_verus.display()
         )),
     }
 }

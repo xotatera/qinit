@@ -135,9 +135,9 @@ pub fn preflight(root: &Path) -> Result<(), String> {
                 errors.push(tools::report(&gone));
             }
             if d.proofs.iter().any(|p| p.kind == proofs::Kind::Verus)
-                && let Some(verus) =
-                    std::env::var_os("PATH").and_then(|path| tools::resolve_in(&path, "verus"))
-                && let Err(error) = tools::verus_version(&verus)
+                && let Some(cargo_verus) = std::env::var_os("PATH")
+                    .and_then(|path| tools::resolve_in(&path, "cargo-verus"))
+                && let Err(error) = tools::cargo_verus_version(&cargo_verus)
             {
                 errors.push(error);
             }
@@ -208,6 +208,13 @@ pub fn proof_run(
     let gone = tools::missing(&need, &tools::on_path);
     if !gone.is_empty() {
         return (Err(tools::report(&gone)), String::new());
+    }
+    if p.kind == proofs::Kind::Verus
+        && let Some(cargo_verus) =
+            std::env::var_os("PATH").and_then(|path| tools::resolve_in(&path, "cargo-verus"))
+        && let Err(error) = tools::cargo_verus_version(&cargo_verus)
+    {
+        return (Err(error), String::new());
     }
     proof_run_as(root, p, jobs, capture, &atc::reserve(root))
 }

@@ -1833,7 +1833,7 @@ fn verus_entries_require_cargo_verus() {
     // `verus!` bodies once a Verus proof is declared.
     assert_eq!(
         names(proofs::required_tools(&[one(VERUS_A)])),
-        ["verus", "verusfmt"]
+        ["verus", "cargo-verus", "verusfmt"]
     );
 }
 

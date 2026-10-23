@@ -40,6 +40,7 @@ const PREFLIGHT_TOOLS: &[&str] = &[
     "cargo-clippy",
     "git",
     "verus",
+    "cargo-verus",
     "verusfmt",
 ];
 
@@ -208,7 +209,7 @@ fn preflight_fingerprints_every_required_tool() {
         .unwrap();
     let mut required: Vec<&str> = xtask::tools::REQUIRED.iter().map(|(t, _)| *t).collect();
     // The tool preflight requires once a Verus entry is declared.
-    required.extend(["verus", "verusfmt"]);
+    required.extend(["verus", "cargo-verus", "verusfmt"]);
     assert_eq!(preflight.tools, required.as_slice());
     let declared = xtask::proofs::parse(PROOF_METADATA).unwrap();
     for (tool, _) in xtask::proofs::required_tools(&declared.proofs) {

@@ -59,10 +59,13 @@ fn resolve_in_finds_the_first_executable_only() {
 }
 
 #[test]
-fn verus_version_requires_the_selected_release() {
+fn cargo_verus_version_requires_the_selected_release() {
     use std::os::unix::fs::PermissionsExt;
-    let scratch = scratch("verus_version_requires_the_selected_release");
+    let scratch = scratch("cargo_verus_version_requires_the_selected_release");
     std::fs::create_dir_all(&scratch.0).unwrap();
+    let cargo_verus = scratch.0.join("cargo-verus");
+    std::fs::write(&cargo_verus, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&cargo_verus, std::fs::Permissions::from_mode(0o755)).unwrap();
     let verus = scratch.0.join("verus");
     std::fs::write(
         &verus,
@@ -70,14 +73,15 @@ fn verus_version_requires_the_selected_release() {
     )
     .unwrap();
     std::fs::set_permissions(&verus, std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert_eq!(xtask::tools::verus_version(&verus), Ok(()));
+    assert_eq!(xtask::tools::cargo_verus_version(&cargo_verus), Ok(()));
 
     std::fs::write(
         &verus,
         "#!/bin/sh\nprintf '%s\\n' 'Verus' '  Version: 0.2026.10.05.next'\n",
     )
     .unwrap();
-    let error = xtask::tools::verus_version(&verus).unwrap_err();
+    let error = xtask::tools::cargo_verus_version(&cargo_verus).unwrap_err();
+    assert!(error.contains("cargo-verus driver"), "{error}");
     assert!(
         error.contains("reported Verus 0.2026.10.05.next"),
         "{error}"
@@ -86,9 +90,13 @@ fn verus_version_requires_the_selected_release() {
 }
 
 #[test]
-fn verus_version_reports_a_missing_command() {
-    let scratch = scratch("verus_version_reports_a_missing_command");
-    let error = xtask::tools::verus_version(&scratch.0.join("missing-verus")).unwrap_err();
-    assert!(error.contains("cannot run"), "{error}");
-    assert!(error.contains("missing-verus"), "{error}");
+fn cargo_verus_version_reports_a_missing_driver() {
+    let scratch = scratch("cargo_verus_version_reports_a_missing_driver");
+    let error =
+        xtask::tools::cargo_verus_version(&scratch.0.join("missing-cargo-verus")).unwrap_err();
+    assert!(
+        error.contains("cannot resolve cargo-verus driver"),
+        "{error}"
+    );
+    assert!(error.contains("missing-cargo-verus"), "{error}");
 }
