@@ -229,8 +229,10 @@ pub fn registry() -> Vec<Gate> {
 }
 
 /// A whole-tree text scan: its input is the tree, its only tool git.
-/// `cacheable: false` also keeps it off the cache on main.
-fn scan(name: &'static str, run: fn(&Path) -> Result<(), String>, cacheable: bool) -> Gate {
+/// `cacheable: false` also keeps it off the cache on main. Public so a
+/// repository stage declares its scans exactly like the template.
+#[must_use]
+pub fn scan(name: &'static str, run: fn(&Path) -> Result<(), String>, cacheable: bool) -> Gate {
     Gate {
         name,
         run: Box::new(run),

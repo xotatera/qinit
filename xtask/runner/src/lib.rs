@@ -187,9 +187,9 @@ pub fn repo_registry() -> Vec<Gate> {
             blocked: Some(NO_PRODUCT_FORMAT),
             decl: "",
         },
-        repo_scan("placeholder-scan", xtask::gates::stub_scan, true), // disciplines:allow-placeholder (the gate's name)
-        repo_scan("sleep-scan", xtask::gates::sleep_scan, true),
-        repo_scan("changelog", xtask::gates::changelog, false),
+        xtask::scan("placeholder-scan", xtask::gates::stub_scan, true), // disciplines:allow-placeholder (the gate's name)
+        xtask::scan("sleep-scan", xtask::gates::sleep_scan, true),
+        xtask::scan("changelog", xtask::gates::changelog, false),
         Gate {
             name: "lint",
             run: Box::new(xtask::gates::lint),
@@ -265,23 +265,6 @@ pub fn repo_registry() -> Vec<Gate> {
 
 fn reuse(root: &Path) -> Result<(), String> {
     xtask::gates::run(root, "reuse", &["lint"])
-}
-
-fn repo_scan(name: &'static str, run: fn(&Path) -> Result<(), String>, cacheable: bool) -> Gate {
-    Gate {
-        name,
-        run: Box::new(run),
-        inputs: Inputs::Tree,
-        env: &[],
-        tools: &["git"],
-        extra_paths: &[],
-        cache_paths: &[],
-        ignored_inputs: &[],
-        cacheable,
-        cache_on_main: cacheable,
-        blocked: None,
-        decl: "",
-    }
 }
 
 /// Repository files outside `xtask/` that the tooling tests read (hooks,

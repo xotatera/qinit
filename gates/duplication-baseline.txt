@@ -4,4 +4,3 @@
 # Accepted duplicate groups. Shrink-only: a group not covered here fails the
 # duplication gate; `cargo xtask dup bless` removes entries that no longer match.
 # One group per line, members sorted:  <member> | <member>  # reason
-xtask/disciplines/src/lib.rs::scan | xtask/runner/src/lib.rs::repo_scan  # registry declarations share the template scan policy
