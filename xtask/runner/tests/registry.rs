@@ -285,6 +285,9 @@ fn canary_detection_normalises_encoding_line_endings_and_spacing() {
         format!("\n  \n{CANARY_LINE_1}\n{CANARY_LINE_2}\n"),
         format!(" {CANARY_LINE_1}\n\t{CANARY_LINE_2}  \n"),
         format!("\u{feff}\r\n {CANARY_LINE_1} \r\n{CANARY_LINE_2}\t\r\n"),
+        // pre-push reads the README through bash command substitution,
+        // which drops NUL bytes.
+        format!("{CANARY_LINE_1}\0\n{CANARY_LINE_2}\n"),
     ] {
         assert!(qinit_xtask::canary_present(&variant), "{variant:?}");
     }
@@ -312,6 +315,16 @@ fn repository_canary_gate_rejects_a_crlf_bom_canary_in_main_context() {
         Some("main"),
     );
     assert_failure_contains(&rejected, "review canary remains in README.md");
+}
+
+#[test]
+fn repository_canary_gate_rejects_a_symlinked_readme() {
+    let fixture = Fixture::new();
+    let readme = fixture.root.join("README.md");
+    std::fs::rename(&readme, fixture.root.join("README.real.md")).unwrap();
+    std::os::unix::fs::symlink("README.real.md", &readme).unwrap();
+    let rejected = fixture.run(&["gate", "--only", "repo/canary", "--no-cache"]);
+    assert_failure_contains(&rejected, "README.md is a symlink");
 }
 
 #[test]

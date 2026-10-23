@@ -57,7 +57,13 @@ fn canary_gate(root: &Path) -> Result<(), String> {
         branch.as_deref(),
         &main_branch,
     );
-    let readme = match std::fs::read_to_string(root.join("README.md")) {
+    let path = root.join("README.md");
+    // pre-push reads the committed blob, which for a symlink is the link
+    // text, so a symlinked README could pass one check and fail the other.
+    if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err("README.md is a symlink, so the review canary cannot be checked".to_string());
+    }
+    let readme = match std::fs::read_to_string(&path) {
         Ok(readme) => readme,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err("README.md is missing, so the review canary cannot be checked".to_string());
@@ -73,12 +79,14 @@ const CANARY_LINE: &str =
     "> Remove these two lines to confirm that a human has reviewed this change.";
 
 /// Whether `readme` starts with the review canary. Normalised exactly like
-/// `.githooks/pre-push`: a leading UTF-8 BOM is dropped, CRLF counts as LF,
+/// `.githooks/pre-push`: NUL bytes are dropped (bash command substitution
+/// drops them there), a leading UTF-8 BOM is dropped, CRLF counts as LF,
 /// leading blank lines are skipped and each line's whitespace at both ends
 /// (`[[:space:]]` in the C locale) is ignored.
 #[must_use]
 pub fn canary_present(readme: &str) -> bool {
-    let readme = readme.strip_prefix('\u{feff}').unwrap_or(readme);
+    let readme = readme.replace('\0', "");
+    let readme = readme.strip_prefix('\u{feff}').unwrap_or(&readme);
     readme
         .split('\n')
         // POSIX `[[:space:]]` in the C locale: ASCII whitespace and `\v`.

@@ -677,6 +677,7 @@ fn pre_push_normalises_the_canary_like_the_gate() {
         format!("\n  \n{CANARY_LINE_1}\n{CANARY_LINE_2}\n"),
         format!(" {CANARY_LINE_1}\n\t{CANARY_LINE_2}  \n"),
         format!("\u{feff}\r\n {CANARY_LINE_1} \r\n{CANARY_LINE_2}\t\r\n"),
+        format!("{CANARY_LINE_1}\0\n{CANARY_LINE_2}\n"),
     ]
     .iter()
     .enumerate()
@@ -718,6 +719,29 @@ fn pre_push_refuses_a_ref_without_a_readme_with_a_clear_message() {
     assert!(!refused.status.success());
     assert!(
         stderr(&refused).contains("has no README.md"),
+        "{}",
+        stderr(&refused)
+    );
+}
+
+#[test]
+fn pre_push_refuses_a_ref_whose_readme_is_a_symlink() {
+    let repo = Repo::new();
+    repo.ok(&["switch", "-q", "-c", "feat/symlink", "main"]);
+    std::fs::write(
+        repo.work().join("README.real.md"),
+        format!("{CANARY_LINE_1}\n{CANARY_LINE_2}\n"),
+    )
+    .unwrap();
+    std::fs::remove_file(repo.work().join("README.md")).unwrap();
+    std::os::unix::fs::symlink("README.real.md", repo.work().join("README.md")).unwrap();
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-qm", "symlinked readme"]);
+    let sha = repo.rev("HEAD");
+    let refused = repo.pre_push("feat/symlink", &sha);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("README.md is not a regular file"),
         "{}",
         stderr(&refused)
     );
@@ -845,6 +869,54 @@ fn worktree_clean_refuses_unstaged_untracked_and_hidden_entries() {
 
     let clean = repo.run_hook("worktree-clean.sh", "");
     assert!(clean.status.success(), "{}", stderr(&clean));
+}
+
+#[test]
+fn worktree_clean_refuses_hidden_entries_in_an_explicit_index() {
+    let repo = Repo::new();
+    let index = repo.dir.join("partial-index");
+    let git_index = repo.work().join(".git/index");
+    std::fs::copy(&git_index, &index).unwrap();
+    let run = || {
+        Command::new(repo.hooks_dir().join("worktree-clean.sh"))
+            .arg(&index)
+            .current_dir(repo.work())
+            .env("HOME", &repo.dir)
+            .env("GIT_CONFIG_GLOBAL", repo.dir.join("gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap()
+    };
+    let clean = run();
+    assert!(clean.status.success(), "{}", stderr(&clean));
+
+    // Marks set only in the explicit index, not in the repository's own.
+    for (mark, unmark) in [
+        ("--assume-unchanged", "--no-assume-unchanged"),
+        ("--skip-worktree", "--no-skip-worktree"),
+    ] {
+        let marked = Command::new("git")
+            .args(["update-index", mark, "a"])
+            .env("GIT_INDEX_FILE", &index)
+            .current_dir(repo.work())
+            .status()
+            .unwrap();
+        assert!(marked.success());
+        assert_refused(&run(), "assume-unchanged or skip-worktree): a");
+        let cleared = Command::new("git")
+            .args(["update-index", unmark, "a"])
+            .env("GIT_INDEX_FILE", &index)
+            .current_dir(repo.work())
+            .status()
+            .unwrap();
+        assert!(cleared.success());
+    }
+    let repository_index = Command::new("git")
+        .args(["ls-files", "-v", "a"])
+        .current_dir(repo.work())
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&repository_index.stdout), "H a\n");
 }
 
 // --- pre-commit concluding a merge into main ---------------------------------

@@ -7,9 +7,11 @@
 # zero local object and are safe: no tree reaches the remote.
 #
 # The README is normalised exactly like the runner's canary gate
-# (`canary_present` in xtask/runner/src/lib.rs): a leading UTF-8 BOM is
-# dropped, CRLF counts as LF, leading blank lines are skipped and each line's
-# whitespace at both ends is ignored.
+# (`canary_present` in xtask/runner/src/lib.rs): NUL bytes are dropped (by
+# the command substitution below), a leading UTF-8 BOM is dropped, CRLF counts
+# as LF, leading blank lines are skipped and each line's whitespace at both
+# ends is ignored. A README.md that is not a regular file is refused, as the
+# gate refuses a symlink: the blob of a symlink is only its target's name.
 set -euo pipefail
 
 # A hook may inherit repository-local variables from Git. The tree objects
@@ -37,6 +39,12 @@ while read -r local_ref local_sha remote_ref _remote_sha; do
     fi
     if ! git cat-file -e "$local_sha:README.md" 2>/dev/null; then
         echo "pre-push: refusing $local_ref -> $remote_ref: it has no README.md, so the review canary cannot be checked." >&2
+        refused=1
+        continue
+    fi
+    mode="$(git ls-tree "$local_sha" README.md | cut -d' ' -f1)"
+    if [ "$mode" != 100644 ] && [ "$mode" != 100755 ]; then
+        echo "pre-push: refusing $local_ref -> $remote_ref: its README.md is not a regular file, so the review canary cannot be checked." >&2
         refused=1
         continue
     fi
