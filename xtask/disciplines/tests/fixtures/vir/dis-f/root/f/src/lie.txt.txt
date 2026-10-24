@@ -1,0 +1,6 @@
+#[verifier::external] // disciplines:allow-trusted (spike f)
+impl One for S {
+    fn one(&self) -> u32 {
+        6
+    }
+}

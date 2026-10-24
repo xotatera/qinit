@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Paths excluded from whole-tree scans, one literal path per line. A directory
+# entry ends with `/`; an entry matching no file fails. No exclusions are needed
+# for the bootstrap.

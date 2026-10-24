@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Exact-case words exempted from unfinished-work scans, one per line. An
+# exemption that matches no finding fails. No exemptions are needed for the
+# bootstrap.

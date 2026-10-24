@@ -22,7 +22,7 @@ These rules apply to any AI agent working in this repository. Human contributors
    section stating which AI tools were used and for which parts of the change.
 4. **Licensing headers.** Every new file starts with `SPDX-FileCopyrightText: <year> <human author>`
    and an `SPDX-License-Identifier`:
-   - GPL-3.0-or-later for queen, hivemind, overseer, zero and the tools;
+   - GPL-3.0-or-later for queen, colony, overseer, zero and the tools;
    - MPL-2.0 for the client library;
    - CC-BY-4.0 for protocol specifications and prose documentation.
 

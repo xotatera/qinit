@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Guards literal main and the optionally configured extra protected branch.
+# Every update must be a merge whose first parent is the current protected ref
+# and whose tree the full gate passed: pre-merge-commit, or pre-commit when it
+# concludes a merge, records that tree in the gate token after the gate passes.
+# Anything else that moves, creates or deletes a protected ref (cherry-pick,
+# revert, reset, rebase, amend, `branch -f`, `update-ref`, `push .`,
+# fast-forward merges and pulls, `merge --no-verify`) is refused in the
+# `prepared` phase, which aborts the whole transaction.
+#
+# `--no-verify` does not skip this hook. The override for a deliberate
+# ungated move (repairing a runner that does not build, fast-forwarding to an
+# upstream main gated elsewhere) is DISCIPLINES_ALLOW_UNGATED_MAIN='<reason>'.
+#
+# Unlike the other hooks, this one keeps GIT_DIR: here it names the repository
+# whose refs are changing, including `git push .`, which runs this hook inside
+# .git with GIT_DIR=. .
+set -euo pipefail
+
+# --- project-specific: fill these in -----------------------------------------
+configured_main="${DISCIPLINES_MAIN_BRANCH:-main}"
+TOKEN_NAME=disciplines-gated-tree   # same name in pre-commit and pre-merge-commit
+# ------------------------------------------------------------------------------
+
+is_protected_ref() {
+  [ "$1" = refs/heads/main ] || [ "$1" = "refs/heads/$configured_main" ]
+}
+
+state="${1:-}"
+updates=()
+while read -r old new ref; do
+  if is_protected_ref "$ref"; then
+    updates+=("$old $new $ref")
+  fi
+done
+if [ "${#updates[@]}" = 0 ]; then
+  exit 0
+fi
+case "$state" in
+  prepared | committed | aborted) ;;
+  *) exit 0 ;;
+esac
+
+token="$(git rev-parse --path-format=absolute --git-path "$TOKEN_NAME")"
+# `git pack-refs` (also run by `gc` and `maintenance`) moves a protected ref
+# in two transactions of one process: it writes the current value into
+# packed-refs, then deletes the loose ref. A marker per ref, "<git pid> <ref>
+# <value>" (`git_pid`), lets each matching deletion through for that process
+# and value only. Anything else that deletes a protected ref is refused.
+packing_root="$(git rev-parse --path-format=absolute --git-common-dir)/$TOKEN_NAME.packing"
+packing_marker() {
+  # Git only supplies valid ref names here, so this remains below packing_root.
+  printf '%s/%s' "$packing_root" "$1"
+}
+# The git process this transaction belongs to: the nearest `git` ancestor.
+# A dispatcher that runs this hook as a child (rather than `exec`ing it)
+# sits in between, with a new pid for every transaction.
+git_pid() {
+  local pid=$PPID comm _
+  for _ in 1 2 3 4 5; do
+    comm="$(ps -o comm= -p "$pid" 2>/dev/null)" || break
+    # `git`, or a dashed builtin run directly (`git-pack-refs`).
+    case "${comm##*/}" in git | git-*) echo "$pid"; return ;; esac
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" || break
+    { [ -n "$pid" ] && [ "$pid" != 1 ]; } || break
+  done
+  echo "$PPID"
+}
+zero='^0+$'
+
+# The token is spent once a transaction on a protected ref commits or aborts,
+# so it cannot admit a later update. Pack markers are spent per ref, so a
+# multi-ref pack transaction leaves the other protected ref's marker intact.
+if [ "$state" != prepared ]; then
+  rm -f "$token"
+  for update in "${updates[@]}"; do
+    read -r old new ref <<<"$update"
+    packing="$(packing_marker "$ref")"
+    rm -f "$packing"
+    current="$(git rev-parse -q --verify "$ref^{commit}" || true)"
+    if [ "$state" = committed ] && [[ "$old" =~ $zero ]] && [ "$new" = "$current" ]; then
+      mkdir -p "$(dirname "$packing")"
+      echo "$(git_pid) $ref $new" >"$packing"
+    fi
+  done
+  exit 0
+fi
+
+# Succeeds if `new` is a merge whose first parent is `old` and whose tree is
+# the one the gate token records.
+gated_merge() {
+  local old="$1" new="$2" parents gated
+  [ -f "$token" ] || return 1
+  read -r gated <"$token" || return 1
+  # `rev-list --parents` prints the commit, then its parents.
+  read -ra parents <<<"$(git rev-list --parents -n 1 "$new")"
+  [ "${#parents[@]}" -ge 3 ] || return 1
+  [ "${parents[1]}" = "$old" ] || return 1
+  [ "$(git rev-parse "$new^{tree}")" = "$gated" ]
+}
+
+refused=0
+for update in "${updates[@]}"; do
+  read -r old new ref <<<"$update"
+  branch="${ref#refs/heads/}"
+  current="$(git rev-parse -q --verify "$ref^{commit}" || true)"
+  if [ -n "${DISCIPLINES_ALLOW_UNGATED_MAIN:-}" ]; then
+    echo "main guard: ungated update of $ref allowed: $DISCIPLINES_ALLOW_UNGATED_MAIN" >&2
+    continue
+  fi
+  # `old` is all zeros when the caller gave no expected value (`git
+  # update-ref <ref> <new>`), even though the ref exists: compare with `current`.
+  if [ -n "$current" ] && [ "$new" = "$current" ]; then
+    continue
+  fi
+  packing="$(packing_marker "$ref")"
+  if [[ "$new" =~ $zero ]] && [ -n "$current" ] && [ "$old" = "$current" ] &&
+    [ "$(cat "$packing" 2>/dev/null)" = "$(git_pid) $ref $current" ]; then
+    continue
+  fi
+  if [ -z "$current" ] || [[ "$new" =~ $zero ]] || ! gated_merge "$current" "$new"; then
+    echo "main guard: refusing to update $ref (${current:-none} -> $new) without a gated merge." >&2
+    echo "Land work with:  git switch $branch && git merge --no-ff <branch>" >&2
+    echo "Deliberate ungated move (runner repair, upstream fast-forward):  DISCIPLINES_ALLOW_UNGATED_MAIN='<reason>' git ..." >&2
+    refused=1
+  fi
+done
+exit "$refused"

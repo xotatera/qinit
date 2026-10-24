@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# `cargo xtask …` invokes the separate disciplines runner workspace.
+[alias]
+xtask = "run --manifest-path xtask/Cargo.toml --package qinit-xtask --quiet --"

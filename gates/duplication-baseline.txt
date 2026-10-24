@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Accepted duplicate groups. Shrink-only: a group not covered here fails the
+# duplication gate; `cargo xtask dup bless` removes entries that no longer match.
+# One group per line, members sorted:  <member> | <member>  # reason

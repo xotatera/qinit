@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The full gate. Fires only on a merge commit git creates itself, which is why
+# merges into main must be --no-ff (`git config merge.ff false`). A merge that
+# stops first (conflict, --no-commit) is gated by pre-commit instead.
+# The working tree must match the merge's tree (worktree-clean.sh).
+set -euo pipefail
+# Find the repository from the working directory, not from a hook's GIT_DIR,
+# which is absolute in a linked worktree; every git child would inherit it.
+# shellcheck disable=SC2046
+unset $(git rev-parse --local-env-vars)
+hooks="$(cd "$(dirname "$0")" && pwd)"
+
+# --- project-specific: fill these in -----------------------------------------
+BUILD_RUNNER=(cargo build --manifest-path xtask/Cargo.toml --package qinit-xtask --quiet)
+GATE=(cargo xtask gate)
+configured_main="${DISCIPLINES_MAIN_BRANCH:-main}"
+is_protected_branch() {
+  [ "$1" = main ] || [ "$1" = "$configured_main" ]
+}
+TOKEN_NAME=disciplines-gated-tree   # same name in pre-commit and reference-transaction
+# No wait cap for the host scheduler (atc, if the host runs one): a gate step
+# waits rather than fail on a busy host. A caller's ATC_MAX_WAIT still applies.
+# ------------------------------------------------------------------------------
+
+branch="$(git symbolic-ref --short -q HEAD || true)"
+is_protected_branch "$branch" || exit 0
+"$hooks/worktree-clean.sh"
+
+# The tree this merge will commit, recorded below as the gate token once the
+# gate passes; reference-transaction admits main's update only for it.
+tree="$(git write-tree)"
+token="$(git rev-parse --path-format=absolute --git-path "$TOKEN_NAME")"
+
+cd "$(git rev-parse --show-toplevel)"
+
+# A runner that does not build would wedge the repo: fixing it needs a merge.
+if ! "${BUILD_RUNNER[@]}"; then
+  echo "FAIL: the gate runner does not build, so no gate can run." >&2
+  echo "Only if this merge IS the runner fix:  DISCIPLINES_ALLOW_UNGATED_MAIN='runner fix' git merge --no-verify <branch>" >&2
+  exit 1
+fi
+
+# Cargo gates must not reuse cached passes for main (runner: DISCIPLINES_GATE_CONTEXT; proof gates and preflight excepted).
+if ! DISCIPLINES_GATE_CONTEXT=main "${GATE[@]}"; then
+  echo "=== MERGE BLOCKED: one or more gates failed ===" >&2
+  exit 1
+fi
+printf '%s\n' "$tree" >"$token"

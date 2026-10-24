@@ -9,7 +9,7 @@ Contributions are accepted under the license of the part they change (inbound = 
 
 | Part | License |
 |---|---|
-| queen, hivemind, overseer, zero and the command-line tools | GPL-3.0-or-later |
+| queen, colony, overseer, zero and the command-line tools | GPL-3.0-or-later |
 | The client library | MPL-2.0 |
 | Protocol specifications and prose documentation | CC-BY-4.0 |
 

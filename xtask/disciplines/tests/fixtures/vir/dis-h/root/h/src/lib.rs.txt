@@ -1,0 +1,28 @@
+use vstd::prelude::*;
+
+verus! {
+
+pub const LIMIT: u32 = 7;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Point {
+    pub x: u32,
+    pub y: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum Kind {
+    #[default]
+    A,
+    B { n: u8 },
+    C { n: u8 },
+}
+
+pub fn limit() -> (r: u32)
+    ensures
+        r == LIMIT,
+{
+    LIMIT
+}
+
+} // verus!

@@ -1,0 +1,834 @@
+//! The string-free core of the script interpreter (plan P26): which fiber
+//! waits on which effect, which `Parallel` is running how many branches,
+//! which fibers are done. The interpreter asks [`next`] what a fiber does,
+//! and records every scheduling event with [`apply`]; the steps, results
+//! and variables stay in the interpreter. Verus proves that [`apply`] keeps
+//! [`invariant`] and that [`next`] only proposes what [`apply`] admits.
+use suite_bridge_core::MAX_IN_FLIGHT;
+use vstd::prelude::*;
+
+verus! {
+
+/// The most fibers a script has: the script and every `Parallel` branch it
+/// launches. More is `Reject::Overflow`.
+pub const MAX_FIBERS: usize = 32;
+
+/// A `Parallel` in progress on fiber 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Join {
+    /// At most this many branches at once, `1..=MAX_IN_FLIGHT`.
+    pub max: u8,
+    /// Branches not started yet.
+    pub pending: u16,
+    /// Branches started and not done.
+    pub running: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Slot {
+    /// `Some(0)` for a branch; `None` for the script.
+    pub parent: Option<u8>,
+    /// The command whose effect the fiber waits for.
+    pub awaiting: Option<u32>,
+    pub join: Option<Join>,
+    pub done: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sched<const F: usize> {
+    pub fibers: [Slot; F],
+    /// Fibers in use: `fibers[..len]`.
+    pub len: u8,
+    /// The command number the next request gets; effect IDs are unique
+    /// because it only grows.
+    pub next_command: u32,
+}
+
+/// A scheduling event: what the interpreter's events do to the core.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ev {
+    /// The fiber requested an effect, numbered `next_command`.
+    Requested { fiber: u8 },
+    Answered { fiber: u8 },
+    /// Fiber 0 started a `Parallel` of `branches` branches.
+    Forked { fiber: u8, max: u8, branches: u16 },
+    /// A pending branch of the fiber's `Parallel` started as a new fiber.
+    Launched { parent: u8 },
+    Joined { fiber: u8 },
+    FiberDone { fiber: u8 },
+}
+
+/// What a fiber does next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    /// Nothing until a result arrives or a branch finishes.
+    Blocked,
+    /// Start a pending branch (`Ev::Launched`).
+    Launch,
+    /// Every branch finished (`Ev::Joined`).
+    Join,
+    /// No steps left (`Ev::FiberDone`).
+    Done,
+    /// Run its next step.
+    Step,
+    /// A branch should start, but every fiber slot is taken.
+    Full,
+}
+
+// ---- Specification ----
+/// The empty slot: `Slot::default()`.
+pub open spec fn empty_slot() -> Slot {
+    Slot { parent: None, awaiting: None, join: None, done: false }
+}
+
+/// Branches among `fibers[1..k]` not done.
+pub open spec fn live_upto<const F: usize>(s: Sched<F>, k: int) -> int
+    decreases k,
+{
+    if k <= 1 {
+        0
+    } else {
+        live_upto(s, k - 1) + if s.fibers[k - 1].done {
+            0int
+        } else {
+            1int
+        }
+    }
+}
+
+/// Branches started and not done.
+pub open spec fn live<const F: usize>(s: Sched<F>) -> int {
+    live_upto(s, s.len as int)
+}
+
+/// Fibers among `fibers[..k]` waiting on an effect.
+pub open spec fn waiting_upto<const F: usize>(s: Sched<F>, k: int) -> int
+    decreases k,
+{
+    if k <= 0 {
+        0
+    } else {
+        waiting_upto(s, k - 1) + if s.fibers[k - 1].awaiting is Some {
+            1int
+        } else {
+            0int
+        }
+    }
+}
+
+/// Effects awaited: `fibers.iter().filter(|f| f.awaiting.is_some()).count()`.
+pub open spec fn waiting<const F: usize>(s: Sched<F>) -> int {
+    waiting_upto(s, F as int)
+}
+
+/// Slot `i` as the invariant requires it.
+pub open spec fn slot_ok<const F: usize>(s: Sched<F>, i: int) -> bool {
+    let f = s.fibers[i];
+    if i >= s.len {
+        f == empty_slot()
+    } else {
+        &&& if i == 0 {
+            f.parent is None
+        } else {
+            f.parent == Some(0u8) && f.join is None
+        }
+        &&& !(f.done && (f.awaiting is Some || f.join is Some))
+        &&& f.awaiting matches Some(c) ==> c < s.next_command
+    }
+}
+
+/// No two fibers in use wait on the same command.
+pub open spec fn unique<const F: usize>(s: Sched<F>) -> bool {
+    forall|i: int, j: int|
+        #![trigger s.fibers[i], s.fibers[j]]
+        0 <= i < j < s.len && s.fibers[i].awaiting is Some ==> s.fibers[j].awaiting
+            != s.fibers[i].awaiting
+}
+
+/// What [`invariant`] computes.
+pub open spec fn inv<const F: usize>(s: Sched<F>) -> bool {
+    &&& 1 <= s.len <= F <= MAX_FIBERS
+    &&& forall|i: int| 0 <= i < F ==> slot_ok(s, i)
+    &&& unique(s)
+    &&& match s.fibers[0].join {
+        Some(j) => {
+            &&& s.fibers[0].awaiting is None
+            &&& 1 <= j.max <= MAX_IN_FLIGHT
+            &&& j.running <= j.max
+            &&& j.running == live(s)
+        },
+        None => live(s) == 0,
+    }
+}
+
+/// Fiber `fiber` is in use and neither waiting nor joined nor done.
+pub open spec fn idle_spec<const F: usize>(s: Sched<F>, fiber: u8) -> bool {
+    &&& fiber < s.len
+    &&& fiber < F
+    &&& !s.fibers[fiber as int].done
+    &&& s.fibers[fiber as int].awaiting is None
+    &&& s.fibers[fiber as int].join is None
+}
+
+/// What [`next`] computes.
+pub open spec fn next_spec<const F: usize>(s: Sched<F>, fiber: u8, has_step: bool) -> Action {
+    if !(fiber < s.len && fiber < F) {
+        Action::Blocked
+    } else {
+        let f = s.fibers[fiber as int];
+        if f.done || f.awaiting is Some {
+            Action::Blocked
+        } else if let Some(j) = f.join {
+            if j.running < j.max && j.pending > 0 {
+                if s.len < F {
+                    Action::Launch
+                } else {
+                    Action::Full
+                }
+            } else if j.running == 0 && j.pending == 0 {
+                Action::Join
+            } else {
+                Action::Blocked
+            }
+        } else if has_step {
+            Action::Step
+        } else {
+            Action::Done
+        }
+    }
+}
+
+/// When [`apply`] admits `ev`.
+pub open spec fn admits<const F: usize>(s: Sched<F>, ev: Ev) -> bool {
+    match ev {
+        Ev::Requested { fiber } => idle_spec(s, fiber) && s.next_command < u32::MAX,
+        Ev::Answered { fiber } => fiber < s.len && fiber < F
+            && s.fibers[fiber as int].awaiting is Some,
+        Ev::Forked { fiber, max, branches: _ } => {
+            fiber == 0 && idle_spec(s, 0) && max != 0 && max <= MAX_IN_FLIGHT
+        },
+        Ev::Launched { parent } => {
+            parent == 0 && next_spec(s, 0, false) == Action::Launch && s.len < F
+        },
+        Ev::Joined { fiber } => next_spec(s, fiber, false) == Action::Join,
+        Ev::FiberDone { fiber } => idle_spec(s, fiber) && (fiber == 0 || (
+        s.fibers[0].join matches Some(j) && j.running >= 1)),
+    }
+}
+
+/// What `next` proposes, `apply` admits (a request, while command numbers
+/// remain).
+pub open spec fn proposes_admitted<const F: usize>(s: Sched<F>, fiber: u8, a: Action) -> bool {
+    match a {
+        Action::Launch => admits(s, Ev::Launched { parent: fiber }),
+        Action::Join => admits(s, Ev::Joined { fiber }),
+        Action::Done => admits(s, Ev::FiberDone { fiber }),
+        Action::Step => s.next_command < u32::MAX ==> admits(s, Ev::Requested { fiber }),
+        Action::Blocked | Action::Full => true,
+    }
+}
+
+// ---- Lemmas ----
+proof fn lemma_live_bounds<const F: usize>(s: Sched<F>, k: int)
+    ensures
+        0 <= live_upto(s, k),
+        k >= 1 ==> live_upto(s, k) <= k - 1,
+    decreases k,
+{
+    if k > 1 {
+        lemma_live_bounds(s, k - 1);
+    }
+}
+
+/// `live_upto` reads only `done`.
+proof fn lemma_live_same<const F: usize>(s: Sched<F>, t: Sched<F>, k: int)
+    requires
+        k <= F,
+        forall|i: int|
+            #![trigger s.fibers[i]]
+            #![trigger t.fibers[i]]
+            1 <= i < k ==> s.fibers[i].done == t.fibers[i].done,
+    ensures
+        live_upto(s, k) == live_upto(t, k),
+    decreases k,
+{
+    if k > 1 {
+        lemma_live_same(s, t, k - 1);
+    }
+}
+
+/// A branch not done is live.
+proof fn lemma_live_pos<const F: usize>(s: Sched<F>, k: int, b: int)
+    requires
+        1 <= b < k,
+        !s.fibers[b].done,
+    ensures
+        live_upto(s, k) >= 1,
+    decreases k,
+{
+    lemma_live_bounds(s, k - 1);
+    if b < k - 1 {
+        lemma_live_pos(s, k - 1, b);
+    }
+}
+
+/// Waiting fibers among `fibers[..k]`: fiber 0, and branches not done.
+proof fn lemma_waiting_live<const F: usize>(s: Sched<F>, k: int)
+    requires
+        inv(s),
+        1 <= k <= s.len,
+    ensures
+        waiting_upto(s, k) <= live_upto(s, k) + if s.fibers[0].awaiting is Some {
+            1int
+        } else {
+            0int
+        },
+    decreases k,
+{
+    if k > 1 {
+        lemma_waiting_live(s, k - 1);
+        assert(slot_ok(s, k - 1));
+    } else {
+        assert(waiting_upto(s, 0) == 0);
+    }
+}
+
+/// Slots past `len` wait on nothing.
+proof fn lemma_waiting_tail<const F: usize>(s: Sched<F>, k: int)
+    requires
+        inv(s),
+        s.len <= k <= F,
+    ensures
+        waiting_upto(s, k) == waiting_upto(s, s.len as int),
+    decreases k,
+{
+    if k > s.len {
+        lemma_waiting_tail(s, k - 1);
+        assert(slot_ok(s, k - 1));
+    }
+}
+
+/// With the invariant, at most `MAX_IN_FLIGHT` effects are awaited.
+pub proof fn lemma_waiting_bounded<const F: usize>(s: Sched<F>)
+    requires
+        inv(s),
+    ensures
+        waiting(s) <= MAX_IN_FLIGHT,
+{
+    lemma_waiting_live(s, s.len as int);
+    lemma_waiting_tail(s, F as int);
+}
+
+/// One branch finishing: `live_upto` drops by one past it.
+proof fn lemma_live_done<const F: usize>(s: Sched<F>, t: Sched<F>, k: int, b: int)
+    requires
+        k <= F,
+        1 <= b,
+        !s.fibers[b].done,
+        t.fibers[b].done,
+        forall|i: int|
+            #![trigger s.fibers[i]]
+            #![trigger t.fibers[i]]
+            1 <= i < k && i != b ==> s.fibers[i].done == t.fibers[i].done,
+    ensures
+        live_upto(t, k) == live_upto(s, k) - if b < k {
+            1int
+        } else {
+            0int
+        },
+    decreases k,
+{
+    if k > 1 {
+        lemma_live_done(s, t, k - 1, b);
+    }
+}
+
+/// `t` is `s` but for the slots `a` and `b`.
+pub open spec fn same_but<const F: usize>(s: Sched<F>, t: Sched<F>, a: int, b: int) -> bool {
+    forall|i: int| 0 <= i < F && i != a && i != b ==> #[trigger] t.fibers[i] == s.fibers[i]
+}
+
+// ---- One proof per event ----
+proof fn requested_keeps_the_invariant<const F: usize>(s: Sched<F>, t: Sched<F>, fiber: u8)
+    requires
+        inv(s),
+        idle_spec(s, fiber),
+        t.len == s.len,
+        t.next_command == s.next_command + 1,
+        same_but(s, t, fiber as int, fiber as int),
+        t.fibers[fiber as int] == (Slot {
+            awaiting: Some(s.next_command),
+            ..s.fibers[fiber as int]
+        }),
+    ensures
+        inv(t),
+{
+    assert forall|i: int| 0 <= i < F implies slot_ok(t, i) by {
+        assert(slot_ok(s, i));
+    }
+    assert forall|i: int, j: int|
+        #![trigger t.fibers[i], t.fibers[j]]
+        0 <= i < j < t.len && t.fibers[i].awaiting is Some implies t.fibers[j].awaiting
+        != t.fibers[i].awaiting by {
+        assert(slot_ok(s, i));
+        assert(slot_ok(s, j));
+    }
+    lemma_live_same(s, t, t.len as int);
+}
+
+proof fn answered_keeps_the_invariant<const F: usize>(s: Sched<F>, t: Sched<F>, fiber: u8)
+    requires
+        inv(s),
+        fiber < s.len,
+        t.len == s.len,
+        t.next_command == s.next_command,
+        same_but(s, t, fiber as int, fiber as int),
+        t.fibers[fiber as int] == (Slot { awaiting: None, ..s.fibers[fiber as int] }),
+    ensures
+        inv(t),
+{
+    assert forall|i: int| 0 <= i < F implies slot_ok(t, i) by {
+        assert(slot_ok(s, i));
+    }
+    lemma_live_same(s, t, t.len as int);
+}
+
+proof fn forked_keeps_the_invariant<const F: usize>(
+    s: Sched<F>,
+    t: Sched<F>,
+    max: u8,
+    branches: u16,
+)
+    requires
+        inv(s),
+        idle_spec(s, 0),
+        1 <= max <= MAX_IN_FLIGHT,
+        t.len == s.len,
+        t.next_command == s.next_command,
+        same_but(s, t, 0, 0),
+        t.fibers[0] == (Slot {
+            join: Some(Join { max, pending: branches, running: 0 }),
+            ..s.fibers[0]
+        }),
+    ensures
+        inv(t),
+{
+    assert forall|i: int| 0 <= i < F implies slot_ok(t, i) by {
+        assert(slot_ok(s, i));
+    }
+    lemma_live_same(s, t, t.len as int);
+}
+
+proof fn launched_keeps_the_invariant<const F: usize>(s: Sched<F>, t: Sched<F>, j: Join)
+    requires
+        inv(s),
+        next_spec(s, 0, false) == Action::Launch,
+        s.fibers[0].join == Some(j),
+        t.len == s.len + 1,
+        t.next_command == s.next_command,
+        same_but(s, t, 0, s.len as int),
+        t.fibers[0] == (Slot {
+            join: Some(
+                Join { pending: (j.pending - 1) as u16, running: (j.running + 1) as u8, ..j },
+            ),
+            ..s.fibers[0]
+        }),
+        t.fibers[s.len as int] == (Slot {
+            parent: Some(0u8),
+            awaiting: None,
+            join: None,
+            done: false,
+        }),
+    ensures
+        inv(t),
+{
+    assert forall|i: int| 0 <= i < F implies slot_ok(t, i) by {
+        assert(slot_ok(s, i));
+    }
+    assert forall|i: int, k: int|
+        #![trigger t.fibers[i], t.fibers[k]]
+        0 <= i < k < t.len && t.fibers[i].awaiting is Some implies t.fibers[k].awaiting
+        != t.fibers[i].awaiting by {
+        assert(slot_ok(s, i));
+        assert(slot_ok(s, k));
+    }
+    lemma_live_same(s, t, s.len as int);
+}
+
+proof fn joined_keeps_the_invariant<const F: usize>(s: Sched<F>, t: Sched<F>, fiber: u8)
+    requires
+        inv(s),
+        next_spec(s, fiber, false) == Action::Join,
+        t.len == s.len,
+        t.next_command == s.next_command,
+        same_but(s, t, fiber as int, fiber as int),
+        t.fibers[fiber as int] == (Slot { join: None, ..s.fibers[fiber as int] }),
+    ensures
+        inv(t),
+{
+    assert(slot_ok(s, fiber as int));
+    assert forall|i: int| 0 <= i < F implies slot_ok(t, i) by {
+        assert(slot_ok(s, i));
+    }
+    lemma_live_same(s, t, t.len as int);
+}
+
+proof fn fiber_done_keeps_the_invariant<const F: usize>(s: Sched<F>, t: Sched<F>, fiber: u8)
+    requires
+        inv(s),
+        idle_spec(s, fiber),
+        t.len == s.len,
+        t.next_command == s.next_command,
+        same_but(s, t, 0, fiber as int),
+        t.fibers[fiber as int] == (Slot { done: true, ..s.fibers[fiber as int] }),
+        fiber != 0 ==> (s.fibers[0].join matches Some(j) && j.running >= 1 && t.fibers[0] == (Slot {
+            join: Some(Join { running: (j.running - 1) as u8, ..j }),
+            ..s.fibers[0]
+        })),
+    ensures
+        inv(t),
+{
+    assert forall|i: int| 0 <= i < F implies slot_ok(t, i) by {
+        assert(slot_ok(s, i));
+    }
+    if fiber == 0 {
+        lemma_live_same(s, t, t.len as int);
+    } else {
+        lemma_live_done(s, t, t.len as int, fiber as int);
+    }
+}
+
+// ---- Code ----
+// Not derived: a derived `Default` has no spec, and `Sched::default` and
+// `apply` build slots with it.
+#[allow(clippy::derivable_impls)]
+impl Default for Slot {
+    fn default() -> (r: Self)
+        ensures
+            r == empty_slot(),
+    {
+        Slot { parent: None, awaiting: None, join: None, done: false }
+    }
+}
+
+impl<const F: usize> Default for Sched<F> {
+    fn default() -> (r: Self)
+        ensures
+            1 <= F <= MAX_FIBERS ==> inv(r),
+    {
+        let mut fibers = [Slot::default();F];
+        // The script itself.
+        if let Some(first) = fibers.first_mut() {
+            first.parent = None;
+        }
+        Sched { fibers, len: 1, next_command: 0 }
+    }
+}
+
+fn slot<const F: usize>(s: &Sched<F>, fiber: u8) -> (r: Option<&Slot>)
+    ensures
+        match r {
+            Some(f) => fiber < s.len && fiber < F && *f == s.fibers[fiber as int],
+            None => !(fiber < s.len && fiber < F),
+        },
+{
+    if fiber < s.len {
+        s.fibers.get(usize::from(fiber))
+    } else {
+        None
+    }
+}
+
+/// Branches started and not done.
+fn live_branches<const F: usize>(s: &Sched<F>) -> (r: usize)
+    ensures
+        r == live_upto(
+            *s,
+            if s.len <= F {
+                s.len as int
+            } else {
+                F as int
+            },
+        ),
+{
+    let mut n = 0;
+    let end = usize::from(s.len).min(F);
+    let mut i = 1;
+    while i < end
+        invariant
+            end == if s.len <= F {
+                s.len as int
+            } else {
+                F as int
+            },
+            1 <= i,
+            i <= end || i == 1,
+            n == live_upto(*s, i as int),
+            n <= i,
+        decreases end - i,
+    {
+        if !s.fibers[i].done {
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+}
+
+/// The invariant:
+/// - `1 <= len <= F`; unused slots are empty;
+/// - fiber 0 is the script, every other fiber a branch of it, and only
+///   fiber 0 holds a `Parallel`;
+/// - a waiting fiber waits on a command already numbered, and no two wait
+///   on the same one;
+/// - a done fiber waits on nothing and holds no `Parallel`;
+/// - while a `Parallel` runs, fiber 0 waits on nothing, and `running`
+///   counts the branches not done, within `max`; without one, every
+///   branch is done.
+#[must_use]
+pub fn invariant<const F: usize>(s: &Sched<F>) -> (r: bool)
+    ensures
+        r == inv(*s),
+{
+    let len = usize::from(s.len);
+    if len == 0 || len > F || F > MAX_FIBERS {
+        return false;
+    }
+    let mut i = 0;
+    while i < F
+        invariant
+            i <= F,
+            len == s.len,
+            1 <= len <= F <= MAX_FIBERS,
+            forall|k: int| 0 <= k < i ==> slot_ok(*s, k),
+            forall|a: int, b: int|
+                #![trigger s.fibers[a], s.fibers[b]]
+                0 <= a < i && a < b < len && s.fibers[a].awaiting is Some ==> s.fibers[b].awaiting
+                    != s.fibers[a].awaiting,
+        decreases F - i,
+    {
+        let f = &s.fibers[i];
+        if i >= len {
+            if !matches!(*f, Slot { parent: None, awaiting: None, join: None, done: false }) {
+                assert(!slot_ok(*s, i as int));
+                return false;
+            }
+            i += 1;
+            continue;
+        }
+        let parent_ok = if i == 0 {
+            f.parent.is_none()
+        } else {
+            f.parent == Some(0) && f.join.is_none()
+        };
+        if !parent_ok || (f.done && (f.awaiting.is_some() || f.join.is_some())) {
+            assert(!slot_ok(*s, i as int));
+            return false;
+        }
+        if let Some(c) = f.awaiting {
+            if c >= s.next_command {
+                assert(!slot_ok(*s, i as int));
+                return false;
+            }
+            let mut j = i + 1;
+            while j < len
+                invariant
+                    len == s.len,
+                    len <= F,
+                    i < len,
+                    i < j <= len,
+                    s.fibers[i as int].awaiting == Some(c),
+                    forall|b: int|
+                        #![trigger s.fibers[b]]
+                        i < b < j ==> s.fibers[b].awaiting != Some(c),
+                decreases len - j,
+            {
+                if s.fibers[j].awaiting == Some(c) {
+                    assert(!unique(*s));
+                    return false;
+                }
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+    let script = &s.fibers[0];
+    match script.join {
+        Some(j) => {
+            script.awaiting.is_none() && j.max >= 1 && usize::from(j.max) <= MAX_IN_FLIGHT
+                && j.running <= j.max && usize::from(j.running) == live_branches(s)
+        },
+        None => live_branches(s) == 0,
+    }
+}
+
+/// What `fiber` does next; `has_step` says whether its queue holds a step.
+#[must_use]
+pub fn next<const F: usize>(s: &Sched<F>, fiber: u8, has_step: bool) -> (r: Action)
+    ensures
+        r == next_spec(*s, fiber, has_step),
+        inv(*s) ==> proposes_admitted(*s, fiber, r),
+{
+    let Some(f) = slot(s, fiber) else {
+        return Action::Blocked;
+    };
+    if f.done || f.awaiting.is_some() {
+        return Action::Blocked;
+    }
+    if let Some(j) = f.join {
+        proof {
+            if inv(*s) {
+                assert(slot_ok(*s, fiber as int));
+            }
+        }
+        if j.running < j.max && j.pending > 0 {
+            return if usize::from(s.len) < F {
+                Action::Launch
+            } else {
+                Action::Full
+            };
+        }
+        if j.running == 0 && j.pending == 0 {
+            return Action::Join;
+        }
+        return Action::Blocked;
+    }
+    if has_step {
+        Action::Step
+    } else {
+        proof {
+            if inv(*s) && fiber != 0 {
+                assert(slot_ok(*s, fiber as int));
+                lemma_live_pos(*s, s.len as int, fiber as int);
+            }
+        }
+        Action::Done
+    }
+}
+
+/// The fiber waiting on `command`, if any.
+#[must_use]
+pub fn awaiting<const F: usize>(s: &Sched<F>, command: u32) -> (r: Option<u8>)
+    ensures
+        match r {
+            Some(i) => i < s.len && i < F && s.fibers[i as int].awaiting == Some(command),
+            None => forall|i: int|
+                #![trigger s.fibers[i]]
+                0 <= i < s.len && i < F ==> s.fibers[i].awaiting != Some(command),
+        },
+        inv(*s) ==> forall|fiber: u8|
+            fiber < s.len && #[trigger] s.fibers[fiber as int].awaiting == Some(command) ==> r
+                == Some(fiber),
+{
+    let mut i: u8 = 0;
+    while i < s.len
+        invariant
+            i <= s.len,
+            forall|k: int|
+                #![trigger s.fibers[k]]
+                0 <= k < i && k < F ==> s.fibers[k].awaiting != Some(command),
+        decreases s.len - i,
+    {
+        if matches!(slot(s, i), Some(f) if f.awaiting == Some(command)) {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Whether fiber `fiber` may run a step now: neither waiting nor joined
+/// nor done.
+fn idle<const F: usize>(s: &Sched<F>, fiber: u8) -> (r: bool)
+    ensures
+        r == idle_spec(*s, fiber),
+{
+    match slot(s, fiber) {
+        Some(f) => !f.done && f.awaiting.is_none() && f.join.is_none(),
+        None => false,
+    }
+}
+
+/// The state after `ev`; `None` when `ev` is not admissible here.
+#[must_use]
+pub fn apply<const F: usize>(mut s: Sched<F>, ev: Ev) -> (r: Option<Sched<F>>)
+    requires
+        F <= MAX_FIBERS,
+    ensures
+        r is Some <==> admits(s, ev),
+        inv(s) ==> (r matches Some(t) ==> inv(t) && waiting(t) <= MAX_IN_FLIGHT),
+{
+    let ghost s0 = s;
+    match ev {
+        Ev::Requested { fiber } => {
+            if !idle(&s, fiber) {
+                return None;
+            }
+            let command = s.next_command;
+            s.next_command = command.checked_add(1)?;
+            s.fibers[usize::from(fiber)].awaiting = Some(command);
+        },
+        Ev::Answered { fiber } => {
+            slot(&s, fiber)?.awaiting?;
+            s.fibers[usize::from(fiber)].awaiting = None;
+        },
+        Ev::Forked { fiber, max, branches } => {
+            if fiber != 0 || !idle(&s, 0) || max == 0 || usize::from(max) > MAX_IN_FLIGHT {
+                return None;
+            }
+            s.fibers[0].join = Some(Join { max, pending: branches, running: 0 });
+        },
+        Ev::Launched { parent } => {
+            let len = usize::from(s.len);
+            if parent != 0 || !matches!(next(&s, 0, false), Action::Launch) || len >= F {
+                return None;
+            }
+            let j = s.fibers[0].join.as_mut()?;
+            j.pending -= 1;
+            j.running += 1;
+            s.fibers[len] = Slot { parent: Some(0), ..Slot::default() };
+            s.len += 1;
+        },
+        Ev::Joined { fiber } => {
+            if !matches!(next(&s, fiber, false), Action::Join) {
+                return None;
+            }
+            s.fibers[usize::from(fiber)].join = None;
+        },
+        Ev::FiberDone { fiber } => {
+            if !idle(&s, fiber) {
+                return None;
+            }
+            s.fibers[usize::from(fiber)].done = true;
+            if fiber != 0 {
+                let j = s.fibers[0].join.as_mut()?;
+                j.running = j.running.checked_sub(1)?;
+            }
+        },
+    }
+    proof {
+        if inv(s0) {
+            match ev {
+                Ev::Requested { fiber } => requested_keeps_the_invariant(s0, s, fiber),
+                Ev::Answered { fiber } => answered_keeps_the_invariant(s0, s, fiber),
+                Ev::Forked { fiber: _, max, branches } => forked_keeps_the_invariant(
+                    s0,
+                    s,
+                    max,
+                    branches,
+                ),
+                Ev::Launched { parent: _ } => launched_keeps_the_invariant(
+                    s0,
+                    s,
+                    s0.fibers[0].join->Some_0,
+                ),
+                Ev::Joined { fiber } => joined_keeps_the_invariant(s0, s, fiber),
+                Ev::FiberDone { fiber } => fiber_done_keeps_the_invariant(s0, s, fiber),
+            }
+            lemma_waiting_bounded(s);
+        }
+    }
+    Some(s)
+}
+
+} // verus!

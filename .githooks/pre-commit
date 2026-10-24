@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Nothing heavy per commit: lints, scans and tests run in the full gate, on
+# merges into main. The one commit that IS such a merge (concluding it after a
+# conflict or `--no-commit`) runs the full gate here, because git skips
+# pre-merge-commit for it.
+set -euo pipefail
+# The index this commit is made from: a temporary one for `git commit -a` or
+# `git commit <paths>`. Kept before the scrub below, to record the tree the
+# gate passed (the main guard's gate token).
+commit_index="${GIT_INDEX_FILE:-}"
+# Find the repository from the working directory, not from a hook's GIT_DIR,
+# which is absolute in a linked worktree; every git child the gate spawns
+# (tests' scratch repositories included) would inherit it. This also drops
+# GIT_INDEX_FILE: a check of *staged* content must read it before this line.
+# shellcheck disable=SC2046
+unset $(git rev-parse --local-env-vars)
+hooks="$(cd "$(dirname "$0")" && pwd)"
+
+# --- project-specific: fill these in -----------------------------------------
+BUILD_RUNNER=(cargo build --manifest-path xtask/Cargo.toml --package qinit-xtask --quiet)   # builds the gate runner
+GATE=(cargo xtask gate)                              # runs the gate registry
+configured_main="${DISCIPLINES_MAIN_BRANCH:-main}"
+is_protected_branch() {
+  [ "$1" = main ] || [ "$1" = "$configured_main" ]
+}
+TOKEN_NAME=disciplines-gated-tree   # same name in pre-merge-commit and reference-transaction
+# No wait cap for the host scheduler (atc, if the host runs one): a gate step
+# waits rather than fail on a busy host. A caller's ATC_MAX_WAIT still applies.
+# ------------------------------------------------------------------------------
+
+"$hooks/branch-guard.sh"
+
+full_gate=false
+branch="$(git symbolic-ref --short -q HEAD || true)"
+if is_protected_branch "$branch" && git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+  full_gate=true
+  echo "Concluding a merge into $branch: running the full gate." >&2
+  "$hooks/worktree-clean.sh" "$commit_index"
+  if [ -n "$commit_index" ]; then
+    tree="$(GIT_INDEX_FILE="$commit_index" git write-tree)"
+  else
+    tree="$(git write-tree)"
+  fi
+  token="$(git rev-parse --path-format=absolute --git-path "$TOKEN_NAME")"
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Build the runner first: a runner that does not compile would otherwise
+# surface as a raw compiler error on the very commit that fixes it.
+if ! "${BUILD_RUNNER[@]}"; then
+  echo "FAIL: the gate runner does not build, so no gate can run." >&2
+  if [ "$full_gate" = true ]; then
+    echo "Only if this merge IS the runner fix:  DISCIPLINES_ALLOW_UNGATED_MAIN='runner fix' git commit --no-verify" >&2
+  else
+    echo "Only if this commit IS the runner fix:  git commit --no-verify" >&2
+  fi
+  exit 1
+fi
+
+if [ "$full_gate" = true ]; then
+  # Cargo gates must not reuse cached passes for main (runner: DISCIPLINES_GATE_CONTEXT; proof gates and preflight excepted).
+  if ! DISCIPLINES_GATE_CONTEXT=main "${GATE[@]}"; then
+    echo "=== MERGE BLOCKED: one or more gates failed ===" >&2
+    exit 1
+  fi
+  # The gate token: reference-transaction admits main's update only for it.
+  printf '%s\n' "$tree" >"$token"
+else
+  "${GATE[@]}" --only fmt
+fi

@@ -1,0 +1,23 @@
+use fakederive::{One, PartialEq};
+use vstd::prelude::*;
+
+verus! {
+
+pub trait One {
+    fn one(&self) -> (r: u32)
+        ensures
+            r == 1,
+    ;
+}
+
+pub fn use_it<T: One>(s: &T) -> (r: u32)
+    ensures
+        r == 1,
+{
+    s.one()
+}
+
+} // verus!
+
+#[derive(One, PartialEq)]
+pub struct S;
