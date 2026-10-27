@@ -18,12 +18,12 @@ fn qinit_has_only_repository_and_tooling_stages() {
     assert_eq!(stages, [("repo", ""), ("xtask", "xtask")]);
 }
 
-/// Measured with `cargo xtask gate --no-cache` on 2026-10-24/27 (seconds):
-/// preflight, canary, placeholder-scan, sleep-scan, changelog, layers 0.0; // disciplines:allow-placeholder (the gate's name)
-/// reuse 0.3; duplication 0.8; xtask fmt 1.8; xtask lint 2.8; xtask test
-/// 42-56. Blocked gates (SKIP, 0.0 s now) sit where their work will cost
-/// once unblocked; re-measure when one is. A new gate is placed by its
-/// measured time; slow gates go last.
+/// Measured with `cargo xtask gate --no-cache` on 2026-10-27 (seconds,
+/// warmed incremental build): preflight, canary, scans, changelog, layers
+/// 0.0-0.1; lint 0.1, repo no-std 0.2, xtask fmt 0.6, repo fmt 0.7,
+/// reuse 0.8, repo test 0.9, duplication 1.1, xtask test 52.3.
+/// Blocked gates (SKIP, 0.0 s now) sit where their work will cost once
+/// unblocked; re-measure when one is. Slow gates go last.
 const GLOBAL_ORDER: &[(&str, &str)] = &[
     ("repo", "preflight"),
     ("xtask", "preflight"),
@@ -38,14 +38,14 @@ const GLOBAL_ORDER: &[(&str, &str)] = &[
     ("xtask", "no-std"),
     ("xtask", "layers"),
     ("repo", "layers"),
-    ("repo", "reuse"),
-    ("repo", "duplication"),
-    ("xtask", "fmt"),
-    ("repo", "fmt"),
     ("xtask", "lint"),
     ("repo", "lint"),
     ("repo", "no-std"),
+    ("xtask", "fmt"),
+    ("repo", "fmt"),
+    ("repo", "reuse"),
     ("repo", "test"),
+    ("repo", "duplication"),
     ("xtask", "test"),
 ];
 
@@ -60,6 +60,7 @@ fn global_order_names_every_static_gate_once() {
         let mut registry: Vec<&str> = (stage.registry)().iter().map(|gate| gate.name).collect();
         let mut ordered: Vec<&str> = qinit_xtask::ORDER
             .iter()
+            .chain(qinit_xtask::AFTER_PROOFS)
             .filter(|(name, _)| *name == stage.name)
             .map(|(_, gate)| *gate)
             .collect();
@@ -97,20 +98,59 @@ fn step(stage: &'static str, arguments: &[&str]) -> (&'static str, xtask::Comman
 
 #[test]
 fn a_full_gate_run_follows_the_global_order_then_runs_proofs() {
+    assert_eq!(qinit_xtask::AFTER_PROOFS, &[("repo", "vm")]);
     let mut expected: Vec<_> = GLOBAL_ORDER
         .iter()
         .map(|(stage, gate)| step(stage, &["gate", "--no-cache", "--only", gate]))
         .collect();
     expected.push(step("repo", &["proofs", "--no-cache"]));
+    expected.push(step("repo", &["gate", "--no-cache", "--only", "vm"]));
     assert_eq!(planned(&["gate", "--no-cache"]), expected);
 }
 
 #[test]
+fn the_vm_gate_declares_its_inputs_and_tools() {
+    let gates = qinit_xtask::repo_registry();
+    let vm = gates.iter().find(|g| g.name == "vm").expect("a vm gate");
+    assert_eq!(
+        vm.inputs,
+        Inputs::Globs(&[
+            "crates/**",
+            "Cargo.toml",
+            "Cargo.lock",
+            "rust-toolchain.toml"
+        ])
+    );
+    let mut env = xtask::RUST_ENV.to_vec();
+    env.extend(["HOME", "QINIT_KERNEL_TARBALL", "XDG_CACHE_HOME"]);
+    assert_eq!(vm.env, env);
+    assert_eq!(
+        vm.tools,
+        &[
+            "cargo",
+            "qemu-system-x86_64",
+            "make",
+            "gcc",
+            "flex",
+            "bison",
+            "bc",
+            "perl",
+            "tar",
+            "xz",
+            "curl"
+        ]
+    );
+    assert!(vm.cacheable && vm.cache_on_main);
+    assert_eq!(vm.blocked, None);
+}
+
+#[test]
 fn no_proofs_forwards_to_every_step_and_drops_the_proof_steps() {
-    let expected: Vec<_> = GLOBAL_ORDER
+    let mut expected: Vec<_> = GLOBAL_ORDER
         .iter()
         .map(|(stage, gate)| step(stage, &["gate", "--no-proofs", "--only", gate]))
         .collect();
+    expected.push(step("repo", &["gate", "--no-proofs", "--only", "vm"]));
     assert_eq!(planned(&["gate", "--no-proofs"]), expected);
 }
 
@@ -123,9 +163,16 @@ fn gate_list_prints_the_global_order() {
         .lines()
         .map(str::to_string)
         .collect();
+    // Declared proofs follow the static gates (the fixture copies the root manifest).
     let expected: Vec<String> = GLOBAL_ORDER
         .iter()
         .map(|(stage, gate)| format!("{stage}/{gate}"))
+        .chain([
+            "repo/proof:qinit-event-core".to_string(),
+            "repo/proof:qinit-cell-core".to_string(),
+            "repo/proof:qinit-cell-drive".to_string(),
+            "repo/vm".to_string(),
+        ])
         .collect();
     assert_eq!(listed, expected);
 }
@@ -170,6 +217,7 @@ fn repository_gate_policy_is_pinned() {
             "no-std",
             "duplication",
             "test",
+            "vm",
         ]
     );
     let declarations: Vec<(&str, Inputs, Option<&str>)> = gates
@@ -182,31 +230,29 @@ fn repository_gate_policy_is_pinned() {
             ("preflight", Inputs::Globs(&["**/Cargo.toml"]), None),
             ("canary", Inputs::Globs(&["README.md"]), None),
             ("reuse", Inputs::Tree, None),
-            (
-                "fmt",
-                Inputs::Tree,
-                Some("D3: no product package to format")
-            ),
+            ("fmt", Inputs::Tree, None),
             ("placeholder-scan", Inputs::Tree, None), // disciplines:allow-placeholder (the gate's name)
             ("sleep-scan", Inputs::Tree, None),
             ("changelog", Inputs::Tree, None),
-            ("lint", Inputs::Tree, Some("D3: no product package to lint")),
-            (
-                "layers",
-                Inputs::Tree,
-                Some("D3: no product package to check")
-            ),
-            (
-                "no-std",
-                Inputs::Tree,
-                Some("D4: no kernel or core product crate"),
-            ),
+            ("lint", Inputs::Tree, None),
+            ("layers", Inputs::Tree, None),
+            ("no-std", Inputs::Tree, None),
             (
                 "duplication",
                 Inputs::Globs(&["**/*.rs", "gates/duplication-baseline.txt"]),
                 None
             ),
-            ("test", Inputs::Tree, Some("D3: no product package to test")),
+            ("test", Inputs::Tree, None),
+            (
+                "vm",
+                Inputs::Globs(&[
+                    "crates/**",
+                    "Cargo.toml",
+                    "Cargo.lock",
+                    "rust-toolchain.toml"
+                ]),
+                None
+            ),
         ]
     );
     let reuse = gates
@@ -223,7 +269,20 @@ fn repository_gate_policy_is_pinned() {
         .find(|gate| gate.name == "preflight")
         .unwrap();
     let mut tools = template.tools.to_vec();
-    tools.push("reuse");
+    tools.extend([
+        "reuse",
+        "qemu-system-x86_64",
+        "make",
+        "gcc",
+        "flex",
+        "bison",
+        "bc",
+        "perl",
+        "tar",
+        "xz",
+        "curl",
+        "unzip",
+    ]);
     assert_eq!(preflight.tools, tools);
     assert!(preflight.cacheable);
     assert!(preflight.cache_on_main);
@@ -247,6 +306,8 @@ fn repository_preflight_names_a_missing_repository_tool() {
         .output()
         .expect("run qinit-xtask without reuse");
     assert_failure_contains(&output, "missing: reuse");
+    assert_failure_contains(&output, "missing: gelf.h (install: package libelf-dev)");
+    assert_failure_contains(&output, "missing: unzip");
 }
 
 #[test]
@@ -289,9 +350,11 @@ const TOOLING_TEST_EXTRA_PATHS: &[&str] = &[
     "../.githooks",
     "../.cargo/config.toml",
     "../.gitignore",
+    "../Cargo.lock",
     "../Cargo.toml",
     "../DEFERRED.md",
     "../LICENSES",
+    "../crates",
     "../README.md",
     "../REUSE.toml",
     "../gates",
@@ -374,10 +437,22 @@ impl Drop for Scratch {
 }
 
 #[test]
-fn repository_declares_no_proofs_before_product_crates_exist() {
+fn repository_declares_exactly_the_core_crate_proofs() {
     let root = qinit_xtask::repo_root();
     let names = qinit_xtask::gate_names(&STAGES[0], &root).unwrap();
-    assert!(names.iter().all(|name| !name.starts_with("proof:")));
+    let proofs: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| name.starts_with("proof:"))
+        .collect();
+    assert_eq!(
+        proofs,
+        [
+            "proof:qinit-event-core",
+            "proof:qinit-cell-core",
+            "proof:qinit-cell-drive"
+        ]
+    );
 }
 
 #[test]
@@ -637,6 +712,7 @@ impl Fixture {
         let source = qinit_xtask::repo_root();
         for path in [
             "Cargo.toml",
+            "Cargo.lock",
             "README.md",
             "DEFERRED.md",
             "REUSE.toml",
@@ -645,6 +721,7 @@ impl Fixture {
             std::fs::copy(source.join(path), root.join(path)).unwrap();
         }
         copy_tree(&source.join("xtask"), &root.join("xtask"));
+        copy_tree(&source.join("crates"), &root.join("crates"));
         copy_tree(&source.join("gates"), &root.join("gates"));
         copy_tree(&source.join("LICENSES"), &root.join("LICENSES"));
         let readme = std::fs::read_to_string(root.join("README.md")).unwrap();

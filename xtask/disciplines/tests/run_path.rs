@@ -11,7 +11,8 @@
 //! The test re-runs itself as a child with that environment (`set_var` is
 //! `unsafe`, which the workspace forbids); llvm-cov counts the child too.
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+mod common;
+use common::exe;
 use std::path::{Path, PathBuf};
 use std::process::Command as Proc;
 
@@ -61,11 +62,6 @@ const SPINE_LIB: &str = "#![no_std]\n#[cfg_attr(kani, kani::ensures(|r: &u8| *r 
 fn write(path: &Path, text: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, text).unwrap();
-}
-
-fn exe(path: &Path, text: &str) {
-    write(path, text);
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 fn git(root: &Path, args: &[&str]) {

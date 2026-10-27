@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[package]
+name = "qinit-sys"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+libc = { workspace = true, features = ["std"] }
+
+# The one crate allowed `unsafe` (spec R1); not `workspace = true` on purpose.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+
+# Layer and allowed direct dependencies, checked by the `layers` gate.
+[package.metadata.disciplines]
+layer = "unsafe"
+allow = ["libc"]

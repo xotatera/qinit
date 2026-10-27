@@ -11,7 +11,7 @@ SPDX-License-Identifier = "CC-BY-4.0"
 
 # Machine-readable disciplines test fixtures cannot carry source comments.
 [[annotations]]
-path = ["xtask/Cargo.lock", "xtask/disciplines/tests/fixtures/**"]
+path = ["Cargo.lock", "xtask/Cargo.lock", "xtask/disciplines/tests/fixtures/**"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Xota Tera"
 SPDX-License-Identifier = "GPL-3.0-or-later"

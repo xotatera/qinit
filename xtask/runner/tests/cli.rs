@@ -102,7 +102,9 @@ impl Drop for Fixture {
 
 #[test]
 fn empty_proofs_are_a_successful_no_op() {
-    let output = xtask(&["proofs"]);
+    // A fixture without proofs, not the repository: the repository declares proofs, and
+    // running them here would nest Verus and its atc reservation inside the test gate.
+    let output = Fixture::new().run(&["proofs"]);
     assert!(output.status.success(), "{:?}", output.status);
 }
 

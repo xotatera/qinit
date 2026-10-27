@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[package]
+name = "qinit-event"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+libc = { workspace = true, features = ["std"] }
+qinit-event-core = { path = "../qinit-event-core" }
+qinit-sys = { path = "../qinit-sys" }
+
+[lints]
+workspace = true
+
+[package.metadata.disciplines]
+layer = "runtime"
+allow = ["libc", "qinit-event-core", "qinit-sys"]

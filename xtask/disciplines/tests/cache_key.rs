@@ -36,10 +36,8 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(ok, "git {args:?}");
 }
 
-fn write_exe(path: &Path, body: &str) {
-    fs::write(path, body).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-}
+mod common;
+use common::exe as write_exe;
 
 /// repo/ (a git repo with src/lib.rs, README.md, .gitignore ignoring `out/`,
 /// committed), runner/ (one file), bin/ (an executable `cargo`).

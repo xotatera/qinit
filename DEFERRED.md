@@ -25,20 +25,16 @@ project.
 Deferred by the approved design, §9. None of these may enter qinit without an
 approved design amendment.
 
-### D3 — Product workspace gates · `ACCEPTED`
+### D3 — Product workspace gates · `RESOLVED`
 
-The repository has no product package while disciplines are being set up.
-The root `fmt`, `lint`, `layers`, and `test` gates are therefore blocked:
-running them would format, lint, inspect, or test an empty virtual workspace.
-Unblock each gate in the same change that adds its first product package.
+Resolved by sub-project 2 Task 1: `qinit-sys` is the first product package; the four gates run.
 
-### D4 — no-std product gate · `ACCEPTED`
+### D4 — no-std tooling gate · `ACCEPTED`
 
-The repository has no kernel or core product crate. The root `no-std` gate is
-blocked until one exists; unblock it in the change that adds that crate. The
-tooling `no-std` gate is separately blocked because the `xtask` workspace also
-has no kernel or core crate. Unblock it only in the change that adds a
-primitive, kernel, or core crate to the `xtask` workspace.
+The root `no-std` gate runs since sub-project 2 Task 2 (`qinit-event-core` is
+the first core crate). The tooling `no-std` gate is separately blocked: the
+`xtask` workspace has no kernel or core crate.
+Unblock it only in the change that adds a primitive, kernel, or core crate to the `xtask` workspace.
 
 ### D5 — Tooling-stage repository-wide scans · `ACCEPTED`
 
@@ -63,3 +59,59 @@ call is located at its `verus` identifier, so one at column 0 reads as
 indented. A file the parser cannot read whole falls back to the earlier text
 rules, which miss `r#verus!`, `verus ! {}` and a call after other code on its
 line. Revisit if real Verus code hits one.
+
+### D8 — Exit status of a handed-over main process · `ACCEPTED`
+
+A main process queen hands over on adoption need not be the runtime's child,
+so `qinit-cell` watches its pidfd without reaping it and reports its exit as
+`MainExited(None)`. If that handed-over main is actually our child, its exit
+is separately reported as an Orphan with its real status, while its cell gets
+`MainExited(None)`. The status of a process that is not a child is only readable
+through `PIDFD_INFO_EXIT` (Linux 6.15), above the 6.13 floor (spec R9). Revisit
+if the floor reaches 6.15.
+
+### D9 — Released child the loop refuses to watch · `ACCEPTED`
+
+When a cell lets go of a child that is still running (a late exec result
+after the cell failed, a released slot, the cleanup of a spawn that could not
+be watched), `qinit-cell` watches its pidfd under a stray token so the loop
+reaps it at exit and reports it as an orphan. If the loop refuses that
+registration (`epoll_ctl` out of memory), the child is kept and tried at every
+later wake-up of the loop instead: it is still reaped and reported, but may
+stay a zombie until something else wakes the loop. Closing that gap needs a
+second watch mechanism for an `epoll_ctl` failure the loop itself already
+cannot survive.
+
+### D10 — A main exit during a stop is recorded, not reported · `ACCEPTED`
+
+While a cell is Stopping or Killing, the proved machine records the main
+process's exit status (`Main::Reaped`) but emits no `MainExited` report; the
+stop ends with `Empty` (or `Failed(Stuck)`). By design: the stop's outcome is
+the report the caller waits for. Sub-project 2 Task 9's `escalate` suite
+therefore asserts escalation by the report sequence ending `Empty` after the
+kill deadline path plus the helper's own evidence, not by a
+`MainExited(SIGKILL)` report.
+
+### D11 — Unkillable process in VM suites · `ACCEPTED`
+
+VM suites cannot produce an unkillable process (uninterruptible sleep): the
+'still populated after the kill deadline → Failed(Stuck)' path is covered by
+the Verus proof (`good`, obligation 6) and the host engine test
+`deadlines_escalate_then_report_stuck` only (spec §6.2).
+
+### D12 — Adoption open failure · `ACCEPTED`
+
+Adoption treats a cell that cannot be opened as an id mismatch
+(`Failed(IdMismatch)`), not as a separate failure.
+
+### D13 — x86_64 syscall shim · `ACCEPTED`
+
+`qinit-sys` is written for x86_64 (raw child path, kernel structure layouts);
+another architecture needs its own `KernelSigaction` and checked layouts.
+
+### D14 — clone3 signal mask and threaded credential changes · `ACCEPTED`
+
+Blocking all signals around clone3, including glibc's SIGSETXID and musl's
+synccall signal, lets a threaded caller create a child with credentials from
+before a concurrent setxid change. Sub-project 5 (privilege) must revisit
+this before using spawn from a threaded caller that changes credentials.

@@ -10,7 +10,7 @@
 //! test re-runs itself as a child with that `PATH` (`set_var` is `unsafe`,
 //! which the workspace forbids).
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -47,8 +47,7 @@ fn scratch(lib: &str) -> PathBuf {
         "#[must_use]\npub fn g(x: Option<u32>) -> u32 {\n    x.unwrap()\n}\n",
     );
     let bin = root.join("bin");
-    write(&bin.join("atc"), "#!/bin/sh\nexit 1\n");
-    fs::set_permissions(bin.join("atc"), fs::Permissions::from_mode(0o755)).unwrap();
+    common::exe(&bin.join("atc"), "#!/bin/sh\nexit 1\n");
     let lock = Command::new("cargo")
         .args(["generate-lockfile", "--offline"])
         .current_dir(&root)

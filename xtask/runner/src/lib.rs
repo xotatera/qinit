@@ -31,9 +31,10 @@ pub const STAGES: &[Stage] = &[
 ];
 
 /// Every static gate of every stage, fastest first: a full `gate` run runs
-/// them in this order, then each stage's proof gates, and stops at the first
-/// failure. Place a new gate by its measured time (`tests/registry.rs` pins
-/// the order and records the measurements); slow gates go last.
+/// them in this order, then each stage's proof gates, then [`AFTER_PROOFS`],
+/// and stops at the first failure. Place a new gate by its measured time
+/// (`tests/registry.rs` pins the order and records the measurements); slow
+/// gates go last.
 pub const ORDER: &[(&str, &str)] = &[
     ("repo", "preflight"),
     ("xtask", "preflight"),
@@ -48,16 +49,19 @@ pub const ORDER: &[(&str, &str)] = &[
     ("xtask", "no-std"),
     ("xtask", "layers"),
     ("repo", "layers"),
-    ("repo", "reuse"),
-    ("repo", "duplication"),
-    ("xtask", "fmt"),
-    ("repo", "fmt"),
     ("xtask", "lint"),
     ("repo", "lint"),
     ("repo", "no-std"),
+    ("xtask", "fmt"),
+    ("repo", "fmt"),
+    ("repo", "reuse"),
     ("repo", "test"),
+    ("repo", "duplication"),
     ("xtask", "test"),
 ];
+
+/// Gates that run after the proof tier, slowest last (spec 2026-10-27 R6).
+pub const AFTER_PROOFS: &[(&str, &str)] = &[("repo", "vm")];
 
 /// The review canary's required instruction.
 pub const CANARY_INSTRUCTION: &str =
@@ -125,17 +129,25 @@ pub fn canary_present(readme: &str) -> bool {
         .eq(CANARY_LINES)
 }
 
-const NO_PRODUCT_FORMAT: &str = "D3: no product package to format";
-const NO_PRODUCT_LINT: &str = "D3: no product package to lint";
-const NO_PRODUCT_LAYERS: &str = "D3: no product package to check";
-const NO_PRODUCT_NO_STD: &str = "D4: no kernel or core product crate";
 const NO_TOOLING_NO_STD: &str = "D4: no tooling kernel or core crate";
-const NO_PRODUCT_TEST: &str = "D3: no product package to test";
 const TOOLING_REPOSITORY_SCANS: &str = "D5: repository-wide scans run in the repo stage";
 
 /// Tools only the repository stage's own gates run, beyond the template's:
-/// (binary, install line).
-const REPO_TOOLS: &[(&str, &str)] = &[("reuse", "the REUSE tool, from your package manager")];
+/// (binary, install line). The `vm` gate's hints name Debian packages.
+const REPO_TOOLS: &[(&str, &str)] = &[
+    ("reuse", "the REUSE tool, from your package manager"),
+    ("qemu-system-x86_64", "QEMU, package qemu-system-x86"),
+    ("make", "package make"),
+    ("gcc", "package gcc"),
+    ("flex", "package flex"),
+    ("bison", "package bison"),
+    ("bc", "package bc"),
+    ("perl", "package perl"),
+    ("tar", "package tar"),
+    ("xz", "package xz-utils"),
+    ("curl", "package curl"),
+    ("unzip", "package unzip"),
+];
 
 /// The template preflight's fingerprinted tools plus [`REPO_TOOLS`].
 /// `tests/registry.rs` pins this against the template.
@@ -148,7 +160,73 @@ const REPO_PREFLIGHT_TOOLS: &[&str] = &[
     "cargo-verus",
     "verusfmt",
     "reuse",
+    "qemu-system-x86_64",
+    "make",
+    "gcc",
+    "flex",
+    "bison",
+    "bc",
+    "perl",
+    "tar",
+    "xz",
+    "curl",
+    "unzip",
 ];
+
+/// What the `vm` gate runs: cargo, QEMU and the kernel build.
+const VM_TOOLS: &[&str] = &[
+    "cargo",
+    "qemu-system-x86_64",
+    "make",
+    "gcc",
+    "flex",
+    "bison",
+    "bc",
+    "perl",
+    "tar",
+    "xz",
+    "curl",
+];
+
+/// What the `vm` gate's result depends on beyond its files: the variables
+/// every cargo gate declares ([`xtask::RUST_ENV`], pinned against it in
+/// `tests/registry.rs`), `HOME` (the fallback cache root), the kernel tarball
+/// override and the cache root.
+const VM_ENV: &[&str] = &[
+    "RUSTFLAGS",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "CARGO_BUILD_RUSTFLAGS",
+    "RUSTDOCFLAGS",
+    "RUSTC",
+    "RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "CLIPPY_CONF_DIR",
+    "HOME",
+    "QINIT_KERNEL_TARBALL",
+    "XDG_CACHE_HOME",
+];
+
+/// The guest suites (`qinit-vm run`): builds the pinned kernel on first use.
+fn vm(root: &Path) -> Result<(), String> {
+    let status = std::process::Command::new("cargo")
+        .current_dir(root)
+        .args([
+            "run",
+            "--release",
+            "--locked",
+            "-p",
+            "qinit-vm",
+            "--",
+            "run",
+        ])
+        .status()
+        .map_err(|e| format!("start cargo run -p qinit-vm: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("qinit-vm run failed ({status})"))
+    }
+}
 
 /// The template preflight over the root workspace (tools, proof
 /// declarations, the selected Verus release), then the repository's tools.
@@ -161,11 +239,23 @@ fn repo_preflight(root: &Path) -> Result<(), String> {
     if !gone.is_empty() {
         errors.push(xtask::tools::report(&gone));
     }
+    if !libelf_headers("gcc") {
+        errors.push("missing: gelf.h (install: package libelf-dev)".to_string());
+    }
     if errors.is_empty() {
         Ok(())
     } else {
         Err(errors.join("\n"))
     }
+}
+
+/// Probe the compiler's include search, including multiarch and configured search paths.
+#[must_use]
+pub fn libelf_headers(compiler: impl AsRef<std::ffi::OsStr>) -> bool {
+    std::process::Command::new(compiler)
+        .args(["-x", "c", "-E", "-include", "gelf.h", "/dev/null"])
+        .output()
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Repository gates available before qinit has product packages.
@@ -221,7 +311,7 @@ pub fn repo_registry() -> Vec<Gate> {
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: false,
-            blocked: Some(NO_PRODUCT_FORMAT),
+            blocked: None,
             decl: "",
         },
         xtask::scan("placeholder-scan", xtask::gates::stub_scan, true), // disciplines:allow-placeholder (the gate's name)
@@ -238,7 +328,7 @@ pub fn repo_registry() -> Vec<Gate> {
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: false,
-            blocked: Some(NO_PRODUCT_LINT),
+            blocked: None,
             decl: "",
         },
         Gate {
@@ -252,7 +342,7 @@ pub fn repo_registry() -> Vec<Gate> {
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: false,
-            blocked: Some(NO_PRODUCT_LAYERS),
+            blocked: None,
             decl: "",
         },
         Gate {
@@ -266,7 +356,7 @@ pub fn repo_registry() -> Vec<Gate> {
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: false,
-            blocked: Some(NO_PRODUCT_NO_STD),
+            blocked: None,
             decl: "",
         },
         Gate {
@@ -294,7 +384,26 @@ pub fn repo_registry() -> Vec<Gate> {
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: false,
-            blocked: Some(NO_PRODUCT_TEST),
+            blocked: None,
+            decl: "",
+        },
+        Gate {
+            name: "vm",
+            run: Box::new(vm),
+            inputs: Inputs::Globs(&[
+                "crates/**",
+                "Cargo.toml",
+                "Cargo.lock",
+                "rust-toolchain.toml",
+            ]),
+            env: VM_ENV,
+            tools: VM_TOOLS,
+            extra_paths: &[],
+            cache_paths: &[],
+            ignored_inputs: &[],
+            cacheable: true,
+            cache_on_main: true,
+            blocked: None,
             decl: "",
         },
     ]
@@ -311,9 +420,11 @@ const TOOLING_TEST_EXTRA_PATHS: &[&str] = &[
     "../.githooks",
     "../.cargo/config.toml",
     "../.gitignore",
+    "../Cargo.lock",
     "../Cargo.toml",
     "../DEFERRED.md",
     "../LICENSES",
+    "../crates",
     "../README.md",
     "../REUSE.toml",
     "../gates",
@@ -502,15 +613,14 @@ fn plan_run(
     Ok(Plan::Run(selected))
 }
 
-/// A full `gate` run: one step per gate in [`ORDER`], then each stage's
-/// proof gates unless `--no-proofs`. The flags go to every step, so the
-/// template's own refusals (`--no-proofs` on main) still apply.
-fn plan_full_gate(
+/// One step per gate in `gates`, each running only that gate with the
+/// forwarded flags.
+fn gate_steps(
+    gates: &[(&str, &str)],
     forwarded: &[String],
-    names: &dyn Fn(&Stage) -> Result<Vec<String>, String>,
-) -> Result<Plan, String> {
+) -> Result<Vec<(&'static str, Command)>, String> {
     let mut steps = Vec::new();
-    for (stage_name, gate) in ORDER {
+    for (stage_name, gate) in gates {
         let stage = stage_named(stage_name)?;
         let mut arguments = forwarded.to_vec();
         arguments.extend(["--only".to_string(), (*gate).to_string()]);
@@ -519,9 +629,32 @@ fn plan_full_gate(
             xtask::parse_args_with(stage.registry, &arguments)?,
         ));
     }
-    if forwarded.iter().any(|argument| argument == "--no-proofs") {
-        return Ok(Plan::Run(steps));
+    Ok(steps)
+}
+
+/// A full `gate` run: one step per gate in [`ORDER`], then each stage's
+/// proof gates unless `--no-proofs`, then one step per gate in
+/// [`AFTER_PROOFS`]. The flags go to every step, so the template's own
+/// refusals (`--no-proofs` on main) still apply.
+fn plan_full_gate(
+    forwarded: &[String],
+    names: &dyn Fn(&Stage) -> Result<Vec<String>, String>,
+) -> Result<Plan, String> {
+    let mut steps = gate_steps(ORDER, forwarded)?;
+    if !forwarded.iter().any(|argument| argument == "--no-proofs") {
+        steps.extend(proof_steps(forwarded, names)?);
     }
+    steps.extend(gate_steps(AFTER_PROOFS, forwarded)?);
+    Ok(Plan::Run(steps))
+}
+
+/// Each stage's proof step (stages that declare proofs), forwarding only
+/// `--no-cache`.
+fn proof_steps(
+    forwarded: &[String],
+    names: &dyn Fn(&Stage) -> Result<Vec<String>, String>,
+) -> Result<Vec<(&'static str, Command)>, String> {
+    let mut steps = Vec::new();
     let mut proofs = vec!["proofs".to_string()];
     proofs.extend(
         forwarded
@@ -536,7 +669,7 @@ fn plan_full_gate(
             steps.push((stage.name, xtask::parse_args_with(stage.registry, &proofs)?));
         }
     }
-    Ok(Plan::Run(steps))
+    Ok(steps)
 }
 
 /// How a run step is named in progress and failure lines.
@@ -581,6 +714,9 @@ pub fn execute(plan: Plan, root: &Path) -> bool {
                 for name in names.iter().filter(|name| name.starts_with("proof:")) {
                     println!("{}/{name}", stage.name);
                 }
+            }
+            for (stage, gate) in AFTER_PROOFS {
+                println!("{stage}/{gate}");
             }
             true
         }
