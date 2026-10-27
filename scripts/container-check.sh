@@ -77,7 +77,7 @@ unzip -q /tmp/verus.zip -d \"\$HOME/.local/opt\"
 # The release archive contains verus-x86-linux/ (cargo-verus, verus, z3).
 for t in cargo-verus verus z3; do ln -s \"\$HOME/.local/opt/verus-x86-linux/\$t\" \"\$HOME/.local/bin/\$t\"; done
 export PATH=\"\$HOME/.local/bin:\$PATH\"
-cargo install --locked verusfmt --version 0.7.4
+RUSTUP_TOOLCHAIN=1.98.1 cargo install --locked verusfmt --version 0.7.4
 if [ -f /src/kernel.tar.xz ]; then export QINIT_KERNEL_TARBALL=/src/kernel.tar.xz; fi
 git clone -q /src/qinit.git \"\$HOME/qinit\"
 cd \"\$HOME/qinit\"
