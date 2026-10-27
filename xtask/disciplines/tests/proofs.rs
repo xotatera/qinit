@@ -1274,8 +1274,11 @@ fn a_sigint_to_the_callers_group_stops_the_driver() {
         .spawn()
         .unwrap();
     assert!(fifo.started(), "the driver never started");
-    let ok = std::process::Command::new("kill")
-        .args(["-INT", "--", &format!("-{}", child.id())])
+    // The shell's `kill` (a POSIX built-in): a base system without procps
+    // has no `kill` binary.
+    let ok = std::process::Command::new("sh")
+        .args(["-c", "kill -s INT -- \"$1\"", "sh"])
+        .arg(format!("-{}", child.id()))
         .status()
         .unwrap()
         .success();
@@ -1498,8 +1501,9 @@ fn the_wrapper_exits_with_the_signal_it_got() {
         .spawn()
         .unwrap();
     assert!(fifo.started(), "the driver never started");
-    let ok = std::process::Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
+    let ok = std::process::Command::new("sh")
+        .args(["-c", "kill -s TERM -- \"$1\"", "sh"])
+        .arg(child.id().to_string())
         .status()
         .unwrap()
         .success();

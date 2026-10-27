@@ -151,18 +151,20 @@ fn a_budget_does_not_count_time_frozen() {
     let pid = child.id().to_string();
     let signal = |sig: &str| {
         assert!(
-            std::process::Command::new("kill")
-                .args([sig, &pid])
+            // The shell's `kill` (a POSIX built-in): a base system without
+            // procps has no `kill` binary.
+            std::process::Command::new("sh")
+                .args(["-c", "kill -s \"$1\" -- \"$2\"", "sh", sig, &pid])
                 .status()
                 .unwrap()
                 .success()
         );
     };
-    signal("-STOP");
+    signal("STOP");
     // The freeze itself: real time on purpose, the child's budget and more.
     let (_keep, never) = std::sync::mpsc::channel::<()>();
     let _ = never.recv_timeout(Duration::from_millis(3500));
-    signal("-CONT");
+    signal("CONT");
     writeln!(child.stdin.take().unwrap(), "go").unwrap();
     let mut rest = String::new();
     std::io::Read::read_to_string(&mut out, &mut rest).unwrap();
