@@ -289,9 +289,11 @@ fn kill_all(path: &Path) -> std::io::Result<()> {
             if pids.is_empty() {
                 return Ok(());
             }
-            // A pid may exit first; `kill` then fails for it alone.
-            Command::new("kill")
-                .arg("-KILL")
+            // A pid may exit first; `kill` then fails for it alone. The
+            // shell's `kill` (a POSIX built-in): a base system without
+            // procps has no `kill` binary.
+            Command::new("sh")
+                .args(["-c", "kill -KILL \"$@\"", "sh"])
                 .args(&pids)
                 .status()
                 .map(|_| ())

@@ -41,3 +41,5 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The fmt gate decides whether a file needs verusfmt from its parsed source:
   only a real `verus!` invocation counts, not a mention in a comment or a
   string, so trees without Verus code no longer require verusfmt.
+- Proof cgroup cleanup kills leftover processes with the shell's `kill`
+  built-in, so a base system without procps no longer fails the cleanup.
