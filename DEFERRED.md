@@ -54,3 +54,12 @@ fastest-first order, so the template's run scope (`run_scope::will_run`,
 `shared`), which lets one gate reuse another's results within a single run,
 no longer spans gates. No qinit gate uses it. Revisit when a gate starts to
 depend on another's results (the template's `test` / `zero-coverage` pattern).
+
+### D7 — fmt gate `verus!` detection edge cases · `ACCEPTED`
+
+The fmt gate finds `verus!` calls from tree-sitter's parse. Known contrived
+misses: inside a token tree, `verus !x` counts as a call, and a path-qualified
+call is located at its `verus` identifier, so one at column 0 reads as
+indented. A file the parser cannot read whole falls back to the earlier text
+rules, which miss `r#verus!`, `verus ! {}` and a call after other code on its
+line. Revisit if real Verus code hits one.

@@ -80,10 +80,11 @@ pinned toolchain from [`rust-toolchain.toml`](rust-toolchain.toml) on first
 use. Verus and verusfmt are needed only once a Verus proof or a `verus!` block
 exists.
 
-`sh scripts/container-check.sh [<ref>]` proves this list: it clones the
-repository fresh in a stock Debian stable container, installs exactly these
-packages, and runs the full gate as an unprivileged user (podman, or docker
-with `CONTAINER=docker`).
+`sh scripts/container-check.sh [<commit-ish>]` (default `HEAD`) proves this
+list: it clones the repository fresh in a stock Debian stable container,
+installs exactly these packages, and runs the full gate as an unprivileged
+user (podman, or docker with `CONTAINER=docker`). To check `main` itself,
+pass `main` by name.
 
 ### Hooks
 

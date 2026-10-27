@@ -9,6 +9,10 @@
 #
 #   sh scripts/container-check.sh [<commit-ish>]    default: HEAD
 #
+# A branch is checked out by its name. Any other commit-ish gets a local
+# `container-check` branch; for a commit already on main, pass `main` by
+# name, since the changelog gate fails a branch that changes nothing.
+#
 # Uses podman, or docker when CONTAINER=docker.
 set -eu
 image='docker.io/library/debian@sha256:b52d043ed9ce0a3313d85dc03980d5496aa25dff2f05b032d470446b1e3e0e2a'
