@@ -177,6 +177,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "qinit-cell",
+ "qinit-cell-core",
  "qinit-event",
  "qinit-sys",
 ]

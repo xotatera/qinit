@@ -113,6 +113,13 @@ impl Cells {
         self.engine.effects.cgroup_id(id.0)
     }
 
+    /// The cell's main process's pid while it is tracked: from the spawn (or the hand-over on
+    /// adoption) until its exit is seen.
+    #[must_use]
+    pub fn main_pid(&self, id: CellId) -> Option<libc::pid_t> {
+        self.engine.effects.main_pid(id.0)
+    }
+
     #[must_use]
     pub fn phase(&self, id: CellId) -> Option<Phase> {
         self.engine.phase(id)

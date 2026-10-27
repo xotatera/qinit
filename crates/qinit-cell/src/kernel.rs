@@ -117,6 +117,15 @@ impl Kernel {
         })
     }
 
+    /// The tracked main process's pid, until it is reaped or its exit is seen.
+    #[must_use]
+    pub fn main_pid(&self, slot: u16) -> Option<libc::pid_t> {
+        self.slots
+            .get(usize::from(slot))
+            .and_then(|s| s.main.as_ref())
+            .map(|m| m.pid)
+    }
+
     /// Reports SIGCHLD under `token` (subreaper mode).
     ///
     /// # Errors

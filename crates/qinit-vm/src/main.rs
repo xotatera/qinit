@@ -9,7 +9,17 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// Every suite, in run order; each is a binary of `qinit-vm-guests`.
-const SUITES: &[&str] = &["probe"];
+const SUITES: &[&str] = &[
+    "probe",
+    "spawn",
+    "ready",
+    "stop_main",
+    "stop_cell",
+    "escalate",
+    "reuse_guard",
+    "adopt",
+    "orphan",
+];
 
 fn suite_run(suite: &str, image: &Path, bin: &Path, out: &Path) -> Result<usize, String> {
     let data = std::fs::read(bin).map_err(|e| format!("read {}: {e}", bin.display()))?;

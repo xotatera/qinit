@@ -7,15 +7,11 @@
 //! (`await_notified`).
 use qinit_event::Loop;
 use qinit_vm_guests::{
-    COMB, await_notified, make_cell, read_events, run, spawn_helper, spawn_helper_routed,
+    COMB, await_notified, e, make_cell, read_events, run, spawn_helper, spawn_helper_routed,
 };
 use std::ffi::CString;
 use std::io::Read;
 use std::os::fd::AsFd;
-
-fn e<T, E: std::fmt::Display>(r: Result<T, E>) -> Result<T, String> {
-    r.map_err(|x| x.to_string())
-}
 
 fn remove(name: &str) -> Result<(), String> {
     let comb = qinit_vm_guests::comb()?;
