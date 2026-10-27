@@ -57,11 +57,16 @@ fn a_missing_program_is_an_error() {
     std::fs::remove_file(&l).unwrap();
 }
 
-#[test]
-fn the_deadline_kill_reaches_the_whole_process_group() {
+/// One attempt: `Some(Ok(error text))` when the child started and the deadline kill emptied its
+/// whole process group; `None` when the deadline came before the child's first byte.
+fn group_attempt(deadline: Duration) -> Option<String> {
+    use qinit_event::{Loop, Ready};
     use std::io::Read;
+    use std::os::fd::AsFd;
+    use std::os::unix::fs::OpenOptionsExt;
     let l = log("group");
     let fifo = std::env::temp_dir().join(format!("qinit-vm-fifo-{}", std::process::id()));
+    let _ = std::fs::remove_file(&fifo);
     assert!(
         Command::new("mkfifo")
             .arg(&fifo)
@@ -69,19 +74,67 @@ fn the_deadline_kill_reaches_the_whole_process_group() {
             .unwrap()
             .success()
     );
-    let mut cmd = sh("exec 3>\"$0\"; sleep 600 & wait");
-    cmd.arg(&fifo);
-    let log2 = l.clone();
-    let t = std::thread::spawn(move || run_logged(cmd, &log2, Duration::from_millis(300)));
-    // Both the shell and its background `sleep` hold the fifo's write end; reading reaches EOF
-    // only when both are dead. Were only the shell killed, this would wait out the sleep.
-    let mut rest = Vec::new();
-    std::fs::File::open(&fifo)
-        .unwrap()
-        .read_to_end(&mut rest)
+    // A reader without a writer opens at once; it sees hangup only after a writer came and
+    // every writer is gone.
+    let mut reader = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&fifo)
         .unwrap();
+    // The shell announces itself, then leaves `sleep` holding the fifo in the same group.
+    let mut cmd = sh("exec 3>\"$0\"; echo up >&3; sleep 600 & wait");
+    cmd.arg(&fifo);
+    let (done_rx, done_tx) = std::io::pipe().unwrap();
+    let log2 = l.clone();
+    let t = std::thread::spawn(move || {
+        let r = run_logged(cmd, &log2, deadline);
+        drop(done_tx);
+        r
+    });
+    let mut lp = Loop::new().unwrap();
+    lp.add_fd(reader.as_fd(), 1).unwrap();
+    lp.add_fd(done_rx.as_fd(), 2).unwrap();
+    let (mut up, mut closed) = (false, false);
+    let mut buf = [0u8; 16];
+    while !closed {
+        for ev in lp.wait().unwrap() {
+            match ev {
+                Ready::Readable(1) | Ready::Hangup(1) => match reader.read(&mut buf) {
+                    Ok(0) if up => closed = true,
+                    Ok(n) if n > 0 => up = true,
+                    _ => {}
+                },
+                Ready::Readable(2) | Ready::Hangup(2) => {
+                    lp.remove(2).unwrap();
+                    if !up {
+                        // The deadline beat the shell's start; the group is gone.
+                        t.join().unwrap().unwrap_err();
+                        std::fs::remove_file(&fifo).unwrap();
+                        std::fs::remove_file(&l).unwrap();
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    // Were only the shell killed, `sleep` would still hold the fifo and this point never comes.
     let e = t.join().unwrap().unwrap_err();
-    assert!(e.contains("did not finish within"), "{e}");
     std::fs::remove_file(&fifo).unwrap();
     std::fs::remove_file(&l).unwrap();
+    Some(e)
+}
+
+#[test]
+fn the_deadline_kill_reaches_the_whole_process_group() {
+    // A deadline shorter than the shell's start just ends that attempt; each retry doubles it.
+    let mut deadline = Duration::from_millis(300);
+    for _ in 0..6 {
+        if let Some(e) = group_attempt(deadline) {
+            assert!(e.contains("did not finish within"), "{e}");
+            return;
+        }
+        deadline *= 2;
+    }
+    panic!("the shell never started within {deadline:?}");
 }

@@ -23,11 +23,16 @@ fn header(out: &mut Vec<u8>, ino: u32, mode: u32, nlink: u32, size: usize, name:
     pad(out);
 }
 
-/// A newc size field is 8 hex digits; a member beyond that cannot be archived.
-fn field32(v: usize, what: &str, name: &str) -> u32 {
-    u32::try_from(v).unwrap_or_else(|_| {
-        panic!("initrd member {name:?}: {what} of {v} bytes does not fit a newc field (4 GiB - 1)")
+/// A newc size field is 8 hex digits: `v` as one, or why it cannot be (a member beyond 4 GiB - 1
+/// cannot be archived, and saturating it would write an archive the kernel unpacks wrongly).
+pub fn size_field(v: usize, what: &str, name: &str) -> Result<u32, String> {
+    u32::try_from(v).map_err(|_| {
+        format!("initrd member {name:?}: {what} of {v} does not fit a newc field (4 GiB - 1)")
     })
+}
+
+fn field32(v: usize, what: &str, name: &str) -> u32 {
+    size_field(v, what, name).unwrap_or_else(|e| panic!("{e}"))
 }
 
 fn pad(out: &mut Vec<u8>) {

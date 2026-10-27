@@ -142,12 +142,13 @@ pub fn ensure() -> Result<PathBuf, String> {
 /// Extracts, configures and builds in `work`, then moves the result to `done` whole.
 fn build_in(work: &Path, tarball: &Path, done: &Path) -> Result<(), String> {
     let log = work.join("build.log");
+    let at = |e: std::io::Error| format!("{e}; log: {}", log.display());
     let mut tar = Command::new("tar");
     tar.arg("-xJf").arg(tarball).arg("-C").arg(work);
     run_logged(tar, &log, BUILD_WITHIN)?;
     let src = work.join(format!("linux-{VERSION}"));
     let fragment = work.join("qinit.config");
-    std::fs::write(&fragment, FRAGMENT).map_err(|e| e.to_string())?;
+    std::fs::write(&fragment, FRAGMENT).map_err(at)?;
     let mut config = Command::new("make");
     config
         .arg("-C")
@@ -155,8 +156,7 @@ fn build_in(work: &Path, tarball: &Path, done: &Path) -> Result<(), String> {
         .arg("allnoconfig")
         .env("KCONFIG_ALLCONFIG", &fragment);
     run_logged(config, &log, BUILD_WITHIN)?;
-    let written = std::fs::read_to_string(src.join(".config"))
-        .map_err(|e| format!("{e}; log: {}", log.display()))?;
+    let written = std::fs::read_to_string(src.join(".config")).map_err(at)?;
     let missing = missing_options(FRAGMENT, &written);
     if !missing.is_empty() {
         return Err(format!(
@@ -174,12 +174,17 @@ fn build_in(work: &Path, tarball: &Path, done: &Path) -> Result<(), String> {
         .arg("bzImage");
     run_logged(build, &log, BUILD_WITHIN)?;
     let staged = work.join("done");
-    std::fs::create_dir_all(&staged).map_err(|e| e.to_string())?;
-    std::fs::copy(src.join("arch/x86/boot/bzImage"), staged.join("bzImage"))
-        .map_err(|e| format!("{e}; log: {}", log.display()))?;
-    std::fs::copy(src.join(".config"), staged.join("config")).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&staged).map_err(at)?;
+    std::fs::copy(src.join("arch/x86/boot/bzImage"), staged.join("bzImage")).map_err(at)?;
+    std::fs::copy(src.join(".config"), staged.join("config")).map_err(at)?;
     // The finished directory appears whole or not at all.
-    std::fs::rename(&staged, done).map_err(|e| format!("rename into {}: {e}", done.display()))
+    std::fs::rename(&staged, done).map_err(|e| {
+        format!(
+            "rename into {}: {e}; log: {}",
+            done.display(),
+            log.display()
+        )
+    })
 }
 
 /// The verified tarball: `$QINIT_KERNEL_TARBALL`, the cached download, or a fresh download.

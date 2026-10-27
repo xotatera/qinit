@@ -96,14 +96,16 @@ fn cargo_json_names_each_binary() {
     assert_eq!(m["probe"], std::path::PathBuf::from("/b/probe"));
 }
 
+#[cfg(target_pointer_width = "64")]
 #[test]
-#[should_panic(expected = "does not fit a newc field")]
-fn an_oversized_member_is_refused_not_saturated() {
-    // 4 GiB of zeroed, never-touched pages: the size check fires before any byte is copied.
-    let data = vec![0u8; usize::try_from(u64::from(u32::MAX) + 1).unwrap()];
-    let _ = newc(&[Entry {
-        path: "big".into(),
-        mode: 0o100_644,
-        data,
-    }]);
+fn a_size_beyond_a_newc_field_is_refused_not_saturated() {
+    use qinit_vm::initrd::size_field;
+    let over = usize::try_from(u64::from(u32::MAX) + 1).unwrap();
+    let e = size_field(over, "data", "big").unwrap_err();
+    assert!(
+        e.contains("big") && e.contains("does not fit a newc field"),
+        "{e}"
+    );
+    assert_eq!(size_field(0, "data", "x"), Ok(0));
+    assert_eq!(size_field(u32::MAX as usize, "data", "x"), Ok(u32::MAX));
 }
