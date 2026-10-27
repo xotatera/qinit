@@ -384,6 +384,10 @@ impl<E: Effects> Engine<E> {
             && let Some(status) = self.entry(slot)?.pending_exit.take()
         {
             self.deliver(slot, Event::MainExited(status))?;
+            // Empty may have been notified while an unrelated clone held the pipe open.
+            // Spawned marked populated again: re-read rather than wait for a lost edge.
+            let (populated, frozen) = self.effects.read_level(slot)?;
+            self.deliver(slot, Event::Level { populated, frozen })?;
         }
         Ok(())
     }

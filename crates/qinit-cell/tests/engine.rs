@@ -67,10 +67,53 @@ fn failed_effects_escalate_and_do_not_lose_batch_events() {
         assert_eq!(e.phase(CellId(0)), Some(Phase::Killing));
         assert!(e.effects.calls.contains(&Call::Kill(0)));
         assert!(e.effects.calls.contains(&Call::Arm(0, Timer::Kill, 1000)));
-        e.on_ready(&Ready::Deadline(token(0, Source::Kill)))
-            .unwrap();
-        assert_eq!(reports(&mut e), [Report::Failed(Failure::Stuck)]);
+        if effect == Effect::SignalMembers {
+            e.effects.levels.push_back((false, false));
+            e.on_ready(&Ready::Priority(token(0, Source::Events)))
+                .unwrap();
+            assert_eq!(
+                reports(&mut e),
+                [Report::Empty],
+                "the batch exit was retained"
+            );
+        } else {
+            e.on_ready(&Ready::Deadline(token(0, Source::Kill)))
+                .unwrap();
+            assert_eq!(reports(&mut e), [Report::Failed(Failure::Stuck)]);
+        }
     }
+}
+
+#[test]
+fn noneffect_errors_keep_first_error_but_run_every_action_and_event() {
+    use qinit_cell_core::Effect;
+    let mut e = running();
+    e.effects.failures.push_back(Effect::Freeze);
+    e.effects.arm_fails = true;
+    e.effects.cancel_fails = true;
+    assert_eq!(
+        e.stop(CellId(0), Polite::Cell, SEC, SEC),
+        Err(Error::Sys(qinit_sys::Errno(libc::ENOMEM)))
+    );
+    assert!(
+        e.effects.calls.contains(&Call::Kill(0)),
+        "cancel failure did not skip kill"
+    );
+    assert!(e.effects.calls.contains(&Call::Arm(0, Timer::Kill, 1000)));
+    e.effects.levels.push_back((false, false));
+    assert_eq!(
+        e.on_batch(&[
+            Ready::Exited(token(0, Source::Main), 9),
+            Ready::Priority(token(0, Source::Events)),
+            Ready::Deadline(token(0, Source::Kill)),
+        ]),
+        Some(Error::Sys(qinit_sys::Errno(libc::EIO)))
+    );
+    assert_eq!(
+        reports(&mut e),
+        [Report::Empty],
+        "report after failed Cancel still runs"
+    );
 }
 
 #[test]
@@ -99,6 +142,11 @@ fn unsettled_exec_pipe_keeps_handle_and_exit_until_eof() {
     e.on_ready(&Ready::Readable(token(0, Source::ExecError)))
         .unwrap();
     assert!(reports(&mut e).contains(&Report::Ready));
+    assert_eq!(
+        e.phase(id),
+        Some(Phase::Empty),
+        "the earlier empty edge cannot be lost"
+    );
 }
 
 /// An engine with cell 0 running (ready by pipe) and its notices taken.

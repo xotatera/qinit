@@ -42,6 +42,8 @@ pub struct Sim {
     pub failures: VecDeque<Effect>,
     /// An exec-error pipe whose writer is still open.
     pub exec_pending: bool,
+    pub arm_fails: bool,
+    pub cancel_fails: bool,
     /// `adopt_main` refuses the pidfd (EBADF).
     pub adopt_fails: bool,
     /// `open_existing`'s answer: `(cgroup id, populated)`, or ENOENT when `None`.
@@ -116,11 +118,19 @@ impl Effects for Sim {
     }
     fn arm(&mut self, slot: u16, timer: Timer, ms: u32) -> Result<(), Errno> {
         self.calls.push(Call::Arm(slot, timer, ms));
-        Ok(())
+        if self.arm_fails {
+            Err(Errno(libc::ENOMEM))
+        } else {
+            Ok(())
+        }
     }
     fn cancel(&mut self, slot: u16, timer: Timer) -> Result<(), Errno> {
         self.calls.push(Call::Cancel(slot, timer));
-        Ok(())
+        if self.cancel_fails {
+            Err(Errno(libc::EIO))
+        } else {
+            Ok(())
+        }
     }
     fn read_ready(&mut self, _slot: u16, buf: &mut [u8]) -> Result<usize, Errno> {
         let chunk = self.ready_chunks.pop_front().unwrap_or_default();

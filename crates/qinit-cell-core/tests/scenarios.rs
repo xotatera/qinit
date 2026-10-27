@@ -180,6 +180,9 @@ fn readiness_by_exit() {
         "status 0 with the cell still populated: ready"
     );
     assert_eq!(c.phase, Phase::Running);
+    let (unknown, acts) = run(base, &[Event::MainExited(None)]);
+    assert_eq!(unknown.phase, Phase::Exited);
+    assert_eq!(acts[0], [Action::Report(Report::MainExited(None))]);
     let (c, acts) = run(base, &[Event::MainExited(Some(1 << 8))]);
     assert_eq!(acts[0], [Action::Report(Report::MainExited(Some(1 << 8)))]);
     assert_eq!(c.phase, Phase::Exited);
