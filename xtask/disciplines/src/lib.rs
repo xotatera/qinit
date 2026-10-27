@@ -920,15 +920,22 @@ fn run_wave(ctx: &RunCtx, wave: &[Gate], run: &mut Ran) {
         run.not_run.extend(rest.map(|i| wave[i].name));
         return;
     }
+    let mut skipped = Vec::new();
     run_batch(ctx, wave, &waiting, &mut |d| {
+        // The batch stops starting entries after a failure; those never ran,
+        // so they are neither concluded nor timed.
+        if !d.ran {
+            skipped.push(wave[d.index].name);
+            return;
+        }
         let ended = Ended {
             start: d.start,
             elapsed: d.elapsed,
             steps: d.steps,
         };
-        // The batch itself stops starting entries after a failure.
         let _ = finish(d.index, d.result, &d.log, ended, true);
     });
+    run.not_run.extend(skipped);
 }
 
 /// Looks up every gate of `wave` before any runs: `Some` slot for each gate
@@ -1046,8 +1053,9 @@ fn print_report(name: &str, report: &runner::Report, took: Option<String>) -> bo
     true
 }
 
-/// Runs a parsed command. Failure policy: every gate runs, and failures are
-/// reported together (a long report beats one-at-a-time discovery).
+/// Runs a parsed command. Failure policy: fail fast. Gates run in registry
+/// order and the run stops at the first failure; the summary names the
+/// gates that did not run.
 #[must_use]
 pub fn execute(cmd: &Command, root: &Path) -> bool {
     execute_with(&Runner::template(), cmd, root)

@@ -194,14 +194,12 @@ fn after_a_failure_no_queued_entry_starts() {
         1,
         8 * G,
         &runner,
-        &mut |d| results.push((d.index, d.result)),
+        &mut |d| results.push((d.index, d.ran, d.result.is_ok())),
     );
     assert_eq!(started.into_inner().unwrap(), ["first"]);
-    results.sort_by_key(|(index, _)| *index);
-    assert_eq!(results[0], (0, Err("fails".to_string())));
-    for (index, result) in &results[1..] {
-        let error = result.as_ref().unwrap_err();
-        assert!(error.contains("not run"), "{index}: {error}");
-    }
-    assert_eq!(results.len(), 3);
+    results.sort_unstable();
+    assert_eq!(
+        results,
+        [(0, true, false), (1, false, false), (2, false, false)]
+    );
 }

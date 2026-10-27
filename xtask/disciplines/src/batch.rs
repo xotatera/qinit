@@ -23,9 +23,11 @@ pub struct Waiting {
 
 /// A finished entry: its index in the caller's list, verdict, log, when it
 /// started, its wall-clock time, and the atc steps its thread recorded
-/// (`timing::take`).
+/// (`timing::take`). `ran` is false for an entry that never started because
+/// an earlier one failed: it is not run, not failed, and has no time.
 pub struct Done {
     pub index: usize,
+    pub ran: bool,
     pub result: Result<(), String>,
     pub log: String,
     pub start: Instant,
@@ -96,6 +98,7 @@ pub fn run(
                         let _ = tx.send((
                             Done {
                                 index,
+                                ran: true,
                                 result,
                                 log,
                                 start,
@@ -113,6 +116,7 @@ pub fn run(
                     failed = true;
                     done(Done {
                         index,
+                        ran: true,
                         result: Err(format!("cannot start a thread: {e}")),
                         log: String::new(),
                         start: Instant::now(),
@@ -137,6 +141,7 @@ pub fn run(
     for w in queue {
         done(Done {
             index: w.index,
+            ran: false,
             result: Err("not run: an earlier proof failed".to_string()),
             log: String::new(),
             start: Instant::now(),
