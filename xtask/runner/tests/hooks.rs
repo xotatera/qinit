@@ -177,11 +177,9 @@ fn copy_hooks(source: &Path, destination: &Path) {
     }
 }
 
-fn write_exec(path: &Path, text: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, text).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
+#[path = "../../disciplines/tests/common/mod.rs"]
+mod executable;
+use executable::exe as write_exec;
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()

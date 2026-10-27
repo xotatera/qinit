@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+mod common;
+use common::exe as write_script;
 use xtask::tools::{missing, report};
 
 const REQUIRED: &[(&str, &str)] = &[("a", "install a"), ("b", "install b")];
@@ -41,15 +43,13 @@ impl Drop for Scratch {
 
 #[test]
 fn resolve_in_finds_the_first_executable_only() {
-    use std::os::unix::fs::PermissionsExt;
     let scratch = scratch("resolve_in_finds_the_first_executable_only");
     let dir = &scratch.0;
     let (a, b) = (dir.join("a"), dir.join("b"));
     std::fs::create_dir_all(&a).unwrap();
     std::fs::create_dir_all(&b).unwrap();
     std::fs::write(a.join("tool"), "not executable").unwrap();
-    std::fs::write(b.join("tool"), "#!/bin/sh\n").unwrap();
-    std::fs::set_permissions(b.join("tool"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&b.join("tool"), "#!/bin/sh\n");
     let path = std::env::join_paths([&a, &b]).unwrap();
     assert_eq!(
         xtask::tools::resolve_in(&path, "tool"),
@@ -60,26 +60,21 @@ fn resolve_in_finds_the_first_executable_only() {
 
 #[test]
 fn cargo_verus_version_requires_the_selected_release() {
-    use std::os::unix::fs::PermissionsExt;
     let scratch = scratch("cargo_verus_version_requires_the_selected_release");
     std::fs::create_dir_all(&scratch.0).unwrap();
     let cargo_verus = scratch.0.join("cargo-verus");
-    std::fs::write(&cargo_verus, "#!/bin/sh\n").unwrap();
-    std::fs::set_permissions(&cargo_verus, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&cargo_verus, "#!/bin/sh\n");
     let verus = scratch.0.join("verus");
-    std::fs::write(
+    write_script(
         &verus,
         "#!/bin/sh\nprintf '%s\\n' 'Verus' '  Version: 0.2026.10.04.426d8b0'\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&verus, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     assert_eq!(xtask::tools::cargo_verus_version(&cargo_verus), Ok(()));
 
-    std::fs::write(
+    write_script(
         &verus,
         "#!/bin/sh\nprintf '%s\\n' 'Verus' '  Version: 0.2026.10.05.next'\n",
-    )
-    .unwrap();
+    );
     let error = xtask::tools::cargo_verus_version(&cargo_verus).unwrap_err();
     assert!(error.contains("cargo-verus driver"), "{error}");
     assert!(
@@ -99,12 +94,6 @@ fn cargo_verus_version_reports_a_missing_driver() {
         "{error}"
     );
     assert!(error.contains("missing-cargo-verus"), "{error}");
-}
-
-fn write_script(path: &std::path::Path, body: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, body).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 #[test]

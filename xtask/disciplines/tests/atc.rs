@@ -22,26 +22,13 @@ fn scratch(test: &str) -> Scratch {
     Scratch(dir)
 }
 
-/// A fake `atc` in `dir` that exits `code` for `status`. `install` writes the
-/// binary from a source file, so this process never holds it open for
-/// writing: a thread of another test that forks meanwhile would otherwise
-/// carry that descriptor into its child until it execs, and running the
-/// fake then would fail with ETXTBSY.
+mod common;
+
+/// A fake `atc` in `dir` that exits `code` for `status`.
 fn fake_atc(dir: &Path, code: i32) {
-    let src = dir.join("atc.src");
-    std::fs::write(
-        &src,
-        format!("#!/bin/sh\n[ \"$1\" = status ] && exit {code}\nexit 64\n"),
-    )
-    .unwrap();
-    assert!(
-        std::process::Command::new("install")
-            .args(["-m", "755"])
-            .arg(&src)
-            .arg(dir.join("atc"))
-            .status()
-            .unwrap()
-            .success()
+    common::exe(
+        &dir.join("atc"),
+        &format!("#!/bin/sh\n[ \"$1\" = status ] && exit {code}\nexit 64\n"),
     );
 }
 
