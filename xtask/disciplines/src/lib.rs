@@ -820,12 +820,9 @@ struct Ran {
 
 /// Runs `wave`: each gate is looked up first; what must run runs one at a
 /// time, or, for two or more proofs, in parallel under the budget. Fail
-/// fast: after a failure, in this wave or an earlier one, no gate starts.
+/// fast: after a failure, in this wave or an earlier one, no gate starts
+/// (`prepare_wave` stops at once and lists the wave as not run).
 fn run_wave(ctx: &RunCtx, wave: &[Gate], run: &mut Ran) {
-    if !run.failed.is_empty() {
-        run.not_run.extend(wave.iter().map(|g| g.name));
-        return;
-    }
     let key = |g: &Gate| ctx.key(g);
     let alt_keys: Vec<Box<dyn Fn() -> Result<String, String> + '_>> = wave
         .iter()
@@ -921,13 +918,7 @@ fn run_wave(ctx: &RunCtx, wave: &[Gate], run: &mut Ran) {
         return;
     }
     let mut skipped = Vec::new();
-    run_batch(ctx, wave, &waiting, &mut |d| {
-        // The batch stops starting entries after a failure; those never ran,
-        // so they are neither concluded nor timed.
-        if !d.ran {
-            skipped.push(wave[d.index].name);
-            return;
-        }
+    run_batch(ctx, wave, &waiting, &mut skipped, &mut |d| {
         let ended = Ended {
             start: d.start,
             elapsed: d.elapsed,
@@ -1000,7 +991,15 @@ fn timed(g: &Gate, root: &Path) -> (Result<(), String>, Ended) {
 
 /// Two or more pending proofs of `wave` (`waiting`, by index) run in
 /// parallel under the budget; `finish` concludes each as it ends.
-fn run_batch(ctx: &RunCtx, wave: &[Gate], waiting: &[usize], finish: &mut dyn FnMut(batch::Done)) {
+/// The batch stops starting entries after a failure; those never ran, so
+/// they go to `skipped`, neither concluded nor timed.
+fn run_batch(
+    ctx: &RunCtx,
+    wave: &[Gate],
+    waiting: &[usize],
+    skipped: &mut Vec<&'static str>,
+    finish: &mut dyn FnMut(batch::Done),
+) {
     let names: Vec<&str> = waiting.iter().map(|i| wave[*i].name).collect();
     let durations = ctx
         .store
@@ -1024,7 +1023,21 @@ fn run_batch(ctx: &RunCtx, wave: &[Gate], waiting: &[usize], finish: &mut dyn Fn
         .collect();
     let runner =
         |root: &Path, p: &proofs::Proof, jobs: usize| gates::proof_run(root, p, jobs, true);
-    batch::run(ctx.root, entries, &order, cores, budget, &runner, finish);
+    batch::run(
+        ctx.root,
+        entries,
+        &order,
+        cores,
+        budget,
+        &runner,
+        &mut |d| {
+            if d.ran {
+                finish(d);
+            } else {
+                skipped.push(wave[d.index].name);
+            }
+        },
+    );
 }
 
 /// Prints a gate's warnings and outcome, with its time when it ran
