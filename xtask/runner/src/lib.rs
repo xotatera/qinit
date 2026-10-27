@@ -186,6 +186,24 @@ const VM_TOOLS: &[&str] = &[
     "curl",
 ];
 
+/// What the `vm` gate's result depends on beyond its files: the variables
+/// every cargo gate declares ([`xtask::RUST_ENV`], pinned against it in
+/// `tests/registry.rs`), `HOME` (the fallback cache root), the kernel tarball
+/// override and the cache root.
+const VM_ENV: &[&str] = &[
+    "RUSTFLAGS",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "CARGO_BUILD_RUSTFLAGS",
+    "RUSTDOCFLAGS",
+    "RUSTC",
+    "RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "CLIPPY_CONF_DIR",
+    "HOME",
+    "QINIT_KERNEL_TARBALL",
+    "XDG_CACHE_HOME",
+];
+
 /// The guest suites (`qinit-vm run`): builds the pinned kernel on first use.
 fn vm(root: &Path) -> Result<(), String> {
     let status = std::process::Command::new("cargo")
@@ -364,7 +382,7 @@ pub fn repo_registry() -> Vec<Gate> {
                 "Cargo.lock",
                 "rust-toolchain.toml",
             ]),
-            env: &["QINIT_KERNEL_TARBALL", "XDG_CACHE_HOME"],
+            env: VM_ENV,
             tools: VM_TOOLS,
             extra_paths: &[],
             cache_paths: &[],

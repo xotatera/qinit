@@ -98,17 +98,6 @@ fn step(stage: &'static str, arguments: &[&str]) -> (&'static str, xtask::Comman
 
 #[test]
 fn a_full_gate_run_follows_the_global_order_then_runs_proofs() {
-    let mut expected: Vec<_> = GLOBAL_ORDER
-        .iter()
-        .map(|(stage, gate)| step(stage, &["gate", "--no-cache", "--only", gate]))
-        .collect();
-    expected.push(step("repo", &["proofs", "--no-cache"]));
-    expected.push(step("repo", &["gate", "--no-cache", "--only", "vm"]));
-    assert_eq!(planned(&["gate", "--no-cache"]), expected);
-}
-
-#[test]
-fn the_vm_gate_runs_after_the_proofs() {
     assert_eq!(qinit_xtask::AFTER_PROOFS, &[("repo", "vm")]);
     let mut expected: Vec<_> = GLOBAL_ORDER
         .iter()
@@ -132,7 +121,9 @@ fn the_vm_gate_declares_its_inputs_and_tools() {
             "rust-toolchain.toml"
         ])
     );
-    assert_eq!(vm.env, &["QINIT_KERNEL_TARBALL", "XDG_CACHE_HOME"]);
+    let mut env = xtask::RUST_ENV.to_vec();
+    env.extend(["HOME", "QINIT_KERNEL_TARBALL", "XDG_CACHE_HOME"]);
+    assert_eq!(vm.env, env);
     assert_eq!(
         vm.tools,
         &[

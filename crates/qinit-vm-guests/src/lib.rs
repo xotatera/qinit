@@ -12,7 +12,7 @@
 use qinit_event::{Loop, Ready, Token};
 use std::ffi::CString;
 use std::io::Write;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd, RawFd};
 use std::path::Path;
 use std::time::Duration;
 
@@ -113,6 +113,15 @@ pub fn make_cell(name: &str) -> Result<(OwnedFd, OwnedFd), String> {
 
 /// Spawns `/init --qinit-helper <role>` straight into `cell`, waiting for its exec.
 pub fn spawn_helper(cell: BorrowedFd<'_>, role: &str) -> Result<(libc::pid_t, OwnedFd), String> {
+    spawn_helper_routed(cell, role, &[])
+}
+
+/// [`spawn_helper`] with descriptor routes `(source, target number)` into the helper.
+pub fn spawn_helper_routed(
+    cell: BorrowedFd<'_>,
+    role: &str,
+    routes: &[(BorrowedFd<'_>, RawFd)],
+) -> Result<(libc::pid_t, OwnedFd), String> {
     use std::ffi::OsStr;
     use std::io::Read;
     let argv = [
@@ -121,7 +130,7 @@ pub fn spawn_helper(cell: BorrowedFd<'_>, role: &str) -> Result<(libc::pid_t, Ow
         OsStr::new(role),
     ];
     let p = sys(
-        qinit_sys::spawn::Prepared::new(Path::new("/init"), &argv, &[], &[]),
+        qinit_sys::spawn::Prepared::new(Path::new("/init"), &argv, &[], routes),
         "prepare",
     )?;
     let (r, w) = sys(qinit_sys::fd::pipe(libc::O_CLOEXEC), "pipe")?;
@@ -159,7 +168,9 @@ pub fn read_events(events: BorrowedFd<'_>) -> Result<(bool, bool), String> {
 }
 
 /// Waits on `l` (whose source `token` watches `events`) until `events` shows the wanted
-/// values; a `HANG_GUARD` deadline token `token + 1000` ends the wait with an error.
+/// values; a `HANG_GUARD` deadline token `token + 1000` ends the wait with an error. Lenient:
+/// a state already reached when it is called is accepted without any notification, so it
+/// proves the state, never that a notification announced it (that is [`await_notified`]).
 pub fn await_events(
     l: &mut Loop,
     token: Token,
@@ -167,12 +178,37 @@ pub fn await_events(
     populated: Option<bool>,
     frozen: Option<bool>,
 ) -> Result<(), String> {
+    wait_for(l, token, events, (populated, frozen), false)
+}
+
+/// Like [`await_events`], but strict: the wanted state is accepted only when read after a
+/// `Ready::Priority` or `Ready::Inotify` for `token`. For a probe of the notification
+/// itself: read `events` (clearing its pending priority state), register the watch, then
+/// trigger the change. EPOLLPRI is level-triggered and inotify queues, so a notification
+/// raised before this call stays pending.
+pub fn await_notified(
+    l: &mut Loop,
+    token: Token,
+    events: BorrowedFd<'_>,
+    populated: Option<bool>,
+    frozen: Option<bool>,
+) -> Result<(), String> {
+    wait_for(l, token, events, (populated, frozen), true)
+}
+
+fn wait_for(
+    l: &mut Loop,
+    token: Token,
+    events: BorrowedFd<'_>,
+    (populated, frozen): (Option<bool>, Option<bool>),
+    strict: bool,
+) -> Result<(), String> {
     let guard = token + 1000;
     l.add_deadline(HANG_GUARD, guard)
         .map_err(|e| e.to_string())?;
     let wanted =
         |(p, f): (bool, bool)| populated.is_none_or(|w| w == p) && frozen.is_none_or(|w| w == f);
-    if wanted(read_events(events)?) {
+    if !strict && wanted(read_events(events)?) {
         l.remove(guard).map_err(|e| e.to_string())?;
         return Ok(());
     }
@@ -196,10 +232,24 @@ pub fn await_events(
     }
 }
 
-/// Blocks until SIGTERM (blocked, read from a signalfd) arrives.
-fn wait_for_term(ignore: bool) -> i32 {
+/// Writes one byte to descriptor 3 (a readiness pipe).
+fn write_ready() -> bool {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open("/proc/self/fd/3")
+        .and_then(|mut f| f.write_all(b"\n"))
+        .is_ok()
+}
+
+/// Blocks until SIGTERM (blocked, read from a signalfd) arrives; with `ignore`, forever.
+/// With `ready`, writes to descriptor 3 once SIGTERM is blocked, so a TERM sent after the
+/// readiness byte is always caught.
+fn wait_for_term(ignore: bool, ready: bool) -> i32 {
     let Ok(mut l) = Loop::new() else { return 2 };
     if l.add_signal(&[libc::SIGTERM], 1).is_err() {
+        return 2;
+    }
+    if ready && !write_ready() {
         return 2;
     }
     loop {
@@ -234,19 +284,26 @@ fn spawn_role(role: &str) -> i32 {
     }
 }
 
+/// Copies `/proc/self/cgroup` to descriptor 3: the helper's first action after the role
+/// dispatch, so it shows the cgroup the program started in.
+fn report_cgroup() -> i32 {
+    let copied = std::fs::read("/proc/self/cgroup").and_then(|text| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open("/proc/self/fd/3")
+            .and_then(|mut f| f.write_all(&text))
+    });
+    if copied.is_ok() { 0 } else { 2 }
+}
+
 /// The helper programs (exit codes: 0 done, 2 helper failure).
 fn helper(role: &str) -> i32 {
     match role {
-        "wait-term" => wait_for_term(false),
-        "ignore-term" => wait_for_term(true),
-        "ready" => {
-            let ok = std::fs::OpenOptions::new()
-                .write(true)
-                .open("/proc/self/fd/3")
-                .and_then(|mut f| f.write_all(b"\n"))
-                .is_ok();
-            if ok { wait_for_term(false) } else { 2 }
-        }
+        "report-cgroup" => report_cgroup(),
+        "wait-term" => wait_for_term(false, false),
+        "ignore-term" => wait_for_term(true, false),
+        "ready" => wait_for_term(false, true),
+        "ready-ignore-term" => wait_for_term(true, true),
         "ready-close" => {
             // Close fd 3 without writing by exec'ing with it close-on-exec, and keep running.
             if qinit_sys::fd::set_cloexec_raw(3).is_err() {
@@ -271,7 +328,7 @@ fn helper(role: &str) -> i32 {
             if qinit_sys::proc::setsid().is_err() {
                 return 2;
             }
-            wait_for_term(false)
+            wait_for_term(false, false)
         }
         "orphan-parent" => spawn_role("wait-term"),
         "exit-0" => 0,

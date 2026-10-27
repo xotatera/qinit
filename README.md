@@ -54,9 +54,9 @@ The selected Verus release is `0.2026.10.04.426d8b0`; when a `kind = "verus"`
 proof is declared, tooling verifies the Verus driver selected by the
 `cargo-verus` command that `cargo verus` invokes, and that `verusfmt` is the
 paired release `0.7.4` (`cargo install --locked verusfmt --version 0.7.4`).
-This keeps the empty-workspace full gate portable: it declares no proof and
-therefore does not require Verus. Run the complete local gate from the
-repository root:
+The root workspace declares Verus proofs, so the full gate needs Verus and
+verusfmt (see Requirements). Run the complete local gate from the repository
+root:
 
 ```sh
 cargo xtask gate --no-cache
@@ -68,7 +68,7 @@ any declared proofs, then the `vm` gate (guest suites in QEMU), and stops at
 the first failure. Every run of several
 steps stops at its first failure, `--only` across both workspaces and
 `cargo xtask proofs` included. `cargo xtask proofs` runs only declared proof
-obligations; there are none until product crates exist. Gates are portable and
+obligations. Gates are portable and
 do not require a host scheduler. There is no CI at this stage.
 
 ### Requirements
@@ -133,7 +133,7 @@ must be resolved with the stated implementation change rather than hidden:
 | Approved qinit design §1 fixes qinit's public component scope and keeps unrelated services out. | No product component or additional binary is introduced by this setup. | [DEFERRED.md](DEFERRED.md) D2. |
 | Approved qinit design §2 requires Rust, Verus, four layers, event-driven waits, and bounded operations. | Rust is pinned; the selected Verus release is asserted when a Verus proof is declared; implementation and transition tests wait for product crates. | `rust-toolchain.toml`; `xtask/disciplines/src/tools.rs`; `Cargo.toml`. |
 | Approved qinit design §§3–7 define the queen, colony, overseer, zero, graph, logging, protocol, and shutdown behavior. | These product behaviors remain design-only; this task adds no daemon, protocol, or systemd-derived code. | [Scope](#scope); [DEFERRED.md](DEFERRED.md). |
-| Approved qinit design §8 makes disciplines setup the first sub-project: pinned tools; portable format, test, proof, REUSE, and canary gates; opt-in hooks; and no CI. | `cargo xtask gate --no-cache` is the fresh full check; Rust is pinned and declared Verus proofs assert their selected release without blocking the empty workspace; the hook installation above is local and optional. | `rust-toolchain.toml`; `xtask/disciplines/src/gates.rs`; `.githooks/setup-hooks.sh`; `xtask/runner/src/lib.rs`; `xtask/runner/tests/repo.rs`. |
+| Approved qinit design §8 makes disciplines setup the first sub-project: pinned tools; portable format, test, proof, REUSE, and canary gates; opt-in hooks; and no CI. | `cargo xtask gate --no-cache` is the fresh full check; Rust is pinned and declared Verus proofs assert their selected release; the hook installation above is local and optional. | `rust-toolchain.toml`; `xtask/disciplines/src/gates.rs`; `.githooks/setup-hooks.sh`; `xtask/runner/src/lib.rs`; `xtask/runner/tests/repo.rs`. |
 | Approved qinit design §9 defers user-session work, adoption/additional binaries/live upgrade, CI, and size budgets. | D1–D2 remain open design deferrals; no CI or size-budget commitment is made. | [DEFERRED.md](DEFERRED.md). |
 | Approved qinit design §10 records the research provenance for later implementation. | This public documentation records repository setup evidence and the accepted D4–D5 gate blockers (D3 resolved by the first product crate); product research provenance remains for later implementation. | [Development](#development); [DEFERRED.md](DEFERRED.md). |
 
