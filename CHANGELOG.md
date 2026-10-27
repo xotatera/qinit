@@ -10,15 +10,6 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Fixed
-
-- `qinit-cell`: settle exec failure before readiness EOF so it cannot report
-  `NotReady` before `Failed(Spawn)`; removing a failed mismatched adoption
-  releases only its slot and never touches the foreign directory.
-- Cell guest assertions wait for children to become reapable after Empty,
-  prove the between-enumeration hook killed members before TERM, and ready
-  the TERM-ignoring escalation member before a cell-wide polite stop.
-
 ### Added
 
 - Guest suites for cells: spawn (placement, exec failure, only routed
@@ -27,8 +18,9 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   handed-over main process), orphan; `Cells::main_pid`.
 - `qinit-cell`: the cell runtime (`Cells`): create, spawn into the cell,
   readiness, polite stop by main pidfd or freeze-signal-thaw with pidfds
-  verified by cgroup id, escalation, adoption, removal, orphan reaping as a
-  subreaper; refuses kernels below 6.13.
+  verified by cgroup id, escalation, adoption, removal (a failed adoption whose
+  cgroup id did not match releases only its slot and never touches the
+  directory), orphan reaping as a subreaper; refuses kernels below 6.13.
 - `qinit-cell-drive`: loop tokens and slot choice for the cell table, Verus-proved
   (each token routes to one cell and source; a full table refuses new cells).
 - `qinit-cell-core`: the cell machine (create, spawn into the cell, readiness by
