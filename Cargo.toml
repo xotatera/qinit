@@ -33,12 +33,13 @@ proof_memory_budget = "8G"
 # Rust/LLVM linking on a rootless cgroup (resident peaks are much lower).
 # timeout: CPU seconds, about 2x the run.
 # Measured 2026-10-27: 2 verified, 12.9 s (19.3 s CPU), 1.0 GB peak.
+# The final container KVM re-run took 20.1s wall; allow about twice that too.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-event-core"
 kind = "verus"
 package = "qinit-event-core"
 memory = "4G"
-timeout = "40s"
+timeout = "45s"
 
 # Measured 2026-10-27: 29 verified, 12.6-15.7 s (18.9-22.3 s CPU), 986 MB peak.
 [[workspace.metadata.disciplines.proof]]
@@ -49,9 +50,10 @@ memory = "4G"
 timeout = "45s"
 
 # Measured 2026-10-27: 12 verified, 13.5-14.2 s (19.9-21.0 s CPU), 1.0 GB peak.
+# Container runs: 13.5 and 14.0 s; 45s covers 2x the slowest measured 21.0s CPU.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-cell-drive"
 kind = "verus"
 package = "qinit-cell-drive"
 memory = "4G"
-timeout = "40s"
+timeout = "45s"
