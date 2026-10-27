@@ -6,7 +6,7 @@
 //! its `SAFETY` comment what it relies on. Seeded from alloy's `common-sys`.
 // Every fallible function returns the errno of the one system call it wraps; a per-function
 // `# Errors` section would only repeat that.
-#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_errors_doc)] // syscall wrappers propagate Errno unchanged; individual docs name the operations
 
 #[cfg(not(target_arch = "x86_64"))]
 compile_error!("qinit-sys's raw child path and kernel structures are written for x86_64");

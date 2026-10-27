@@ -186,22 +186,24 @@ fn child(p: &Prepared<'_>, err: RawFd) -> ! {
     let mut parked: [RawFd; MAX_ROUTES] = [0; MAX_ROUTES];
     for (i, &(src, _)) in p.routes.iter().enumerate() {
         // SAFETY: F_DUPFD_CLOEXEC on an inherited descriptor; no memory is passed.
-        let t = unsafe { libc::fcntl(src, libc::F_DUPFD_CLOEXEC, p.park) };
+        let t = unsafe { libc::syscall(libc::SYS_fcntl, src, libc::F_DUPFD_CLOEXEC, p.park) };
         if t < 0 {
             fail(err);
         }
+        #[allow(clippy::cast_possible_truncation)] // fcntl returned a valid RawFd
+        let t = t as RawFd;
         parked[i] = t;
     }
     for (i, &(_, dst)) in p.routes.iter().enumerate() {
         // SAFETY: dup3 of a parked copy onto its target, without close-on-exec.
-        if unsafe { libc::dup3(parked[i], dst, 0) } < 0 {
+        if unsafe { libc::syscall(libc::SYS_dup3, parked[i], dst, 0) } < 0 {
             fail(err);
         }
     }
     for n in 0..=p.top {
         if !p.routes.iter().any(|&(_, d)| d == n) {
             // SAFETY: closing an unrouted number below the highest target; EBADF is harmless.
-            unsafe { libc::close(n) };
+            unsafe { libc::syscall(libc::SYS_close, n) };
         }
     }
     #[allow(clippy::cast_sign_loss)] // top + 1 is at least 0
@@ -280,7 +282,11 @@ fn default_dispositions() {
 fn fail(err: RawFd) -> ! {
     let bytes = Errno::last().0.to_ne_bytes();
     // SAFETY: four readable bytes; a failed write leaves only the exit status to tell.
-    unsafe { libc::write(err, bytes.as_ptr().cast(), bytes.len()) };
-    // SAFETY: _exit is async-signal-safe and never returns.
-    unsafe { libc::_exit(127) }
+    unsafe { libc::syscall(libc::SYS_write, err, bytes.as_ptr(), bytes.len()) };
+    // SAFETY: SYS_exit terminates this single-threaded child, with no memory arguments.
+    unsafe { libc::syscall(libc::SYS_exit, 127) };
+    // SYS_exit never returns; do not run a destructor or panic in the child.
+    loop {
+        core::hint::spin_loop();
+    }
 }

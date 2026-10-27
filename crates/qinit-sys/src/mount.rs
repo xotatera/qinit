@@ -51,7 +51,7 @@ pub fn power_off_from_child() -> ! {
         loop {
             let mut status = 0;
             // SAFETY: waits for any child with a valid out-pointer.
-            if unsafe { libc::wait(&raw mut status) } < 0 && Errno::last() == Errno(libc::ECHILD) {
+            if unsafe { libc::wait(&raw mut status) } < 0 && Errno::last() != Errno(libc::EINTR) {
                 break;
             }
         }

@@ -88,12 +88,29 @@ fn an_exec_failure_reports_its_errno() {
 fn routes_over_the_error_pipes_number_still_report_an_exec_failure() {
     let (_r, w) = fd::pipe(libc::O_CLOEXEC).unwrap();
     let (err_r, err_w) = fd::pipe(libc::O_CLOEXEC).unwrap();
-    let n = err_w.as_raw_fd();
-    // Targets on the caller's error-pipe number and on both its neighbours: routing must not
-    // overwrite the child's own copy of the pipe.
-    let routes = [(w.as_fd(), n - 1), (w.as_fd(), n), (w.as_fd(), n + 1)];
+    // Run alone so parallel tests cannot allocate the deliberate descriptor hole.
+    if std::env::var_os("QINIT_ERROR_FLOOR_CHILD").is_none() {
+        assert!(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "routes_over_the_error_pipes_number_still_report_an_exec_failure"
+                ])
+                .env("QINIT_ERROR_FLOOR_CHILD", "1")
+                .status()
+                .unwrap()
+                .success()
+        );
+        return;
+    }
+    // The next free number becomes a route target. A floor=0 error-pipe copy would
+    // occupy this hole and dup3 would overwrite it; the protected floor must avoid it.
+    let hole = fd::dup_above(&w, 0).unwrap();
+    let n = hole.as_raw_fd();
+    let routes = [(w.as_fd(), n)];
     let p =
         spawn::Prepared::new(Path::new("/nonexistent/qinit"), &sh("true"), &[], &routes).unwrap();
+    drop(hole);
     let (_pid, pidfd) = spawn::spawn(&p, None, err_w.as_fd()).unwrap();
     drop(err_w);
     let mut bytes = Vec::new();

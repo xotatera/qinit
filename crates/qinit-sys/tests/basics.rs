@@ -68,13 +68,24 @@ fn a_child_is_reaped_through_its_pidfd_with_its_status() {
     std::mem::forget(child);
 }
 
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 #[test]
 fn a_killed_child_reports_its_signal() {
-    let child = std::process::Command::new("sleep")
-        .arg("30")
-        .spawn()
-        .unwrap();
-    let pidfd = proc::pidfd_open(child.id() as libc::pid_t).unwrap();
+    let child = KillOnDrop(
+        std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap(),
+    );
+    let pidfd = proc::pidfd_open(child.0.id() as libc::pid_t).unwrap();
     assert!(proc::pidfd_signal(&pidfd, libc::SIGKILL).unwrap());
     let ep = event::epoll().unwrap();
     event::epoll_add(&ep, pidfd.as_raw_fd(), libc::EPOLLIN as u32, 1).unwrap();
@@ -82,7 +93,6 @@ fn a_killed_child_reports_its_signal() {
     let raw = proc::reap_pidfd(&pidfd).unwrap().expect("exited");
     assert!(libc::WIFSIGNALED(raw));
     assert_eq!(libc::WTERMSIG(raw), libc::SIGKILL);
-    std::mem::forget(child);
 }
 
 #[test]
