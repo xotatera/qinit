@@ -91,6 +91,9 @@ enum Source {
 pub struct Loop {
     ep: OwnedFd,
     sources: HashMap<Token, (RawFd, Source)>,
+    /// The first source error of a batch that also collected events; the next `wait`
+    /// returns it before blocking.
+    deferred: Option<Error>,
 }
 
 const IN: u32 = libc::EPOLLIN as u32;
@@ -105,6 +108,7 @@ impl Loop {
         Ok(Loop {
             ep: sys(event::epoll(), "epoll_create1")?,
             sources: HashMap::new(),
+            deferred: None,
         })
     }
 
@@ -121,6 +125,8 @@ impl Loop {
     }
 
     /// Reports `Readable` while `fd` has data, `Hangup` once the peer closed and nothing is left.
+    /// A socket whose peer closed reports `Readable` (read it to EOF); `Hangup` comes from
+    /// pipes and terminal hangups.
     ///
     /// # Errors
     ///
@@ -209,23 +215,34 @@ impl Loop {
     /// Waits for the next events. `Exited` entries come first: the process is already reaped,
     /// so nothing else in the batch may be acted on as if it still ran.
     ///
+    /// A source that fails while a batch is processed (a pidfd that cannot be reaped, a
+    /// removal epoll refuses) is removed, and the rest of the batch is still processed, so no
+    /// report from an already-removed one-shot source is lost. If the batch collected events,
+    /// they are returned and the first such error is kept for the next call, which returns it
+    /// before blocking; if it collected none, the error is returned at once.
+    ///
     /// # Errors
     ///
-    /// [`Error::Empty`] with no source registered; [`Error::Sys`] when `epoll_wait` fails or a
-    /// pidfd cannot be reaped (that source is removed first).
+    /// The error kept from the previous batch, if any; then [`Error::Empty`] with no source
+    /// registered; [`Error::Sys`] when `epoll_wait` fails, or when a source fails and the batch
+    /// collected no events.
     pub fn wait(&mut self) -> Result<Vec<Ready>, Error> {
+        if let Some(e) = self.deferred.take() {
+            return Err(e);
+        }
         if self.sources.is_empty() {
             return Err(Error::Empty);
         }
         let mut evs = [libc::epoll_event { events: 0, u64: 0 }; 16];
         let n = sys(event::epoll_wait(&self.ep, &mut evs), "epoll_wait")?;
         let mut out = Vec::new();
+        let mut failed = None;
         for ev in &evs[..n] {
             let (token, bits) = (ev.u64, ev.events);
             let Some((_, src)) = self.sources.get(&token) else {
                 continue;
             };
-            match src {
+            let result = match src {
                 Source::Fd => {
                     if bits & IN != 0 {
                         out.push(Ready::Readable(token));
@@ -234,38 +251,57 @@ impl Loop {
                     {
                         out.push(Ready::Hangup(token));
                     }
+                    Ok(())
                 }
-                Source::Priority => out.push(Ready::Priority(token)),
+                Source::Priority => {
+                    out.push(Ready::Priority(token));
+                    Ok(())
+                }
                 Source::Pidfd(pidfd) => match qinit_sys::proc::reap_pidfd(pidfd) {
                     Ok(Some(status)) => {
-                        self.remove(token)?;
                         out.push(Ready::Exited(token, status));
+                        self.remove(token)
                     }
-                    Ok(None) => {}
+                    Ok(None) => Ok(()),
                     Err(errno) => {
-                        self.remove(token)?;
-                        return Err(Error::Sys {
+                        // Reaped elsewhere, or not a child: the pidfd stays readable, so the
+                        // source goes and the caller learns why.
+                        // A failed removal is reported in its place: either way the source
+                        // is gone.
+                        let reap = Error::Sys {
                             what: "waitid P_PIDFD",
                             errno,
-                        });
+                        };
+                        self.remove(token).and(Err(reap))
                     }
                 },
                 Source::Deadline { .. } => {
-                    self.remove(token)?;
                     out.push(Ready::Deadline(token));
+                    self.remove(token)
                 }
                 Source::Signal(f) => {
                     while let Some(signo) = event::read_signal(f) {
                         out.push(Ready::Signal(token, signo));
                     }
+                    Ok(())
                 }
                 Source::Inotify(f) => {
                     let evs = read_inotify(f);
                     if !evs.is_empty() {
                         out.push(Ready::Inotify(token, evs));
                     }
+                    Ok(())
                 }
+            };
+            if let Err(e) = result {
+                failed.get_or_insert(e);
             }
+        }
+        if let Some(e) = failed {
+            if out.is_empty() {
+                return Err(e);
+            }
+            self.deferred = Some(e);
         }
         out.sort_by_key(|r| !matches!(r, Ready::Exited(..)));
         Ok(out)

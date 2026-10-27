@@ -118,3 +118,54 @@ fn parse_inotify_stops_at_a_truncated_record() {
     assert_eq!(parse_inotify(&b).len(), 1);
     assert!(parse_inotify(&b[..10]).is_empty());
 }
+
+/// A child reaped elsewhere: its pidfd is readable, but `waitid(P_PIDFD)` fails with `ECHILD`.
+fn reaped_elsewhere() -> OwnedFd {
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pidfd = qinit_sys::proc::pidfd_open(child.id() as libc::pid_t).unwrap();
+    child.wait().unwrap();
+    pidfd
+}
+
+#[test]
+fn a_source_error_with_no_events_is_returned_at_once() {
+    let bad = reaped_elsewhere();
+    let mut l = Loop::new().unwrap();
+    l.add_pidfd(bad.as_fd(), 7).unwrap();
+    let reap = Error::Sys {
+        what: "waitid P_PIDFD",
+        errno: qinit_sys::Errno(libc::ECHILD),
+    };
+    assert_eq!(l.wait(), Err(reap));
+    assert_eq!(l.wait(), Err(Error::Empty), "the failed source is removed");
+}
+
+#[test]
+fn a_source_error_waits_behind_the_events_of_its_batch() {
+    let child = std::process::Command::new("sh")
+        .args(["-c", "exit 5"])
+        .spawn()
+        .unwrap();
+    let good: OwnedFd = qinit_sys::proc::pidfd_open(child.id() as libc::pid_t).unwrap();
+    // Wait until the child has exited, so both pidfds are ready in the same batch.
+    let mut probe = Loop::new().unwrap();
+    let dup = good.try_clone().unwrap();
+    probe.add_fd(dup.as_fd(), 9).unwrap();
+    assert_eq!(probe.wait().unwrap(), [Ready::Readable(9)]);
+    let bad = reaped_elsewhere();
+    let mut l = Loop::new().unwrap();
+    l.add_pidfd(good.as_fd(), 1).unwrap();
+    l.add_pidfd(bad.as_fd(), 2).unwrap();
+    let got = l.wait().unwrap();
+    let [Ready::Exited(1, raw)] = got.as_slice() else {
+        panic!("{got:?}")
+    };
+    assert_eq!(exit_code(*raw), 5);
+    let reap = Error::Sys {
+        what: "waitid P_PIDFD",
+        errno: qinit_sys::Errno(libc::ECHILD),
+    };
+    assert_eq!(l.wait(), Err(reap), "the kept error comes before blocking");
+    assert_eq!(l.wait(), Err(Error::Empty));
+    std::mem::forget(child);
+}

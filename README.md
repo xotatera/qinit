@@ -111,14 +111,12 @@ agent change awaits human review; removing them is the human confirmation. The
 canary gate fails in the main context, merge hooks refuse a main merge with it,
 and the opt-in pre-push hook refuses any outgoing ref that contains it.
 
-### Accepted setup-stage blockers
+### Accepted gate blockers
 
 The complete gate passes while printing these accepted `SKIP`s. They are
 intentional, recorded in the single [deferred-work ledger](DEFERRED.md), and
 must be resolved with the stated implementation change rather than hidden:
 
-- **D3 — product workspace gates:** root formatting, lint, layer, and test
-  gates wait for qinit's first product package.
 - **D4 — tooling no-std gate:** the tooling workspace has no kernel or core
   crate; its no-std gate waits for one (the root no-std gate runs).
 - **D5 — tooling repository-wide scans:** the repository stage already owns the
@@ -134,7 +132,7 @@ must be resolved with the stated implementation change rather than hidden:
 | Approved qinit design §§3–7 define the queen, colony, overseer, zero, graph, logging, protocol, and shutdown behavior. | These product behaviors remain design-only; this task adds no daemon, protocol, or systemd-derived code. | [Scope](#scope); [DEFERRED.md](DEFERRED.md). |
 | Approved qinit design §8 makes disciplines setup the first sub-project: pinned tools; portable format, test, proof, REUSE, and canary gates; opt-in hooks; and no CI. | `cargo xtask gate --no-cache` is the fresh full check; Rust is pinned and declared Verus proofs assert their selected release without blocking the empty workspace; the hook installation above is local and optional. | `rust-toolchain.toml`; `xtask/disciplines/src/gates.rs`; `.githooks/setup-hooks.sh`; `xtask/runner/src/lib.rs`; `xtask/runner/tests/repo.rs`. |
 | Approved qinit design §9 defers user-session work, adoption/additional binaries/live upgrade, CI, and size budgets. | D1–D2 remain open design deferrals; no CI or size-budget commitment is made. | [DEFERRED.md](DEFERRED.md). |
-| Approved qinit design §10 records the research provenance for later implementation. | This public documentation records repository setup evidence and the accepted D3–D5 gate blockers; product research provenance remains for later implementation. | [Development](#development); [DEFERRED.md](DEFERRED.md). |
+| Approved qinit design §10 records the research provenance for later implementation. | This public documentation records repository setup evidence and the accepted D4–D5 gate blockers (D3 resolved by the first product crate); product research provenance remains for later implementation. | [Development](#development); [DEFERRED.md](DEFERRED.md). |
 
 qinit is developed with AI assistance. A human reviews every change and takes responsibility for it.
 See [CONTRIBUTING.md](CONTRIBUTING.md).
