@@ -7,24 +7,29 @@
 # and run the full gate as an unprivileged user. Anything the gate needs that
 # the developer's machine supplies silently fails here.
 #
-#   sh scripts/container-check.sh [<ref>]    default: the current branch
+#   sh scripts/container-check.sh [<commit-ish>]    default: HEAD
 #
 # Uses podman, or docker when CONTAINER=docker.
 set -eu
 image='docker.io/library/debian@sha256:b52d043ed9ce0a3313d85dc03980d5496aa25dff2f05b032d470446b1e3e0e2a'
 engine="${CONTAINER:-podman}"
-top="$(git rev-parse --show-toplevel)"
 common="$(git rev-parse --path-format=absolute --git-common-dir)"
-ref="${1:-$(git symbolic-ref --short HEAD)}"
-git rev-parse --verify --quiet "$ref^{commit}" >/dev/null || {
-    echo "container-check: unknown ref $ref" >&2
+ref="${1:-HEAD}"
+# Only the resolved commit id (hex) reaches the container's shells.
+sha="$(git rev-parse --verify --quiet "$ref^{commit}")" || {
+    echo "container-check: $ref does not name a commit" >&2
     exit 2
 }
-cd "$top"
+# A fresh clone fetches only what refs reach.
+if [ -z "$(git for-each-ref --contains "$sha" --count=1)" ]; then
+    echo "container-check: no branch or tag contains $sha, so a fresh clone cannot fetch it; commit it to a branch first" >&2
+    exit 2
+fi
 # The script runs inside the container: its variables expand there.
 # shellcheck disable=SC2016
-exec "$engine" run --rm -v "$common:/src/qinit.git:ro" -e REF="$ref" "$image" sh -c '
+exec "$engine" run --rm -v "$common:/src/qinit.git:ro" -e SHA="$sha" "$image" sh -c '
 set -eu
+case "$SHA" in *[!0-9a-f]*) echo "container-check: bad commit id" >&2; exit 2 ;; esac
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends ca-certificates curl git build-essential reuse >/dev/null
@@ -34,8 +39,9 @@ set -eu
 git config --global --add safe.directory /src/qinit.git
 curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none >/dev/null
 . \"\$HOME/.cargo/env\"
-git clone -q --branch \"$REF\" /src/qinit.git \"\$HOME/qinit\"
+git clone -q /src/qinit.git \"\$HOME/qinit\"
 cd \"\$HOME/qinit\"
+git checkout -q --detach $SHA
 cargo xtask gate --no-cache
 "
 '
