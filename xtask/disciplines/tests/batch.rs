@@ -162,8 +162,9 @@ fn a_panic_keeps_what_was_logged() {
     assert!(log.contains("before the panic\n"), "{log}");
 }
 
-/// Fail fast: once an entry fails, no queued entry starts; each is reported
-/// as not run, so the caller concludes every entry.
+/// Fail fast: once an entry fails, no queued entry starts; each comes back
+/// with `ran: false`, so the caller lists it as not run without concluding
+/// it (`run_path.rs` covers that end to end).
 #[test]
 fn after_a_failure_no_queued_entry_starts() {
     let waiting = vec![

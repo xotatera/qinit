@@ -258,3 +258,110 @@ fn gates_run_then_cache_and_a_spine_body_edit_reruns_only_the_spine() {
         "the command proofs key on the whole spine package"
     );
 }
+
+/// Two command proofs that must run one at a time (each takes the whole
+/// memory budget); the first fails.
+const SERIAL_MANIFEST: &str = r#"[workspace]
+members = ["p"]
+resolver = "3"
+
+[workspace.metadata.disciplines]
+proof_memory_budget = "1G"
+
+[[workspace.metadata.disciplines.proof]]
+name = "a-fails"
+kind = "command"
+package = "p"
+command = ["sh", "-c", "exit 1"]
+memory = "1G"
+
+[[workspace.metadata.disciplines.proof]]
+name = "b-later"
+kind = "command"
+package = "p"
+command = ["sh", "-c", "touch ../b-ran"]
+memory = "1G"
+"#;
+
+fn serial_scratch() -> Scratch {
+    let root = std::env::temp_dir().join(format!("xtask-run-path-serial-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    write(&root.join("Cargo.toml"), SERIAL_MANIFEST);
+    write(
+        &root.join("p/Cargo.toml"),
+        "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    write(&root.join("p/src/lib.rs"), "#![no_std]\n");
+    exe(&root.join("bin/atc"), "#!/bin/sh\nexit 1\n");
+    git(&root, &["init", "-q", "-b", "feat/x"]);
+    git(&root, &["add", "-A"]);
+    git(
+        &root,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "init",
+        ],
+    );
+    Scratch(root)
+}
+
+const SERIAL_CHILD: &str = "XTASK_RUN_PATH_SERIAL_ROOT";
+
+/// Fail fast in the proof batch: a proof a failure kept from starting does
+/// not run, is not concluded as a failure and records no duration (which
+/// would reorder the next batch).
+#[test]
+fn a_proof_a_failure_kept_from_starting_is_not_concluded() {
+    let Some(root) = std::env::var_os(SERIAL_CHILD).map(PathBuf::from) else {
+        let s = serial_scratch();
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![s.0.join("bin")];
+        dirs.extend(std::env::split_paths(&path));
+        let out = Proc::new(std::env::current_exe().unwrap())
+            .args([
+                "a_proof_a_failure_kept_from_starting_is_not_concluded",
+                "--exact",
+                "--nocapture",
+            ])
+            .env(SERIAL_CHILD, &s.0)
+            .env("PATH", std::env::join_paths(dirs).unwrap())
+            .env_remove("DISCIPLINES_GATE_CONTEXT")
+            .env_remove("DISCIPLINES_GATE_NO_CACHE")
+            .env_remove("ATC_HELD")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "{}{stderr}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(stderr.contains("not run: proof:b-later"), "{stderr}");
+        assert!(!stderr.contains("FAIL proof:b-later"), "{stderr}");
+        return;
+    };
+    let runner = Runner {
+        registry: Vec::new,
+        dirs: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))],
+    };
+    let cmd = Command::Gate {
+        only: None,
+        no_cache: false,
+        scope: Scope::All,
+    };
+    assert!(
+        !execute_with(&runner, &cmd, &root),
+        "the failing proof fails the run"
+    );
+    assert!(!root.join("b-ran").exists(), "the later proof did not run");
+    let durations = xtask::cache::store::Store::open(&root).unwrap().durations();
+    assert!(
+        !durations.contains_key("proof:b-later"),
+        "no duration recorded for a proof that never ran: {durations:?}"
+    );
+}
