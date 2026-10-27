@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> Remove these two lines to confirm that a human has reviewed this change.
+
 # qinit: Queen Init, Native Integrated Tree
 
 qinit is an init and service-supervision system for Linux. It is one design built from separate parts:
