@@ -35,3 +35,9 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   repository and tooling workspaces, then the proof gates, and stops at the
   first failure, naming the gates it did not run. A failed proof stops new
   proofs from starting.
+
+### Fixed
+
+- The fmt gate decides whether a file needs verusfmt from its parsed source:
+  only a real `verus!` invocation counts, not a mention in a comment or a
+  string, so trees without Verus code no longer require verusfmt.
