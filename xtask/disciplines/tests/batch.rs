@@ -161,3 +161,47 @@ fn a_panic_keeps_what_was_logged() {
     assert!(result.unwrap_err().contains("panicked"));
     assert!(log.contains("before the panic\n"), "{log}");
 }
+
+/// Fail fast: once an entry fails, no queued entry starts; each is reported
+/// as not run, so the caller concludes every entry.
+#[test]
+fn after_a_failure_no_queued_entry_starts() {
+    let waiting = vec![
+        Waiting {
+            index: 0,
+            proof: proof("first", Kind::Kani, G),
+        },
+        Waiting {
+            index: 1,
+            proof: proof("second", Kind::Kani, G),
+        },
+        Waiting {
+            index: 2,
+            proof: proof("third", Kind::Kani, G),
+        },
+    ];
+    let started = Mutex::new(Vec::new());
+    let runner = |_: &Path, p: &Proof, _: usize| {
+        started.lock().unwrap().push(p.name.clone());
+        (Err("fails".to_string()), String::new())
+    };
+    let mut results = Vec::new();
+    // One core: entries start one at a time.
+    batch::run(
+        Path::new("."),
+        waiting,
+        &[0, 1, 2],
+        1,
+        8 * G,
+        &runner,
+        &mut |d| results.push((d.index, d.result)),
+    );
+    assert_eq!(started.into_inner().unwrap(), ["first"]);
+    results.sort_by_key(|(index, _)| *index);
+    assert_eq!(results[0], (0, Err("fails".to_string())));
+    for (index, result) in &results[1..] {
+        let error = result.as_ref().unwrap_err();
+        assert!(error.contains("not run"), "{index}: {error}");
+    }
+    assert_eq!(results.len(), 3);
+}

@@ -34,7 +34,9 @@ pub struct Done {
 }
 
 /// Runs `waiting` under `cores` and `budget`, in `order`, calling `done`
-/// for each as it finishes (on this thread).
+/// for each as it finishes (on this thread). Fail fast: once an entry fails,
+/// no queued entry starts; the running ones finish and each queued one is
+/// reported as not run.
 pub fn run(
     root: &Path,
     waiting: Vec<Waiting>,
@@ -51,9 +53,10 @@ pub fn run(
         .collect();
     let (tx, rx) = mpsc::channel::<(Done, usize, u64)>();
     let (mut free_cores, mut free_budget, mut running) = (cores, budget, 0usize);
+    let mut failed = false;
     std::thread::scope(|scope| {
         loop {
-            loop {
+            while !failed {
                 let entries: Vec<proofs::schedule::Entry> = queue
                     .iter()
                     .map(|w| proofs::schedule::Entry {
@@ -107,6 +110,7 @@ pub fn run(
                     running -= 1;
                     free_cores += c;
                     free_budget += b;
+                    failed = true;
                     done(Done {
                         index,
                         result: Err(format!("cannot start a thread: {e}")),
@@ -126,7 +130,18 @@ pub fn run(
             running -= 1;
             free_cores += c;
             free_budget += b;
+            failed |= d.result.is_err();
             done(d);
         }
     });
+    for w in queue {
+        done(Done {
+            index: w.index,
+            result: Err("not run: an earlier proof failed".to_string()),
+            log: String::new(),
+            start: Instant::now(),
+            elapsed: Duration::ZERO,
+            steps: Vec::new(),
+        });
+    }
 }
