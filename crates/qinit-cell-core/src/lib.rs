@@ -64,7 +64,7 @@ pub enum Main {
     /// `Spawn` was emitted; the exec result (`Spawned` or `SpawnFailed`) has not arrived.
     Pending,
     Live(Handle),
-    /// Reaped, with its wait status.
+    /// Exit observed: wait status, or None for a handed-over main whose status is unknown.
     Reaped(Option<i32>),
 }
 

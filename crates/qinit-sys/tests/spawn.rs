@@ -97,6 +97,7 @@ fn routes_over_the_error_pipes_number_still_report_an_exec_failure() {
                     "routes_over_the_error_pipes_number_still_report_an_exec_failure"
                 ])
                 .env("QINIT_ERROR_FLOOR_CHILD", "1")
+                .stdin(w.try_clone().unwrap())
                 .status()
                 .unwrap()
                 .success()
@@ -105,9 +106,12 @@ fn routes_over_the_error_pipes_number_still_report_an_exec_failure() {
     }
     // The next free number becomes a route target. A floor=0 error-pipe copy would
     // occupy this hole and dup3 would overwrite it; the protected floor must avoid it.
-    let hole = fd::dup_above(&w, 0).unwrap();
+    // The route source is exactly fd 0, the erroneous floor in the regression mutant.
+    let source = std::io::stdin();
+    assert_eq!(source.as_raw_fd(), 0);
+    let hole = fd::dup_above(source.as_fd(), 0).unwrap();
     let n = hole.as_raw_fd();
-    let routes = [(w.as_fd(), n)];
+    let routes = [(source.as_fd(), n)];
     let p =
         spawn::Prepared::new(Path::new("/nonexistent/qinit"), &sh("true"), &[], &routes).unwrap();
     drop(hole);
