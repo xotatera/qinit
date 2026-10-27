@@ -12,6 +12,10 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `qinit-cell`: the cell runtime (`Cells`): create, spawn into the cell,
+  readiness, polite stop by main pidfd or freeze-signal-thaw with pidfds
+  verified by cgroup id, escalation, adoption, removal, orphan reaping as a
+  subreaper; refuses kernels below 6.13.
 - `qinit-cell-drive`: loop tokens and slot choice for the cell table, Verus-proved
   (each token routes to one cell and source; a full table refuses new cells).
 - `qinit-cell-core`: the cell machine (create, spawn into the cell, readiness by

@@ -112,6 +112,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "qinit-cell"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "qinit-cell-core",
+ "qinit-cell-drive",
+ "qinit-event",
+ "qinit-sys",
+]
+
+[[package]]
 name = "qinit-cell-core"
 version = "0.1.0"
 dependencies = [
@@ -165,6 +176,7 @@ name = "qinit-vm-guests"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "qinit-cell",
  "qinit-event",
  "qinit-sys",
 ]

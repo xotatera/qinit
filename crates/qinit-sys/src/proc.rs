@@ -102,6 +102,44 @@ pub fn reap_any() -> Result<Option<(libc::pid_t, i32)>> {
     }
 }
 
+/// The first exited child's `(pid, wait status)`, left waitable (`WNOWAIT`): a subreaper looks
+/// before it reaps, so a tracked main process is reaped through its own pidfd. `None` when
+/// none has exited, or when there are no children at all.
+pub fn peek_any() -> Result<Option<(libc::pid_t, i32)>> {
+    let mut info = MaybeUninit::<libc::siginfo_t>::zeroed();
+    // SAFETY: `info` is a zeroed siginfo_t the kernel fills; WNOWAIT leaves the child waitable.
+    let r = check(unsafe {
+        libc::waitid(
+            libc::P_ALL,
+            0,
+            info.as_mut_ptr(),
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    });
+    match r {
+        Err(Errno(libc::ECHILD)) => return Ok(None),
+        Err(e) => return Err(e),
+        Ok(_) => {}
+    }
+    // SAFETY: zero-initialised and possibly filled by waitid; every bit pattern is valid.
+    let info = unsafe { info.assume_init() };
+    // SAFETY: for WEXITED si_pid is the field the kernel set (0 when no child has exited).
+    let who = unsafe { info.si_pid() };
+    if who == 0 {
+        return Ok(None);
+    }
+    // SAFETY: si_status is set together with si_pid.
+    let status = unsafe { info.si_status() };
+    Ok(Some((who, wait_status(info.si_code, status))))
+}
+
+/// Reaps child `pid` if it has exited: its wait status, `None` while it runs.
+pub fn reap_pid(pid: libc::pid_t) -> Result<Option<i32>> {
+    #[allow(clippy::cast_sign_loss)] // a pid from the kernel is positive
+    let id = pid as libc::id_t;
+    Ok(reap(libc::P_PID, id)?.map(|(_, status)| status))
+}
+
 /// `struct pidfd_info`, `PIDFD_INFO_SIZE_VER0` (64 bytes).
 #[allow(dead_code)] // the kernel's layout: every field is part of the ABI
 #[repr(C)]

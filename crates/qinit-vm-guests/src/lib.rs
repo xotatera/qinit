@@ -153,18 +153,12 @@ pub fn read_events(events: BorrowedFd<'_>) -> Result<(bool, bool), String> {
         qinit_sys::cgroup::read_from_start(events, &mut buf),
         "read cgroup.events",
     )?;
-    let text = std::str::from_utf8(&buf[..n]).map_err(|e| e.to_string())?;
-    let flag = |key: &str| {
-        text.lines()
-            .find_map(|l| l.strip_prefix(key))
-            .map(|v| v.trim() == "1")
-    };
-    match (flag("populated "), flag("frozen ")) {
-        (Some(p), Some(f)) => Ok((p, f)),
-        _ => Err(format!(
-            "cgroup.events without populated and frozen: {text:?}"
-        )),
-    }
+    qinit_cell::text::parse_events(&buf[..n]).ok_or_else(|| {
+        format!(
+            "cgroup.events without populated and frozen: {:?}",
+            String::from_utf8_lossy(&buf[..n])
+        )
+    })
 }
 
 /// Waits on `l` (whose source `token` watches `events`) until `events` shows the wanted

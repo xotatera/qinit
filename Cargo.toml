@@ -3,7 +3,7 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests"]
+members = ["crates/qinit-cell", "crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests"]
 
 [workspace.package]
 edition = "2024"
