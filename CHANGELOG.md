@@ -28,3 +28,10 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `git config qinit.hooksDispatcher`.
 - `pre-push` hook refusing any outgoing ref whose `README.md` still carries the
   review canary, or that has no `README.md`.
+
+### Changed
+
+- `cargo xtask gate` runs every gate in one fastest-first order across the
+  repository and tooling workspaces, then the proof gates, and stops at the
+  first failure, naming the gates it did not run. A failed proof stops new
+  proofs from starting.

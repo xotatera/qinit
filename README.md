@@ -62,9 +62,11 @@ repository root:
 cargo xtask gate --no-cache
 ```
 
-This runs the configured repository and tooling checks fresh. `cargo xtask
-proofs` runs only declared proof obligations; there are none until product crates
-exist. Gates are portable and do not require a host scheduler.
+This runs the configured repository and tooling checks fresh, fastest first
+in one order across both workspaces (`cargo xtask gate --list` prints it), then
+any declared proofs, and stops at the first failure. `cargo xtask proofs` runs
+only declared proof obligations; there are none until product crates exist.
+Gates are portable and do not require a host scheduler.
 There is no CI at this stage.
 
 The committed hooks are opt-in; install them only in a clone where you want local checks.
