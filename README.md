@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> Remove these two lines to confirm that a human has reviewed this change.
+
 # qinit: Queen Init, Native Integrated Tree
 
 qinit is an init and service-supervision system for Linux. It is one design built from separate parts:
@@ -82,7 +85,7 @@ The gate needs only these on a stock Linux system (Debian stable package
 names): `git`, `build-essential` (a C toolchain and `make`), `reuse`, `curl`
 and `ca-certificates` (to install rustup), a POSIX `sh`, `qemu-system-x86`,
 and to build the guest kernel `make gcc flex bison bc perl libelf-dev
-xz-utils unzip`; Verus 0.2026.10.04.426d8b0 (release zip, see above) and
+xz-utils unzip util-linux`; Verus 0.2026.10.04.426d8b0 (release zip, see above) and
 `cargo install --locked verusfmt --version 0.7.4` now that the workspace has
 `verus!` code. Install [rustup](https://rustup.rs) without a default
 toolchain; it installs the pinned toolchain from
@@ -92,7 +95,9 @@ toolchain; it installs the pinned toolchain from
 list: it clones the repository fresh in a pinned Debian stable container,
 installs these packages, Verus and verusfmt, and runs the full gate as an
 unprivileged user (podman, or docker with `CONTAINER=docker`). It passes
-`/dev/kvm` when it opens read-write; set `QINIT_CHECK_KVM=0` to exercise TCG.
+`/dev/kvm` when it opens read-write and verifies the unprivileged builder can
+open it too (rootless podman uses the local engine and retains supplementary
+groups); set `QINIT_CHECK_KVM=0` to exercise TCG.
 Optionally set `QINIT_KERNEL_TARBALL` to a local kernel archive to mount it
 read-only instead of downloading it (the guest builder still verifies its
 checksum). To check `main` itself, pass `main` by name.

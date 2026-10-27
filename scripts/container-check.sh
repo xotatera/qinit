@@ -45,7 +45,13 @@ fi
 # Pass KVM only when it opens read-write; QINIT_CHECK_KVM=0 exercises TCG.
 set -- run --rm -v "$common:/src/qinit.git:ro" -e SHA="$sha" -e BRANCH="$branch"
 if [ "${QINIT_CHECK_KVM:-1}" != 0 ] && ( exec 3<> /dev/kvm ) 2>/dev/null; then
-    set -- "$@" --device /dev/kvm
+    # Rootless podman must preserve the host's supplementary kvm group.
+    # The remote API rejects keep-groups; use the local engine even when
+    # CONTAINER_HOST points at a podman socket.
+    if [ "$engine" = podman ]; then
+        set -- "$@" --group-add keep-groups
+    fi
+    set -- "$@" --device /dev/kvm -e CHECK_KVM=1
 fi
 # The override is optional; without it the guest kernel is downloaded normally.
 if [ -n "${QINIT_KERNEL_TARBALL:-}" ]; then
@@ -55,6 +61,9 @@ if [ -n "${QINIT_KERNEL_TARBALL:-}" ]; then
     fi
     set -- "$@" -v "$QINIT_KERNEL_TARBALL:/src/kernel.tar.xz:ro" -e QINIT_KERNEL_TARBALL=/src/kernel.tar.xz
 fi
+if [ "$engine" = podman ] && [ "${QINIT_CHECK_KVM:-1}" != 0 ] && ( exec 3<> /dev/kvm ) 2>/dev/null; then
+    set -- --remote=false "$@"
+fi
 # shellcheck disable=SC2016
 exec "$engine" "$@" "$image" sh -c '
 set -eu
@@ -63,9 +72,17 @@ case "$BRANCH" in *[!A-Za-z0-9._/-]*) echo "container-check: bad branch name" >&
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends ca-certificates curl git build-essential reuse \
-    qemu-system-x86 make gcc flex bison bc perl libelf-dev xz-utils unzip >/dev/null
+    qemu-system-x86 make gcc flex bison bc perl libelf-dev xz-utils unzip util-linux >/dev/null
 useradd -m builder
-su builder -c "
+# setpriv drops root to builder while retaining keep-groups (su drops them).
+# Do not proceed with a purported KVM check if builder cannot open the device.
+if [ "${CHECK_KVM:-0}" = 1 ]; then
+    setpriv --reuid=builder --regid=builder --keep-groups sh -c "exec 3<>/dev/kvm" || {
+        echo "container-check: builder cannot open /dev/kvm read-write" >&2
+        exit 1
+    }
+fi
+builder_command="
 set -eu
 git config --global --add safe.directory /src/qinit.git
 curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none >/dev/null
@@ -84,4 +101,9 @@ cd \"\$HOME/qinit\"
 git checkout -q -B $BRANCH $SHA
 cargo xtask gate --no-cache
 "
+if [ "${CHECK_KVM:-0}" = 1 ]; then
+    setpriv --reuid=builder --regid=builder --keep-groups sh -c "$builder_command"
+else
+    su builder -c "$builder_command"
+fi
 '

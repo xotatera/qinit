@@ -17,6 +17,17 @@ pub enum Accel {
     Tcg,
 }
 
+impl Accel {
+    /// The accelerator named in the boot log.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Kvm => "kvm",
+            Self::Tcg => "tcg",
+        }
+    }
+}
+
 /// KVM when `/dev/kvm` opens read-write, TCG otherwise.
 #[must_use]
 pub fn accel() -> Accel {
@@ -84,6 +95,7 @@ const DEADLINE: u64 = 3;
 /// fails or the guest does not power off before the deadline.
 pub fn boot(kernel: &Path, initrd: &Path, log: &Path) -> Result<String, String> {
     let a = accel();
+    eprintln!("accel: {}", a.label());
     let mut child = Command::new("qemu-system-x86_64")
         .args(args(a, kernel, initrd))
         .stdin(Stdio::null())

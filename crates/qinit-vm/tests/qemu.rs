@@ -5,6 +5,12 @@ use qinit_vm::qemu::{Accel, args};
 use std::path::Path;
 
 #[test]
+fn selected_accelerator_has_an_unambiguous_log_label() {
+    assert_eq!(Accel::Kvm.label(), "kvm");
+    assert_eq!(Accel::Tcg.label(), "tcg");
+}
+
+#[test]
 fn kvm_and_tcg_differ_only_in_accelerator_and_cpu() {
     let k = args(Accel::Kvm, Path::new("/k"), Path::new("/i"));
     let t = args(Accel::Tcg, Path::new("/k"), Path::new("/i"));
