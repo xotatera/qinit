@@ -12,6 +12,10 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `qinit-sys` spawns with `clone3` (into a cgroup, with a pidfd; only routed
+  descriptors arrive; exec failures reported through an error pipe), cgroup
+  operations through directory descriptors, `PIDFD_GET_INFO` cgroup ids, guest
+  mounts and power-off from a child.
 - `qinit-event`: the epoll loop (fds, priority notifications, pidfd exits,
   deadlines, signals, inotify) over the Verus-proved `qinit-event-core`; the
   root no-std gate runs.

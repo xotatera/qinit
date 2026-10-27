@@ -11,10 +11,13 @@
 #[cfg(not(target_arch = "x86_64"))]
 compile_error!("qinit-sys's raw child path and kernel structures are written for x86_64");
 
+pub mod cgroup;
 pub mod event;
 pub mod fd;
+pub mod mount;
 pub mod proc;
 pub mod signal;
+pub mod spawn;
 
 /// An OS error number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

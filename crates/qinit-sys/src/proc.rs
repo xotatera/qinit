@@ -102,6 +102,77 @@ pub fn reap_any() -> Result<Option<(libc::pid_t, i32)>> {
     }
 }
 
+/// `struct pidfd_info`, `PIDFD_INFO_SIZE_VER0` (64 bytes).
+#[allow(dead_code)] // the kernel's layout: every field is part of the ABI
+#[repr(C)]
+#[derive(Default)]
+struct PidfdInfo {
+    mask: u64,
+    cgroupid: u64,
+    pid: u32,
+    tgid: u32,
+    ppid: u32,
+    ruid: u32,
+    rgid: u32,
+    euid: u32,
+    egid: u32,
+    suid: u32,
+    sgid: u32,
+    fsuid: u32,
+    fsgid: u32,
+    exit_code: i32,
+}
+
+const _: () = assert!(core::mem::size_of::<PidfdInfo>() == 64);
+
+const PIDFD_INFO_CGROUPID: u64 = 1 << 2;
+/// `_IOWR(PIDFS_IOCTL_MAGIC = 0xFF, 11, struct pidfd_info)`.
+const PIDFD_GET_INFO: u32 = 0xC040_FF0B;
+
+/// `ioctl`'s request argument: `unsigned long` in glibc, `int` in musl.
+#[cfg(target_env = "musl")]
+type Request = libc::c_int;
+#[cfg(not(target_env = "musl"))]
+type Request = libc::c_ulong;
+
+/// The cgroup id of the process behind `pidfd` (`PIDFD_GET_INFO`, Linux 6.13). `ENODATA` when
+/// the kernel did not fill it.
+pub fn pidfd_cgroup_id(pidfd: impl AsFd) -> Result<u64> {
+    let mut info = PidfdInfo {
+        mask: PIDFD_INFO_CGROUPID,
+        ..PidfdInfo::default()
+    };
+    #[allow(clippy::cast_possible_wrap, clippy::cast_lossless)] // same bits, each libc's type
+    let request = PIDFD_GET_INFO as Request;
+    // SAFETY: the ioctl fills a pidfd_info of the size its request number encodes.
+    check(unsafe { libc::ioctl(pidfd.as_fd().as_raw_fd(), request, &raw mut info) })?;
+    if info.mask & PIDFD_INFO_CGROUPID == 0 {
+        return Err(Errno(libc::ENODATA));
+    }
+    Ok(info.cgroupid)
+}
+
+/// Blocks until the process behind `pidfd` exits and reaps it: its wait status. For tests and
+/// guest programs; daemons wait on the loop instead.
+pub fn wait_pidfd(pidfd: impl AsFd) -> Result<i32> {
+    #[allow(clippy::cast_sign_loss)] // a descriptor number is non-negative
+    let id = pidfd.as_fd().as_raw_fd() as libc::id_t;
+    loop {
+        let mut info = MaybeUninit::<libc::siginfo_t>::zeroed();
+        // SAFETY: `info` is a zeroed siginfo_t the kernel fills.
+        match check(unsafe { libc::waitid(libc::P_PIDFD, id, info.as_mut_ptr(), libc::WEXITED) }) {
+            Err(Errno(libc::EINTR)) => continue,
+            Err(e) => return Err(e),
+            Ok(_) => {}
+        }
+        // SAFETY: filled by the successful waitid.
+        let info = unsafe { info.assume_init() };
+        // SAFETY: si_status is set for a WEXITED result.
+        let status = unsafe { info.si_status() };
+        return Ok(wait_status(info.si_code, status));
+    }
+}
+
 /// `PR_SET_CHILD_SUBREAPER`: orphaned descendants are re-parented to this process.
 pub fn set_child_subreaper() -> Result<()> {
     // SAFETY: the prctl option takes integer arguments only.
