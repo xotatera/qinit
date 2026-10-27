@@ -101,6 +101,16 @@ fn scratch(tag: &str) -> Scratch {
     let root = std::env::temp_dir().join(format!("xtask-run-verus-{tag}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     write(&root.join("Cargo.toml"), MANIFEST);
+    // The scratch workspace sits outside the repository, so cargo would fall
+    // back to rustup's default toolchain, which a fresh rustup install need
+    // not have: pin the toolchain this workspace builds with.
+    if let Some(pin) = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .map(|dir| dir.join("rust-toolchain.toml"))
+        .find(|file| file.is_file())
+    {
+        fs::copy(pin, root.join("rust-toolchain.toml")).unwrap();
+    }
     write(
         &root.join("tooth/Cargo.toml"),
         "[package]\nname = \"tooth\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
@@ -141,6 +151,20 @@ fn scratch(tag: &str) -> Scratch {
         ],
     );
     Scratch(root)
+}
+
+/// A caller's `RUSTUP_TOOLCHAIN` the runner must drop: the sysroot of the
+/// toolchain running this test, so it is installed wherever the test runs
+/// (a toolchain name could make rustup download it), yet differs from the
+/// name rustup's proxy sets for the subcommand.
+fn decoy_toolchain() -> String {
+    let out = Proc::new("rustc")
+        .args(["--print", "sysroot"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "rustc --print sysroot");
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
 fn gate(root: &Path) -> bool {
@@ -190,7 +214,7 @@ fn a_verus_proof_runs_focus_in_its_package_caches_and_fails_on_errors() {
             .env("VERUS_LOG", s.0.join("verus.log"))
             .env("VERUS_OUT", s.0.join("ctl/out"))
             .env("VERUS_RC", s.0.join("ctl/rc"))
-            .env("RUSTUP_TOOLCHAIN", "1.99.0")
+            .env("RUSTUP_TOOLCHAIN", decoy_toolchain())
             .env("CARGO_BUILD_BUILD_DIR", s.0.join("build"))
             .env_remove("DISCIPLINES_GATE_CONTEXT")
             .env_remove("DISCIPLINES_GATE_NO_CACHE")
@@ -213,7 +237,8 @@ fn a_verus_proof_runs_focus_in_its_package_caches_and_fails_on_errors() {
     let words: Vec<&str> = first[0].split(' ').collect();
     assert_eq!(words[0], tooth.display().to_string(), "runs in the package");
     assert_ne!(
-        words[1], "1.99.0",
+        words[1],
+        decoy_toolchain(),
         "the caller's RUSTUP_TOOLCHAIN is dropped"
     );
     let build = words[2];
@@ -524,7 +549,7 @@ fn cargo_verus_driver_parent(non_utf8: bool) {
             .env("VERUS_DRIVER_LOG", s.0.join("driver.log"))
             .env("VERUS_OUT", s.0.join("ctl/out"))
             .env("VERUS_RC", s.0.join("ctl/rc"))
-            .env("RUSTUP_TOOLCHAIN", "1.99.0")
+            .env("RUSTUP_TOOLCHAIN", decoy_toolchain())
             .env("CARGO_BUILD_BUILD_DIR", s.0.join("build"))
             .env_remove("DISCIPLINES_GATE_CONTEXT")
             .env_remove("DISCIPLINES_GATE_NO_CACHE")
