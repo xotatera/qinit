@@ -102,7 +102,7 @@ git checkout -q -B $BRANCH $SHA
 cargo xtask gate --no-cache
 "
 if [ "${CHECK_KVM:-0}" = 1 ]; then
-    setpriv --reuid=builder --regid=builder --keep-groups sh -c "$builder_command"
+    setpriv --reuid=builder --regid=builder --keep-groups env HOME=/home/builder sh -c "$builder_command"
 else
     su builder -c "$builder_command"
 fi
