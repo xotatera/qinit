@@ -29,12 +29,12 @@ approved design amendment.
 
 Resolved by sub-project 2 Task 1: `qinit-sys` is the first product package; the four gates run.
 
-### D4 — no-std product gate · `ACCEPTED`
+### D4 — no-std tooling gate · `ACCEPTED`
 
-The repository has no kernel or core product crate. The root `no-std` gate is
-blocked until one exists; unblock it in the change that adds that crate. The
-tooling `no-std` gate is separately blocked because the `xtask` workspace also
-has no kernel or core crate. Unblock it only in the change that adds a
+The root `no-std` gate runs since sub-project 2 Task 2 (`qinit-event-core` is
+the first core crate). The tooling `no-std` gate is separately blocked: the
+`xtask` workspace has no kernel or core crate.
+Unblock it only in the change that adds a
 primitive, kernel, or core crate to the `xtask` workspace.
 
 ### D5 — Tooling-stage repository-wide scans · `ACCEPTED`

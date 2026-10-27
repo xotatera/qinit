@@ -119,8 +119,8 @@ must be resolved with the stated implementation change rather than hidden:
 
 - **D3 — product workspace gates:** root formatting, lint, layer, and test
   gates wait for qinit's first product package.
-- **D4 — no-std gates:** the root and tooling workspaces have no kernel or core
-  crate; each no-std gate waits for the corresponding crate.
+- **D4 — tooling no-std gate:** the tooling workspace has no kernel or core
+  crate; its no-std gate waits for one (the root no-std gate runs).
 - **D5 — tooling repository-wide scans:** the repository stage already owns the
   placeholder, sleep, changelog, and duplication scans; the tooling stage does
   not duplicate that policy.

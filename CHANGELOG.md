@@ -12,6 +12,9 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `qinit-event`: the epoll loop (fds, priority notifications, pidfd exits,
+  deadlines, signals, inotify) over the Verus-proved `qinit-event-core`; the
+  root no-std gate runs.
 - `qinit-sys`: the unsafe shim (descriptors, epoll, timers, signals, pidfd
   reaping), the first product crate; the repository stage's fmt, lint, layers
   and test gates now run.

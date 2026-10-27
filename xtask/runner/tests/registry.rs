@@ -123,9 +123,11 @@ fn gate_list_prints_the_global_order() {
         .lines()
         .map(str::to_string)
         .collect();
+    // Declared proofs follow the static gates (the fixture copies the root manifest).
     let expected: Vec<String> = GLOBAL_ORDER
         .iter()
         .map(|(stage, gate)| format!("{stage}/{gate}"))
+        .chain(["repo/proof:qinit-event-core".to_string()])
         .collect();
     assert_eq!(listed, expected);
 }
@@ -188,11 +190,7 @@ fn repository_gate_policy_is_pinned() {
             ("changelog", Inputs::Tree, None),
             ("lint", Inputs::Tree, None),
             ("layers", Inputs::Tree, None),
-            (
-                "no-std",
-                Inputs::Tree,
-                Some("D4: no kernel or core product crate"),
-            ),
+            ("no-std", Inputs::Tree, None),
             (
                 "duplication",
                 Inputs::Globs(&["**/*.rs", "gates/duplication-baseline.txt"]),
@@ -368,10 +366,15 @@ impl Drop for Scratch {
 }
 
 #[test]
-fn repository_declares_no_proofs_before_product_crates_exist() {
+fn repository_declares_exactly_the_core_crate_proofs() {
     let root = qinit_xtask::repo_root();
     let names = qinit_xtask::gate_names(&STAGES[0], &root).unwrap();
-    assert!(names.iter().all(|name| !name.starts_with("proof:")));
+    let proofs: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| name.starts_with("proof:"))
+        .collect();
+    assert_eq!(proofs, ["proof:qinit-event-core"]);
 }
 
 #[test]

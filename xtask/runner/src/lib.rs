@@ -125,7 +125,6 @@ pub fn canary_present(readme: &str) -> bool {
         .eq(CANARY_LINES)
 }
 
-const NO_PRODUCT_NO_STD: &str = "D4: no kernel or core product crate";
 const NO_TOOLING_NO_STD: &str = "D4: no tooling kernel or core crate";
 const TOOLING_REPOSITORY_SCANS: &str = "D5: repository-wide scans run in the repo stage";
 
@@ -262,7 +261,7 @@ pub fn repo_registry() -> Vec<Gate> {
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: false,
-            blocked: Some(NO_PRODUCT_NO_STD),
+            blocked: None,
             decl: "",
         },
         Gate {
