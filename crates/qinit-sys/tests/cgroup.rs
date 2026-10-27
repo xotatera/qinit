@@ -8,8 +8,13 @@ use std::os::unix::fs::MetadataExt;
 
 #[test]
 fn directories_and_files_through_a_dirfd() {
-    let root = std::env::temp_dir().join(format!("qinit-sys-cg-{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
+    // Unique per run: a panicked earlier run with the same pid leaves its directory behind.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("qinit-sys-cg-{}-{nanos}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
     let dir = cgroup::open_dir(&root).unwrap();
     let name = CString::new("cell").unwrap();
     cgroup::mkdir_at(&dir, &name, 0o755).unwrap();

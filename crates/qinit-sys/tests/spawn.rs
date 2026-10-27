@@ -85,6 +85,24 @@ fn an_exec_failure_reports_its_errno() {
 }
 
 #[test]
+fn routes_over_the_error_pipes_number_still_report_an_exec_failure() {
+    let (_r, w) = fd::pipe(libc::O_CLOEXEC).unwrap();
+    let (err_r, err_w) = fd::pipe(libc::O_CLOEXEC).unwrap();
+    let n = err_w.as_raw_fd();
+    // Targets on the caller's error-pipe number and on both its neighbours: routing must not
+    // overwrite the child's own copy of the pipe.
+    let routes = [(w.as_fd(), n - 1), (w.as_fd(), n), (w.as_fd(), n + 1)];
+    let p =
+        spawn::Prepared::new(Path::new("/nonexistent/qinit"), &sh("true"), &[], &routes).unwrap();
+    let (_pid, pidfd) = spawn::spawn(&p, None, err_w.as_fd()).unwrap();
+    drop(err_w);
+    let mut bytes = Vec::new();
+    std::fs::File::from(err_r).read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, libc::ENOENT.to_ne_bytes());
+    assert_eq!(libc::WEXITSTATUS(proc::wait_pidfd(&pidfd).unwrap()), 127);
+}
+
+#[test]
 fn the_child_starts_with_no_signal_blocked_or_ignored() {
     signal::block_in_thread(&[libc::SIGUSR1]).unwrap();
     let (r, w) = fd::pipe(libc::O_CLOEXEC).unwrap();
