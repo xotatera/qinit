@@ -93,6 +93,16 @@ fn scratch() -> Scratch {
     let root = std::env::temp_dir().join(format!("xtask-run-path-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     write(&root.join("Cargo.toml"), MANIFEST);
+    // The scratch workspace sits outside the repository, so its cargo would
+    // fall back to rustup's default toolchain, which a fresh rustup install
+    // need not have: pin the toolchain this workspace builds with.
+    if let Some(pin) = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .map(|dir| dir.join("rust-toolchain.toml"))
+        .find(|file| file.is_file())
+    {
+        fs::copy(pin, root.join("rust-toolchain.toml")).unwrap();
+    }
     for (name, layer, extra) in [("spine", "core", ""), ("tooth", "core", "tooth = \"t\"\n")] {
         let deps = if name == "tooth" {
             "spine = { path = \"../spine\" }\n"
