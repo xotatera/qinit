@@ -182,20 +182,12 @@ fn repository_gate_policy_is_pinned() {
             ("preflight", Inputs::Globs(&["**/Cargo.toml"]), None),
             ("canary", Inputs::Globs(&["README.md"]), None),
             ("reuse", Inputs::Tree, None),
-            (
-                "fmt",
-                Inputs::Tree,
-                Some("D3: no product package to format")
-            ),
+            ("fmt", Inputs::Tree, None),
             ("placeholder-scan", Inputs::Tree, None), // disciplines:allow-placeholder (the gate's name)
             ("sleep-scan", Inputs::Tree, None),
             ("changelog", Inputs::Tree, None),
-            ("lint", Inputs::Tree, Some("D3: no product package to lint")),
-            (
-                "layers",
-                Inputs::Tree,
-                Some("D3: no product package to check")
-            ),
+            ("lint", Inputs::Tree, None),
+            ("layers", Inputs::Tree, None),
             (
                 "no-std",
                 Inputs::Tree,
@@ -206,7 +198,7 @@ fn repository_gate_policy_is_pinned() {
                 Inputs::Globs(&["**/*.rs", "gates/duplication-baseline.txt"]),
                 None
             ),
-            ("test", Inputs::Tree, Some("D3: no product package to test")),
+            ("test", Inputs::Tree, None),
         ]
     );
     let reuse = gates
@@ -289,9 +281,11 @@ const TOOLING_TEST_EXTRA_PATHS: &[&str] = &[
     "../.githooks",
     "../.cargo/config.toml",
     "../.gitignore",
+    "../Cargo.lock",
     "../Cargo.toml",
     "../DEFERRED.md",
     "../LICENSES",
+    "../crates",
     "../README.md",
     "../REUSE.toml",
     "../gates",
@@ -637,6 +631,7 @@ impl Fixture {
         let source = qinit_xtask::repo_root();
         for path in [
             "Cargo.toml",
+            "Cargo.lock",
             "README.md",
             "DEFERRED.md",
             "REUSE.toml",
@@ -645,6 +640,7 @@ impl Fixture {
             std::fs::copy(source.join(path), root.join(path)).unwrap();
         }
         copy_tree(&source.join("xtask"), &root.join("xtask"));
+        copy_tree(&source.join("crates"), &root.join("crates"));
         copy_tree(&source.join("gates"), &root.join("gates"));
         copy_tree(&source.join("LICENSES"), &root.join("LICENSES"));
         let readme = std::fs::read_to_string(root.join("README.md")).unwrap();

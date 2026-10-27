@@ -125,12 +125,8 @@ pub fn canary_present(readme: &str) -> bool {
         .eq(CANARY_LINES)
 }
 
-const NO_PRODUCT_FORMAT: &str = "D3: no product package to format";
-const NO_PRODUCT_LINT: &str = "D3: no product package to lint";
-const NO_PRODUCT_LAYERS: &str = "D3: no product package to check";
 const NO_PRODUCT_NO_STD: &str = "D4: no kernel or core product crate";
 const NO_TOOLING_NO_STD: &str = "D4: no tooling kernel or core crate";
-const NO_PRODUCT_TEST: &str = "D3: no product package to test";
 const TOOLING_REPOSITORY_SCANS: &str = "D5: repository-wide scans run in the repo stage";
 
 /// Tools only the repository stage's own gates run, beyond the template's:
@@ -221,7 +217,7 @@ pub fn repo_registry() -> Vec<Gate> {
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: false,
-            blocked: Some(NO_PRODUCT_FORMAT),
+            blocked: None,
             decl: "",
         },
         xtask::scan("placeholder-scan", xtask::gates::stub_scan, true), // disciplines:allow-placeholder (the gate's name)
@@ -238,7 +234,7 @@ pub fn repo_registry() -> Vec<Gate> {
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: false,
-            blocked: Some(NO_PRODUCT_LINT),
+            blocked: None,
             decl: "",
         },
         Gate {
@@ -252,7 +248,7 @@ pub fn repo_registry() -> Vec<Gate> {
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: false,
-            blocked: Some(NO_PRODUCT_LAYERS),
+            blocked: None,
             decl: "",
         },
         Gate {
@@ -294,7 +290,7 @@ pub fn repo_registry() -> Vec<Gate> {
             ignored_inputs: &[],
             cacheable: true,
             cache_on_main: false,
-            blocked: Some(NO_PRODUCT_TEST),
+            blocked: None,
             decl: "",
         },
     ]
@@ -311,9 +307,11 @@ const TOOLING_TEST_EXTRA_PATHS: &[&str] = &[
     "../.githooks",
     "../.cargo/config.toml",
     "../.gitignore",
+    "../Cargo.lock",
     "../Cargo.toml",
     "../DEFERRED.md",
     "../LICENSES",
+    "../crates",
     "../README.md",
     "../REUSE.toml",
     "../gates",

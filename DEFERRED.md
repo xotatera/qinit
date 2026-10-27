@@ -25,12 +25,9 @@ project.
 Deferred by the approved design, §9. None of these may enter qinit without an
 approved design amendment.
 
-### D3 — Product workspace gates · `ACCEPTED`
+### D3 — Product workspace gates · `RESOLVED`
 
-The repository has no product package while disciplines are being set up.
-The root `fmt`, `lint`, `layers`, and `test` gates are therefore blocked:
-running them would format, lint, inspect, or test an empty virtual workspace.
-Unblock each gate in the same change that adds its first product package.
+Resolved by sub-project 2 Task 1: `qinit-sys` is the first product package; the four gates run.
 
 ### D4 — no-std product gate · `ACCEPTED`
 

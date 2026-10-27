@@ -12,6 +12,9 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `qinit-sys`: the unsafe shim (descriptors, epoll, timers, signals, pidfd
+  reaping), the first product crate; the repository stage's fmt, lint, layers
+  and test gates now run.
 - Repository disciplines bootstrap with a Rust/Verus-compatible pinned
   toolchain, virtual Cargo workspace, xtask alias, policy ledgers, and scan
   configuration.
