@@ -6,8 +6,8 @@
 use qinit_cell::{Polite, ReadyMode, Report};
 use qinit_event::Loop;
 use qinit_vm_guests::{
-    COMB, HANG_GUARD, await_events, cells, e, exists, expect, helper_cmd, make_cell, reap_exited,
-    remove, reports_of, run,
+    COMB, HANG_GUARD, await_events, cells, e, exists, expect, helper_cmd, killed, make_cell,
+    reap_exited, remove, reports_of, run,
 };
 use std::os::fd::AsFd;
 
@@ -24,8 +24,12 @@ fn moved_member_is_spared() -> Result<(), String> {
     ))?;
     let mut seen = expect(&mut cells, id, Report::Ready)?;
     let target = format!("{COMB}/rg-other/cgroup.procs");
+    let moved_pid = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
+    let recorded = moved_pid.clone();
     cells.set_between_hook(Box::new(move |pid| {
-        let _ = std::fs::write(&target, pid.to_string());
+        if std::fs::write(&target, pid.to_string()).is_ok() {
+            recorded.store(pid, std::sync::atomic::Ordering::SeqCst);
+        }
     }));
     e(cells.stop(id, Polite::Cell, HANG_GUARD, HANG_GUARD))?;
     seen.extend(expect(&mut cells, id, Report::Empty)?);
@@ -44,6 +48,15 @@ fn moved_member_is_spared() -> Result<(), String> {
         qinit_vm_guests::comb()?,
         c"rg-other",
     ))?;
+    let pid = moved_pid.load(std::sync::atomic::Ordering::SeqCst);
+    if pid <= 0 {
+        return Err("the hook recorded no moved pid".into());
+    }
+    let pidfd = e(qinit_sys::proc::pidfd_open(pid))?;
+    let status = e(qinit_sys::proc::wait_pidfd(&pidfd))?;
+    if !killed(status) {
+        return Err(format!("moved pid {pid} status {status}, expected SIGKILL"));
+    }
     reap_exited()?;
     let got = reports_of(&seen, id);
     let want = [Report::Created, Report::Ready, Report::Empty];

@@ -5,7 +5,7 @@ use qinit_vm::verdict::{Outcome, judge, parse};
 
 #[test]
 fn verdict_lines_are_read_and_others_ignored() {
-    let serial = "[    0.1] boot noise\r\nQINIT-VM spawn first PASS\r\nQINIT-VM spawn second FAIL child left fd 4 open\r\nQINIT-VM other x PASS\r\nQINIT-VM spawn END\r\n";
+    let serial = "[    0.1] boot noise\r\nQINIT-VM spawn first PASS\r\nQINIT-VM spawn second FAIL child left fd 4 open\r\nQINIT-VM other x PASS\r\nQINIT-VM spawn END 2\r\n";
     let r = parse("spawn", serial);
     assert!(r.finished);
     assert_eq!(r.verdicts.len(), 2);
@@ -31,15 +31,28 @@ fn a_suite_without_its_end_line_failed() {
 
 #[test]
 fn a_finished_suite_with_no_case_failed() {
-    let r = parse("probe", "QINIT-VM probe END\n");
+    let r = parse("probe", "QINIT-VM probe END 0\n");
     assert!(judge("probe", &r).unwrap_err().contains("no case"));
+}
+
+#[test]
+fn incomplete_duplicate_garbled_and_extra_fail_are_rejected() {
+    for serial in [
+        "QINIT-VM p a PASS\nQINIT-VM p END 2\n",
+        "QINIT-VM p a PASS\nQINIT-VM p a PASS\nQINIT-VM p END 2\n",
+        "QINIT-VM p a PASS garbage\nQINIT-VM p END 1\n",
+        "QINIT-VM p a PASS\nQINIT-VM p b FAIL extra\nQINIT-VM p END 1\n",
+        "QINIT-VM p a PASS\nQINIT-VM p END\n",
+    ] {
+        assert!(judge("p", &parse("p", serial)).is_err(), "{serial}");
+    }
 }
 
 #[test]
 fn all_passes_count() {
     let r = parse(
         "probe",
-        "QINIT-VM probe a PASS\nQINIT-VM probe b PASS\nQINIT-VM probe END\n",
+        "QINIT-VM probe a PASS\nQINIT-VM probe b PASS\nQINIT-VM probe END 2\n",
     );
     assert_eq!(judge("probe", &r), Ok(2));
 }

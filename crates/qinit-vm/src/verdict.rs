@@ -1,9 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Reading a guest's verdict lines: `QINIT-VM <suite> <case> PASS`, `QINIT-VM <suite> <case>
-//! FAIL <detail>` and the closing `QINIT-VM <suite> END`. A suite without its END line crashed
-//! or hung, and failed.
+//! Strict guest verdicts, closed by `QINIT-VM <suite> END <case-count>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Pass,
@@ -20,32 +18,45 @@ pub struct Verdict {
 pub struct Report {
     pub verdicts: Vec<Verdict>,
     pub finished: bool,
+    pub expected: Option<usize>,
+    pub malformed: bool,
 }
 
-/// The verdicts of `suite` in `serial`; lines of other suites and boot noise are ignored.
+/// The verdicts of `suite`; unrelated boot noise is ignored.
 #[must_use]
 pub fn parse(suite: &str, serial: &str) -> Report {
     let mut r = Report {
         verdicts: Vec::new(),
         finished: false,
+        expected: None,
+        malformed: false,
     };
     let prefix = format!("QINIT-VM {suite} ");
     for line in serial.lines().map(|l| l.trim_end_matches('\r')) {
         let Some(rest) = line.strip_prefix(&prefix) else {
             continue;
         };
-        if rest == "END" {
+        let mut parts = rest.splitn(3, ' ');
+        let case = parts.next().unwrap_or("");
+        let word = parts.next();
+        let detail = parts.next();
+        if case == "END" {
+            r.malformed |= r.finished || detail.is_some();
             r.finished = true;
+            r.expected = word.and_then(|n| n.parse().ok());
+            r.malformed |= r.expected.is_none();
             continue;
         }
-        let mut parts = rest.splitn(3, ' ');
-        let (Some(case), Some(word)) = (parts.next(), parts.next()) else {
-            continue;
-        };
-        let outcome = match word {
-            "PASS" => Outcome::Pass,
-            "FAIL" => Outcome::Fail(parts.next().unwrap_or("").to_string()),
-            _ => continue,
+        if r.finished || case.is_empty() {
+            r.malformed = true;
+        }
+        let outcome = match (word, detail) {
+            (Some("PASS"), None) => Outcome::Pass,
+            (Some("FAIL"), d) => Outcome::Fail(d.unwrap_or("").to_string()),
+            _ => {
+                r.malformed = true;
+                continue;
+            }
         };
         r.verdicts.push(Verdict {
             case: case.to_string(),
@@ -55,27 +66,32 @@ pub fn parse(suite: &str, serial: &str) -> Report {
     r
 }
 
-/// `Ok(passed cases)` when the suite finished with at least one case and no failure.
+/// Accept exactly the declared number of distinct, well-formed passes.
 pub fn judge(suite: &str, r: &Report) -> Result<usize, String> {
     if !r.finished {
-        return Err(format!(
-            "suite {suite} never finished (crash or hang); {} case(s) reported",
-            r.verdicts.len()
-        ));
+        return Err(format!("suite {suite} never finished (crash or hang)"));
     }
-    let failed: Vec<String> = r
-        .verdicts
-        .iter()
-        .filter_map(|v| match &v.outcome {
-            Outcome::Fail(d) => Some(format!("{}: {d}", v.case)),
-            Outcome::Pass => None,
-        })
-        .collect();
-    if !failed.is_empty() {
-        return Err(format!("suite {suite} failed: {}", failed.join("; ")));
+    let mut cases = std::collections::BTreeSet::new();
+    for v in &r.verdicts {
+        if !cases.insert(&v.case) {
+            return Err(format!("suite {suite} duplicate case {}", v.case));
+        }
+        if let Outcome::Fail(detail) = &v.outcome {
+            return Err(format!("suite {suite} failed: {}: {detail}", v.case));
+        }
+    }
+    if r.malformed {
+        return Err(format!("suite {suite} garbled verdict or END count"));
     }
     if r.verdicts.is_empty() {
         return Err(format!("suite {suite} reported no case"));
     }
-    Ok(r.verdicts.len())
+    if r.expected != Some(cases.len()) {
+        return Err(format!(
+            "suite {suite} missing or extra case: expected {:?}, got {}",
+            r.expected,
+            cases.len()
+        ));
+    }
+    Ok(cases.len())
 }

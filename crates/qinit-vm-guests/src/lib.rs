@@ -3,7 +3,7 @@
 
 //! `qinit-vm-guests`: the guest side of qinit's VM suites (spec 2026-10-27 §6.1 tier 3). Each
 //! suite is a binary booted as `/init`. It mounts proc, sys, cgroup2, devtmpfs and tmpfs, runs
-//! its cases, prints `QINIT-VM <suite> <case> PASS|FAIL <detail>` and `QINIT-VM <suite> END` on
+//! its cases, prints `QINIT-VM <suite> <case> PASS|FAIL <detail>` and `QINIT-VM <suite> END <case-count>` on
 //! the console and powers the guest off from a child. The same binary is the helper program
 //! the cases spawn: `/init --qinit-helper <role> <args…>`.
 // Every fallible function returns one string naming the step and its cause; a per-function
@@ -54,7 +54,7 @@ pub fn run(suite: &'static str, cases: &[Case]) -> ! {
             ),
         });
     }
-    console(&format!("QINIT-VM {suite} END"));
+    console(&format!("QINIT-VM {suite} END {}", cases.len()));
     qinit_sys::mount::power_off_from_child()
 }
 
