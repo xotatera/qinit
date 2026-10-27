@@ -89,8 +89,8 @@ fn noneffect_errors_keep_first_error_but_run_every_action_and_event() {
     use qinit_cell_core::Effect;
     let mut e = running();
     e.effects.failures.push_back(Effect::Freeze);
-    e.effects.arm_fails = true;
-    e.effects.cancel_fails = true;
+    e.effects.arm_error = Some(qinit_sys::Errno(libc::ENOMEM));
+    e.effects.cancel_error = Some(qinit_sys::Errno(libc::EIO));
     assert_eq!(
         e.stop(CellId(0), Polite::Cell, SEC, SEC),
         Err(Error::Sys(qinit_sys::Errno(libc::ENOMEM)))
