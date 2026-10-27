@@ -18,6 +18,139 @@ fn qinit_has_only_repository_and_tooling_stages() {
     assert_eq!(stages, [("repo", ""), ("xtask", "xtask")]);
 }
 
+/// Measured with `cargo xtask gate --no-cache` on 2026-10-24/27 (seconds):
+/// preflight, canary, placeholder-scan, sleep-scan, changelog, layers 0.0; // disciplines:allow-placeholder (the gate's name)
+/// reuse 0.3; duplication 0.8; xtask fmt 1.8; xtask lint 2.8; xtask test
+/// 42-56. Blocked gates (SKIP, 0.0 s now) sit where their work will cost
+/// once unblocked; re-measure when one is. A new gate is placed by its
+/// measured time; slow gates go last.
+const GLOBAL_ORDER: &[(&str, &str)] = &[
+    ("repo", "preflight"),
+    ("xtask", "preflight"),
+    ("repo", "canary"),
+    ("repo", "placeholder-scan"), // disciplines:allow-placeholder (the gate's name)
+    ("repo", "sleep-scan"),
+    ("repo", "changelog"),
+    ("xtask", "placeholder-scan"), // disciplines:allow-placeholder (the gate's name)
+    ("xtask", "sleep-scan"),
+    ("xtask", "changelog"),
+    ("xtask", "duplication"),
+    ("xtask", "no-std"),
+    ("xtask", "layers"),
+    ("repo", "layers"),
+    ("repo", "reuse"),
+    ("repo", "duplication"),
+    ("xtask", "fmt"),
+    ("repo", "fmt"),
+    ("xtask", "lint"),
+    ("repo", "lint"),
+    ("repo", "no-std"),
+    ("repo", "test"),
+    ("xtask", "test"),
+];
+
+#[test]
+fn global_gate_order_is_pinned_fastest_first() {
+    assert_eq!(qinit_xtask::ORDER, GLOBAL_ORDER);
+}
+
+#[test]
+fn global_order_names_every_static_gate_once() {
+    for stage in STAGES {
+        let mut registry: Vec<&str> = (stage.registry)().iter().map(|gate| gate.name).collect();
+        let mut ordered: Vec<&str> = qinit_xtask::ORDER
+            .iter()
+            .filter(|(name, _)| *name == stage.name)
+            .map(|(_, gate)| *gate)
+            .collect();
+        registry.sort_unstable();
+        ordered.sort_unstable();
+        assert_eq!(ordered, registry, "stage {}", stage.name);
+    }
+}
+
+#[allow(clippy::unnecessary_wraps)] // signature fixed by the `plan` names callback
+fn names_with_a_repo_proof(stage: &qinit_xtask::Stage) -> Result<Vec<String>, String> {
+    let mut names: Vec<String> = (stage.registry)()
+        .iter()
+        .map(|gate| gate.name.to_string())
+        .collect();
+    if stage.name == "repo" {
+        names.push("proof:example".to_string());
+    }
+    Ok(names)
+}
+
+fn planned(arguments: &[&str]) -> Vec<(&'static str, xtask::Command)> {
+    let arguments: Vec<String> = arguments.iter().map(|a| (*a).to_string()).collect();
+    match qinit_xtask::plan(&arguments, &names_with_a_repo_proof).unwrap() {
+        qinit_xtask::Plan::Run(steps) => steps,
+        other => panic!("not a run: {other:?}"),
+    }
+}
+
+fn step(stage: &'static str, arguments: &[&str]) -> (&'static str, xtask::Command) {
+    let registry = STAGES.iter().find(|s| s.name == stage).unwrap().registry;
+    let arguments: Vec<String> = arguments.iter().map(|a| (*a).to_string()).collect();
+    (stage, xtask::parse_args_with(registry, &arguments).unwrap())
+}
+
+#[test]
+fn a_full_gate_run_follows_the_global_order_then_runs_proofs() {
+    let mut expected: Vec<_> = GLOBAL_ORDER
+        .iter()
+        .map(|(stage, gate)| step(stage, &["gate", "--no-cache", "--only", gate]))
+        .collect();
+    expected.push(step("repo", &["proofs", "--no-cache"]));
+    assert_eq!(planned(&["gate", "--no-cache"]), expected);
+}
+
+#[test]
+fn no_proofs_forwards_to_every_step_and_drops_the_proof_steps() {
+    let expected: Vec<_> = GLOBAL_ORDER
+        .iter()
+        .map(|(stage, gate)| step(stage, &["gate", "--no-proofs", "--only", gate]))
+        .collect();
+    assert_eq!(planned(&["gate", "--no-proofs"]), expected);
+}
+
+#[test]
+fn gate_list_prints_the_global_order() {
+    let fixture = Fixture::new();
+    let output = fixture.run(&["gate", "--list"]);
+    assert_success(&output);
+    let listed: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let expected: Vec<String> = GLOBAL_ORDER
+        .iter()
+        .map(|(stage, gate)| format!("{stage}/{gate}"))
+        .collect();
+    assert_eq!(listed, expected);
+}
+
+#[test]
+fn the_first_failing_gate_stops_the_run() {
+    let fixture = Fixture::new();
+    fixture.seed_review_canary();
+    let output = fixture.run_with_context(&["gate", "--no-cache"], Some("main"));
+    assert_failure_contains(&output, "review canary remains in README.md");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("=== stopped at repo/canary"), "{stderr}");
+    assert!(
+        stderr.contains("not run: repo/placeholder-scan,"), // disciplines:allow-placeholder (the gate's name)
+        "{stderr}"
+    );
+    assert!(stderr.contains("xtask/test"), "{stderr}");
+    for later in ["== reuse", "== duplication", "== test", "PASS fmt"] {
+        assert!(
+            !stderr.contains(later),
+            "{later} ran after the failure: {stderr}"
+        );
+    }
+}
+
 #[test]
 fn repository_gate_policy_is_pinned() {
     let gates = qinit_xtask::repo_registry();
