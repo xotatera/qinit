@@ -62,6 +62,21 @@ repository root:
 cargo xtask gate --no-cache
 ```
 
+### Requirements
+
+The gate needs only these on a stock Linux system (Debian stable package
+names): `git`, `build-essential` (a C toolchain and `make`), `reuse`, `curl`
+and `ca-certificates` (to install rustup), and a POSIX `sh`. Install
+[rustup](https://rustup.rs) without a default toolchain; it installs the
+pinned toolchain from [`rust-toolchain.toml`](rust-toolchain.toml) on first
+use. Verus and verusfmt are needed only once a Verus proof or a `verus!` block
+exists.
+
+`sh scripts/container-check.sh [<ref>]` proves this list: it clones the
+repository fresh in a stock Debian stable container, installs exactly these
+packages, and runs the full gate as an unprivileged user (podman, or docker
+with `CONTAINER=docker`).
+
 This runs the configured repository and tooling checks fresh, fastest first
 in one order across both workspaces (`cargo xtask gate --list` prints it), then
 any declared proofs, and stops at the first failure. `cargo xtask proofs` runs
