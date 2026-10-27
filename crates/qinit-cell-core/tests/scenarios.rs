@@ -77,7 +77,7 @@ fn a_main_stop_signals_the_pidfd_and_ends_empty_and_removed() {
         running(),
         &[
             stop(Polite::Main),
-            Event::MainExited(15),
+            Event::MainExited(Some(15)),
             level(false, false),
             Event::Request(Request::Remove),
             Event::Removed,
@@ -110,7 +110,7 @@ fn a_cell_stop_freezes_signals_every_member_thaws_then_escalates() {
             Event::Signalled,
             level(true, false),
             Event::Deadline(Timer::Grace),
-            Event::MainExited(9),
+            Event::MainExited(Some(9)),
             level(false, false),
         ],
     );
@@ -173,17 +173,17 @@ fn readiness_by_exit() {
         ],
     )
     .0;
-    let (c, acts) = run(base, &[Event::MainExited(0)]);
+    let (c, acts) = run(base, &[Event::MainExited(Some(0))]);
     assert_eq!(
         acts[0],
         [Action::Report(Report::Ready)],
         "status 0 with the cell still populated: ready"
     );
     assert_eq!(c.phase, Phase::Running);
-    let (c, acts) = run(base, &[Event::MainExited(1 << 8)]);
-    assert_eq!(acts[0], [Action::Report(Report::MainExited(1 << 8))]);
+    let (c, acts) = run(base, &[Event::MainExited(Some(1 << 8))]);
+    assert_eq!(acts[0], [Action::Report(Report::MainExited(Some(1 << 8)))]);
     assert_eq!(c.phase, Phase::Exited);
-    let (c, acts) = run(base, &[level(false, false), Event::MainExited(0)]);
+    let (c, acts) = run(base, &[level(false, false), Event::MainExited(Some(0))]);
     assert_eq!(
         acts[1],
         [Action::Report(Report::Ready), Action::Report(Report::Empty)],
@@ -280,7 +280,7 @@ fn nothing_is_signalled_after_empty_and_stale_deadlines_are_ignored() {
         running(),
         &[
             stop(Polite::Main),
-            Event::MainExited(15),
+            Event::MainExited(Some(15)),
             level(false, false),
         ],
     );
@@ -350,7 +350,7 @@ fn a_spawn_confirmed_after_the_stop_began_is_still_tracked() {
     let (c, acts) = run(stopped_before_spawned(), &[Event::Spawned(7)]);
     assert_eq!(acts[0], []);
     assert_eq!(c.main, Main::Live(7), "the handle is recorded, not dropped");
-    let (c, acts) = run(c, &[Event::MainExited(15), level(false, false)]);
+    let (c, acts) = run(c, &[Event::MainExited(Some(15)), level(false, false)]);
     assert_eq!(acts[0], [], "still populated: wait");
     assert_eq!(
         acts[1],
@@ -361,7 +361,7 @@ fn a_spawn_confirmed_after_the_stop_began_is_still_tracked() {
         ]
     );
     assert_eq!(c.phase, Phase::Empty);
-    assert_eq!(c.main, Main::Reaped(15));
+    assert_eq!(c.main, Main::Reaped(Some(15)));
 }
 
 #[test]
@@ -395,7 +395,11 @@ fn an_empty_level_before_spawned_while_stopping_waits_for_the_main_process() {
     );
     let (c, acts) = run(
         c,
-        &[Event::Spawned(7), level(false, false), Event::MainExited(9)],
+        &[
+            Event::Spawned(7),
+            level(false, false),
+            Event::MainExited(Some(9)),
+        ],
     );
     assert_eq!(acts[0], []);
     assert_eq!(acts[1], [], "the main process is live: wait for its exit");
@@ -409,5 +413,5 @@ fn an_empty_level_before_spawned_while_stopping_waits_for_the_main_process() {
         "reaped, and the last level read empty"
     );
     assert_eq!(c.phase, Phase::Empty);
-    assert_eq!(c.main, Main::Reaped(9));
+    assert_eq!(c.main, Main::Reaped(Some(9)));
 }

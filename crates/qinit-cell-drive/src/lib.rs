@@ -1,6 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
-
 //! `qinit-cell-drive`: the drive's decisions (spec 2026-10-27 §5.2, plan P1), proved by Verus
 //! (`proof:qinit-cell-drive`). A loop token is `slot << 3 | source`: every token routes to at
 //! most one (slot, source) pair and every pair has its own token, so each event reaches exactly
@@ -28,7 +27,9 @@ pub enum Source {
     ExecError,
     /// `cgroup.events`.
     Events,
+    /// The polite-stop grace deadline.
     Grace,
+    /// The post-kill deadline.
     Kill,
 }
 
@@ -97,6 +98,23 @@ pub proof fn lemma_roundtrip(slot: u16, s: Source)
     lemma_split(slot as u64, kind_of(s));
 }
 
+/// Every routed token is exactly the token for its pair.
+pub proof fn lemma_route_inverse(t: u64, slot: u16, s: Source)
+    requires
+        spec_route(t) == Some((slot, s)),
+    ensures
+        t == spec_token(slot, s),
+{
+    assert((t >> 3u64) < 64);
+    assert(source_of(t & 7u64) == Some(s));
+    assert(kind_of(s) == (t & 7u64));
+    assert((((t >> 3u64) as u16) as u64) == (t >> 3u64)) by (bit_vector)
+        requires
+            (t >> 3u64) < 64,
+    ;
+    assert(((t >> 3u64) << 3u64) | (t & 7u64) == t) by (bit_vector);
+}
+
 /// Different pairs have different tokens.
 pub proof fn lemma_injective(a: u16, s: Source, b: u16, u: Source)
     requires
@@ -119,9 +137,18 @@ pub fn token(slot: u16, s: Source) -> (t: u64)
     ensures
         t == spec_token(slot, s),
         spec_route(t) == Some((slot, s)),
+        t < (CAPACITY as u64) << 3u64,
 {
     proof {
         lemma_roundtrip(slot, s);
+        let k = kind_of(s);
+        assert(k < 8);
+        assert((CAPACITY as u64) << 3u64 == 512u64) by (bit_vector);
+        assert(((slot as u64) << 3u64) | k < 512u64) by (bit_vector)
+            requires
+                slot < 64,
+                k < 8,
+        ;
     }
     let k: u64 = match s {
         Source::Main => 0,

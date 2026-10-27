@@ -5,7 +5,7 @@
 use qinit_cell::effects::{Command, Reaped};
 use qinit_cell::engine::{CellId, Engine, Error, Notice, ORPHANS};
 use qinit_cell::sim::{Call, Sim};
-use qinit_cell_core::{Failure, Phase, Polite, ReadyMode, Report, STATUS_UNKNOWN, Sig, Timer};
+use qinit_cell_core::{Failure, Phase, Polite, ReadyMode, Report, Sig, Timer};
 use qinit_cell_drive::{CAPACITY, Source, token};
 use qinit_event::Ready;
 use std::time::Duration;
@@ -35,6 +35,71 @@ fn count(e: &Engine<Sim>, call: &Call) -> usize {
 }
 
 const SEC: Duration = Duration::from_secs(1);
+
+#[test]
+fn failed_effects_escalate_and_do_not_lose_batch_events() {
+    use qinit_cell_core::Effect;
+    for effect in [
+        Effect::Freeze,
+        Effect::SignalMain,
+        Effect::Thaw,
+        Effect::SignalMembers,
+    ] {
+        let mut e = running();
+        e.effects.failures.push_back(effect);
+        let polite = if effect == Effect::SignalMain {
+            Polite::Main
+        } else {
+            Polite::Cell
+        };
+        e.stop(CellId(0), polite, SEC, SEC).unwrap();
+        if matches!(effect, Effect::Thaw | Effect::SignalMembers) {
+            e.effects.levels.push_back((true, true));
+            assert_eq!(
+                e.on_batch(&[
+                    Ready::Priority(token(0, Source::Events)),
+                    Ready::Deadline(token(0, Source::Grace)),
+                    Ready::Exited(token(0, Source::Main), 9),
+                ]),
+                None
+            );
+        }
+        assert_eq!(e.phase(CellId(0)), Some(Phase::Killing));
+        assert!(e.effects.calls.contains(&Call::Kill(0)));
+        assert!(e.effects.calls.contains(&Call::Arm(0, Timer::Kill, 1000)));
+        e.on_ready(&Ready::Deadline(token(0, Source::Kill)))
+            .unwrap();
+        assert_eq!(reports(&mut e), [Report::Failed(Failure::Stuck)]);
+    }
+}
+
+#[test]
+fn failed_kill_reports_kill_failure_after_arming_and_cancelling() {
+    use qinit_cell_core::Effect;
+    let mut e = running();
+    e.effects.failures.extend([Effect::Freeze, Effect::Kill]);
+    e.stop(CellId(0), Polite::Cell, SEC, SEC).unwrap();
+    assert_eq!(e.phase(CellId(0)), Some(Phase::Failed(Failure::Kill)));
+    assert_eq!(reports(&mut e), [Report::Failed(Failure::Kill)]);
+    assert!(e.effects.calls.contains(&Call::Arm(0, Timer::Kill, 1000)));
+    assert!(e.effects.calls.contains(&Call::Cancel(0, Timer::Kill)));
+}
+
+#[test]
+fn unsettled_exec_pipe_keeps_handle_and_exit_until_eof() {
+    let mut e = Engine::new(Sim::default());
+    let id = e.create("pending").unwrap();
+    e.spawn(id, cmd(), ReadyMode::Exit).unwrap();
+    e.effects.exec_pending = true;
+    e.on_ready(&Ready::Exited(token(0, Source::Main), 0))
+        .unwrap();
+    assert_eq!(e.phase(id), Some(Phase::Starting));
+    assert!(!e.effects.calls.contains(&Call::Close(0, Source::ExecError)));
+    e.effects.exec_pending = false;
+    e.on_ready(&Ready::Readable(token(0, Source::ExecError)))
+        .unwrap();
+    assert!(reports(&mut e).contains(&Report::Ready));
+}
 
 /// An engine with cell 0 running (ready by pipe) and its notices taken.
 fn running() -> Engine<Sim> {
@@ -218,7 +283,7 @@ fn orphans_and_reaped_mains_are_reported() {
         .unwrap();
     let notices = e.take_notices();
     assert!(notices.contains(&Notice::Orphan { pid: 42, status: 0 }));
-    assert!(notices.contains(&Notice::Cell(CellId(0), Report::MainExited(9))));
+    assert!(notices.contains(&Notice::Cell(CellId(0), Report::MainExited(Some(9)))));
 }
 
 #[test]
@@ -395,11 +460,7 @@ fn a_handed_over_main_is_seen_exiting_without_a_status() {
         .unwrap();
     assert_eq!(
         reports(&mut e),
-        [
-            Report::Running,
-            Report::MainExited(STATUS_UNKNOWN),
-            Report::Empty
-        ]
+        [Report::Running, Report::MainExited(None), Report::Empty]
     );
 }
 

@@ -143,6 +143,9 @@ impl Kernel {
     ///
     /// The loop's errno.
     pub fn wait(&mut self) -> Result<Vec<Ready>, Errno> {
+        if let Some(error) = self.reap_error.take() {
+            return Err(error);
+        }
         let mut out = self.l.wait().map_err(lp)?;
         out.retain(|r| match *r {
             Ready::Exited(t, status) => self.reaped_by_loop(t, status),
@@ -202,12 +205,15 @@ impl Kernel {
             .iter()
             .position(|s| s.main.as_ref().is_some_and(|m| m.child && m.pid == pid));
         if let Some(slot) = tracked.and_then(|i| u16::try_from(i).ok()) {
-            // The loop's copy goes first, so the loop never reaps it as well.
-            let _ = self.l.remove(token(slot, Source::Main));
-            let Some(m) = self.slot(slot)?.main.take() else {
+            let Some(m) = self.slot(slot)?.main.as_ref() else {
                 return Ok(None);
             };
-            return Ok(proc::reap_pidfd(&m.pidfd)?.map(|_| Reaped::Main(slot, pid, status)));
+            if proc::reap_pidfd(&m.pidfd)?.is_none() {
+                return Ok(None);
+            }
+            self.slot(slot)?.main.take();
+            let _ = self.l.remove(token(slot, Source::Main));
+            return Ok(Some(Reaped::Main(slot, pid, status)));
         }
         if let Some(k) = self.strays.iter().position(|&(_, p)| p == pid) {
             let (t, _) = self.strays.swap_remove(k);
@@ -297,7 +303,7 @@ impl Effects for Kernel {
     }
 
     fn spawn(&mut self, slot: u16, cmd: Command, ready: ReadyMode) -> Result<Handle, Errno> {
-        let (err_r, err_w) = fd::pipe(libc::O_CLOEXEC)?;
+        let (err_r, err_w) = fd::pipe(libc::O_CLOEXEC | libc::O_NONBLOCK)?;
         let pipe = match ready {
             ReadyMode::Pipe => Some(fd::pipe(libc::O_CLOEXEC)?),
             ReadyMode::Exit => None,

@@ -12,6 +12,9 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Guest verdicts require the declared number of distinct passing cases; missing,
+  duplicate and malformed verdicts fail. Reuse-guard evidence includes the moved
+  process's SIGKILL wait status.
 - Guest suites for cells: spawn (placement, exec failure, only routed
   descriptors), ready (pipe, EOF, exit), stop_main, stop_cell (setsid
   escapee, member dying mid-enumeration), escalate, reuse_guard, adopt (with a
@@ -20,7 +23,10 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   readiness, polite stop by main pidfd or freeze-signal-thaw with pidfds
   verified by cgroup id, escalation, adoption, removal (a failed adoption whose
   cgroup id did not match releases only its slot and never touches the
-  directory), orphan reaping as a subreaper; refuses kernels below 6.13.
+  directory), orphan reaping as a subreaper; refuses kernels below 6.13. Failed
+  stop effects escalate immediately, failed kills report `Failed(Kill)`, and
+  batches retain all events despite errors. Unknown adopted-main statuses are
+  `None`; exec-error pipes are nonblocking and reap errors surface on the next wait.
 - `qinit-cell-drive`: loop tokens and slot choice for the cell table, Verus-proved
   (each token routes to one cell and source; a full table refuses new cells).
 - `qinit-cell-core`: the cell machine (create, spawn into the cell, readiness by
@@ -36,7 +42,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   non-terminal state has an armed deadline or an awaited event (the effect
   issued on entry, the caller's request after a report, the main process's
   exit or a level change); the kill deadline ends in Failed; a left deadline
-  is cancelled.
+  is cancelled. Effect-failure escalation and foreign-directory removal safety
+  are proved, as are the token range bound and routing inverse.
 - The `vm` gate: guest suites in QEMU on the pinned kernel, after the proof
   tier; the `probe` suite checks how `cgroup.events` notifies, placement by
   `CLONE_INTO_CGROUP`, cgroup ids, freeze and `cgroup.kill`.
@@ -77,7 +84,9 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The clean-container check installs Verus, verusfmt, QEMU and kernel build
   tools; it uses KVM when available, supports a TCG-only run and an optional
-  checksum-verified local kernel tarball. Gate order is re-pinned from measured
+  checksum-verified local kernel tarball. Kernel builds scrub ambient make
+  overrides; preflight checks libelf headers and unzip. Fake test executables
+  are installed by a child process to avoid parallel-fork ETXTBSY races. Gate order is re-pinned from measured
   runs; the ledger records the cell substrate's accepted limitations.
 - `cargo xtask gate` runs every gate in one fastest-first order across the
   repository and tooling workspaces, then the proof gates, and stops at the

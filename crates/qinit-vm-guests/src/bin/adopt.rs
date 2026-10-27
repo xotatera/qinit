@@ -3,7 +3,7 @@
 
 //! Adoption after the driver state is dropped: by name and cgroup id, a wrong id fails, and a
 //! handed-over main process is watched without being reaped as a main (spec §6.2, D8).
-use qinit_cell::{Failure, Notice, Polite, ReadyMode, Report, STATUS_UNKNOWN};
+use qinit_cell::{Failure, Notice, Polite, ReadyMode, Report};
 use qinit_vm_guests::{
     COMB, HANG_GUARD, cells, e, exists, expect, helper_cmd, reap_expected, remove, reports_of, run,
 };
@@ -53,7 +53,7 @@ fn adopt_by_name_and_id() -> Result<(), String> {
 }
 
 /// A main pidfd handed over on adoption is watched without reaping: its exit reaches the cell
-/// as `MainExited(STATUS_UNKNOWN)` (D8). This helper happens to be this process's child, so
+/// as `MainExited(None)` (D8). This helper happens to be this process's child, so
 /// the runtime reaps it when it lets the pidfd go and reports it as an orphan with its real
 /// status (spec §5.3: a reaped child is never dropped).
 fn handed_over_main() -> Result<(), String> {
@@ -72,11 +72,7 @@ fn handed_over_main() -> Result<(), String> {
     let after = second.main_pid(id);
     remove(&mut second, id)?;
     let got = reports_of(&seen, id);
-    let want = [
-        Report::Running,
-        Report::MainExited(STATUS_UNKNOWN),
-        Report::Empty,
-    ];
+    let want = [Report::Running, Report::MainExited(None), Report::Empty];
     let orphans: Vec<Notice> = seen
         .iter()
         .copied()

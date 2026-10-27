@@ -64,7 +64,7 @@ fn exit_zero() -> Result<(), String> {
 
 fn exit_nonzero() -> Result<(), String> {
     use Report::{Created, Empty, MainExited};
-    let want = [Created, MainExited(3 << 8), Empty];
+    let want = [Created, MainExited(Some(3 << 8)), Empty];
     case("rn", "exit-3", ReadyMode::Exit, Empty, false, &want)
 }
 

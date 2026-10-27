@@ -33,9 +33,8 @@ Resolved by sub-project 2 Task 1: `qinit-sys` is the first product package; the 
 
 The root `no-std` gate runs since sub-project 2 Task 2 (`qinit-event-core` is
 the first core crate). The tooling `no-std` gate is separately blocked: the
-`xtask` workspace has no kernel or core crate.
-Unblock it only in the change that adds a
-primitive, kernel, or core crate to the `xtask` workspace.
+`xtask` workspace has no kernel or core crate. Unblock it only in the change
+that adds a primitive, kernel, or core crate to the `xtask` workspace.
 
 ### D5 — Tooling-stage repository-wide scans · `ACCEPTED`
 
@@ -65,9 +64,11 @@ line. Revisit if real Verus code hits one.
 
 A main process queen hands over on adoption need not be the runtime's child,
 so `qinit-cell` watches its pidfd without reaping it and reports its exit as
-`STATUS_UNKNOWN` (`qinit-cell-core`). The status of a process that is not a
-child is only readable through `PIDFD_INFO_EXIT` (Linux 6.15), above the 6.13
-floor (spec R9). Revisit if the floor reaches 6.15.
+`MainExited(None)`. If that handed-over main is actually our child, its exit
+is separately reported as an Orphan with its real status, while its cell gets
+`MainExited(None)`. The status of a process that is not a child is only readable
+through `PIDFD_INFO_EXIT` (Linux 6.15), above the 6.13 floor (spec R9). Revisit
+if the floor reaches 6.15.
 
 ### D9 — Released child the loop refuses to watch · `ACCEPTED`
 
@@ -107,3 +108,10 @@ Adoption treats a cell that cannot be opened as an id mismatch
 
 `qinit-sys` is written for x86_64 (raw child path, kernel structure layouts);
 another architecture needs its own `KernelSigaction` and checked layouts.
+
+### D14 — clone3 signal mask and threaded credential changes · `ACCEPTED`
+
+Blocking all signals around clone3, including glibc's SIGSETXID and musl's
+synccall signal, lets a threaded caller create a child with credentials from
+before a concurrent setxid change. Sub-project 5 (privilege) must revisit
+this before using spawn from a threaded caller that changes credentials.

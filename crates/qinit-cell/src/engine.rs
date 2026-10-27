@@ -7,8 +7,8 @@
 use crate::effects::{Command, Effects, Reaped};
 use crate::text::{ReadyBuf, valid_name};
 use qinit_cell_core::{
-    Action, Cell, Event, Failure, Handle, Main, Phase, Polite, ReadyMode, Report, Request,
-    STATUS_UNKNOWN, absent, step,
+    Action, Cell, Effect, Event, Handle, Main, Phase, Polite, ReadyMode, Report, Request, absent,
+    step,
 };
 use qinit_cell_drive::{CAPACITY, Source, first_free, route, source_timer};
 use qinit_event::{Ready, Token};
@@ -76,6 +76,8 @@ struct Entry {
     /// The handle `spawn` returned while its exec result is outstanding; given to the machine
     /// once exec is confirmed.
     pending_main: Option<Handle>,
+    #[allow(clippy::option_option)] // outer: exit observed; inner: status known
+    pending_exit: Option<Option<i32>>,
 }
 
 impl Entry {
@@ -88,6 +90,7 @@ impl Entry {
             expected_id: 0,
             command: None,
             pending_main: None,
+            pending_exit: None,
         })
     }
 }
@@ -227,13 +230,6 @@ impl<E: Effects> Engine<E> {
     ///
     /// [`Error::NoSuchCell`], or [`Error::Sys`] when an effect failed.
     pub fn remove(&mut self, id: CellId) -> Result<(), Error> {
-        // A mismatched directory belongs to somebody else. Release only our tracking;
-        // never execute the machine's RemoveDir effect against that directory.
-        if self.phase(id) == Some(Phase::Failed(Failure::IdMismatch)) {
-            self.free(id.0);
-            self.notices.push(Notice::Cell(id, Report::Removed));
-            return Ok(());
-        }
         self.deliver(id.0, Event::Request(Request::Remove))
     }
 
@@ -254,6 +250,19 @@ impl<E: Effects> Engine<E> {
         std::mem::take(&mut self.notices)
     }
 
+    /// Processes every loop result, retaining only the first error for the caller.
+    pub fn on_batch(&mut self, batch: &[Ready]) -> Option<Error> {
+        let mut error = None;
+        for ready in batch {
+            if let Err(e) = self.on_ready(ready)
+                && error.is_none()
+            {
+                error = Some(e);
+            }
+        }
+        error
+    }
+
     /// Feeds one loop result to the cell it concerns; results for no cell are ignored.
     ///
     /// # Errors
@@ -262,16 +271,24 @@ impl<E: Effects> Engine<E> {
     pub fn on_ready(&mut self, r: &Ready) -> Result<(), Error> {
         match *r {
             Ready::Signal(ORPHANS, _) => {
+                let mut error = None;
                 for c in self.effects.reap_children()? {
                     match c {
                         Reaped::Main(slot, _, status) if self.has(slot) => {
-                            self.main_exited(slot, status)?;
+                            if let Err(e) = self.main_exited(slot, Some(status))
+                                && error.is_none()
+                            {
+                                error = Some(e);
+                            }
                         }
                         // A main whose cell is gone is an orphan like any other.
                         Reaped::Main(_, pid, status) | Reaped::Orphan(pid, status) => {
                             self.notices.push(Notice::Orphan { pid, status });
                         }
                     }
+                }
+                if let Some(e) = error {
+                    return Err(e);
                 }
             }
             Ready::Readable(t) | Ready::Hangup(t) => match route(t) {
@@ -280,7 +297,7 @@ impl<E: Effects> Engine<E> {
                 // A handed-over main is watched without reaping: readable once it exits.
                 Some((slot, Source::Main)) if self.has(slot) => {
                     self.effects.close(slot, Source::Main);
-                    self.main_exited(slot, STATUS_UNKNOWN)?;
+                    self.main_exited(slot, None)?;
                 }
                 _ => {}
             },
@@ -296,7 +313,7 @@ impl<E: Effects> Engine<E> {
                 if let Some((slot, Source::Main)) = route(t)
                     && self.has(slot)
                 {
-                    self.main_exited(slot, status)?;
+                    self.main_exited(slot, Some(status))?;
                 }
             }
             Ready::Deadline(t) => {
@@ -335,10 +352,14 @@ impl<E: Effects> Engine<E> {
     /// exit can come before its exec result: that is settled first (the child is gone, so its
     /// end of the exec pipe is closed and the read cannot block), and the machine sees
     /// `Spawned` or `SpawnFailed` before the exit, never an exit it would drop.
-    fn main_exited(&mut self, slot: u16, status: i32) -> Result<(), Error> {
+    fn main_exited(&mut self, slot: u16, status: Option<i32>) -> Result<(), Error> {
         self.on_exec(slot)?;
         if self.has(slot) {
-            self.deliver(slot, Event::MainExited(status))?;
+            if self.entry(slot)?.pending_main.is_some() {
+                self.entry(slot)?.pending_exit = Some(status);
+            } else {
+                self.deliver(slot, Event::MainExited(status))?;
+            }
         }
         Ok(())
     }
@@ -346,15 +367,25 @@ impl<E: Effects> Engine<E> {
     /// Settles an outstanding exec result; nothing once it is settled (a later report of the
     /// closed pipe in the same batch).
     fn on_exec(&mut self, slot: u16) -> Result<(), Error> {
-        let Some(h) = self.entry(slot)?.pending_main.take() else {
+        let Some(h) = self.entry(slot)?.pending_main else {
             return Ok(());
         };
-        let failed = self.effects.read_exec_error(slot)?;
+        let failed = match self.effects.read_exec_error(slot) {
+            Err(Errno(libc::EAGAIN)) => return Ok(()),
+            result => result?,
+        };
+        self.entry(slot)?.pending_main = None;
         self.effects.close(slot, Source::ExecError);
         match failed {
-            None => self.spawned(slot, h),
-            Some(_) => self.deliver(slot, Event::SpawnFailed),
+            None => self.spawned(slot, h)?,
+            Some(_) => self.deliver(slot, Event::SpawnFailed)?,
         }
+        if self.has(slot)
+            && let Some(status) = self.entry(slot)?.pending_exit.take()
+        {
+            self.deliver(slot, Event::MainExited(status))?;
+        }
+        Ok(())
     }
 
     /// Delivers a confirmed exec. A result that arrives after the cell failed (or while it is
@@ -377,20 +408,36 @@ impl<E: Effects> Engine<E> {
     fn deliver(&mut self, slot: u16, first: Event) -> Result<(), Error> {
         let mut queue = VecDeque::from([first]);
         let mut release = false;
+        let mut error = None;
         while let Some(e) = queue.pop_front() {
             let entry = self.entry(slot)?;
             let (next, acts) = step(entry.cell, e);
             entry.cell = next;
-            // An effect that fails returns its error at once: the step's later actions are not
-            // carried out, and the machine keeps the state it stepped to.
             for a in acts.items().into_iter().flatten() {
-                queue.extend(self.act(slot, a, &mut release)?);
+                match self.act(slot, a, &mut release) {
+                    Ok(events) => queue.extend(events),
+                    Err(e) => {
+                        let effect = match a {
+                            Action::Freeze => Some(Effect::Freeze),
+                            Action::Thaw => Some(Effect::Thaw),
+                            Action::SignalMain(..) => Some(Effect::SignalMain),
+                            Action::SignalMembers(_) => Some(Effect::SignalMembers),
+                            Action::Kill => Some(Effect::Kill),
+                            _ => None,
+                        };
+                        if let Some(effect) = effect {
+                            queue.push_back(Event::EffectFailed(effect));
+                        } else if error.is_none() {
+                            error = Some(e);
+                        }
+                    }
+                }
             }
         }
         if release {
             self.free(slot);
         }
-        Ok(())
+        error.map_or(Ok(()), Err)
     }
 
     /// Carries out one action; the events it produces at once.

@@ -1,11 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
-
 //! `qinit-cell-core`: the cell machine (spec 2026-10-27 §5.2), proved by Verus
 //! (`proof:qinit-cell-core`). One machine per cell over fixed-size `Copy` data: requests and
 //! kernel results come in as [`Event`]s, at most four [`Action`]s go out. Process and fd
 //! identities are [`Handle`]s the drive maps to real pidfds. `step`'s postcondition `good` is
-//! the spec's six obligations; `inv` holds between steps.
+//! the spec's eight obligations; `inv` holds between steps.
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
@@ -15,11 +14,6 @@ verus! {
 
 /// The drive's name for a process (its pidfd).
 pub type Handle = u32;
-
-/// The exit status recorded for a main process handed over on adoption that is not this
-/// process's child: it cannot be reaped here, so its status is unknown (DEFERRED D8). Real
-/// statuses (`waitpid` encoding) are never negative.
-pub const STATUS_UNKNOWN: i32 = i32::MIN;
 
 /// How a stop asks politely first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +52,8 @@ pub enum Failure {
     IdMismatch,
     /// Still populated after the kill deadline (a process in uninterruptible sleep).
     Stuck,
+    /// Writing cgroup.kill failed; processes may remain.
+    Kill,
     Remove,
 }
 
@@ -69,7 +65,7 @@ pub enum Main {
     Pending,
     Live(Handle),
     /// Reaped, with its wait status.
-    Reaped(i32),
+    Reaped(Option<i32>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,6 +121,16 @@ pub enum Request {
     Remove,
 }
 
+/// Fallible effects whose errors are fed back into the machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Effect {
+    Freeze,
+    Thaw,
+    SignalMain,
+    SignalMembers,
+    Kill,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
     Request(Request),
@@ -135,12 +141,13 @@ pub enum Event {
     SpawnFailed,
     ReadyLine,
     ReadyClosed,
-    /// The main process was reaped, with its wait status.
-    MainExited(i32),
+    /// Main exit: a wait status, or None for a handed-over main.
+    MainExited(Option<i32>),
     /// `cgroup.events` re-read after a notification.
     Level { populated: bool, frozen: bool },
     /// Every member got the polite signal.
     Signalled,
+    EffectFailed(Effect),
     AdoptChecked { id_matches: bool, populated: bool },
     Deadline(Timer),
     Removed,
@@ -154,7 +161,7 @@ pub enum Report {
     /// The readiness pipe closed without a newline; the caller decides.
     NotReady,
     Running,
-    MainExited(i32),
+    MainExited(Option<i32>),
     Empty,
     Removed,
     Failed(Failure),
@@ -228,9 +235,9 @@ pub open spec fn awaits(c: Cell) -> bool {
     }
 }
 
-/// Phases that never reach processes again: Empty and the removal phases after it. Removing
-/// and Failed(Remove) are also reached from a Failed cell that was never empty (Failed(Stuck)
-/// gave up on its processes); the set is closed under `step` either way.
+/// Phases that never reach processes again. Remove from any Failed reaches Removing,
+/// except Failed(IdMismatch), which goes directly to Removed. Failed(Kill) is not
+/// hands-off: processes may remain.
 pub open spec fn hands_off(p: Phase) -> bool {
     p is Empty || p is Removing || p is Removed || p == Phase::Failed(Failure::Remove)
 }
@@ -288,7 +295,8 @@ pub open spec fn records_level(c: Cell, e: Event, n: Cell) -> bool {
 /// as empty: nothing can be in it before `Spawn`.
 pub open spec fn populated_from_readings(c: Cell, e: Event, n: Cell) -> bool {
     &&& (e is Spawned && c.main is Pending ==> n.populated)
-    &&& (c.populated && !n.populated ==> e is Level || e is AdoptChecked)
+    &&& (c.populated && !n.populated ==> e is Level || (e is AdoptChecked && c.phase is Adopting
+        && e->id_matches))
 }
 
 /// Obligation 3: the main process goes None -> Pending (spawn requested) -> Live(h) (exec
@@ -375,6 +383,18 @@ pub open spec fn good(c: Cell, e: Event, r: (Cell, Actions)) -> bool {
     &&& (c.phase is Killing && e == Event::Deadline(Timer::Kill) ==> r.0.phase == Phase::Failed(
         Failure::Stuck,
     ))
+    // 7. Failed effects escalate immediately, and failed kills terminate.
+    &&& (c.phase is Stopping && e is EffectFailed ==> emits(r.1, Action::Kill))
+    &&& (c.phase is Killing && e == Event::EffectFailed(Effect::Kill) ==> r.0.phase
+        == Phase::Failed(
+        Failure::Kill,
+    ))
+    // 8. A mismatched directory belongs to somebody else.
+    &&& (c.phase == Phase::Failed(Failure::IdMismatch) && e == Event::Request(Request::Remove)
+        ==> !emits(
+        r.1,
+        Action::RemoveDir,
+    ))
     // Deadlines are cancelled when their state is left (unless the deadline itself fired).
     &&& (forall|t: Timer|
         c.armed == Some(t) && r.0.armed != Some(t) && e != Event::Deadline(t) ==> emits(
@@ -445,9 +465,11 @@ fn to_empty(c: Cell, e: Ghost<Event>, main: Main) -> (r: (Cell, Actions))
         main is None || main is Reaped,
         !hands_off(c.phase),
         observed_empty(c, e@),
+        populated_from_readings(c, e@, Cell { populated: false, ..c }),
         main_moves(c, e@, Cell { main, ..c }),
         !(c.phase is Stopping && e@ == Event::Deadline(Timer::Grace)),
         !(c.phase is Killing && e@ == Event::Deadline(Timer::Kill)),
+        !(e@ is EffectFailed),
     ensures
         good(c, e@, r),
         r.0.phase == Phase::Empty,
@@ -536,6 +558,10 @@ fn request(c: Cell, q: Request) -> (r: (Cell, Actions))
             _ => (c, none()),
         },
         Request::Remove => match c.phase {
+            Phase::Failed(Failure::IdMismatch) => (
+                Cell { phase: Phase::Removed, ..c },
+                one(Action::Report(Report::Removed)),
+            ),
             Phase::Created | Phase::Empty | Phase::Failed(_) => (
                 Cell { phase: Phase::Removing, ..c },
                 one(Action::RemoveDir),
@@ -545,7 +571,7 @@ fn request(c: Cell, q: Request) -> (r: (Cell, Actions))
     }
 }
 
-fn main_exited(c: Cell, status: i32) -> (r: (Cell, Actions))
+fn main_exited(c: Cell, status: Option<i32>) -> (r: (Cell, Actions))
     requires
         inv(c),
     ensures
@@ -558,7 +584,7 @@ fn main_exited(c: Cell, status: i32) -> (r: (Cell, Actions))
             match c.phase {
                 Phase::Starting => {
                     let by_exit = match c.ready {
-                        ReadyMode::Exit => status == 0,
+                        ReadyMode::Exit => status == Some(0),
                         ReadyMode::Pipe => false,
                     };
                     let first = if by_exit {
@@ -731,6 +757,48 @@ fn spawn_failed(c: Cell) -> (r: (Cell, Actions))
     }
 }
 
+/// Failed effects are processed after all actions of the preceding step.
+fn effect_failed(c: Cell, effect: Effect) -> (r: (Cell, Actions))
+    requires
+        inv(c),
+    ensures
+        good(c, Event::EffectFailed(effect), r),
+{
+    match c.phase {
+        Phase::Stopping(_) => {
+            let n = Cell {
+                phase: Phase::Killing,
+                freeze_held: false,
+                armed: Some(Timer::Kill),
+                ..c
+            };
+            let cancel = Action::Cancel(Timer::Grace);
+            let arm = Action::Arm(Timer::Kill, c.kill_ms);
+            if c.freeze_held {
+                (
+                    n,
+                    Actions {
+                        a: Some(Action::Thaw),
+                        b: Some(cancel),
+                        c: Some(Action::Kill),
+                        d: Some(arm),
+                    },
+                )
+            } else {
+                (n, three(cancel, Action::Kill, arm))
+            }
+        },
+        Phase::Killing => match effect {
+            Effect::Kill => (
+                Cell { phase: Phase::Failed(Failure::Kill), armed: None, ..c },
+                two(Action::Cancel(Timer::Kill), Action::Report(Report::Failed(Failure::Kill))),
+            ),
+            _ => (c, none()),
+        },
+        _ => (c, none()),
+    }
+}
+
 /// One step of the machine.
 #[must_use]
 pub fn step(c: Cell, e: Event) -> (r: (Cell, Actions))
@@ -783,6 +851,7 @@ pub fn step(c: Cell, e: Event) -> (r: (Cell, Actions))
         },
         Event::AdoptChecked { id_matches, populated } => adopt_checked(c, id_matches, populated),
         Event::Deadline(t) => deadline(c, t),
+        Event::EffectFailed(effect) => effect_failed(c, effect),
         Event::Removed => match c.phase {
             Phase::Removing => (
                 Cell { phase: Phase::Removed, ..c },
@@ -801,7 +870,6 @@ pub fn step(c: Cell, e: Event) -> (r: (Cell, Actions))
 }
 
 } // verus!
-
 impl Actions {
     /// The four slots in order (`None` past the last action).
     #[must_use]

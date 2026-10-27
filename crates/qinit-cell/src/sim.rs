@@ -4,7 +4,7 @@
 //! A deterministic [`Effects`] for host tests (spec §6.1 tier 2): it records every call and
 //! answers from scripted queues; no cgroup, clone3 or loop is touched.
 use crate::effects::{Command, Effects, Reaped};
-use qinit_cell_core::{Handle, ReadyMode, Sig, Timer};
+use qinit_cell_core::{Effect, Handle, ReadyMode, Sig, Timer};
 use qinit_cell_drive::Source;
 use qinit_sys::Errno;
 use std::collections::VecDeque;
@@ -38,6 +38,10 @@ pub struct Sim {
     /// `read_exec_error` answers; `None` (exec succeeded) when empty.
     pub exec_errors: VecDeque<Option<Errno>>,
     pub create_fails: bool,
+    /// Effects that fail with EIO (each occurrence is consumed once).
+    pub failures: VecDeque<Effect>,
+    /// An exec-error pipe whose writer is still open.
+    pub exec_pending: bool,
     /// `adopt_main` refuses the pidfd (EBADF).
     pub adopt_fails: bool,
     /// `open_existing`'s answer: `(cgroup id, populated)`, or ENOENT when `None`.
@@ -49,6 +53,17 @@ pub struct Sim {
 
 fn name(c: &CStr) -> String {
     c.to_string_lossy().into_owned()
+}
+
+impl Sim {
+    fn effect(&mut self, effect: Effect) -> Result<(), Errno> {
+        if let Some(i) = self.failures.iter().position(|&e| e == effect) {
+            self.failures.remove(i);
+            Err(Errno(libc::EIO))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl Effects for Sim {
@@ -81,19 +96,19 @@ impl Effects for Sim {
     }
     fn signal_main(&mut self, slot: u16, main: Handle, sig: Sig) -> Result<(), Errno> {
         self.calls.push(Call::SignalMain(slot, main, sig));
-        Ok(())
+        self.effect(Effect::SignalMain)
     }
     fn freeze(&mut self, slot: u16, on: bool) -> Result<(), Errno> {
         self.calls.push(Call::Freeze(slot, on));
-        Ok(())
+        self.effect(if on { Effect::Freeze } else { Effect::Thaw })
     }
     fn signal_members(&mut self, slot: u16, sig: Sig) -> Result<(), Errno> {
         self.calls.push(Call::SignalMembers(slot, sig));
-        Ok(())
+        self.effect(Effect::SignalMembers)
     }
     fn kill(&mut self, slot: u16) -> Result<(), Errno> {
         self.calls.push(Call::Kill(slot));
-        Ok(())
+        self.effect(Effect::Kill)
     }
     fn remove(&mut self, slot: u16, n: &CStr) -> Result<(), Errno> {
         self.calls.push(Call::Remove(slot, name(n)));
@@ -114,6 +129,9 @@ impl Effects for Sim {
         Ok(n)
     }
     fn read_exec_error(&mut self, _slot: u16) -> Result<Option<Errno>, Errno> {
+        if self.exec_pending {
+            return Err(Errno(libc::EAGAIN));
+        }
         Ok(self.exec_errors.pop_front().flatten())
     }
     fn close(&mut self, slot: u16, source: Source) {

@@ -12,7 +12,7 @@ pub mod text;
 
 pub use effects::Command;
 pub use engine::{CellId, Error, Notice};
-pub use qinit_cell_core::{Failure, Phase, Polite, ReadyMode, Report, STATUS_UNKNOWN};
+pub use qinit_cell_core::{Failure, Phase, Polite, ReadyMode, Report};
 
 use effects::Effects;
 use engine::{Engine, ORPHANS};
@@ -24,6 +24,7 @@ use std::time::Duration;
 /// The cells under one comb directory.
 pub struct Cells {
     engine: Engine<Kernel>,
+    pending_error: Option<Error>,
 }
 
 impl Cells {
@@ -38,6 +39,7 @@ impl Cells {
         text::kernel_supported(&release).map_err(Error::Floor)?;
         Ok(Cells {
             engine: Engine::new(Kernel::open(root)?),
+            pending_error: None,
         })
     }
 
@@ -134,13 +136,22 @@ impl Cells {
     // Fallible and blocking, so not an `Iterator`; the guest suites call it `next`.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Vec<Notice>, Error> {
+        if let Some(error) = self.pending_error.take() {
+            return Err(error);
+        }
         loop {
             let notices = self.engine.take_notices();
             if !notices.is_empty() {
                 return Ok(notices);
             }
-            for r in self.engine.effects.wait()? {
-                self.engine.on_ready(&r)?;
+            let batch = self.engine.effects.wait()?;
+            self.pending_error = self.engine.on_batch(&batch);
+            let notices = self.engine.take_notices();
+            if !notices.is_empty() {
+                return Ok(notices);
+            }
+            if let Some(error) = self.pending_error.take() {
+                return Err(error);
             }
         }
     }
