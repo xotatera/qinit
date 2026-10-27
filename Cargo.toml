@@ -3,7 +3,7 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/qinit-cell-core", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests"]
+members = ["crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests"]
 
 [workspace.package]
 edition = "2024"
@@ -45,3 +45,11 @@ kind = "verus"
 package = "qinit-cell-core"
 memory = "2G"
 timeout = "45s"
+
+# Measured 2026-10-27: 12 verified, 13.5-14.2 s (19.9-21.0 s CPU), 1.0 GB peak.
+[[workspace.metadata.disciplines.proof]]
+name = "qinit-cell-drive"
+kind = "verus"
+package = "qinit-cell-drive"
+memory = "2G"
+timeout = "40s"

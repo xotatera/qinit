@@ -119,6 +119,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "qinit-cell-drive"
+version = "0.1.0"
+dependencies = [
+ "qinit-cell-core",
+ "vstd",
+]
+
+[[package]]
 name = "qinit-event"
 version = "0.1.0"
 dependencies = [

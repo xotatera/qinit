@@ -12,6 +12,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `qinit-cell-drive`: loop tokens and slot choice for the cell table, Verus-proved
+  (each token routes to one cell and source; a full table refuses new cells).
 - `qinit-cell-core`: the cell machine (create, spawn into the cell, readiness by
   pipe or exit, polite stop by main pidfd or freeze-signal-thaw, escalation to
   `cgroup.kill`, adoption, removal). Verus proves for every step: the grace

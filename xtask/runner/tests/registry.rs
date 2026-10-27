@@ -170,6 +170,7 @@ fn gate_list_prints_the_global_order() {
         .chain([
             "repo/proof:qinit-event-core".to_string(),
             "repo/proof:qinit-cell-core".to_string(),
+            "repo/proof:qinit-cell-drive".to_string(),
             "repo/vm".to_string(),
         ])
         .collect();
@@ -441,7 +442,14 @@ fn repository_declares_exactly_the_core_crate_proofs() {
         .map(String::as_str)
         .filter(|name| name.starts_with("proof:"))
         .collect();
-    assert_eq!(proofs, ["proof:qinit-event-core", "proof:qinit-cell-core"]);
+    assert_eq!(
+        proofs,
+        [
+            "proof:qinit-event-core",
+            "proof:qinit-cell-core",
+            "proof:qinit-cell-drive"
+        ]
+    );
 }
 
 #[test]
