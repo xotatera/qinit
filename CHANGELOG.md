@@ -12,6 +12,11 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `qinit-cell-core`: the cell machine (create, spawn into the cell, readiness
+  by pipe or exit, polite stop by main pidfd or freeze-signal-thaw, escalation
+  to `cgroup.kill`, adoption, removal), Verus-proved: escalation, no freeze
+  leak, no pid reuse, honest emptiness, nothing signalled after empty, no stuck
+  state.
 - The `vm` gate: guest suites in QEMU on the pinned kernel, after the proof
   tier; the `probe` suite checks how `cgroup.events` notifies, placement by
   `CLONE_INTO_CGROUP`, cgroup ids, freeze and `cgroup.kill`.

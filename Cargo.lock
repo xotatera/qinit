@@ -112,6 +112,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "qinit-cell-core"
+version = "0.1.0"
+dependencies = [
+ "vstd",
+]
+
+[[package]]
 name = "qinit-event"
 version = "0.1.0"
 dependencies = [
