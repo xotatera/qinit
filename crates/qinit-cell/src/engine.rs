@@ -76,8 +76,8 @@ struct Entry {
     /// The handle `spawn` returned while its exec result is outstanding; given to the machine
     /// once exec is confirmed.
     pending_main: Option<Handle>,
-    #[allow(clippy::option_option)] // outer: exit observed; inner: status known
-    pending_exit: Option<Option<i32>>,
+    /// Readiness and main exits observed before exec settles, in arrival order.
+    pending_events: VecDeque<Event>,
 }
 
 impl Entry {
@@ -90,7 +90,7 @@ impl Entry {
             expected_id: 0,
             command: None,
             pending_main: None,
-            pending_exit: None,
+            pending_events: VecDeque::new(),
         })
     }
 }
@@ -330,20 +330,30 @@ impl<E: Effects> Engine<E> {
     }
 
     fn on_ready_pipe(&mut self, slot: u16) -> Result<(), Error> {
+        self.on_exec(slot)?;
+        if !self.has(slot) {
+            return Ok(());
+        }
         let mut buf = [0u8; 256];
         let n = self.effects.read_ready(slot, &mut buf)?;
-        if n == 0 {
-            // Both pipes close on exec failure; epoll may report readiness EOF first.
-            self.on_exec(slot)?;
-            if !self.has(slot) {
-                return Ok(());
-            }
+        let event = if n == 0 {
             self.effects.close(slot, Source::Ready);
-            if self.entry(slot)?.cell.phase == Phase::Starting && self.entry(slot)?.ready.at_eof() {
-                self.deliver(slot, Event::ReadyClosed)?;
+            self.entry(slot)?
+                .ready
+                .at_eof()
+                .then_some(Event::ReadyClosed)
+        } else {
+            self.entry(slot)?
+                .ready
+                .push(&buf[..n])
+                .then_some(Event::ReadyLine)
+        };
+        if let Some(event) = event {
+            if self.entry(slot)?.pending_main.is_some() {
+                self.entry(slot)?.pending_events.push_back(event);
+            } else {
+                self.deliver(slot, event)?;
             }
-        } else if self.entry(slot)?.ready.push(&buf[..n]) {
-            self.deliver(slot, Event::ReadyLine)?;
         }
         Ok(())
     }
@@ -356,7 +366,9 @@ impl<E: Effects> Engine<E> {
         self.on_exec(slot)?;
         if self.has(slot) {
             if self.entry(slot)?.pending_main.is_some() {
-                self.entry(slot)?.pending_exit = Some(status);
+                self.entry(slot)?
+                    .pending_events
+                    .push_back(Event::MainExited(status));
             } else {
                 self.deliver(slot, Event::MainExited(status))?;
             }
@@ -376,20 +388,30 @@ impl<E: Effects> Engine<E> {
         };
         self.entry(slot)?.pending_main = None;
         self.effects.close(slot, Source::ExecError);
-        match failed {
-            None => self.spawned(slot, h)?,
-            Some(_) => self.deliver(slot, Event::SpawnFailed)?,
+        let mut error = match failed {
+            None => self.spawned(slot, h),
+            Some(_) => self.deliver(slot, Event::SpawnFailed),
         }
-        if self.has(slot)
-            && let Some(status) = self.entry(slot)?.pending_exit.take()
-        {
-            self.deliver(slot, Event::MainExited(status))?;
-            // Empty may have been notified while an unrelated clone held the pipe open.
-            // Spawned marked populated again: re-read rather than wait for a lost edge.
-            let (populated, frozen) = self.effects.read_level(slot)?;
-            self.deliver(slot, Event::Level { populated, frozen })?;
+        .err();
+        while self.has(slot) {
+            let Some(event) = self.entry(slot)?.pending_events.pop_front() else {
+                break;
+            };
+            if let Err(e) = self.deliver(slot, event) {
+                error.get_or_insert(e);
+            }
+            if matches!(event, Event::MainExited(_)) {
+                // Empty may have been notified while an unrelated clone held the pipe open.
+                // Spawned marked populated again: re-read rather than wait for a lost edge.
+                let result = self.effects.read_level(slot).map_err(Error::from).and_then(
+                    |(populated, frozen)| self.deliver(slot, Event::Level { populated, frozen }),
+                );
+                if let Err(e) = result {
+                    error.get_or_insert(e);
+                }
+            }
         }
-        Ok(())
+        error.map_or(Ok(()), Err)
     }
 
     /// Delivers a confirmed exec. A result that arrives after the cell failed (or while it is

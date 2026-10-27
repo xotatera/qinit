@@ -149,6 +149,109 @@ fn unsettled_exec_pipe_keeps_handle_and_exit_until_eof() {
     );
 }
 
+#[test]
+fn r1_ready_line_waits_for_exec_across_batches() {
+    let mut e = Engine::new(Sim::default());
+    let id = e.create("pending-ready").unwrap();
+    e.spawn(id, cmd(), ReadyMode::Pipe).unwrap();
+    e.effects.exec_pending = true;
+    e.effects.ready_chunks.push_back(b"ready\n".to_vec());
+    e.on_ready(&Ready::Readable(token(0, Source::Ready)))
+        .unwrap();
+    assert_eq!(reports(&mut e), [Report::Created]);
+    e.effects.exec_pending = false;
+    e.on_ready(&Ready::Readable(token(0, Source::ExecError)))
+        .unwrap();
+    assert_eq!(
+        e.phase(id),
+        Some(Phase::Running),
+        "deferred line must reach Running"
+    );
+    assert_eq!(reports(&mut e), [Report::Ready]);
+    e.effects.ready_chunks.push_back(b"again\n".to_vec());
+    e.on_ready(&Ready::Readable(token(0, Source::Ready)))
+        .unwrap();
+    e.on_ready(&Ready::Readable(token(0, Source::ExecError)))
+        .unwrap();
+    assert!(
+        reports(&mut e).is_empty(),
+        "Ready must be reported exactly once"
+    );
+
+    // Retained readiness and exits must follow observation order, not source priority.
+    for ready_first in [true, false] {
+        let mut e = Engine::new(Sim::default());
+        let id = e.create("ordered-ready").unwrap();
+        e.spawn(id, cmd(), ReadyMode::Pipe).unwrap();
+        e.effects.exec_pending = true;
+        e.effects.ready_chunks.push_back(b"\n".to_vec());
+        let ready = Ready::Readable(token(0, Source::Ready));
+        let exit = Ready::Exited(token(0, Source::Main), 0);
+        let batch = if ready_first {
+            [ready, exit]
+        } else {
+            [exit, ready]
+        };
+        assert_eq!(e.on_batch(&batch), None);
+        assert_eq!(reports(&mut e), [Report::Created]);
+        e.effects.exec_pending = false;
+        e.on_ready(&Ready::Readable(token(0, Source::ExecError)))
+            .unwrap();
+        let mut want = Vec::new();
+        if ready_first {
+            want.push(Report::Ready);
+        }
+        want.extend([Report::MainExited(Some(0)), Report::Empty]);
+        assert_eq!(reports(&mut e), want, "ready_first={ready_first}");
+        assert_eq!(e.phase(id), Some(Phase::Empty));
+    }
+}
+
+#[test]
+fn r1_ready_line_before_exec_readable_in_same_batch() {
+    let mut e = Engine::new(Sim::default());
+    let id = e.create("batch-ready").unwrap();
+    e.spawn(id, cmd(), ReadyMode::Pipe).unwrap();
+    e.effects.ready_chunks.push_back(b"\n".to_vec());
+    assert_eq!(
+        e.on_batch(&[
+            Ready::Readable(token(0, Source::Ready)),
+            Ready::Readable(token(0, Source::ExecError)),
+        ]),
+        None
+    );
+    assert_eq!(
+        e.phase(id),
+        Some(Phase::Running),
+        "same-batch line must reach Running"
+    );
+    assert_eq!(reports(&mut e), [Report::Created, Report::Ready]);
+}
+
+#[test]
+fn r1_ready_eof_waits_for_failed_exec_without_not_ready() {
+    let mut e = Engine::new(Sim::default());
+    let id = e.create("failed-ready").unwrap();
+    e.spawn(id, cmd(), ReadyMode::Pipe).unwrap();
+    e.effects.exec_pending = true;
+    e.on_ready(&Ready::Hangup(token(0, Source::Ready))).unwrap();
+    let mut seen = reports(&mut e);
+    assert_eq!(
+        seen,
+        [Report::Created],
+        "EOF cannot report NotReady before exec settles"
+    );
+    e.effects
+        .exec_errors
+        .push_back(Some(qinit_sys::Errno(libc::ENOENT)));
+    e.effects.exec_pending = false;
+    e.on_ready(&Ready::Readable(token(0, Source::ExecError)))
+        .unwrap();
+    seen.extend(reports(&mut e));
+    assert_eq!(seen, [Report::Created, Report::Failed(Failure::Spawn)]);
+    assert_eq!(e.phase(id), Some(Phase::Failed(Failure::Spawn)));
+}
+
 /// An engine with cell 0 running (ready by pipe) and its notices taken.
 fn running() -> Engine<Sim> {
     let mut e = Engine::new(Sim::default());
