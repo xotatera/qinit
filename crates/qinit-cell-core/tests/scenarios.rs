@@ -329,3 +329,53 @@ fn a_stop_while_stopping_changes_nothing() {
     assert_eq!(acts.items(), [None; 4]);
     assert_eq!(n.phase, Phase::Stopping(StopStep::Waiting));
 }
+
+/// A cell stopped after `Spawn` was requested but before the exec was confirmed.
+fn stopped_before_spawned() -> Cell {
+    let (c, _) = run(
+        absent(),
+        &[
+            Event::Request(Request::Create),
+            Event::Created,
+            Event::Request(Request::Spawn(ReadyMode::Pipe)),
+            stop(Polite::Main),
+        ],
+    );
+    assert_eq!(c.phase, Phase::Stopping(StopStep::Freezing));
+    c
+}
+
+#[test]
+fn a_spawn_confirmed_after_the_stop_began_is_still_tracked() {
+    let (c, acts) = run(stopped_before_spawned(), &[Event::Spawned(7)]);
+    assert_eq!(acts[0], []);
+    assert_eq!(c.main, Main::Live(7), "the handle is recorded, not dropped");
+    let (c, acts) = run(c, &[Event::MainExited(15), level(false, false)]);
+    assert_eq!(acts[0], [], "still populated: wait");
+    assert_eq!(
+        acts[1],
+        [
+            Action::Cancel(Timer::Grace),
+            Action::Thaw,
+            Action::Report(Report::Empty)
+        ]
+    );
+    assert_eq!(c.phase, Phase::Empty);
+    assert_eq!(c.main, Main::Reaped(15));
+}
+
+#[test]
+fn a_spawn_failure_after_the_stop_began_ends_the_stop_and_is_reported() {
+    let (c, acts) = run(stopped_before_spawned(), &[Event::SpawnFailed]);
+    assert_eq!(
+        acts[0],
+        [
+            Action::Cancel(Timer::Grace),
+            Action::Thaw,
+            Action::Report(Report::Failed(Failure::Spawn))
+        ]
+    );
+    assert_eq!(c.phase, Phase::Failed(Failure::Spawn));
+    assert!(!c.freeze_held);
+    assert_eq!(c.armed, None);
+}

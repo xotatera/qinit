@@ -38,7 +38,7 @@ package = "qinit-event-core"
 memory = "2G"
 timeout = "40s"
 
-# Measured 2026-10-27: 28 verified, 13.7 s (21.0 s CPU), 961 MB peak.
+# Measured 2026-10-27: 29 verified, 12.6-13.7 s (18.9-21.0 s CPU), 984 MB peak.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-cell-core"
 kind = "verus"

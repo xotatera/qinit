@@ -198,6 +198,34 @@ pub open spec fn emits_reaching(acts: Actions) -> bool {
     reaches(acts.a) || reaches(acts.b) || reaches(acts.c) || reaches(acts.d)
 }
 
+/// Removed and Failed end the machine: no event moves them except `Remove` from Failed.
+pub open spec fn terminal(p: Phase) -> bool {
+    p is Removed || p is Failed
+}
+
+/// Obligation 6: the event a phase without an armed deadline waits for exists.
+pub open spec fn awaits(c: Cell) -> bool {
+    match c.phase {
+        // The answer to the effect issued on entry (`entered`): Created / CreateFailed,
+        // AdoptChecked, Removed / RemoveFailed.
+        Phase::Creating | Phase::Adopting | Phase::Removing => true,
+        // The caller's next request; entry was reported to the caller (`entered`).
+        Phase::Absent | Phase::Created | Phase::Empty => true,
+        // Spawned / SpawnFailed while the spawn is outstanding, then the live pidfd's exit.
+        Phase::Starting => !(c.main is Reaped),
+        // The live pidfd's exit, or the level change that reports `populated 0`.
+        Phase::Running | Phase::Exited => c.main is Live || c.populated,
+        // Only an armed deadline moves these.
+        Phase::Stopping(_) | Phase::Killing => false,
+        Phase::Removed | Phase::Failed(_) => false,
+    }
+}
+
+/// The phases of a cell that was empty; none of them reaches processes.
+pub open spec fn after_empty(p: Phase) -> bool {
+    p is Empty || p is Removing || p is Removed || p == Phase::Failed(Failure::Remove)
+}
+
 /// What holds between steps.
 pub open spec fn inv(c: Cell) -> bool {
     &&& (c.freeze_held <==> (c.phase == Phase::Stopping(StopStep::Freezing) || c.phase
@@ -209,8 +237,63 @@ pub open spec fn inv(c: Cell) -> bool {
     // Nothing is spawned or adopted before `Spawn` or `Adopt`.
     &&& (c.phase is Absent || c.phase is Creating || c.phase is Created
         ==> c.main is None)
+    // Exited means the main process was reaped.
+    &&& (c.phase is Exited
+        ==> c.main is Reaped)
     // Obligation 4: empty is honest.
-    &&& (c.phase is Empty ==> !(c.main is Live) && !c.populated)
+    &&& (c.phase is Empty ==> !(c.main is Live)
+        && !c.populated)
+    // Obligation 6: no stuck state.
+    &&& (!terminal(c.phase) ==> c.armed is Some || awaits(c))
+}
+
+/// Obligation 4: the level that makes a cell empty was observed: the event's own reading, or
+/// the last one recorded.
+pub open spec fn observed_empty(c: Cell, e: Event) -> bool {
+    match e {
+        Event::Level { populated, .. } => !populated,
+        Event::AdoptChecked { populated, .. } => !populated,
+        _ => !c.populated,
+    }
+}
+
+/// Obligation 4: every level read is recorded (an empty cell ignores late readings).
+pub open spec fn records_level(c: Cell, e: Event, n: Cell) -> bool {
+    match e {
+        Event::Level { populated, .. } => c.phase is Empty || n.populated == populated,
+        _ => true,
+    }
+}
+
+/// Obligation 3: the main process goes None -> Live(h) (spawned or handed over) ->
+/// Reaped(status) (its exit observed), and never back.
+pub open spec fn main_moves(c: Cell, e: Event, n: Cell) -> bool {
+    match c.main {
+        Main::Reaped(_) => n.main == c.main,
+        Main::Live(_) => match e {
+            Event::MainExited(status) => n.main == Main::Reaped(status),
+            _ => n.main == c.main,
+        },
+        Main::None => n.main is None || match e {
+            Event::Spawned(h) => n.main == Main::Live(h),
+            Event::Request(Request::Adopt(Some(h))) => n.main == Main::Live(h),
+            _ => false,
+        },
+    }
+}
+
+/// Obligation 6: entering a phase that waits for an effect's answer issues that effect, and
+/// entering one that waits for the caller (or ends the machine) reports it.
+pub open spec fn entered(c: Cell, r: (Cell, Actions)) -> bool {
+    let (p, q) = (c.phase, r.0.phase);
+    &&& (q is Creating && !(p is Creating) ==> emits(r.1, Action::CreateDir))
+    &&& (q is Adopting && !(p is Adopting) ==> emits(r.1, Action::CheckAdopt))
+    &&& (q is Starting && !(p is Starting) ==> emits(r.1, Action::Spawn))
+    &&& (q is Removing && !(p is Removing) ==> emits(r.1, Action::RemoveDir))
+    &&& (q is Created && !(p is Created) ==> emits(r.1, Action::Report(Report::Created)))
+    &&& (q is Empty && !(p is Empty) ==> emits(r.1, Action::Report(Report::Empty)))
+    &&& (forall|f: Failure|
+        q == Phase::Failed(f) && p != q ==> emits(r.1, Action::Report(Report::Failed(f))))
 }
 
 /// The spec's obligations (2026-10-27 §5.2) for one step from `c` on `e` to `r`.
@@ -229,16 +312,32 @@ pub open spec fn good(c: Cell, e: Event, r: (Cell, Actions)) -> bool {
         r.1,
         Action::Thaw,
     ))
-    // 3. No pid reuse: the main process is signalled only through its live handle.
+    // 3. No pid reuse: the main process is signalled only through its live handle, which
+    // stops being live once its exit is observed.
     &&& (forall|h: Handle, s: Sig|
         emits(r.1, Action::SignalMain(h, s)) ==> c.main == Main::Live(h) && r.0.main == Main::Live(
             h,
         ))
-    // 5. Nothing reaches processes once the cell is empty.
-    &&& ((c.phase is Empty || c.phase is Removing || c.phase is Removed) ==> !emits_reaching(
+    &&& main_moves(
+        c,
+        e,
+        r.0,
+    )
+    // 4. Empty is honest: entered only on an observed empty level, with no live main process
+    // (`inv`); every level read is recorded.
+    &&& (!(c.phase is Empty) && r.0.phase is Empty ==> observed_empty(c, e))
+    &&& records_level(
+        c,
+        e,
+        r.0,
+    )
+    // 5. Nothing reaches processes once the cell was empty.
+    &&& (after_empty(c.phase) ==> after_empty(r.0.phase) && !emits_reaching(
         r.1,
     ))
-    // 6. The kill deadline ends in Failed, never in a loop.
+    // 6. No stuck state: every non-terminal state has an awaited event or an armed deadline
+    // (`inv`, `entered`); the kill deadline ends in Failed, never in a loop.
+    &&& entered(c, r)
     &&& (c.phase is Killing && e == Event::Deadline(Timer::Kill) ==> r.0.phase == Phase::Failed(
         Failure::Stuck,
     ))
@@ -311,7 +410,9 @@ fn to_empty(c: Cell, e: Ghost<Event>, main: Main) -> (r: (Cell, Actions))
         inv(c),
         !(main is Live),
         !(c.main is Live) || main is Reaped,
-        !(c.phase is Empty || c.phase is Removing || c.phase is Removed),
+        !after_empty(c.phase),
+        observed_empty(c, e@),
+        main_moves(c, e@, Cell { main, ..c }),
         !(c.phase is Stopping && e@ == Event::Deadline(Timer::Grace)),
         !(c.phase is Killing && e@ == Event::Deadline(Timer::Kill)),
     ensures
@@ -567,6 +668,30 @@ fn adopt_checked(c: Cell, id_matches: bool, populated: bool) -> (r: (Cell, Actio
     }
 }
 
+/// The exec failed, possibly after a stop began: end the stop (cancel its deadline, thaw a held
+/// freeze) and fail.
+fn spawn_failed(c: Cell) -> (r: (Cell, Actions))
+    requires
+        inv(c),
+    ensures
+        good(c, Event::SpawnFailed, r),
+{
+    let failed = Action::Report(Report::Failed(Failure::Spawn));
+    let n = Cell { phase: Phase::Failed(Failure::Spawn), freeze_held: false, armed: None, ..c };
+    match (c.phase, c.main) {
+        (Phase::Starting | Phase::Stopping(_) | Phase::Killing, Main::None) => match c.armed {
+            Some(t) => if c.freeze_held {
+                (n, three(Action::Cancel(t), Action::Thaw, failed))
+            } else {
+                (n, two(Action::Cancel(t), failed))
+            },
+            // Unarmed means Starting (`inv`): no freeze is held.
+            None => (n, one(failed)),
+        },
+        _ => (c, none()),
+    }
+}
+
 /// One step of the machine.
 #[must_use]
 pub fn step(c: Cell, e: Event) -> (r: (Cell, Actions))
@@ -591,20 +716,15 @@ pub fn step(c: Cell, e: Event) -> (r: (Cell, Actions))
             ),
             _ => (c, none()),
         },
+        // A stop may come before the exec is confirmed: the handle is still recorded.
         Event::Spawned(h) => match (c.phase, c.main) {
-            (Phase::Starting, Main::None) => (
+            (Phase::Starting | Phase::Stopping(_) | Phase::Killing, Main::None) => (
                 Cell { main: Main::Live(h), populated: true, ..c },
                 none(),
             ),
             _ => (c, none()),
         },
-        Event::SpawnFailed => match c.phase {
-            Phase::Starting => (
-                Cell { phase: Phase::Failed(Failure::Spawn), ..c },
-                one(Action::Report(Report::Failed(Failure::Spawn))),
-            ),
-            _ => (c, none()),
-        },
+        Event::SpawnFailed => spawn_failed(c),
         Event::ReadyLine => match (c.phase, c.ready, c.main) {
             (Phase::Starting, ReadyMode::Pipe, Main::Live(_)) => (
                 Cell { phase: Phase::Running, ..c },

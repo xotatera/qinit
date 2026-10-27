@@ -14,9 +14,15 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `qinit-cell-core`: the cell machine (create, spawn into the cell, readiness
   by pipe or exit, polite stop by main pidfd or freeze-signal-thaw, escalation
-  to `cgroup.kill`, adoption, removal), Verus-proved: escalation, no freeze
-  leak, no pid reuse, honest emptiness, nothing signalled after empty, no stuck
-  state.
+  to `cgroup.kill`, adoption, removal). Verus proves for every step: the grace
+  deadline while stopping kills; a freeze is held until a thaw is emitted; the
+  main process is signalled only through its live handle, which stops being
+  live once its exit is observed; Empty is entered only on an observed empty
+  level with no live main process; nothing reaches processes once the cell was
+  empty; every non-terminal state has an armed deadline or an awaited event
+  (the effect issued on entry, the caller's request after a report, the main
+  process's exit or a level change); the kill deadline ends in Failed; a left
+  deadline is cancelled.
 - The `vm` gate: guest suites in QEMU on the pinned kernel, after the proof
   tier; the `probe` suite checks how `cgroup.events` notifies, placement by
   `CLONE_INTO_CGROUP`, cgroup ids, freeze and `cgroup.kill`.
