@@ -5,6 +5,7 @@
 use qinit_event::{Loop, Ready, exit_code};
 use std::fs::File;
 use std::os::fd::AsFd;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -39,10 +40,12 @@ pub fn run_logged_stdout_kept(
 }
 
 /// Starts `cmd` and waits on its pidfd and a deadline; an error names the step, its exit code
-/// or the deadline, and the log. A child still running at the deadline is killed and reaped.
+/// or the deadline, and the log. A child still running at the deadline is killed with its whole
+/// process group and reaped.
 fn supervise(mut cmd: Command, log: &Path, within: Duration) -> Result<(), String> {
     let label = format!("{cmd:?}");
-    cmd.stdin(Stdio::null());
+    // Its own process group, so the deadline kill reaches everything it started (make's jobs).
+    cmd.stdin(Stdio::null()).process_group(0);
     let child = cmd.spawn().map_err(|e| format!("start {label}: {e}"))?;
     let pid = libc::pid_t::try_from(child.id()).map_err(|e| e.to_string())?;
     let pidfd = qinit_sys::proc::pidfd_open(pid).map_err(|e| format!("pidfd_open: {e}"))?;
@@ -73,8 +76,7 @@ fn supervise(mut cmd: Command, log: &Path, within: Duration) -> Result<(), Strin
                 }
                 Ready::Deadline(DEADLINE) => {
                     killed = true;
-                    qinit_sys::proc::pidfd_signal(&pidfd, libc::SIGKILL)
-                        .map_err(|e| e.to_string())?;
+                    qinit_sys::proc::kill(-pid, libc::SIGKILL).map_err(|e| e.to_string())?;
                 }
                 _ => {}
             }

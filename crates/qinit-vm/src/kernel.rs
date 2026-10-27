@@ -75,6 +75,22 @@ pub fn download_failed(url: &str, why: &str) -> String {
     )
 }
 
+/// The message when a tarball fails its checksum (or cannot be read): the same remedy as a
+/// failed download, so a corrupt or truncated file is never left unexplained.
+#[must_use]
+pub fn tarball_refused(why: &str) -> String {
+    let file = URL.rsplit('/').next().unwrap_or(URL);
+    format!(
+        "the kernel tarball was refused: {why}. Download {URL} again (for example with curl -fLO) and set {TARBALL_ENV}=/path/to/{file}; its sha256 must be {SHA256}"
+    )
+}
+
+/// A tarball the caller supplied (`$QINIT_KERNEL_TARBALL`), checked against the pin.
+pub fn supplied_tarball(path: &Path) -> Result<PathBuf, String> {
+    verify(path, SHA256).map_err(|e| tarball_refused(&e))?;
+    Ok(path.to_path_buf())
+}
+
 /// Each `CONFIG_…=…` line of `fragment` that is not a line of `config`.
 #[must_use]
 pub fn missing_options(fragment: &str, config: &str) -> Vec<String> {
@@ -104,9 +120,30 @@ pub fn ensure() -> Result<PathBuf, String> {
     ));
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).map_err(|e| format!("create {}: {e}", work.display()))?;
+    match build_in(&work, &tarball, &done) {
+        Ok(()) => {
+            let _ = std::fs::remove_dir_all(&work);
+            Ok(image)
+        }
+        // Another process built the same kernel first: its result is as good as ours.
+        Err(_) if image.is_file() => {
+            let _ = std::fs::remove_dir_all(&work);
+            Ok(image)
+        }
+        Err(e) => {
+            // The extracted tree is gigabytes; the log stays, and the error names it.
+            let _ = std::fs::remove_dir_all(work.join(format!("linux-{VERSION}")));
+            let _ = std::fs::remove_dir_all(work.join("done"));
+            Err(e)
+        }
+    }
+}
+
+/// Extracts, configures and builds in `work`, then moves the result to `done` whole.
+fn build_in(work: &Path, tarball: &Path, done: &Path) -> Result<(), String> {
     let log = work.join("build.log");
     let mut tar = Command::new("tar");
-    tar.arg("-xJf").arg(&tarball).arg("-C").arg(&work);
+    tar.arg("-xJf").arg(tarball).arg("-C").arg(work);
     run_logged(tar, &log, BUILD_WITHIN)?;
     let src = work.join(format!("linux-{VERSION}"));
     let fragment = work.join("qinit.config");
@@ -118,7 +155,8 @@ pub fn ensure() -> Result<PathBuf, String> {
         .arg("allnoconfig")
         .env("KCONFIG_ALLCONFIG", &fragment);
     run_logged(config, &log, BUILD_WITHIN)?;
-    let written = std::fs::read_to_string(src.join(".config")).map_err(|e| e.to_string())?;
+    let written = std::fs::read_to_string(src.join(".config"))
+        .map_err(|e| format!("{e}; log: {}", log.display()))?;
     let missing = missing_options(FRAGMENT, &written);
     if !missing.is_empty() {
         return Err(format!(
@@ -138,20 +176,16 @@ pub fn ensure() -> Result<PathBuf, String> {
     let staged = work.join("done");
     std::fs::create_dir_all(&staged).map_err(|e| e.to_string())?;
     std::fs::copy(src.join("arch/x86/boot/bzImage"), staged.join("bzImage"))
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e}; log: {}", log.display()))?;
     std::fs::copy(src.join(".config"), staged.join("config")).map_err(|e| e.to_string())?;
     // The finished directory appears whole or not at all.
-    std::fs::rename(&staged, &done).map_err(|e| format!("rename into {}: {e}", done.display()))?;
-    let _ = std::fs::remove_dir_all(&work);
-    Ok(image)
+    std::fs::rename(&staged, done).map_err(|e| format!("rename into {}: {e}", done.display()))
 }
 
 /// The verified tarball: `$QINIT_KERNEL_TARBALL`, the cached download, or a fresh download.
 fn tarball(root: &Path) -> Result<PathBuf, String> {
     if let Some(given) = std::env::var_os(TARBALL_ENV).filter(|v| !v.is_empty()) {
-        let p = PathBuf::from(given);
-        verify(&p, SHA256)?;
-        return Ok(p);
+        return supplied_tarball(Path::new(&given));
     }
     let cached = root.join(format!("linux-{VERSION}.tar.xz"));
     if cached.is_file() && verify(&cached, SHA256).is_ok() {
@@ -172,7 +206,7 @@ fn tarball(root: &Path) -> Result<PathBuf, String> {
     }
     if let Err(e) = verify(&partial, SHA256) {
         let _ = std::fs::remove_file(&partial);
-        return Err(e);
+        return Err(tarball_refused(&format!("the download is corrupt ({e})")));
     }
     std::fs::rename(&partial, &cached).map_err(|e| e.to_string())?;
     Ok(cached)

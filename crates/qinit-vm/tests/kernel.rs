@@ -78,3 +78,25 @@ fn options_the_build_dropped_are_named() {
         "the real fragment parses"
     );
 }
+
+#[test]
+fn a_corrupt_supplied_tarball_is_refused_with_the_remedy() {
+    let f = std::env::temp_dir().join(format!("qinit-vm-corrupt-{}", std::process::id()));
+    std::fs::write(&f, b"truncated").unwrap();
+    let e = kernel::supplied_tarball(&f).unwrap_err();
+    assert!(e.contains("does not match"), "{e}");
+    for remedy in [kernel::URL, "QINIT_KERNEL_TARBALL", kernel::SHA256] {
+        assert!(e.contains(remedy), "{remedy} missing from: {e}");
+    }
+    std::fs::remove_file(&f).unwrap();
+}
+
+#[test]
+fn a_missing_supplied_tarball_is_refused_with_the_remedy() {
+    let e =
+        kernel::supplied_tarball(std::path::Path::new("/nonexistent/linux.tar.xz")).unwrap_err();
+    assert!(
+        e.contains("QINIT_KERNEL_TARBALL") && e.contains(kernel::URL),
+        "{e}"
+    );
+}

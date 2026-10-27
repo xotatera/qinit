@@ -95,3 +95,15 @@ fn cargo_json_names_each_binary() {
     assert_eq!(m.len(), 1);
     assert_eq!(m["probe"], std::path::PathBuf::from("/b/probe"));
 }
+
+#[test]
+#[should_panic(expected = "does not fit a newc field")]
+fn an_oversized_member_is_refused_not_saturated() {
+    // 4 GiB of zeroed, never-touched pages: the size check fires before any byte is copied.
+    let data = vec![0u8; usize::try_from(u64::from(u32::MAX) + 1).unwrap()];
+    let _ = newc(&[Entry {
+        path: "big".into(),
+        mode: 0o100_644,
+        data,
+    }]);
+}

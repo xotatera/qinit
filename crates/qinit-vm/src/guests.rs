@@ -52,13 +52,36 @@ pub fn has_interp(elf: &[u8]) -> Result<bool, String> {
     Ok(false)
 }
 
-/// Builds every guest binary in the workspace at `root`; name → static executable.
-pub fn build(root: &Path) -> Result<BTreeMap<String, PathBuf>, String> {
-    let scratch = std::env::temp_dir().join(format!("qinit-vm-guests-{}", std::process::id()));
-    std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
-    let json = scratch.join("cargo.json");
+/// Ambient variables that would change what cargo builds or where: removed from the guest
+/// build (as alloy's `cargo_argv` does), so the guests are the same on every host.
+const AMBIENT_CARGO: &[&str] = &[
+    "RUSTFLAGS",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "RUSTDOCFLAGS",
+    "CARGO_ENCODED_RUSTDOCFLAGS",
+    "RUSTC",
+    "RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "CARGO_BUILD_TARGET",
+    "CARGO_BUILD_RUSTFLAGS",
+    "CARGO_BUILD_RUSTC_WRAPPER",
+    "CARGO_TARGET_DIR",
+    "CARGO_BUILD_TARGET_DIR",
+];
+
+/// The guests' flags, replacing the caller's: static, and the baseline x86-64 instruction set
+/// (a `target-cpu=native` guest would die with SIGILL under TCG's CPU).
+pub const GUEST_RUSTFLAGS: &str = "-C target-feature=+crt-static -C target-cpu=x86-64";
+
+/// The guest build's cargo command in `root`, with the ambient settings scrubbed.
+#[must_use]
+pub fn cargo_command(root: &Path) -> Command {
     let mut cargo = Command::new("cargo");
+    for v in AMBIENT_CARGO {
+        cargo.env_remove(v);
+    }
     cargo
+        .env("RUSTFLAGS", GUEST_RUSTFLAGS)
         .current_dir(root)
         .args([
             "build",
@@ -71,10 +94,30 @@ pub fn build(root: &Path) -> Result<BTreeMap<String, PathBuf>, String> {
             "--bins",
         ])
         .args(["--message-format", "json-render-diagnostics"]);
+    cargo
+}
+
+/// Builds every guest binary in the workspace at `root`; name → static executable. The scratch
+/// directory (cargo's JSON and log) is removed on success and named in the error otherwise.
+pub fn build(root: &Path) -> Result<BTreeMap<String, PathBuf>, String> {
+    let scratch = std::env::temp_dir().join(format!("qinit-vm-guests-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
+    let bins = build_in(root, &scratch)?;
+    let _ = std::fs::remove_dir_all(&scratch);
+    Ok(bins)
+}
+
+fn build_in(root: &Path, scratch: &Path) -> Result<BTreeMap<String, PathBuf>, String> {
+    let json = scratch.join("cargo.json");
+    let log = scratch.join("build.log");
+    // Truncated, not appended to: a log holds this build only.
+    std::fs::File::create(&log).map_err(|e| e.to_string())?;
+    let mut cargo = cargo_command(root);
     // stdout carries cargo's JSON; stderr goes to the build log.
     let out = std::fs::File::create(&json).map_err(|e| e.to_string())?;
     cargo.stdout(out);
-    run_logged_stdout_kept(cargo, &scratch.join("build.log"), BUILD_WITHIN)?;
+    run_logged_stdout_kept(cargo, &log, BUILD_WITHIN)?;
     let text = std::fs::read_to_string(&json).map_err(|e| e.to_string())?;
     let bins = executables(&text);
     if bins.is_empty() {
