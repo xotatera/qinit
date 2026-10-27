@@ -43,6 +43,8 @@ pub struct Sim {
     /// `open_existing`'s answer: `(cgroup id, populated)`, or ENOENT when `None`.
     pub existing: Option<(u64, bool)>,
     pub children: VecDeque<Reaped>,
+    /// `take_reaped` answers, all at once.
+    pub reaped: Vec<(libc::pid_t, i32)>,
 }
 
 fn name(c: &CStr) -> String {
@@ -122,6 +124,9 @@ impl Effects for Sim {
     }
     fn reap_children(&mut self) -> Result<Vec<Reaped>, Errno> {
         Ok(self.children.drain(..).collect())
+    }
+    fn take_reaped(&mut self) -> Vec<(libc::pid_t, i32)> {
+        std::mem::take(&mut self.reaped)
     }
     fn cgroup_id(&self, _slot: u16) -> Option<u64> {
         None

@@ -23,8 +23,8 @@ pub struct Command {
 /// A child a subreaper reaped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reaped {
-    /// A cell's main process, reaped through its pidfd.
-    Main(u16, i32),
+    /// A cell's main process `(slot, pid, wait status)`, reaped through its pidfd.
+    Main(u16, libc::pid_t, i32),
     /// An orphan re-parented to this process (or a child no cell tracks any more).
     Orphan(libc::pid_t, i32),
 }
@@ -58,13 +58,17 @@ pub trait Effects {
     /// Reads the exec-error pipe: `None` when exec succeeded (EOF), the child's errno otherwise.
     fn read_exec_error(&mut self, slot: u16) -> Result<Option<Errno>, Errno>;
     /// Stops watching one source of a slot and drops its descriptor. For [`Source::Main`], a
-    /// process that has not been reaped is still reaped (never left a zombie), only no cell
-    /// hears of it.
+    /// child that has not been reaped is still reaped (never left a zombie) and reported
+    /// through `take_reaped`.
     fn close(&mut self, slot: u16, source: Source);
     /// Drops everything of a slot (a main process not yet reaped is handled as by `close`).
     fn release(&mut self, slot: u16);
-    /// Reaps every exited child (subreaper mode).
+    /// Reaps every exited child (subreaper mode). Children reaped before an error are
+    /// returned, and the error comes on the next call.
     fn reap_children(&mut self) -> Result<Vec<Reaped>, Errno>;
+    /// `(pid, wait status)` of every child reaped outside `reap_children` that no cell
+    /// tracks (a main let go by `close` or `release`), since the last call.
+    fn take_reaped(&mut self) -> Vec<(libc::pid_t, i32)>;
     /// The cell's cgroup id, once opened.
     fn cgroup_id(&self, slot: u16) -> Option<u64>;
 }

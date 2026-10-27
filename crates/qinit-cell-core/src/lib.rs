@@ -16,6 +16,11 @@ verus! {
 /// The drive's name for a process (its pidfd).
 pub type Handle = u32;
 
+/// The exit status recorded for a main process handed over on adoption that is not this
+/// process's child: it cannot be reaped here, so its status is unknown (DEFERRED D8). Real
+/// statuses (`waitpid` encoding) are never negative.
+pub const STATUS_UNKNOWN: i32 = i32::MIN;
+
 /// How a stop asks politely first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Polite {

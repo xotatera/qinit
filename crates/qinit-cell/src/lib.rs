@@ -118,21 +118,24 @@ impl Cells {
         self.engine.phase(id)
     }
 
-    /// The next notices: those already pending, else whatever the next loop wake-up brings
-    /// (possibly none).
+    /// The next notices: those already pending, else those of the next loop wake-ups that
+    /// bring any.
     ///
     /// # Errors
     ///
-    /// [`Error::Sys`] when the loop or an effect failed.
+    /// [`Error::Sys`] when the loop or an effect failed (an empty loop is `EINVAL`).
     // Fallible and blocking, so not an `Iterator`; the guest suites call it `next`.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Vec<Notice>, Error> {
-        if !self.engine.has_notices() {
+        loop {
+            let notices = self.engine.take_notices();
+            if !notices.is_empty() {
+                return Ok(notices);
+            }
             for r in self.engine.effects.wait()? {
                 self.engine.on_ready(&r)?;
             }
         }
-        Ok(self.engine.take_notices())
     }
 
     /// Runs `hook` with each member's pid between reading `cgroup.procs` and verifying its pidfd.

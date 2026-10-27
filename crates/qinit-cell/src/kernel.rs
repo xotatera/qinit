@@ -30,13 +30,23 @@ pub const EVENTS_WATCH: Watch = Watch::Priority;
 /// token (`route` gives `None`) and below [`crate::engine::ORPHANS`].
 const STRAYS: Token = 1 << 62;
 
+/// A cell's main process.
+struct Tracked {
+    pid: libc::pid_t,
+    pidfd: OwnedFd,
+    /// Spawned here, so this process reaps it (the loop through the pidfd, or
+    /// `reap_children`). A main handed over on adoption is watched without reaping: it need
+    /// not be this process's child.
+    child: bool,
+}
+
 #[derive(Default)]
 struct Slot {
     dir: Option<OwnedFd>,
     events: Option<OwnedFd>,
     id: u64,
-    /// The main process until it is reaped (by the loop, or by `reap_children`).
-    main: Option<(libc::pid_t, OwnedFd)>,
+    /// The main process until it is reaped or its exit is seen.
+    main: Option<Tracked>,
     ready: Option<OwnedFd>,
     exec_err: Option<OwnedFd>,
 }
@@ -71,9 +81,16 @@ pub struct Kernel {
     l: Loop,
     slots: Vec<Slot>,
     /// Children no cell tracks any more that had not exited when they were let go: the loop
-    /// watches each under its own token and reaps it; their exits never reach the engine.
+    /// watches each under its own token and reaps it.
     strays: Vec<(Token, libc::pid_t)>,
     next_stray: Token,
+    /// Such children the loop refused to watch: tried at every wake-up (D9).
+    unwatched: Vec<(libc::pid_t, OwnedFd)>,
+    /// `(pid, wait status)` of every child reaped here that no cell tracks, until
+    /// `take_reaped` hands them to the engine (spec §5.3: never dropped).
+    reaped: Vec<(libc::pid_t, i32)>,
+    /// An error `reap_children` hit after it had reaped some children: returned next time.
+    reap_error: Option<Errno>,
     #[cfg(feature = "test-hooks")]
     pub(crate) between: Option<Box<dyn FnMut(libc::pid_t)>>,
 }
@@ -92,6 +109,9 @@ impl Kernel {
             slots: (0..CAPACITY).map(|_| Slot::default()).collect(),
             strays: Vec::new(),
             next_stray: STRAYS,
+            unwatched: Vec::new(),
+            reaped: Vec::new(),
+            reap_error: None,
             #[cfg(feature = "test-hooks")]
             between: None,
         })
@@ -107,8 +127,8 @@ impl Kernel {
     }
 
     /// The next loop results. Exits the loop reaped are taken off the books here: a slot's
-    /// main process is forgotten (its pid may be reused from now on), a stray is dropped and
-    /// not reported.
+    /// main process is forgotten (its pid may be reused from now on); a stray's exit goes to
+    /// [`Effects::take_reaped`] instead of the results.
     ///
     /// # Errors
     ///
@@ -116,16 +136,26 @@ impl Kernel {
     pub fn wait(&mut self) -> Result<Vec<Ready>, Errno> {
         let mut out = self.l.wait().map_err(lp)?;
         out.retain(|r| match *r {
-            Ready::Exited(t, _) => self.reaped_by_loop(t),
+            Ready::Exited(t, status) => self.reaped_by_loop(t, status),
             _ => true,
         });
+        let unwatched = std::mem::take(&mut self.unwatched);
+        for (pid, pidfd) in unwatched {
+            match proc::reap_pidfd(&pidfd) {
+                Ok(Some(status)) => self.reaped.push((pid, status)),
+                Ok(None) => self.unwatched.push((pid, pidfd)),
+                // Reaped elsewhere (by `reap_children`, which reported it).
+                Err(_) => {}
+            }
+        }
         Ok(out)
     }
 
-    /// Whether an exit the loop reaped is reported.
-    fn reaped_by_loop(&mut self, t: Token) -> bool {
+    /// Whether an exit the loop reaped goes on to the engine as it is.
+    fn reaped_by_loop(&mut self, t: Token, status: i32) -> bool {
         if let Some(k) = self.strays.iter().position(|&(s, _)| s == t) {
-            self.strays.swap_remove(k);
+            let (_, pid) = self.strays.swap_remove(k);
+            self.reaped.push((pid, status));
             return false;
         }
         if let Some((slot, Source::Main)) = route(t)
@@ -136,19 +166,46 @@ impl Kernel {
         true
     }
 
-    /// Lets a child go that no cell tracks any more, without leaving a zombie: reaped now if
-    /// it has exited, else watched as a stray until it does. A process that is not this one's
-    /// child (an adopted main) has nothing to reap.
-    fn abandon(&mut self, pid: libc::pid_t, pidfd: &OwnedFd) {
-        if !matches!(proc::reap_pidfd(pidfd), Ok(None)) {
-            return;
+    /// Lets a process go that no cell tracks any more, without leaving a zombie or losing its
+    /// status: a child that has exited is reaped now, one still running is watched as a stray
+    /// until it does (each reported through `take_reaped`). A process that is not this one's
+    /// child (a handed-over main) has nothing to reap.
+    fn abandon(&mut self, pid: libc::pid_t, pidfd: OwnedFd) {
+        match proc::reap_pidfd(&pidfd) {
+            Ok(Some(status)) => self.reaped.push((pid, status)),
+            Ok(None) => {
+                let t = self.next_stray;
+                self.next_stray += 1;
+                if self.l.add_pidfd(pidfd.as_fd(), t).is_ok() {
+                    self.strays.push((t, pid));
+                } else {
+                    self.unwatched.push((pid, pidfd));
+                }
+            }
+            Err(_) => {}
         }
-        let t = self.next_stray;
-        self.next_stray += 1;
-        // Should the loop refuse, a subreaper still reaps it as an orphan.
-        if self.l.add_pidfd(pidfd.as_fd(), t).is_ok() {
-            self.strays.push((t, pid));
+    }
+
+    /// One exited child for `reap_children`: reaped, and its report.
+    fn reap_one(&mut self, pid: libc::pid_t, status: i32) -> Result<Option<Reaped>, Errno> {
+        let tracked = self
+            .slots
+            .iter()
+            .position(|s| s.main.as_ref().is_some_and(|m| m.child && m.pid == pid));
+        if let Some(slot) = tracked.and_then(|i| u16::try_from(i).ok()) {
+            // The loop's copy goes first, so the loop never reaps it as well.
+            let _ = self.l.remove(token(slot, Source::Main));
+            let Some(m) = self.slot(slot)?.main.take() else {
+                return Ok(None);
+            };
+            return Ok(proc::reap_pidfd(&m.pidfd)?.map(|_| Reaped::Main(slot, pid, status)));
         }
+        if let Some(k) = self.strays.iter().position(|&(_, p)| p == pid) {
+            let (t, _) = self.strays.swap_remove(k);
+            let _ = self.l.remove(t);
+        }
+        self.unwatched.retain(|(p, _)| *p != pid);
+        Ok(proc::reap_pid(pid)?.map(|_| Reaped::Orphan(pid, status)))
     }
 
     fn slot(&mut self, slot: u16) -> Result<&mut Slot, Errno> {
@@ -258,12 +315,16 @@ impl Effects for Kernel {
                 let _ = self.l.remove(token(slot, s));
             }
             let _ = proc::pidfd_signal(&pidfd, libc::SIGKILL);
-            self.abandon(pid, &pidfd);
+            self.abandon(pid, pidfd);
             return Err(e);
         }
         let s = self.slot(slot)?;
         s.exec_err = Some(err_r);
-        s.main = Some((pid, pidfd));
+        s.main = Some(Tracked {
+            pid,
+            pidfd,
+            child: true,
+        });
         s.ready = ready_r;
         Ok(u32::from(slot))
     }
@@ -272,10 +333,16 @@ impl Effects for Kernel {
         let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", pidfd.as_raw_fd()))
             .map_err(|_| Errno(libc::EBADF))?;
         let pid = parse_fdinfo_pid(&info).ok_or(Errno(libc::ESRCH))?;
+        // Readable once it exits, and never reaped here: a handed-over main need not be this
+        // process's child, and its status is unknown (D8).
         self.l
-            .add_pidfd(pidfd.as_fd(), token(slot, Source::Main))
+            .add_fd(pidfd.as_fd(), token(slot, Source::Main))
             .map_err(lp)?;
-        self.slot(slot)?.main = Some((pid, pidfd));
+        self.slot(slot)?.main = Some(Tracked {
+            pid,
+            pidfd,
+            child: false,
+        });
         Ok(u32::from(slot))
     }
 
@@ -286,7 +353,7 @@ impl Effects for Kernel {
         // A process already reaped or gone is not an error: its exit is on its way to the
         // machine.
         match &self.slot(slot)?.main {
-            Some((_, pidfd)) => proc::pidfd_signal(pidfd, signo(sig)).map(|_| ()),
+            Some(m) => proc::pidfd_signal(&m.pidfd, signo(sig)).map(|_| ()),
             None => Ok(()),
         }
     }
@@ -321,6 +388,7 @@ impl Effects for Kernel {
             // the open: only a pidfd whose cgroup id is this cell's is signalled.
             match proc::pidfd_cgroup_id(&pidfd) {
                 Ok(cg) if cg == id => {
+                    // A member that exits before the signal (ESRCH) is skipped: `Ok(false)`.
                     proc::pidfd_signal(&pidfd, signo(sig))?;
                 }
                 Ok(_) | Err(Errno(libc::ESRCH)) => {}
@@ -383,8 +451,8 @@ impl Effects for Kernel {
             Source::Ready => s.ready = None,
             Source::ExecError => s.exec_err = None,
             Source::Main => {
-                if let Some((pid, pidfd)) = s.main.take() {
-                    self.abandon(pid, &pidfd);
+                if let Some(m) = s.main.take() {
+                    self.abandon(m.pid, m.pidfd);
                 }
             }
             Source::Events | Source::Grace | Source::Kill => {}
@@ -398,41 +466,41 @@ impl Effects for Kernel {
         let Ok(s) = self.slot(slot) else {
             return;
         };
-        if let Some((pid, pidfd)) = std::mem::take(s).main {
-            self.abandon(pid, &pidfd);
+        if let Some(m) = std::mem::take(s).main {
+            self.abandon(m.pid, m.pidfd);
         }
     }
 
     fn reap_children(&mut self) -> Result<Vec<Reaped>, Errno> {
-        let mut out = Vec::new();
-        while let Some((pid, status)) = proc::peek_any()? {
-            let tracked = self
-                .slots
-                .iter()
-                .position(|s| s.main.as_ref().is_some_and(|(p, _)| *p == pid));
-            let reaped = if let Some(slot) = tracked.and_then(|i| u16::try_from(i).ok()) {
-                // The loop's copy goes first, so the loop never reaps it as well.
-                let _ = self.l.remove(token(slot, Source::Main));
-                let main = self.slot(slot)?.main.take();
-                out.push(Reaped::Main(slot, status));
-                match main {
-                    Some((_, pidfd)) => proc::reap_pidfd(&pidfd)?,
-                    None => None,
-                }
-            } else {
-                if let Some(k) = self.strays.iter().position(|&(_, p)| p == pid) {
-                    let (t, _) = self.strays.swap_remove(k);
-                    let _ = self.l.remove(t);
-                }
-                out.push(Reaped::Orphan(pid, status));
-                proc::reap_pid(pid)?
-            };
-            // A child the peek saw exited but no wait reaped: stop rather than spin on it.
-            if reaped.is_none() {
-                break;
-            }
+        if let Some(e) = self.reap_error.take() {
+            return Err(e);
         }
-        Ok(out)
+        let mut out = Vec::new();
+        let result = loop {
+            match proc::peek_any() {
+                Ok(Some((pid, status))) => match self.reap_one(pid, status) {
+                    Ok(Some(r)) => out.push(r),
+                    // A child the peek saw exited but no wait reaped: stop rather than spin.
+                    Ok(None) => break Ok(()),
+                    Err(e) => break Err(e),
+                },
+                Ok(None) => break Ok(()),
+                Err(e) => break Err(e),
+            }
+        };
+        // Children already reaped are reported; the error waits for the next call.
+        match result {
+            Err(e) if out.is_empty() => Err(e),
+            Err(e) => {
+                self.reap_error = Some(e);
+                Ok(out)
+            }
+            Ok(()) => Ok(out),
+        }
+    }
+
+    fn take_reaped(&mut self) -> Vec<(libc::pid_t, i32)> {
+        std::mem::take(&mut self.reaped)
     }
 
     fn cgroup_id(&self, slot: u16) -> Option<u64> {

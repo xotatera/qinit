@@ -60,3 +60,33 @@ call is located at its `verus` identifier, so one at column 0 reads as
 indented. A file the parser cannot read whole falls back to the earlier text
 rules, which miss `r#verus!`, `verus ! {}` and a call after other code on its
 line. Revisit if real Verus code hits one.
+
+### D8 — Exit status of a handed-over main process · `ACCEPTED`
+
+A main process queen hands over on adoption need not be the runtime's child,
+so `qinit-cell` watches its pidfd without reaping it and reports its exit as
+`STATUS_UNKNOWN` (`qinit-cell-core`). The status of a process that is not a
+child is only readable through `PIDFD_INFO_EXIT` (Linux 6.15), above the 6.13
+floor (spec R9). Revisit if the floor reaches 6.15.
+
+### D9 — Released child the loop refuses to watch · `ACCEPTED`
+
+When a cell lets go of a child that is still running (a late exec result
+after the cell failed, a released slot, the cleanup of a spawn that could not
+be watched), `qinit-cell` watches its pidfd under a stray token so the loop
+reaps it at exit and reports it as an orphan. If the loop refuses that
+registration (`epoll_ctl` out of memory), the child is kept and tried at every
+later wake-up of the loop instead: it is still reaped and reported, but may
+stay a zombie until something else wakes the loop. Closing that gap needs a
+second watch mechanism for an `epoll_ctl` failure the loop itself already
+cannot survive.
+
+### D10 — A main exit during a stop is recorded, not reported · `ACCEPTED`
+
+While a cell is Stopping or Killing, the proved machine records the main
+process's exit status (`Main::Reaped`) but emits no `MainExited` report; the
+stop ends with `Empty` (or `Failed(Stuck)`). By design: the stop's outcome is
+the report the caller waits for. Sub-project 2 Task 9's `escalate` suite
+therefore asserts escalation by the report sequence ending `Empty` after the
+kill deadline path plus the helper's own evidence, not by a
+`MainExited(SIGKILL)` report.

@@ -7,7 +7,8 @@
 use crate::effects::{Command, Effects, Reaped};
 use crate::text::{ReadyBuf, valid_name};
 use qinit_cell_core::{
-    Action, Cell, Event, Handle, Main, Phase, Polite, ReadyMode, Report, Request, absent, step,
+    Action, Cell, Event, Handle, Main, Phase, Polite, ReadyMode, Report, Request, STATUS_UNKNOWN,
+    absent, step,
 };
 use qinit_cell_drive::{CAPACITY, Source, first_free, route, source_timer};
 use qinit_event::{Ready, Token};
@@ -237,13 +238,13 @@ impl<E: Effects> Engine<E> {
             .map(|e| e.cell.phase)
     }
 
+    /// Every notice so far, with the children the effects reaped outside any cell as
+    /// orphans (spec §5.3: never dropped).
     pub fn take_notices(&mut self) -> Vec<Notice> {
+        for (pid, status) in self.effects.take_reaped() {
+            self.notices.push(Notice::Orphan { pid, status });
+        }
         std::mem::take(&mut self.notices)
-    }
-
-    #[must_use]
-    pub fn has_notices(&self) -> bool {
-        !self.notices.is_empty()
     }
 
     /// Feeds one loop result to the cell it concerns; results for no cell are ignored.
@@ -256,11 +257,11 @@ impl<E: Effects> Engine<E> {
             Ready::Signal(ORPHANS, _) => {
                 for c in self.effects.reap_children()? {
                     match c {
-                        Reaped::Main(slot, status) if self.has(slot) => {
+                        Reaped::Main(slot, _, status) if self.has(slot) => {
                             self.main_exited(slot, status)?;
                         }
-                        Reaped::Main(..) => {}
-                        Reaped::Orphan(pid, status) => {
+                        // A main whose cell is gone is an orphan like any other.
+                        Reaped::Main(_, pid, status) | Reaped::Orphan(pid, status) => {
                             self.notices.push(Notice::Orphan { pid, status });
                         }
                     }
@@ -269,6 +270,11 @@ impl<E: Effects> Engine<E> {
             Ready::Readable(t) | Ready::Hangup(t) => match route(t) {
                 Some((slot, Source::Ready)) if self.has(slot) => self.on_ready_pipe(slot)?,
                 Some((slot, Source::ExecError)) if self.has(slot) => self.on_exec(slot)?,
+                // A handed-over main is watched without reaping: readable once it exits.
+                Some((slot, Source::Main)) if self.has(slot) => {
+                    self.effects.close(slot, Source::Main);
+                    self.main_exited(slot, STATUS_UNKNOWN)?;
+                }
                 _ => {}
             },
             Ready::Priority(t) | Ready::Inotify(t, _) => {
@@ -363,6 +369,8 @@ impl<E: Effects> Engine<E> {
             let entry = self.entry(slot)?;
             let (next, acts) = step(entry.cell, e);
             entry.cell = next;
+            // An effect that fails returns its error at once: the step's later actions are not
+            // carried out, and the machine keeps the state it stepped to.
             for a in acts.items().into_iter().flatten() {
                 queue.extend(self.act(slot, a, &mut release)?);
             }

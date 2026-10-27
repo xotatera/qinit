@@ -5,7 +5,7 @@
 use qinit_cell::effects::{Command, Reaped};
 use qinit_cell::engine::{CellId, Engine, Error, Notice, ORPHANS};
 use qinit_cell::sim::{Call, Sim};
-use qinit_cell_core::{Failure, Phase, Polite, ReadyMode, Report, Sig, Timer};
+use qinit_cell_core::{Failure, Phase, Polite, ReadyMode, Report, STATUS_UNKNOWN, Sig, Timer};
 use qinit_cell_drive::{CAPACITY, Source, token};
 use qinit_event::Ready;
 use std::time::Duration;
@@ -195,7 +195,7 @@ fn deadlines_escalate_then_report_stuck() {
 fn orphans_and_reaped_mains_are_reported() {
     let mut e = running();
     e.effects.children.push_back(Reaped::Orphan(42, 0));
-    e.effects.children.push_back(Reaped::Main(0, 9));
+    e.effects.children.push_back(Reaped::Main(0, 4242, 9));
     e.on_ready(&Ready::Signal(ORPHANS, libc::SIGCHLD as u32))
         .unwrap();
     let notices = e.take_notices();
@@ -337,4 +337,54 @@ fn a_failed_adoption_hand_over_frees_the_slot() {
     ));
     assert_eq!(e.phase(CellId(0)), None);
     assert_eq!(e.create("next").unwrap(), CellId(0));
+}
+
+#[test]
+fn a_handed_over_main_is_seen_exiting_without_a_status() {
+    let mut e = Engine::new(Sim::default());
+    e.effects.existing = Some((77, true));
+    let fd = std::fs::File::open("/dev/null").unwrap();
+    let id = e.adopt("old", 77, Some(fd.into())).unwrap();
+    // Watched without reaping: the pidfd turns readable when the process exits.
+    e.on_ready(&Ready::Readable(token(0, Source::Main)))
+        .unwrap();
+    assert_eq!(
+        count(&e, &Call::Close(0, Source::Main)),
+        1,
+        "the source goes once it fired"
+    );
+    assert_eq!(e.phase(id), Some(Phase::Exited));
+    e.effects.levels.push_back((false, false));
+    e.on_ready(&Ready::Priority(token(0, Source::Events)))
+        .unwrap();
+    assert_eq!(
+        reports(&mut e),
+        [
+            Report::Running,
+            Report::MainExited(STATUS_UNKNOWN),
+            Report::Empty
+        ]
+    );
+}
+
+#[test]
+fn children_reaped_outside_any_cell_are_orphans() {
+    let mut e = running();
+    e.effects.reaped.push((77, 3 << 8));
+    assert_eq!(
+        e.take_notices(),
+        [Notice::Orphan {
+            pid: 77,
+            status: 3 << 8
+        }]
+    );
+}
+
+#[test]
+fn a_main_reaped_after_its_cell_is_gone_is_an_orphan() {
+    let mut e = Engine::new(Sim::default());
+    e.effects.children.push_back(Reaped::Main(3, 99, 0));
+    e.on_ready(&Ready::Signal(ORPHANS, libc::SIGCHLD as u32))
+        .unwrap();
+    assert_eq!(e.take_notices(), [Notice::Orphan { pid: 99, status: 0 }]);
 }
