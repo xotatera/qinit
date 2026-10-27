@@ -15,6 +15,7 @@ fn verusfmt_sees_every_file_invoking_the_macro() {
     ));
     assert!(invokes_verus("vstd::prelude::verus! {\nfn f() {}\n}\n"));
     assert!(invokes_verus("mod m {\n    verus! {\n    }\n}\n"));
+    assert!(invokes_verus("r#verus! {\nfn f() {}\n}\n"));
     assert!(!invokes_verus("fn plain() {}\n"));
 }
 
@@ -55,4 +56,30 @@ fn an_indented_verus_block_is_found() {
         indented_verus("    // code inside verus! is verified\n    let s = \"x::verus! {\";\n"),
         Vec::<usize>::new()
     );
+}
+
+/// A file tree-sitter cannot read whole (valid edition-2024 Rust its grammar
+/// rejects) keeps the indented check: the line rule, failing closed.
+#[test]
+fn an_unparsable_file_still_has_its_indented_block_found() {
+    use xtask::fmt_gate::{indented_verus, invokes_verus};
+    let text =
+        "unsafe extern \"C\" { pub safe fn abs(x: i32) -> i32; }\nmod m {\n    verus! {}\n}\n";
+    assert!(invokes_verus(text));
+    assert_eq!(indented_verus(text), vec![3]);
+}
+
+/// A `verus!` inside another macro's body is a token tree, not a parsed
+/// invocation; it still counts, and an indented one is still found.
+#[test]
+fn a_verus_block_inside_another_macro_counts() {
+    use xtask::fmt_gate::{indented_verus, invokes_verus};
+    let nested = "cfg_if::cfg_if! {\n    if #[cfg(verus_keep_ghost)] {\n        verus! {\n        }\n    }\n}\n";
+    assert!(invokes_verus(nested));
+    assert_eq!(indented_verus(nested), vec![3]);
+    let rules = "macro_rules! m {\n    () => { vstd::prelude::verus! {} };\n}\n";
+    assert!(invokes_verus(rules));
+    assert!(!invokes_verus(
+        "cfg_if::cfg_if! { if #[cfg(x)] { fn verus() {} } }\n"
+    ));
 }
