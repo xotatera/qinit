@@ -378,4 +378,36 @@ fn a_spawn_failure_after_the_stop_began_ends_the_stop_and_is_reported() {
     assert_eq!(c.phase, Phase::Failed(Failure::Spawn));
     assert!(!c.freeze_held);
     assert_eq!(c.armed, None);
+    assert_eq!(c.main, Main::None, "the outstanding spawn is forgotten");
+}
+
+#[test]
+fn an_empty_level_before_spawned_while_stopping_waits_for_the_main_process() {
+    let c = stopped_before_spawned();
+    assert_eq!(c.main, Main::Pending);
+    // The child may have exited as an unreaped zombie, which does not count as populated.
+    let (c, acts) = run(c, &[level(false, false)]);
+    assert_eq!(acts[0], []);
+    assert_eq!(
+        c.phase,
+        Phase::Stopping(StopStep::Freezing),
+        "an outstanding spawn keeps the cell out of Empty"
+    );
+    let (c, acts) = run(
+        c,
+        &[Event::Spawned(7), level(false, false), Event::MainExited(9)],
+    );
+    assert_eq!(acts[0], []);
+    assert_eq!(acts[1], [], "the main process is live: wait for its exit");
+    assert_eq!(
+        acts[2],
+        [
+            Action::Cancel(Timer::Grace),
+            Action::Thaw,
+            Action::Report(Report::Empty)
+        ],
+        "reaped, and the last level read empty"
+    );
+    assert_eq!(c.phase, Phase::Empty);
+    assert_eq!(c.main, Main::Reaped(9));
 }

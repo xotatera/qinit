@@ -60,6 +60,8 @@ pub enum Failure {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Main {
     None,
+    /// `Spawn` was emitted; the exec result (`Spawned` or `SpawnFailed`) has not arrived.
+    Pending,
     Live(Handle),
     /// Reaped, with its wait status.
     Reaped(i32),
@@ -212,7 +214,7 @@ pub open spec fn awaits(c: Cell) -> bool {
         // The caller's next request; entry was reported to the caller (`entered`).
         Phase::Absent | Phase::Created | Phase::Empty => true,
         // Spawned / SpawnFailed while the spawn is outstanding, then the live pidfd's exit.
-        Phase::Starting => !(c.main is Reaped),
+        Phase::Starting => c.main is Pending || c.main is Live,
         // The live pidfd's exit, or the level change that reports `populated 0`.
         Phase::Running | Phase::Exited => c.main is Live || c.populated,
         // Only an armed deadline moves these.
@@ -240,8 +242,15 @@ pub open spec fn inv(c: Cell) -> bool {
     // Exited means the main process was reaped.
     &&& (c.phase is Exited
         ==> c.main is Reaped)
-    // Obligation 4: empty is honest.
-    &&& (c.phase is Empty ==> !(c.main is Live)
+    // Adoption never has a spawn outstanding.
+    &&& (c.phase is Adopting ==> c.main
+        != Main::Pending)
+    // A cell starts with its spawn outstanding; Running never has one.
+    &&& (c.phase is Starting ==> c.main is Pending || c.main is Live)
+    &&& (c.phase is Running ==> c.main
+        != Main::Pending)
+    // Obligation 4: empty is honest: no live main process, no outstanding spawn.
+    &&& (c.phase is Empty ==> (c.main is None || c.main is Reaped)
         && !c.populated)
     // Obligation 6: no stuck state.
     &&& (!terminal(c.phase) ==> c.armed is Some || awaits(c))
@@ -265,7 +274,8 @@ pub open spec fn records_level(c: Cell, e: Event, n: Cell) -> bool {
     }
 }
 
-/// Obligation 3: the main process goes None -> Live(h) (spawned or handed over) ->
+/// Obligation 3: the main process goes None -> Pending (spawn requested) -> Live(h) (exec
+/// confirmed) or None (exec failed); None -> Live(h) (handed over on adoption); Live(h) ->
 /// Reaped(status) (its exit observed), and never back.
 pub open spec fn main_moves(c: Cell, e: Event, n: Cell) -> bool {
     match c.main {
@@ -274,8 +284,13 @@ pub open spec fn main_moves(c: Cell, e: Event, n: Cell) -> bool {
             Event::MainExited(status) => n.main == Main::Reaped(status),
             _ => n.main == c.main,
         },
-        Main::None => n.main is None || match e {
+        Main::Pending => match e {
             Event::Spawned(h) => n.main == Main::Live(h),
+            Event::SpawnFailed => n.main is None,
+            _ => n.main is Pending,
+        },
+        Main::None => n.main is None || match e {
+            Event::Request(Request::Spawn(_)) => n.main is Pending,
             Event::Request(Request::Adopt(Some(h))) => n.main == Main::Live(h),
             _ => false,
         },
@@ -408,8 +423,7 @@ pub fn absent() -> (c: Cell)
 fn to_empty(c: Cell, e: Ghost<Event>, main: Main) -> (r: (Cell, Actions))
     requires
         inv(c),
-        !(main is Live),
-        !(c.main is Live) || main is Reaped,
+        main is None || main is Reaped,
         !after_empty(c.phase),
         observed_empty(c, e@),
         main_moves(c, e@, Cell { main, ..c }),
@@ -457,7 +471,7 @@ fn request(c: Cell, q: Request) -> (r: (Cell, Actions))
         },
         Request::Spawn(mode) => match c.phase {
             Phase::Created => (
-                Cell { phase: Phase::Starting, ready: mode, ..c },
+                Cell { phase: Phase::Starting, ready: mode, main: Main::Pending, ..c },
                 one(Action::Spawn),
             ),
             _ => (c, refused()),
@@ -574,11 +588,10 @@ fn level(c: Cell, populated: bool, frozen: bool) -> (r: (Cell, Actions))
         good(c, Event::Level { populated, frozen }, r),
 {
     // The main process can no longer keep the cell alive: reaped, or never tracked (adopted
-    // without a pidfd) outside the spawn window.
+    // without a pidfd). An outstanding spawn may still leave an unreaped main process.
     let gone = match c.main {
-        Main::Reaped(_) => true,
-        Main::None => !matches!(c.phase, Phase::Starting),
-        Main::Live(_) => false,
+        Main::Reaped(_) | Main::None => true,
+        Main::Pending | Main::Live(_) => false,
     };
     let n = Cell { populated, frozen, ..c };
     match c.phase {
@@ -668,8 +681,8 @@ fn adopt_checked(c: Cell, id_matches: bool, populated: bool) -> (r: (Cell, Actio
     }
 }
 
-/// The exec failed, possibly after a stop began: end the stop (cancel its deadline, thaw a held
-/// freeze) and fail.
+/// The exec failed, possibly after a stop began: end the start or stop (cancel its deadline,
+/// thaw a held freeze) and fail; later phases only forget the outstanding spawn.
 fn spawn_failed(c: Cell) -> (r: (Cell, Actions))
     requires
         inv(c),
@@ -677,9 +690,15 @@ fn spawn_failed(c: Cell) -> (r: (Cell, Actions))
         good(c, Event::SpawnFailed, r),
 {
     let failed = Action::Report(Report::Failed(Failure::Spawn));
-    let n = Cell { phase: Phase::Failed(Failure::Spawn), freeze_held: false, armed: None, ..c };
+    let n = Cell {
+        phase: Phase::Failed(Failure::Spawn),
+        main: Main::None,
+        freeze_held: false,
+        armed: None,
+        ..c
+    };
     match (c.phase, c.main) {
-        (Phase::Starting | Phase::Stopping(_) | Phase::Killing, Main::None) => match c.armed {
+        (Phase::Starting | Phase::Stopping(_) | Phase::Killing, Main::Pending) => match c.armed {
             Some(t) => if c.freeze_held {
                 (n, three(Action::Cancel(t), Action::Thaw, failed))
             } else {
@@ -688,6 +707,7 @@ fn spawn_failed(c: Cell) -> (r: (Cell, Actions))
             // Unarmed means Starting (`inv`): no freeze is held.
             None => (n, one(failed)),
         },
+        (_, Main::Pending) => (Cell { main: Main::None, ..c }, none()),
         _ => (c, none()),
     }
 }
@@ -717,11 +737,8 @@ pub fn step(c: Cell, e: Event) -> (r: (Cell, Actions))
             _ => (c, none()),
         },
         // A stop may come before the exec is confirmed: the handle is still recorded.
-        Event::Spawned(h) => match (c.phase, c.main) {
-            (Phase::Starting | Phase::Stopping(_) | Phase::Killing, Main::None) => (
-                Cell { main: Main::Live(h), populated: true, ..c },
-                none(),
-            ),
+        Event::Spawned(h) => match c.main {
+            Main::Pending => (Cell { main: Main::Live(h), populated: true, ..c }, none()),
             _ => (c, none()),
         },
         Event::SpawnFailed => spawn_failed(c),
