@@ -3,8 +3,7 @@
 
 //! Spawning into a cell: placement from the first instruction, exec failure reported, only
 //! routed descriptors arrive (spec §6.2).
-use qinit_cell::{Command, ReadyMode, Report};
-use qinit_cell_core::Failure;
+use qinit_cell::{Command, Failure, ReadyMode, Report};
 use qinit_event::Loop;
 use qinit_vm_guests::{COMB, await_events, cells, e, expect, helper_cmd, remove, reports_of, run};
 use std::io::Read;

@@ -10,6 +10,15 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `qinit-cell`: settle exec failure before readiness EOF so it cannot report
+  `NotReady` before `Failed(Spawn)`; removing a failed mismatched adoption
+  releases only its slot and never touches the foreign directory.
+- Cell guest assertions wait for children to become reapable after Empty,
+  prove the between-enumeration hook killed members before TERM, and ready
+  the TERM-ignoring escalation member before a cell-wide polite stop.
+
 ### Added
 
 - Guest suites for cells: spawn (placement, exec failure, only routed

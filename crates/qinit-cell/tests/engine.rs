@@ -175,6 +175,24 @@ fn an_exec_failure_reports_spawn_failed() {
 }
 
 #[test]
+fn ready_eof_before_a_failed_exec_reports_only_spawn_failed() {
+    let mut e = Engine::new(Sim::default());
+    let id = e.create("w").unwrap();
+    e.spawn(id, cmd(), ReadyMode::Pipe).unwrap();
+    e.effects
+        .exec_errors
+        .push_back(Some(qinit_sys::Errno(libc::ENOENT)));
+    e.on_ready(&Ready::Hangup(token(0, Source::Ready))).unwrap();
+    e.on_ready(&Ready::Readable(token(0, Source::ExecError)))
+        .unwrap();
+    assert_eq!(
+        reports(&mut e),
+        [Report::Created, Report::Failed(Failure::Spawn)]
+    );
+    assert_eq!(count(&e, &Call::Close(0, Source::ExecError)), 1);
+}
+
+#[test]
 fn deadlines_escalate_then_report_stuck() {
     let mut e = running();
     e.stop(CellId(0), Polite::Main, SEC, Duration::from_secs(2))
@@ -225,6 +243,24 @@ fn adoption_compares_the_recorded_id() {
         reports(&mut e),
         [Report::Running, Report::Failed(Failure::IdMismatch)]
     );
+}
+
+#[test]
+fn removing_a_mismatched_adoption_releases_only_the_slot() {
+    for populated in [false, true] {
+        let mut e = Engine::new(Sim::default());
+        e.effects.existing = Some((77, populated));
+        let id = e.adopt("foreign", 78, None).unwrap();
+        assert_eq!(reports(&mut e), [Report::Failed(Failure::IdMismatch)]);
+        e.effects.calls.clear();
+        e.remove(id).unwrap();
+        assert_eq!(reports(&mut e), [Report::Removed]);
+        assert_eq!(e.effects.calls, [Call::Release(id.0)]);
+        assert_eq!(e.phase(id), None);
+        assert_eq!(e.create("next").unwrap(), id);
+        e.remove(id).unwrap();
+        assert!(e.effects.calls.contains(&Call::Remove(id.0, "next".into())));
+    }
 }
 
 #[test]

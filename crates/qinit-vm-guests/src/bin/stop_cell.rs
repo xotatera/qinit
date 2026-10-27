@@ -5,7 +5,8 @@
 //! during enumeration leaves no frozen cell (spec §6.2).
 use qinit_cell::{Polite, ReadyMode, Report};
 use qinit_vm_guests::{
-    COMB, HANG_GUARD, cells, e, exists, expect, helper_cmd, reap_exited, remove, reports_of, run,
+    COMB, HANG_GUARD, cells, e, exists, expect, helper_cmd, killed, reap_expected, remove,
+    reports_of, run,
 };
 
 fn escapee_is_signalled() -> Result<(), String> {
@@ -17,7 +18,12 @@ fn escapee_is_signalled() -> Result<(), String> {
     e(cells.stop(id, Polite::Cell, HANG_GUARD, HANG_GUARD))?;
     let seen = expect(&mut cells, id, Report::Empty)?;
     remove(&mut cells, id)?;
-    reap_exited()?;
+    // Reap both the double fork's middle and its escapee before the next case.
+    // Empty may precede either becoming waitable.
+    let rest = reap_expected(2)?;
+    if rest != [0, 0] {
+        return Err(format!("escape helper statuses {rest:?}, want [0, 0]"));
+    }
     let after_stop = reports_of(&seen, id);
     if after_stop != [Report::Empty] {
         return Err(format!(
@@ -44,12 +50,16 @@ fn member_dying_mid_enumeration() -> Result<(), String> {
     let freeze = e(std::fs::read_to_string(format!("{COMB}/sd/cgroup.freeze")))?;
     let events = e(std::fs::read_to_string(format!("{COMB}/sd/cgroup.events")))?;
     remove(&mut cells, id)?;
-    reap_exited()?;
+    let rest = reap_expected(1)?;
     let after_stop = reports_of(&seen, id);
     if after_stop != [Report::Empty] {
         Err(format!(
             "reports after the stop {after_stop:?}, want [Empty]"
         ))
+    } else if exists("/tmp/sd-main") || exists("/tmp/sd-child") {
+        Err("a member got TERM: the between hook did not kill it first".into())
+    } else if rest.len() != 1 || !rest.iter().all(|s| killed(*s)) {
+        Err(format!("child statuses {rest:?}, want [SIGKILL]"))
     } else if freeze.trim() != "0" || !events.lines().any(|l| l == "frozen 0") {
         Err(format!(
             "after the stop cgroup.freeze is {freeze:?}, cgroup.events {events:?}"

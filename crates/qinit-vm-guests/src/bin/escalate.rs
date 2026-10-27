@@ -10,7 +10,7 @@
 use qinit_cell::{Polite, ReadyMode, Report};
 use qinit_vm_guests::{
     COMB, HANG_GUARD, NOTE_GRACE, cells, e, exists, expect, helper_cmd, killed, remove, reports_of,
-    run, spawn_helper,
+    run, spawn_ready_helper,
 };
 use std::os::fd::AsFd;
 use std::path::Path;
@@ -27,8 +27,8 @@ fn killed_at_the_deadline() -> Result<(), String> {
     let dir = e(qinit_sys::cgroup::open_dir(Path::new(&format!(
         "{COMB}/es"
     ))))?;
-    let (_pid, member) = spawn_helper(dir.as_fd(), "ignore-term")?;
-    e(cells.stop(id, Polite::Main, NOTE_GRACE, HANG_GUARD))?;
+    let (_pid, member) = spawn_ready_helper(dir.as_fd(), "ready-ignore-term")?;
+    e(cells.stop(id, Polite::Cell, NOTE_GRACE, HANG_GUARD))?;
     seen.extend(expect(&mut cells, id, Report::Empty)?);
     let status = e(qinit_sys::proc::wait_pidfd(&member))?;
     remove(&mut cells, id)?;

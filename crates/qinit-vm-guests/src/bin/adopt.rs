@@ -3,10 +3,9 @@
 
 //! Adoption after the driver state is dropped: by name and cgroup id, a wrong id fails, and a
 //! handed-over main process is watched without being reaped as a main (spec §6.2, D8).
-use qinit_cell::{Notice, Polite, ReadyMode, Report};
-use qinit_cell_core::{Failure, STATUS_UNKNOWN};
+use qinit_cell::{Failure, Notice, Polite, ReadyMode, Report, STATUS_UNKNOWN};
 use qinit_vm_guests::{
-    HANG_GUARD, cells, e, expect, helper_cmd, reap_exited, remove, reports_of, run,
+    COMB, HANG_GUARD, cells, e, exists, expect, helper_cmd, reap_expected, remove, reports_of, run,
 };
 
 /// Starts a `ready` helper in a new cell `name` and drops the `Cells` that started it: the
@@ -26,7 +25,10 @@ fn adopt_by_name_and_id() -> Result<(), String> {
     let mut wrong = cells()?;
     let bad = e(wrong.adopt("ak", cg + 1, None))?;
     let refused = expect(&mut wrong, bad, Report::Failed(Failure::IdMismatch))?;
-    // Not removed: removing would try the directory, which is the other driver's cell.
+    remove(&mut wrong, bad)?;
+    if !exists(&format!("{COMB}/ak")) {
+        return Err("removing the mismatched adoption deleted the foreign directory".into());
+    }
     drop(wrong);
     let mut second = cells()?;
     let id = e(second.adopt("ak", cg, None))?;
@@ -35,7 +37,7 @@ fn adopt_by_name_and_id() -> Result<(), String> {
     seen.extend(expect(&mut second, id, Report::Empty)?);
     remove(&mut second, id)?;
     // The helper is this process's child that nothing tracks after the first driver went.
-    let rest = reap_exited()?;
+    let rest = reap_expected(1)?;
     let (got_bad, got) = (reports_of(&refused, bad), reports_of(&seen, id));
     if got_bad != [Report::Failed(Failure::IdMismatch)] {
         Err(format!("reports with the wrong id {got_bad:?}"))

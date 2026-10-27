@@ -176,6 +176,19 @@ pub fn reap_exited() -> Result<Vec<i32>, String> {
     Ok(statuses)
 }
 
+/// Blocks for `count` untracked children (or ECHILD), returning their wait statuses.
+/// Use after Empty when presence is asserted: cgroup exit precedes waitability.
+pub fn reap_expected(count: usize) -> Result<Vec<i32>, String> {
+    let mut statuses = Vec::new();
+    while statuses.len() < count {
+        let Some((_, status)) = sys(qinit_sys::proc::wait_any(), "wait for child")? else {
+            break;
+        };
+        statuses.push(status);
+    }
+    Ok(statuses)
+}
+
 /// Whether wait status `status` is a death by SIGKILL.
 #[must_use]
 pub fn killed(status: i32) -> bool {
@@ -218,6 +231,19 @@ pub fn spawn_helper_routed(
     routes: &[(BorrowedFd<'_>, RawFd)],
 ) -> Result<(libc::pid_t, OwnedFd), String> {
     spawn_with(Some(cell), &[role], routes)
+}
+
+/// Starts a ready helper in `cell`, waiting until it has blocked TERM.
+pub fn spawn_ready_helper(
+    cell: BorrowedFd<'_>,
+    role: &str,
+) -> Result<(libc::pid_t, OwnedFd), String> {
+    let (r, w) = e(qinit_sys::fd::pipe(libc::O_CLOEXEC))?;
+    let child = spawn_helper_routed(cell, role, &[(w.as_fd(), 3)])?;
+    drop(w);
+    let mut byte = [0u8; 1];
+    e(std::fs::File::from(r).read_exact(&mut byte))?;
+    Ok(child)
 }
 
 /// Spawns `/init --qinit-helper <role_args…>`, in `cell` when given, with only `routes`,

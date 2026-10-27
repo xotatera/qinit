@@ -32,4 +32,14 @@ fn a_peeked_child_stays_waitable_until_reaped_by_pid() {
     assert_eq!(proc::peek_any(), Ok(None));
     // `child` is never waited for by std: `reap_pid` reaped it.
     std::mem::forget(child);
+
+    assert_eq!(proc::wait_any(), Ok(None), "ECHILD ends a blocking wait");
+    let child = std::process::Command::new("sh")
+        .args(["-c", "exit 7"])
+        .spawn()
+        .unwrap();
+    let pid = child.id() as libc::pid_t;
+    assert_eq!(proc::wait_any(), Ok(Some((pid, 7 << 8))));
+    assert_eq!(proc::wait_any(), Ok(None));
+    std::mem::forget(child);
 }

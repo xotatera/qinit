@@ -102,6 +102,24 @@ pub fn reap_any() -> Result<Option<(libc::pid_t, i32)>> {
     }
 }
 
+/// Blocks until any child exits and reaps it; `None` only when there are no children.
+/// For tests and guest programs; daemons use non-blocking reaping on the loop.
+pub fn wait_any() -> Result<Option<(libc::pid_t, i32)>> {
+    loop {
+        let mut status = 0;
+        // SAFETY: status is writable, and waitpid(-1, ..., 0) waits for any child.
+        let who = unsafe { libc::waitpid(-1, &raw mut status, 0) };
+        if who > 0 {
+            return Ok(Some((who, status)));
+        }
+        match Errno::last() {
+            Errno(libc::EINTR) => {}
+            Errno(libc::ECHILD) => return Ok(None),
+            e => return Err(e),
+        }
+    }
+}
+
 /// The first exited child's `(pid, wait status)`, left waitable (`WNOWAIT`): a subreaper looks
 /// before it reaps, so a tracked main process is reaped through its own pidfd. `None` when
 /// none has exited, or when there are no children at all.

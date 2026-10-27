@@ -5,7 +5,7 @@
 //! (spec §6.2).
 use qinit_cell::{Polite, ReadyMode, Report};
 use qinit_vm_guests::{
-    HANG_GUARD, NOTE_GRACE, cells, e, exists, expect, helper_cmd, killed, reap_exited, remove,
+    HANG_GUARD, NOTE_GRACE, cells, e, exists, expect, helper_cmd, killed, reap_expected, remove,
     reports_of, run,
 };
 
@@ -19,7 +19,7 @@ fn only_main_gets_term() -> Result<(), String> {
     let seen = expect(&mut cells, id, Report::Empty)?;
     remove(&mut cells, id)?;
     // The child, re-parented to this process when the main process exited.
-    let rest = reap_exited()?;
+    let rest = reap_expected(1)?;
     let after_stop = reports_of(&seen, id);
     if after_stop != [Report::Empty] {
         return Err(format!(
@@ -30,7 +30,7 @@ fn only_main_gets_term() -> Result<(), String> {
         (true, false) => {}
         got => return Err(format!("TERM noted by (main, child) = {got:?}")),
     }
-    if !rest.is_empty() && rest.iter().all(|s| killed(*s)) {
+    if rest.len() == 1 && rest.iter().all(|s| killed(*s)) {
         Ok(())
     } else {
         Err(format!(

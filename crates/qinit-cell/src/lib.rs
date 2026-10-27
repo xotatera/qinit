@@ -12,7 +12,7 @@ pub mod text;
 
 pub use effects::Command;
 pub use engine::{CellId, Error, Notice};
-pub use qinit_cell_core::{Phase, Polite, ReadyMode, Report};
+pub use qinit_cell_core::{Failure, Phase, Polite, ReadyMode, Report, STATUS_UNKNOWN};
 
 use effects::Effects;
 use engine::{Engine, ORPHANS};

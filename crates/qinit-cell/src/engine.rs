@@ -7,8 +7,8 @@
 use crate::effects::{Command, Effects, Reaped};
 use crate::text::{ReadyBuf, valid_name};
 use qinit_cell_core::{
-    Action, Cell, Event, Handle, Main, Phase, Polite, ReadyMode, Report, Request, STATUS_UNKNOWN,
-    absent, step,
+    Action, Cell, Event, Failure, Handle, Main, Phase, Polite, ReadyMode, Report, Request,
+    STATUS_UNKNOWN, absent, step,
 };
 use qinit_cell_drive::{CAPACITY, Source, first_free, route, source_timer};
 use qinit_event::{Ready, Token};
@@ -227,6 +227,13 @@ impl<E: Effects> Engine<E> {
     ///
     /// [`Error::NoSuchCell`], or [`Error::Sys`] when an effect failed.
     pub fn remove(&mut self, id: CellId) -> Result<(), Error> {
+        // A mismatched directory belongs to somebody else. Release only our tracking;
+        // never execute the machine's RemoveDir effect against that directory.
+        if self.phase(id) == Some(Phase::Failed(Failure::IdMismatch)) {
+            self.free(id.0);
+            self.notices.push(Notice::Cell(id, Report::Removed));
+            return Ok(());
+        }
         self.deliver(id.0, Event::Request(Request::Remove))
     }
 
@@ -309,8 +316,13 @@ impl<E: Effects> Engine<E> {
         let mut buf = [0u8; 256];
         let n = self.effects.read_ready(slot, &mut buf)?;
         if n == 0 {
+            // Both pipes close on exec failure; epoll may report readiness EOF first.
+            self.on_exec(slot)?;
+            if !self.has(slot) {
+                return Ok(());
+            }
             self.effects.close(slot, Source::Ready);
-            if self.entry(slot)?.ready.at_eof() {
+            if self.entry(slot)?.cell.phase == Phase::Starting && self.entry(slot)?.ready.at_eof() {
                 self.deliver(slot, Event::ReadyClosed)?;
             }
         } else if self.entry(slot)?.ready.push(&buf[..n]) {
