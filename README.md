@@ -15,7 +15,7 @@ qinit is an init and service-supervision system for Linux. It is one design buil
 - **qctl**: the configuration compiler and administrative CLI.
 - **client library**: the library for the control protocol.
 
-Status: design. Nothing here is usable yet.
+Status: cell substrate implemented; no init daemon or service manager is usable yet.
 
 qinit is a standalone project. Alloy Linux consumes it as a package.
 
@@ -26,6 +26,13 @@ A feature belongs in qinit only if it is about one of those things **and** canno
 outside it (it needs PID 1, ownership of the cgroup tree, or the fd store). Everything else is a
 separate program that uses qinit's open control protocol. The set of programs above is fixed;
 adding one is a design decision, not a patch.
+
+### Cells
+
+Sub-project 2 provides the cell substrate, not a daemon: `qinit-sys` supplies
+Linux primitives, `qinit-event` the event loop, `qinit-cell` the cell runtime,
+and `qinit-vm` the QEMU guest tests. Verus proves the event and cell core
+machines and cell routing. The runtime refuses kernels older than Linux 6.13.
 
 Not part of qinit, now or later:
 
@@ -49,16 +56,15 @@ Every file carries an SPDX header, or is covered by `REUSE.toml`. The license te
 
 ## Development
 
-Status: design only. qinit is not usable yet.
+Status: the cell substrate is implemented and tested; qinit is not usable yet as an init system.
 
-The first implementation sub-project is repository disciplines setup. The pinned
+The first implementation sub-project was repository disciplines setup. The pinned
 [Rust toolchain](rust-toolchain.toml) is Rust 1.98.1 with `rustfmt` and `clippy`.
-The selected Verus release is `0.2026.10.04.426d8b0`; when a `kind = "verus"`
-proof is declared, tooling verifies the Verus driver selected by the
-`cargo-verus` command that `cargo verus` invokes, and that `verusfmt` is the
-paired release `0.7.4` (`cargo install --locked verusfmt --version 0.7.4`).
-The root workspace declares Verus proofs, so the full gate needs Verus and
-verusfmt (see Requirements). Run the complete local gate from the repository
+The root workspace declares three Verus proofs (`qinit-event-core`,
+`qinit-cell-core`, `qinit-cell-drive`). The gate verifies the selected Verus
+release `0.2026.10.04.426d8b0` through `cargo-verus` and its paired
+`verusfmt` release `0.7.4` (`cargo install --locked verusfmt --version 0.7.4`).
+The full gate needs both (see Requirements). Run the complete local gate from the repository
 root:
 
 ```sh
@@ -67,12 +73,11 @@ cargo xtask gate --no-cache
 
 This runs the configured repository and tooling checks fresh, fastest first
 in one order across both workspaces (`cargo xtask gate --list` prints it), then
-any declared proofs, then the `vm` gate (guest suites in QEMU), and stops at
-the first failure. Every run of several
-steps stops at its first failure, `--only` across both workspaces and
-`cargo xtask proofs` included. `cargo xtask proofs` runs only declared proof
-obligations. Gates are portable and
-do not require a host scheduler. There is no CI at this stage.
+the three declared proofs, then the `vm` gate (nine guest suites in QEMU),
+and stops at the first failure. Every run of several steps stops at its first
+failure, `--only` across both workspaces and `cargo xtask proofs` included.
+`cargo xtask proofs` runs only declared proof obligations. Gates are portable
+and do not require a host scheduler. There is no CI at this stage.
 
 ### Requirements
 
@@ -80,17 +85,20 @@ The gate needs only these on a stock Linux system (Debian stable package
 names): `git`, `build-essential` (a C toolchain and `make`), `reuse`, `curl`
 and `ca-certificates` (to install rustup), a POSIX `sh`, `qemu-system-x86`,
 and to build the guest kernel `make gcc flex bison bc perl libelf-dev
-xz-utils`; Verus 0.2026.10.04.426d8b0 (release zip, see above) and
+xz-utils unzip`; Verus 0.2026.10.04.426d8b0 (release zip, see above) and
 `cargo install --locked verusfmt --version 0.7.4` now that the workspace has
 `verus!` code. Install [rustup](https://rustup.rs) without a default
 toolchain; it installs the pinned toolchain from
 [`rust-toolchain.toml`](rust-toolchain.toml) on first use.
 
-`sh scripts/container-check.sh [<commit-ish>]` (default `HEAD`) proves this
-list: it clones the repository fresh in a stock Debian stable container,
-installs exactly these packages, and runs the full gate as an unprivileged
-user (podman, or docker with `CONTAINER=docker`). To check `main` itself,
-pass `main` by name.
+`sh scripts/container-check.sh [<commit-ish>]` (default `HEAD`) checks this
+list: it clones the repository fresh in a pinned Debian stable container,
+installs these packages, Verus and verusfmt, and runs the full gate as an
+unprivileged user (podman, or docker with `CONTAINER=docker`). It passes
+`/dev/kvm` when it opens read-write; set `QINIT_CHECK_KVM=0` to exercise TCG.
+Optionally set `QINIT_KERNEL_TARBALL` to a local kernel archive to mount it
+read-only instead of downloading it (the guest builder still verifies its
+checksum). To check `main` itself, pass `main` by name.
 
 ### Hooks
 
@@ -134,11 +142,11 @@ must be resolved with the stated implementation change rather than hidden:
 | Relevant design clause | Setup status | Repository evidence |
 |---|---|---|
 | Approved qinit design §1 fixes qinit's public component scope and keeps unrelated services out. | No product component or additional binary is introduced by this setup. | [DEFERRED.md](DEFERRED.md) D2. |
-| Approved qinit design §2 requires Rust, Verus, four layers, event-driven waits, and bounded operations. | Rust is pinned; the selected Verus release is asserted when a Verus proof is declared; implementation and transition tests wait for product crates. | `rust-toolchain.toml`; `xtask/disciplines/src/tools.rs`; `Cargo.toml`. |
+| Approved qinit design §2 requires Rust, Verus, four layers, event-driven waits, and bounded operations. | Rust is pinned; three Verus core proofs run in the proof tier, and the `vm` gate tests cell transitions after proofs. The `qinit-sys`, `qinit-event`, `qinit-cell` and `qinit-vm` crates implement the substrate, not the daemon. | `rust-toolchain.toml`; `Cargo.toml`; `xtask/runner/src/lib.rs`; `crates/`. |
 | Approved qinit design §§3–7 define the queen, colony, overseer, zero, graph, logging, protocol, and shutdown behavior. | These product behaviors remain design-only; this task adds no daemon, protocol, or systemd-derived code. | [Scope](#scope); [DEFERRED.md](DEFERRED.md). |
 | Approved qinit design §8 makes disciplines setup the first sub-project: pinned tools; portable format, test, proof, REUSE, and canary gates; opt-in hooks; and no CI. | `cargo xtask gate --no-cache` is the fresh full check; Rust is pinned and declared Verus proofs assert their selected release; the hook installation above is local and optional. | `rust-toolchain.toml`; `xtask/disciplines/src/gates.rs`; `.githooks/setup-hooks.sh`; `xtask/runner/src/lib.rs`; `xtask/runner/tests/repo.rs`. |
 | Approved qinit design §9 defers user-session work, adoption/additional binaries/live upgrade, CI, and size budgets. | D1–D2 remain open design deferrals; no CI or size-budget commitment is made. | [DEFERRED.md](DEFERRED.md). |
-| Approved qinit design §10 records the research provenance for later implementation. | This public documentation records repository setup evidence and the accepted D4–D5 gate blockers (D3 resolved by the first product crate); product research provenance remains for later implementation. | [Development](#development); [DEFERRED.md](DEFERRED.md). |
+| Approved qinit design §10 records the research provenance for later implementation. | This public documentation records repository setup evidence and accepted gate blockers; D3 was resolved by the first product crate. Cell-substrate provenance is recorded privately in the workbench. | [Development](#development); [DEFERRED.md](DEFERRED.md). |
 
 qinit is developed with AI assistance. A human reviews every change and takes responsibility for it.
 See [CONTRIBUTING.md](CONTRIBUTING.md).

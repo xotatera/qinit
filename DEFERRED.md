@@ -90,3 +90,20 @@ the report the caller waits for. Sub-project 2 Task 9's `escalate` suite
 therefore asserts escalation by the report sequence ending `Empty` after the
 kill deadline path plus the helper's own evidence, not by a
 `MainExited(SIGKILL)` report.
+
+### D11 — Unkillable process in VM suites · `ACCEPTED`
+
+VM suites cannot produce an unkillable process (uninterruptible sleep): the
+'still populated after the kill deadline → Failed(Stuck)' path is covered by
+the Verus proof (`good`, obligation 6) and the host engine test
+`deadlines_escalate_then_report_stuck` only (spec §6.2).
+
+### D12 — Adoption open failure · `ACCEPTED`
+
+Adoption treats a cell that cannot be opened as an id mismatch
+(`Failed(IdMismatch)`), not as a separate failure.
+
+### D13 — x86_64 syscall shim · `ACCEPTED`
+
+`qinit-sys` is written for x86_64 (raw child path, kernel structure layouts);
+another architecture needs its own `KernelSigaction` and checked layouts.

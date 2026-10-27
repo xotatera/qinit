@@ -75,6 +75,10 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The clean-container check installs Verus, verusfmt, QEMU and kernel build
+  tools; it uses KVM when available, supports a TCG-only run and an optional
+  checksum-verified local kernel tarball. Gate order is re-pinned from measured
+  runs; the ledger records the cell substrate's accepted limitations.
 - `cargo xtask gate` runs every gate in one fastest-first order across the
   repository and tooling workspaces, then the proof gates, and stops at the
   first failure, naming the gates it did not run. A failed proof stops new
