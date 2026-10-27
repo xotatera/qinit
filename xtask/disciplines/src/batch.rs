@@ -23,9 +23,11 @@ pub struct Waiting {
 
 /// A finished entry: its index in the caller's list, verdict, log, when it
 /// started, its wall-clock time, and the atc steps its thread recorded
-/// (`timing::take`).
+/// (`timing::take`). `ran` is false for an entry that never started because
+/// an earlier one failed: it is not run, not failed, and has no time.
 pub struct Done {
     pub index: usize,
+    pub ran: bool,
     pub result: Result<(), String>,
     pub log: String,
     pub start: Instant,
@@ -34,7 +36,9 @@ pub struct Done {
 }
 
 /// Runs `waiting` under `cores` and `budget`, in `order`, calling `done`
-/// for each as it finishes (on this thread).
+/// for each as it finishes (on this thread). Fail fast: once an entry fails,
+/// no queued entry starts; the running ones finish and each queued one is
+/// reported as not run.
 pub fn run(
     root: &Path,
     waiting: Vec<Waiting>,
@@ -51,9 +55,10 @@ pub fn run(
         .collect();
     let (tx, rx) = mpsc::channel::<(Done, usize, u64)>();
     let (mut free_cores, mut free_budget, mut running) = (cores, budget, 0usize);
+    let mut failed = false;
     std::thread::scope(|scope| {
         loop {
-            loop {
+            while !failed {
                 let entries: Vec<proofs::schedule::Entry> = queue
                     .iter()
                     .map(|w| proofs::schedule::Entry {
@@ -93,6 +98,7 @@ pub fn run(
                         let _ = tx.send((
                             Done {
                                 index,
+                                ran: true,
                                 result,
                                 log,
                                 start,
@@ -107,8 +113,10 @@ pub fn run(
                     running -= 1;
                     free_cores += c;
                     free_budget += b;
+                    failed = true;
                     done(Done {
                         index,
+                        ran: true,
                         result: Err(format!("cannot start a thread: {e}")),
                         log: String::new(),
                         start: Instant::now(),
@@ -126,7 +134,19 @@ pub fn run(
             running -= 1;
             free_cores += c;
             free_budget += b;
+            failed |= d.result.is_err();
             done(d);
         }
     });
+    for w in queue {
+        done(Done {
+            index: w.index,
+            ran: false,
+            result: Err("not run: an earlier proof failed".to_string()),
+            log: String::new(),
+            start: Instant::now(),
+            elapsed: Duration::ZERO,
+            steps: Vec::new(),
+        });
+    }
 }

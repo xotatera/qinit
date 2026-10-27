@@ -767,6 +767,7 @@ fn run_gates(
     let mut run = Ran {
         started,
         failed: Vec::new(),
+        not_run: Vec::new(),
         times: Vec::new(),
         spans: Vec::new(),
     };
@@ -786,6 +787,7 @@ fn run_gates(
     run_wave(&ctx, &keyed, &mut run);
     let Ran {
         mut failed,
+        not_run,
         times,
         spans,
         ..
@@ -799,6 +801,9 @@ fn run_gates(
     } else {
         eprintln!("failed: {}", failed.join(", "));
     }
+    if !not_run.is_empty() {
+        eprintln!("not run: {}", not_run.join(", "));
+    }
     failed.is_empty()
 }
 
@@ -806,13 +811,17 @@ fn run_gates(
 struct Ran {
     started: std::time::Instant,
     failed: Vec<&'static str>,
+    /// Gates left unstarted because an earlier gate failed (fail fast).
+    not_run: Vec<&'static str>,
     /// Each gate that ran, with its time less atc's holds.
     times: Vec<(&'static str, Duration)>,
     spans: Vec<timing::Span>,
 }
 
 /// Runs `wave`: each gate is looked up first; what must run runs one at a
-/// time, or, for two or more proofs, in parallel under the budget.
+/// time, or, for two or more proofs, in parallel under the budget. Fail
+/// fast: after a failure, in this wave or an earlier one, no gate starts
+/// (`prepare_wave` stops at once and lists the wave as not run).
 fn run_wave(ctx: &RunCtx, wave: &[Gate], run: &mut Ran) {
     let key = |g: &Gate| ctx.key(g);
     let alt_keys: Vec<Box<dyn Fn() -> Result<String, String> + '_>> = wave
@@ -848,33 +857,23 @@ fn run_wave(ctx: &RunCtx, wave: &[Gate], run: &mut Ran) {
             })
         })
         .collect();
-    let mut slots: Vec<Option<runner::Pending>> = Vec::new();
-    for (g, alt) in wave.iter().zip(&alts) {
-        match runner::prepare(g, &ctx.cache_of(g), &key, alt.as_ref()) {
-            Err(report) => {
-                eprintln!("== {}", g.name);
-                if !print_report(g.name, &report, None) {
-                    run.failed.push(g.name);
-                }
-                slots.push(None);
-            }
-            Ok(pending) => slots.push(Some(pending)),
-        }
-    }
+    let Some(mut slots) = prepare_wave(ctx, wave, &key, &alts, run) else {
+        return;
+    };
     let waiting: Vec<usize> = (0..wave.len()).filter(|i| slots[*i].is_some()).collect();
     // Every gate of the wave was looked up before any runs.
     run_scope::add(waiting.iter().map(|i| wave[*i].name));
     // `header`: a captured run prints its `== gate` line with its log; a
     // streaming one printed it before running.
     let mut finish =
-        |i: usize, result: Result<(), String>, log: &str, ended: Ended, header: bool| {
+        |i: usize, result: Result<(), String>, log: &str, ended: Ended, header: bool| -> bool {
             let g = &wave[i];
             if header {
                 eprintln!("== {}", g.name);
             }
             eprint!("{log}");
             let Some(pending) = slots[i].take() else {
-                return;
+                return true;
             };
             let steps: Vec<timing::Step> = ended.steps.iter().map(|(_, s)| s.clone()).collect();
             let parts = timing::Parts::of(ended.elapsed, &steps);
@@ -896,30 +895,78 @@ fn run_wave(ctx: &RunCtx, wave: &[Gate], run: &mut Ran) {
             if proof {
                 ctx.record_duration(g.name, parts.ran().as_secs());
             }
-            if !print_report(g.name, &report, Some(parts.suffix(proof))) {
+            let passed = print_report(g.name, &report, Some(parts.suffix(proof)));
+            if !passed {
                 run.failed.push(g.name);
             }
+            passed
         };
     let batchable = waiting.len() > 1
         && waiting
             .iter()
             .all(|i| ctx.specs.contains_key(wave[*i].name));
     if !batchable {
-        for i in waiting {
+        let mut rest = waiting.into_iter();
+        for i in rest.by_ref() {
             eprintln!("== {}", wave[i].name);
             let (result, ended) = timed(&wave[i], ctx.root);
-            finish(i, result, "", ended, false);
+            if !finish(i, result, "", ended, false) {
+                break;
+            }
         }
+        run.not_run.extend(rest.map(|i| wave[i].name));
         return;
     }
-    run_batch(ctx, wave, &waiting, &mut |d| {
+    let mut skipped = Vec::new();
+    run_batch(ctx, wave, &waiting, &mut skipped, &mut |d| {
         let ended = Ended {
             start: d.start,
             elapsed: d.elapsed,
             steps: d.steps,
         };
-        finish(d.index, d.result, &d.log, ended, true);
+        let _ = finish(d.index, d.result, &d.log, ended, true);
     });
+    run.not_run.extend(skipped);
+}
+
+/// Looks up every gate of `wave` before any runs: `Some` slot for each gate
+/// that must run. Fail fast: `None` once a lookup reports a failure, with
+/// the wave's other gates recorded as not run.
+fn prepare_wave<'c>(
+    ctx: &'c RunCtx,
+    wave: &[Gate],
+    key: &dyn Fn(&Gate) -> Result<String, String>,
+    alts: &[Option<runner::Alt>],
+    run: &mut Ran,
+) -> Option<Vec<Option<runner::Pending<'c>>>> {
+    let mut slots = Vec::new();
+    for (g, alt) in wave.iter().zip(alts) {
+        if !run.failed.is_empty() {
+            break;
+        }
+        match runner::prepare(g, &ctx.cache_of(g), key, alt.as_ref()) {
+            Err(report) => {
+                eprintln!("== {}", g.name);
+                if !print_report(g.name, &report, None) {
+                    run.failed.push(g.name);
+                }
+                slots.push(None);
+            }
+            Ok(pending) => slots.push(Some(pending)),
+        }
+    }
+    if run.failed.is_empty() {
+        Some(slots)
+    } else {
+        let looked_up = slots.len();
+        let unfinished = wave
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i >= looked_up || slots[*i].is_some())
+            .map(|(_, g)| g.name);
+        run.not_run.extend(unfinished);
+        None
+    }
 }
 
 /// When a gate that ran started, its wall time, and its atc steps.
@@ -944,7 +991,15 @@ fn timed(g: &Gate, root: &Path) -> (Result<(), String>, Ended) {
 
 /// Two or more pending proofs of `wave` (`waiting`, by index) run in
 /// parallel under the budget; `finish` concludes each as it ends.
-fn run_batch(ctx: &RunCtx, wave: &[Gate], waiting: &[usize], finish: &mut dyn FnMut(batch::Done)) {
+/// The batch stops starting entries after a failure; those never ran, so
+/// they go to `skipped`, neither concluded nor timed.
+fn run_batch(
+    ctx: &RunCtx,
+    wave: &[Gate],
+    waiting: &[usize],
+    skipped: &mut Vec<&'static str>,
+    finish: &mut dyn FnMut(batch::Done),
+) {
     let names: Vec<&str> = waiting.iter().map(|i| wave[*i].name).collect();
     let durations = ctx
         .store
@@ -968,7 +1023,21 @@ fn run_batch(ctx: &RunCtx, wave: &[Gate], waiting: &[usize], finish: &mut dyn Fn
         .collect();
     let runner =
         |root: &Path, p: &proofs::Proof, jobs: usize| gates::proof_run(root, p, jobs, true);
-    batch::run(ctx.root, entries, &order, cores, budget, &runner, finish);
+    batch::run(
+        ctx.root,
+        entries,
+        &order,
+        cores,
+        budget,
+        &runner,
+        &mut |d| {
+            if d.ran {
+                finish(d);
+            } else {
+                skipped.push(wave[d.index].name);
+            }
+        },
+    );
 }
 
 /// Prints a gate's warnings and outcome, with its time when it ran
@@ -997,8 +1066,9 @@ fn print_report(name: &str, report: &runner::Report, took: Option<String>) -> bo
     true
 }
 
-/// Runs a parsed command. Failure policy: every gate runs, and failures are
-/// reported together (a long report beats one-at-a-time discovery).
+/// Runs a parsed command. Failure policy: fail fast. Gates run in registry
+/// order and the run stops at the first failure; the summary names the
+/// gates that did not run.
 #[must_use]
 pub fn execute(cmd: &Command, root: &Path) -> bool {
     execute_with(&Runner::template(), cmd, root)

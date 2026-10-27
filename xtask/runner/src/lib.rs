@@ -30,6 +30,35 @@ pub const STAGES: &[Stage] = &[
     },
 ];
 
+/// Every static gate of every stage, fastest first: a full `gate` run runs
+/// them in this order, then each stage's proof gates, and stops at the first
+/// failure. Place a new gate by its measured time (`tests/registry.rs` pins
+/// the order and records the measurements); slow gates go last.
+pub const ORDER: &[(&str, &str)] = &[
+    ("repo", "preflight"),
+    ("xtask", "preflight"),
+    ("repo", "canary"),
+    ("repo", "placeholder-scan"), // disciplines:allow-placeholder (the gate's name)
+    ("repo", "sleep-scan"),
+    ("repo", "changelog"),
+    ("xtask", "placeholder-scan"), // disciplines:allow-placeholder (the gate's name)
+    ("xtask", "sleep-scan"),
+    ("xtask", "changelog"),
+    ("xtask", "duplication"),
+    ("xtask", "no-std"),
+    ("xtask", "layers"),
+    ("repo", "layers"),
+    ("repo", "reuse"),
+    ("repo", "duplication"),
+    ("xtask", "fmt"),
+    ("repo", "fmt"),
+    ("xtask", "lint"),
+    ("repo", "lint"),
+    ("repo", "no-std"),
+    ("repo", "test"),
+    ("xtask", "test"),
+];
+
 /// The review canary's required instruction.
 pub const CANARY_INSTRUCTION: &str =
     "Remove these two lines to confirm that a human has reviewed this change.";
@@ -354,13 +383,14 @@ pub const USAGE: &str = "usage: cargo xtask gate [--only [<stage>/]<gate>] [--no
 /// What a command line asks for.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Plan {
-    /// `gate --list`: every stage's gates, `<stage>/<gate>`.
+    /// `gate --list`: every gate as `<stage>/<gate>`, in run order.
     List,
     /// `cache clear`: the store is shared by every stage.
     CacheClear,
     /// `ratchet <stage>`: print the stage's pedantic findings per lint table.
     Ratchet(&'static str),
-    /// The template command to run in each listed stage, in order.
+    /// Template commands to run, each in its stage, in order; the run stops
+    /// at the first that fails.
     Run(Vec<(&'static str, Command)>),
 }
 
@@ -419,6 +449,9 @@ fn plan_run(
             forwarded.push((*argument).to_string());
         }
     }
+    if verb == "gate" && only.is_none() {
+        return plan_full_gate(&forwarded, names);
+    }
     let (stage, gate) = match only.map(|value| value.split_once('/')) {
         Some(Some((stage, gate))) => (Some(stage_named(stage)?), Some(gate)),
         Some(None) => (None, only),
@@ -469,6 +502,57 @@ fn plan_run(
     Ok(Plan::Run(selected))
 }
 
+/// A full `gate` run: one step per gate in [`ORDER`], then each stage's
+/// proof gates unless `--no-proofs`. The flags go to every step, so the
+/// template's own refusals (`--no-proofs` on main) still apply.
+fn plan_full_gate(
+    forwarded: &[String],
+    names: &dyn Fn(&Stage) -> Result<Vec<String>, String>,
+) -> Result<Plan, String> {
+    let mut steps = Vec::new();
+    for (stage_name, gate) in ORDER {
+        let stage = stage_named(stage_name)?;
+        let mut arguments = forwarded.to_vec();
+        arguments.extend(["--only".to_string(), (*gate).to_string()]);
+        steps.push((
+            stage.name,
+            xtask::parse_args_with(stage.registry, &arguments)?,
+        ));
+    }
+    if forwarded.iter().any(|argument| argument == "--no-proofs") {
+        return Ok(Plan::Run(steps));
+    }
+    let mut proofs = vec!["proofs".to_string()];
+    proofs.extend(
+        forwarded
+            .iter()
+            .filter(|argument| *argument == "--no-cache")
+            .cloned(),
+    );
+    for stage in STAGES {
+        let stage_names =
+            names(stage).map_err(|error| format!("{} proofs: {error}", stage.name))?;
+        if stage_names.iter().any(|name| name.starts_with("proof:")) {
+            steps.push((stage.name, xtask::parse_args_with(stage.registry, &proofs)?));
+        }
+    }
+    Ok(Plan::Run(steps))
+}
+
+/// How a run step is named in progress and failure lines.
+fn step_label(stage: &str, command: &Command) -> String {
+    match command {
+        Command::Gate {
+            only: Some(gate), ..
+        } => format!("{stage}/{gate}"),
+        Command::Gate {
+            scope: xtask::Scope::ProofsOnly,
+            ..
+        } => format!("{stage}/proofs"),
+        _ => stage.to_string(),
+    }
+}
+
 /// Every gate of `stage` at `root`, including declared proofs.
 ///
 /// # Errors
@@ -483,6 +567,9 @@ pub fn gate_names(stage: &Stage, root: &Path) -> Result<Vec<String>, String> {
 pub fn execute(plan: Plan, root: &Path) -> bool {
     match plan {
         Plan::List => {
+            for (stage, gate) in ORDER {
+                println!("{stage}/{gate}");
+            }
             for stage in STAGES {
                 let names = match gate_names(stage, root) {
                     Ok(names) => names,
@@ -491,7 +578,7 @@ pub fn execute(plan: Plan, root: &Path) -> bool {
                         return false;
                     }
                 };
-                for name in names {
+                for name in names.iter().filter(|name| name.starts_with("proof:")) {
                     println!("{}/{name}", stage.name);
                 }
             }
@@ -516,22 +603,26 @@ pub fn execute(plan: Plan, root: &Path) -> bool {
             root,
         ),
         Plan::Run(steps) => {
-            let mut failed = Vec::new();
-            for (name, command) in steps {
+            let labels: Vec<String> = steps
+                .iter()
+                .map(|(name, command)| step_label(name, command))
+                .collect();
+            for (index, (name, command)) in steps.into_iter().enumerate() {
                 let stage = stage_named(name).unwrap_or_else(|error| unreachable!("{error}"));
-                eprintln!("=== stage {name}");
+                eprintln!("=== {}", labels[index]);
                 let runner =
                     Runner::extending(stage.registry, PathBuf::from(env!("CARGO_MANIFEST_DIR")));
                 if !xtask::execute_with(&runner, &command, &root.join(stage.dir)) {
-                    failed.push(name);
+                    eprintln!("=== stopped at {}", labels[index]);
+                    let rest = &labels[index + 1..];
+                    if !rest.is_empty() {
+                        eprintln!("=== not run: {}", rest.join(", "));
+                    }
+                    return false;
                 }
             }
-            if failed.is_empty() {
-                eprintln!("=== every stage passed");
-            } else {
-                eprintln!("=== failed stages: {}", failed.join(", "));
-            }
-            failed.is_empty()
+            eprintln!("=== every step passed");
+            true
         }
     }
 }
