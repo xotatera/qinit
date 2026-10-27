@@ -330,7 +330,12 @@ impl<E: Effects> Engine<E> {
     }
 
     fn on_ready_pipe(&mut self, slot: u16) -> Result<(), Error> {
-        self.on_exec(slot)?;
+        let exec = self.on_exec(slot);
+        let ready = self.read_ready_pipe(slot);
+        exec.and(ready)
+    }
+
+    fn read_ready_pipe(&mut self, slot: u16) -> Result<(), Error> {
         if !self.has(slot) {
             return Ok(());
         }
@@ -376,8 +381,9 @@ impl<E: Effects> Engine<E> {
         Ok(())
     }
 
-    /// Settles an outstanding exec result; nothing once it is settled (a later report of the
-    /// closed pipe in the same batch).
+    /// Settles an outstanding exec result, then delivers retained readiness and exit events
+    /// in arrival order, re-reading the level after each retained exit. Does nothing once
+    /// settled (a later report of the closed pipe in the same batch).
     fn on_exec(&mut self, slot: u16) -> Result<(), Error> {
         let Some(h) = self.entry(slot)?.pending_main else {
             return Ok(());

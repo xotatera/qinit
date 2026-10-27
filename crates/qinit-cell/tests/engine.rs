@@ -150,7 +150,39 @@ fn unsettled_exec_pipe_keeps_handle_and_exit_until_eof() {
 }
 
 #[test]
-fn r1_ready_line_waits_for_exec_across_batches() {
+fn a_ready_read_is_not_skipped_when_settling_a_held_exit_fails() {
+    for chunk in [b"\n".as_slice(), b"".as_slice()] {
+        let mut e = Engine::new(Sim::default());
+        let id = e.create("settle-error").unwrap();
+        e.spawn(id, cmd(), ReadyMode::Pipe).unwrap();
+        e.effects.exec_pending = true;
+        e.stop(id, Polite::Cell, SEC, SEC).unwrap();
+        e.on_ready(&Ready::Exited(token(0, Source::Main), 0))
+            .unwrap();
+        e.effects.exec_pending = false;
+        e.effects.cancel_error = Some(qinit_sys::Errno(libc::EIO));
+        e.effects.ready_chunks.push_back(chunk.to_vec());
+        assert_eq!(
+            e.on_ready(&Ready::Readable(token(0, Source::Ready))),
+            Err(Error::Sys(qinit_sys::Errno(libc::EIO)))
+        );
+        assert!(
+            e.effects.ready_chunks.is_empty(),
+            "ready read was skipped after exec-settlement error"
+        );
+        if chunk.is_empty() {
+            assert!(
+                e.effects.calls.contains(&Call::Close(0, Source::Ready)),
+                "EOF cleanup still runs after the first error"
+            );
+        }
+        assert_eq!(reports(&mut e), [Report::Created, Report::Empty]);
+        assert_eq!(e.phase(id), Some(Phase::Empty));
+    }
+}
+
+#[test]
+fn a_ready_line_waits_for_an_unsettled_exec() {
     let mut e = Engine::new(Sim::default());
     let id = e.create("pending-ready").unwrap();
     e.spawn(id, cmd(), ReadyMode::Pipe).unwrap();
@@ -177,8 +209,10 @@ fn r1_ready_line_waits_for_exec_across_batches() {
         reports(&mut e).is_empty(),
         "Ready must be reported exactly once"
     );
+}
 
-    // Retained readiness and exits must follow observation order, not source priority.
+#[test]
+fn held_readiness_and_exit_keep_arrival_order() {
     for ready_first in [true, false] {
         let mut e = Engine::new(Sim::default());
         let id = e.create("ordered-ready").unwrap();
@@ -208,7 +242,7 @@ fn r1_ready_line_waits_for_exec_across_batches() {
 }
 
 #[test]
-fn r1_ready_line_before_exec_readable_in_same_batch() {
+fn a_ready_line_before_the_exec_result_in_one_batch_is_not_lost() {
     let mut e = Engine::new(Sim::default());
     let id = e.create("batch-ready").unwrap();
     e.spawn(id, cmd(), ReadyMode::Pipe).unwrap();
@@ -229,7 +263,7 @@ fn r1_ready_line_before_exec_readable_in_same_batch() {
 }
 
 #[test]
-fn r1_ready_eof_waits_for_failed_exec_without_not_ready() {
+fn ready_eof_under_an_unsettled_failed_exec_reports_only_spawn_failed() {
     let mut e = Engine::new(Sim::default());
     let id = e.create("failed-ready").unwrap();
     e.spawn(id, cmd(), ReadyMode::Pipe).unwrap();
