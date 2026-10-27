@@ -29,13 +29,15 @@ no_std_target = "x86_64-unknown-none"
 proof_memory_budget = "8G"
 
 # Proof tier (`cargo xtask proofs`): Verus for the core crates (spec 2026-10-27 §5.2).
-# memory: about 1.25x the measured peak, at least 2G; timeout: CPU seconds, about 2x the run.
+# memory: at least 2G; container prlimit needs 4G virtual address space for
+# Rust/LLVM linking on a rootless cgroup (resident peaks are much lower).
+# timeout: CPU seconds, about 2x the run.
 # Measured 2026-10-27: 2 verified, 12.9 s (19.3 s CPU), 1.0 GB peak.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-event-core"
 kind = "verus"
 package = "qinit-event-core"
-memory = "2G"
+memory = "4G"
 timeout = "40s"
 
 # Measured 2026-10-27: 29 verified, 12.6-15.7 s (18.9-22.3 s CPU), 986 MB peak.
@@ -43,7 +45,7 @@ timeout = "40s"
 name = "qinit-cell-core"
 kind = "verus"
 package = "qinit-cell-core"
-memory = "2G"
+memory = "4G"
 timeout = "45s"
 
 # Measured 2026-10-27: 12 verified, 13.5-14.2 s (19.9-21.0 s CPU), 1.0 GB peak.
@@ -51,5 +53,5 @@ timeout = "45s"
 name = "qinit-cell-drive"
 kind = "verus"
 package = "qinit-cell-drive"
-memory = "2G"
+memory = "4G"
 timeout = "40s"
