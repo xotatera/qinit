@@ -17,12 +17,15 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `cgroup.kill`, adoption, removal). Verus proves for every step: the grace
   deadline while stopping kills; a freeze is held until a thaw is emitted; the
   main process is signalled only through its live handle, which stops being
-  live once its exit is observed; Empty is entered only on an observed empty
-  level with no live main process and no spawn outstanding; nothing reaches
-  processes once the cell was empty; every non-terminal state has an armed
-  deadline or an awaited event (the effect issued on entry, the caller's
-  request after a report, the main process's exit or a level change); the kill
-  deadline ends in Failed; a left deadline is cancelled.
+  live once its exit is observed; Empty is entered only with no live main
+  process and no spawn outstanding, and only when the cell reads empty: a
+  directory the machine just created counts as empty, a spawn marks the cell
+  populated, adoption takes the `cgroup.events` reading, and only a reading
+  clears `populated`; nothing reaches processes once the cell was empty; every
+  non-terminal state has an armed deadline or an awaited event (the effect
+  issued on entry, the caller's request after a report, the main process's
+  exit or a level change); the kill deadline ends in Failed; a left deadline
+  is cancelled.
 - The `vm` gate: guest suites in QEMU on the pinned kernel, after the proof
   tier; the `probe` suite checks how `cgroup.events` notifies, placement by
   `CLONE_INTO_CGROUP`, cgroup ids, freeze and `cgroup.kill`.

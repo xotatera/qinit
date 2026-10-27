@@ -223,8 +223,10 @@ pub open spec fn awaits(c: Cell) -> bool {
     }
 }
 
-/// The phases of a cell that was empty; none of them reaches processes.
-pub open spec fn after_empty(p: Phase) -> bool {
+/// Phases that never reach processes again: Empty and the removal phases after it. Removing
+/// and Failed(Remove) are also reached from a Failed cell that was never empty (Failed(Stuck)
+/// gave up on its processes); the set is closed under `step` either way.
+pub open spec fn hands_off(p: Phase) -> bool {
     p is Empty || p is Removing || p is Removed || p == Phase::Failed(Failure::Remove)
 }
 
@@ -270,8 +272,18 @@ pub open spec fn observed_empty(c: Cell, e: Event) -> bool {
 pub open spec fn records_level(c: Cell, e: Event, n: Cell) -> bool {
     match e {
         Event::Level { populated, .. } => c.phase is Empty || n.populated == populated,
+        Event::AdoptChecked { id_matches, populated } => !(c.phase is Adopting) || !id_matches
+            || n.populated == populated,
         _ => true,
     }
+}
+
+/// Obligation 4: once a process was spawned the cell counts as populated (the child was placed
+/// in it), and only a reading clears `populated`. A directory the machine just created counts
+/// as empty: nothing can be in it before `Spawn`.
+pub open spec fn populated_from_readings(c: Cell, e: Event, n: Cell) -> bool {
+    &&& (e is Spawned && c.main is Pending ==> n.populated)
+    &&& (c.populated && !n.populated ==> e is Level || e is AdoptChecked)
 }
 
 /// Obligation 3: the main process goes None -> Pending (spawn requested) -> Live(h) (exec
@@ -338,16 +350,18 @@ pub open spec fn good(c: Cell, e: Event, r: (Cell, Actions)) -> bool {
         e,
         r.0,
     )
-    // 4. Empty is honest: entered only on an observed empty level, with no live main process
-    // (`inv`); every level read is recorded.
+    // 4. Empty is honest: entered only on an empty level (the event's reading or the last one
+    // recorded), with no live main process and no spawn outstanding (`inv`); every reading is
+    // recorded, a spawn marks the cell populated, and only a reading clears it.
     &&& (!(c.phase is Empty) && r.0.phase is Empty ==> observed_empty(c, e))
+    &&& populated_from_readings(c, e, r.0)
     &&& records_level(
         c,
         e,
         r.0,
     )
-    // 5. Nothing reaches processes once the cell was empty.
-    &&& (after_empty(c.phase) ==> after_empty(r.0.phase) && !emits_reaching(
+    // 5. Nothing reaches processes once the cell was empty (`hands_off`).
+    &&& (hands_off(c.phase) ==> hands_off(r.0.phase) && !emits_reaching(
         r.1,
     ))
     // 6. No stuck state: every non-terminal state has an awaited event or an armed deadline
@@ -424,7 +438,7 @@ fn to_empty(c: Cell, e: Ghost<Event>, main: Main) -> (r: (Cell, Actions))
     requires
         inv(c),
         main is None || main is Reaped,
-        !after_empty(c.phase),
+        !hands_off(c.phase),
         observed_empty(c, e@),
         main_moves(c, e@, Cell { main, ..c }),
         !(c.phase is Stopping && e@ == Event::Deadline(Timer::Grace)),
