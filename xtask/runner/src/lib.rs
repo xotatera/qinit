@@ -146,6 +146,7 @@ const REPO_TOOLS: &[(&str, &str)] = &[
     ("tar", "package tar"),
     ("xz", "package xz-utils"),
     ("curl", "package curl"),
+    ("unzip", "package unzip"),
 ];
 
 /// The template preflight's fingerprinted tools plus [`REPO_TOOLS`].
@@ -169,6 +170,7 @@ const REPO_PREFLIGHT_TOOLS: &[&str] = &[
     "tar",
     "xz",
     "curl",
+    "unzip",
 ];
 
 /// What the `vm` gate runs: cargo, QEMU and the kernel build.
@@ -237,11 +239,23 @@ fn repo_preflight(root: &Path) -> Result<(), String> {
     if !gone.is_empty() {
         errors.push(xtask::tools::report(&gone));
     }
+    if !libelf_headers("gcc") {
+        errors.push("missing: gelf.h (install: package libelf-dev)".to_string());
+    }
     if errors.is_empty() {
         Ok(())
     } else {
         Err(errors.join("\n"))
     }
+}
+
+/// Probe the compiler's include search, including multiarch and configured search paths.
+#[must_use]
+pub fn libelf_headers(compiler: impl AsRef<std::ffi::OsStr>) -> bool {
+    std::process::Command::new(compiler)
+        .args(["-x", "c", "-E", "-include", "gelf.h", "/dev/null"])
+        .output()
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Repository gates available before qinit has product packages.

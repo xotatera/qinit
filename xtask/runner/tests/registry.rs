@@ -281,6 +281,7 @@ fn repository_gate_policy_is_pinned() {
         "tar",
         "xz",
         "curl",
+        "unzip",
     ]);
     assert_eq!(preflight.tools, tools);
     assert!(preflight.cacheable);
@@ -305,6 +306,8 @@ fn repository_preflight_names_a_missing_repository_tool() {
         .output()
         .expect("run qinit-xtask without reuse");
     assert_failure_contains(&output, "missing: reuse");
+    assert_failure_contains(&output, "missing: gelf.h (install: package libelf-dev)");
+    assert_failure_contains(&output, "missing: unzip");
 }
 
 #[test]

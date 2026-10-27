@@ -6,6 +6,18 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 #[test]
+fn kernel_make_drops_ambient_build_overrides() {
+    let command = kernel::make_command(std::path::Path::new("/kernel"));
+    for key in ["ARCH", "CROSS_COMPILE", "KBUILD_OUTPUT", "CC", "MAKEFLAGS"] {
+        assert!(
+            command.get_envs().any(|(k, v)| k == key && v.is_none()),
+            "{key}"
+        );
+    }
+    assert_eq!(command.get_args().collect::<Vec<_>>(), ["-C", "/kernel"]);
+}
+
+#[test]
 fn the_pin_is_the_planned_release() {
     assert_eq!(kernel::VERSION, "6.18.59");
     assert_eq!(

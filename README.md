@@ -84,7 +84,7 @@ The gate needs only these on a stock Linux system (Debian stable package
 names): `git`, `build-essential` (a C toolchain and `make`), `reuse`, `curl`
 and `ca-certificates` (to install rustup), a POSIX `sh`, `qemu-system-x86`,
 and to build the guest kernel `make gcc flex bison bc perl libelf-dev
-xz-utils unzip util-linux`; Verus 0.2026.10.04.426d8b0 (release zip, see above) and
+xz-utils unzip`; Verus 0.2026.10.04.426d8b0 (release zip, see above) and
 `cargo install --locked verusfmt --version 0.7.4` now that the workspace has
 `verus!` code. Install [rustup](https://rustup.rs) without a default
 toolchain; it installs the pinned toolchain from

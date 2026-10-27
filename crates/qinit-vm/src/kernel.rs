@@ -139,6 +139,57 @@ pub fn ensure() -> Result<PathBuf, String> {
     }
 }
 
+/// Kernel make with ambient cross-build, output and compiler overrides removed.
+#[must_use]
+pub fn make_command(src: &Path) -> Command {
+    let mut make = Command::new("make");
+    for (key, _) in std::env::vars_os() {
+        let name = key.to_string_lossy();
+        if name.starts_with("KBUILD_")
+            || name.starts_with("KCONFIG_")
+            || name.starts_with("HOST")
+            || name.starts_with("LLVM")
+            || matches!(
+                name.as_ref(),
+                "ARCH"
+                    | "SUBARCH"
+                    | "CROSS_COMPILE"
+                    | "CC"
+                    | "CXX"
+                    | "CPP"
+                    | "LD"
+                    | "AR"
+                    | "AS"
+                    | "NM"
+                    | "OBJCOPY"
+                    | "OBJDUMP"
+                    | "STRIP"
+                    | "READELF"
+                    | "RUSTC"
+                    | "RUSTFLAGS"
+                    | "KRUSTFLAGS"
+                    | "KCFLAGS"
+                    | "KAFLAGS"
+                    | "CFLAGS"
+                    | "CPPFLAGS"
+                    | "LDFLAGS"
+                    | "MAKEFLAGS"
+                    | "MFLAGS"
+                    | "MAKEOVERRIDES"
+                    | "GNUMAKEFLAGS"
+            )
+        {
+            make.env_remove(key);
+        }
+    }
+    // Explicit removals also make the command's contract inspectable without mutating env.
+    for key in ["ARCH", "CROSS_COMPILE", "KBUILD_OUTPUT", "CC", "MAKEFLAGS"] {
+        make.env_remove(key);
+    }
+    make.arg("-C").arg(src);
+    make
+}
+
 /// Extracts, configures and builds in `work`, then moves the result to `done` whole.
 fn build_in(work: &Path, tarball: &Path, done: &Path) -> Result<(), String> {
     let log = work.join("build.log");
@@ -149,10 +200,8 @@ fn build_in(work: &Path, tarball: &Path, done: &Path) -> Result<(), String> {
     let src = work.join(format!("linux-{VERSION}"));
     let fragment = work.join("qinit.config");
     std::fs::write(&fragment, FRAGMENT).map_err(at)?;
-    let mut config = Command::new("make");
+    let mut config = make_command(&src);
     config
-        .arg("-C")
-        .arg(&src)
         .arg("allnoconfig")
         .env("KCONFIG_ALLCONFIG", &fragment);
     run_logged(config, &log, BUILD_WITHIN)?;
@@ -166,12 +215,8 @@ fn build_in(work: &Path, tarball: &Path, done: &Path) -> Result<(), String> {
         ));
     }
     let jobs = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-    let mut build = Command::new("make");
-    build
-        .arg("-C")
-        .arg(&src)
-        .arg(format!("-j{jobs}"))
-        .arg("bzImage");
+    let mut build = make_command(&src);
+    build.arg(format!("-j{jobs}")).arg("bzImage");
     run_logged(build, &log, BUILD_WITHIN)?;
     let staged = work.join("done");
     std::fs::create_dir_all(&staged).map_err(at)?;

@@ -81,8 +81,8 @@ fn group_attempt(deadline: Duration) -> Option<String> {
         .custom_flags(libc::O_NONBLOCK)
         .open(&fifo)
         .unwrap();
-    // The shell announces itself, then leaves `sleep` holding the fifo in the same group.
-    let mut cmd = sh("exec 3>\"$0\"; echo up >&3; sleep 600 & wait");
+    // Only the forked sleeper announces itself: killing before the fork cannot pass.
+    let mut cmd = sh("exec 3>\"$0\"; sh -c 'echo up >&3; exec sleep 600' & wait");
     cmd.arg(&fifo);
     let (done_rx, done_tx) = std::io::pipe().unwrap();
     let log2 = l.clone();
