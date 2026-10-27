@@ -177,6 +177,12 @@ pub fn make_command(src: &Path) -> Command {
                     | "MFLAGS"
                     | "MAKEOVERRIDES"
                     | "GNUMAKEFLAGS"
+                    | "MAKEFILES"
+                    | "MAKELEVEL"
+                    | "MAKE_RESTARTS"
+                    | "SRCARCH"
+                    | "srctree"
+                    | "objtree"
             )
         {
             make.env_remove(key);

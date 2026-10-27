@@ -33,8 +33,9 @@ Resolved by sub-project 2 Task 1: `qinit-sys` is the first product package; the 
 
 The root `no-std` gate runs since sub-project 2 Task 2 (`qinit-event-core` is
 the first core crate). The tooling `no-std` gate is separately blocked: the
-`xtask` workspace has no kernel or core crate. Unblock it only in the change
-that adds a primitive, kernel, or core crate to the `xtask` workspace.
+`xtask` workspace has no kernel or core crate.
+Unblock it only in the change that adds a primitive, kernel, or core crate
+to the `xtask` workspace.
 
 ### D5 — Tooling-stage repository-wide scans · `ACCEPTED`
 
