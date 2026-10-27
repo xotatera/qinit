@@ -60,6 +60,7 @@ fn global_order_names_every_static_gate_once() {
         let mut registry: Vec<&str> = (stage.registry)().iter().map(|gate| gate.name).collect();
         let mut ordered: Vec<&str> = qinit_xtask::ORDER
             .iter()
+            .chain(qinit_xtask::AFTER_PROOFS)
             .filter(|(name, _)| *name == stage.name)
             .map(|(_, gate)| *gate)
             .collect();
@@ -102,15 +103,63 @@ fn a_full_gate_run_follows_the_global_order_then_runs_proofs() {
         .map(|(stage, gate)| step(stage, &["gate", "--no-cache", "--only", gate]))
         .collect();
     expected.push(step("repo", &["proofs", "--no-cache"]));
+    expected.push(step("repo", &["gate", "--no-cache", "--only", "vm"]));
     assert_eq!(planned(&["gate", "--no-cache"]), expected);
 }
 
 #[test]
+fn the_vm_gate_runs_after_the_proofs() {
+    assert_eq!(qinit_xtask::AFTER_PROOFS, &[("repo", "vm")]);
+    let mut expected: Vec<_> = GLOBAL_ORDER
+        .iter()
+        .map(|(stage, gate)| step(stage, &["gate", "--no-cache", "--only", gate]))
+        .collect();
+    expected.push(step("repo", &["proofs", "--no-cache"]));
+    expected.push(step("repo", &["gate", "--no-cache", "--only", "vm"]));
+    assert_eq!(planned(&["gate", "--no-cache"]), expected);
+}
+
+#[test]
+fn the_vm_gate_declares_its_inputs_and_tools() {
+    let gates = qinit_xtask::repo_registry();
+    let vm = gates.iter().find(|g| g.name == "vm").expect("a vm gate");
+    assert_eq!(
+        vm.inputs,
+        Inputs::Globs(&[
+            "crates/**",
+            "Cargo.toml",
+            "Cargo.lock",
+            "rust-toolchain.toml"
+        ])
+    );
+    assert_eq!(vm.env, &["QINIT_KERNEL_TARBALL", "XDG_CACHE_HOME"]);
+    assert_eq!(
+        vm.tools,
+        &[
+            "cargo",
+            "qemu-system-x86_64",
+            "make",
+            "gcc",
+            "flex",
+            "bison",
+            "bc",
+            "perl",
+            "tar",
+            "xz",
+            "curl"
+        ]
+    );
+    assert!(vm.cacheable && vm.cache_on_main);
+    assert_eq!(vm.blocked, None);
+}
+
+#[test]
 fn no_proofs_forwards_to_every_step_and_drops_the_proof_steps() {
-    let expected: Vec<_> = GLOBAL_ORDER
+    let mut expected: Vec<_> = GLOBAL_ORDER
         .iter()
         .map(|(stage, gate)| step(stage, &["gate", "--no-proofs", "--only", gate]))
         .collect();
+    expected.push(step("repo", &["gate", "--no-proofs", "--only", "vm"]));
     assert_eq!(planned(&["gate", "--no-proofs"]), expected);
 }
 
@@ -127,7 +176,10 @@ fn gate_list_prints_the_global_order() {
     let expected: Vec<String> = GLOBAL_ORDER
         .iter()
         .map(|(stage, gate)| format!("{stage}/{gate}"))
-        .chain(["repo/proof:qinit-event-core".to_string()])
+        .chain([
+            "repo/proof:qinit-event-core".to_string(),
+            "repo/vm".to_string(),
+        ])
         .collect();
     assert_eq!(listed, expected);
 }
@@ -172,6 +224,7 @@ fn repository_gate_policy_is_pinned() {
             "no-std",
             "duplication",
             "test",
+            "vm",
         ]
     );
     let declarations: Vec<(&str, Inputs, Option<&str>)> = gates
@@ -197,6 +250,16 @@ fn repository_gate_policy_is_pinned() {
                 None
             ),
             ("test", Inputs::Tree, None),
+            (
+                "vm",
+                Inputs::Globs(&[
+                    "crates/**",
+                    "Cargo.toml",
+                    "Cargo.lock",
+                    "rust-toolchain.toml"
+                ]),
+                None
+            ),
         ]
     );
     let reuse = gates
@@ -213,7 +276,19 @@ fn repository_gate_policy_is_pinned() {
         .find(|gate| gate.name == "preflight")
         .unwrap();
     let mut tools = template.tools.to_vec();
-    tools.push("reuse");
+    tools.extend([
+        "reuse",
+        "qemu-system-x86_64",
+        "make",
+        "gcc",
+        "flex",
+        "bison",
+        "bc",
+        "perl",
+        "tar",
+        "xz",
+        "curl",
+    ]);
     assert_eq!(preflight.tools, tools);
     assert!(preflight.cacheable);
     assert!(preflight.cache_on_main);

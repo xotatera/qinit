@@ -12,6 +12,9 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The `vm` gate: guest suites in QEMU on the pinned kernel, after the proof
+  tier; the `probe` suite checks how `cgroup.events` notifies, placement by
+  `CLONE_INTO_CGROUP`, cgroup ids, freeze and `cgroup.kill`.
 - `qinit-vm`: builds the pinned guest kernel (Linux 6.18.59, checksum-verified,
   cached), writes newc initrds, builds static guest programs, boots QEMU with KVM
   or TCG and reads guest verdicts.

@@ -64,7 +64,8 @@ cargo xtask gate --no-cache
 
 This runs the configured repository and tooling checks fresh, fastest first
 in one order across both workspaces (`cargo xtask gate --list` prints it), then
-any declared proofs, and stops at the first failure. Every run of several
+any declared proofs, then the `vm` gate (guest suites in QEMU), and stops at
+the first failure. Every run of several
 steps stops at its first failure, `--only` across both workspaces and
 `cargo xtask proofs` included. `cargo xtask proofs` runs only declared proof
 obligations; there are none until product crates exist. Gates are portable and
@@ -74,11 +75,13 @@ do not require a host scheduler. There is no CI at this stage.
 
 The gate needs only these on a stock Linux system (Debian stable package
 names): `git`, `build-essential` (a C toolchain and `make`), `reuse`, `curl`
-and `ca-certificates` (to install rustup), and a POSIX `sh`. Install
-[rustup](https://rustup.rs) without a default toolchain; it installs the
-pinned toolchain from [`rust-toolchain.toml`](rust-toolchain.toml) on first
-use. Verus and verusfmt are needed only once a Verus proof or a `verus!` block
-exists.
+and `ca-certificates` (to install rustup), a POSIX `sh`, `qemu-system-x86`,
+and to build the guest kernel `make gcc flex bison bc perl libelf-dev
+xz-utils`; Verus 0.2026.10.04.426d8b0 (release zip, see above) and
+`cargo install --locked verusfmt --version 0.7.4` now that the workspace has
+`verus!` code. Install [rustup](https://rustup.rs) without a default
+toolchain; it installs the pinned toolchain from
+[`rust-toolchain.toml`](rust-toolchain.toml) on first use.
 
 `sh scripts/container-check.sh [<commit-ish>]` (default `HEAD`) proves this
 list: it clones the repository fresh in a stock Debian stable container,

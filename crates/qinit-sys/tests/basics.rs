@@ -110,3 +110,32 @@ fn dup_above_lands_above_the_floor() {
     assert!(high.as_raw_fd() >= 100);
     assert!(fd::is_open(high.as_raw_fd()));
 }
+
+/// The `flags:` field of `/proc/self/fdinfo/<n>` (octal).
+fn fdinfo_flags(n: std::os::fd::RawFd) -> u32 {
+    let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{n}")).unwrap();
+    let flags = info.lines().find_map(|l| l.strip_prefix("flags:")).unwrap();
+    u32::from_str_radix(flags.trim(), 8).unwrap()
+}
+
+#[test]
+fn set_cloexec_raw_marks_a_descriptor_close_on_exec() {
+    let (r, _w) = fd::pipe(0).unwrap();
+    let cloexec = u32::try_from(libc::O_CLOEXEC).unwrap();
+    assert_eq!(fdinfo_flags(r.as_raw_fd()) & cloexec, 0);
+    fd::set_cloexec_raw(r.as_raw_fd()).unwrap();
+    assert_ne!(fdinfo_flags(r.as_raw_fd()) & cloexec, 0);
+    assert!(
+        fd::is_open(r.as_raw_fd()),
+        "the flag leaves the descriptor open"
+    );
+}
+
+#[test]
+fn set_cloexec_raw_on_a_number_never_open_is_ebadf() {
+    // Above any descriptor limit, so no concurrent test can have it open.
+    assert_eq!(
+        fd::set_cloexec_raw(std::os::fd::RawFd::MAX),
+        Err(qinit_sys::Errno(libc::EBADF))
+    );
+}

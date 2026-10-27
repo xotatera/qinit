@@ -173,6 +173,13 @@ pub fn wait_pidfd(pidfd: impl AsFd) -> Result<i32> {
     }
 }
 
+/// `setsid(2)`: a new session and process group led by the caller.
+pub fn setsid() -> Result<()> {
+    // SAFETY: setsid takes no arguments.
+    check(unsafe { libc::setsid() })?;
+    Ok(())
+}
+
 /// `PR_SET_CHILD_SUBREAPER`: orphaned descendants are re-parented to this process.
 pub fn set_child_subreaper() -> Result<()> {
     // SAFETY: the prctl option takes integer arguments only.

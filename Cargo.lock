@@ -146,6 +146,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "qinit-vm-guests"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "qinit-event",
+ "qinit-sys",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"

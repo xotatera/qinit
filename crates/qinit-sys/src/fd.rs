@@ -42,3 +42,13 @@ pub fn set_nonblocking(fd: impl AsFd) -> Result<()> {
     check(unsafe { libc::fcntl(raw, libc::F_SETFL, old | libc::O_NONBLOCK) })?;
     Ok(())
 }
+
+/// Sets `FD_CLOEXEC` on descriptor number `n` (a helper closing an inherited descriptor at its
+/// next exec). Changing the flag leaves ownership untouched, so this is safe on any number.
+pub fn set_cloexec_raw(n: RawFd) -> Result<()> {
+    // SAFETY: F_GETFD only reads the descriptor's flags.
+    let old = check(unsafe { libc::fcntl(n, libc::F_GETFD) })?;
+    // SAFETY: F_SETFD with an integer argument.
+    check(unsafe { libc::fcntl(n, libc::F_SETFD, old | libc::FD_CLOEXEC) })?;
+    Ok(())
+}
