@@ -71,7 +71,7 @@ git config --global --add safe.directory /src/qinit.git
 curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none >/dev/null
 . \"\$HOME/.cargo/env\"
 curl -fsSL -o /tmp/verus.zip https://github.com/verus-lang/verus/releases/download/release/0.2026.10.04.426d8b0/verus-0.2026.10.04.426d8b0-x86-linux.zip
-echo "624018662868563a7bec0dd07be5e4dd0c3d61124b4b55105765884bf2d4d1a0  /tmp/verus.zip" | sha256sum -c -
+echo \"624018662868563a7bec0dd07be5e4dd0c3d61124b4b55105765884bf2d4d1a0  /tmp/verus.zip\" | sha256sum -c -
 mkdir -p \"\$HOME/.local/opt\" \"\$HOME/.local/bin\"
 unzip -q /tmp/verus.zip -d \"\$HOME/.local/opt\"
 # The release archive contains verus-x86-linux/ (cargo-verus, verus, z3).
