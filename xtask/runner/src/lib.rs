@@ -49,14 +49,14 @@ pub const ORDER: &[(&str, &str)] = &[
     ("xtask", "no-std"),
     ("xtask", "layers"),
     ("repo", "layers"),
-    ("repo", "reuse"),
-    ("repo", "duplication"),
-    ("xtask", "fmt"),
-    ("repo", "fmt"),
     ("xtask", "lint"),
     ("repo", "lint"),
     ("repo", "no-std"),
+    ("xtask", "fmt"),
+    ("repo", "fmt"),
+    ("repo", "reuse"),
     ("repo", "test"),
+    ("repo", "duplication"),
     ("xtask", "test"),
 ];
 

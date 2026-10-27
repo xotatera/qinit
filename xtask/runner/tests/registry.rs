@@ -18,12 +18,12 @@ fn qinit_has_only_repository_and_tooling_stages() {
     assert_eq!(stages, [("repo", ""), ("xtask", "xtask")]);
 }
 
-/// Measured with `cargo xtask gate --no-cache` on 2026-10-24/27 (seconds):
-/// preflight, canary, placeholder-scan, sleep-scan, changelog, layers 0.0; // disciplines:allow-placeholder (the gate's name)
-/// reuse 0.3; duplication 0.8; xtask fmt 1.8; xtask lint 2.8; xtask test
-/// 42-56. Blocked gates (SKIP, 0.0 s now) sit where their work will cost
-/// once unblocked; re-measure when one is. A new gate is placed by its
-/// measured time; slow gates go last.
+/// Measured with `cargo xtask gate --no-cache` on 2026-10-27 (seconds,
+/// warmed incremental build): preflight, canary, scans, changelog, layers
+/// 0.0-0.1; lint 0.1, repo no-std 0.2, xtask fmt 0.6, repo fmt 0.7,
+/// reuse 0.8, repo test 0.9, duplication 1.1, xtask test 52.3.
+/// Blocked gates (SKIP, 0.0 s now) sit where their work will cost once
+/// unblocked; re-measure when one is. Slow gates go last.
 const GLOBAL_ORDER: &[(&str, &str)] = &[
     ("repo", "preflight"),
     ("xtask", "preflight"),
@@ -38,14 +38,14 @@ const GLOBAL_ORDER: &[(&str, &str)] = &[
     ("xtask", "no-std"),
     ("xtask", "layers"),
     ("repo", "layers"),
-    ("repo", "reuse"),
-    ("repo", "duplication"),
-    ("xtask", "fmt"),
-    ("repo", "fmt"),
     ("xtask", "lint"),
     ("repo", "lint"),
     ("repo", "no-std"),
+    ("xtask", "fmt"),
+    ("repo", "fmt"),
+    ("repo", "reuse"),
     ("repo", "test"),
+    ("repo", "duplication"),
     ("xtask", "test"),
 ];
 
