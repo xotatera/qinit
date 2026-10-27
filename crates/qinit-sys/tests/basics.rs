@@ -68,29 +68,33 @@ fn a_child_is_reaped_through_its_pidfd_with_its_status() {
     std::mem::forget(child);
 }
 
-struct KillOnDrop(std::process::Child);
+struct KillOnDrop(Option<std::process::Child>);
 
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        if let Some(child) = self.0.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
 #[test]
 fn a_killed_child_reports_its_signal() {
-    let child = KillOnDrop(
+    let mut child = KillOnDrop(Some(
         std::process::Command::new("sleep")
             .arg("30")
             .spawn()
             .unwrap(),
-    );
-    let pidfd = proc::pidfd_open(child.0.id() as libc::pid_t).unwrap();
+    ));
+    let pidfd = proc::pidfd_open(child.0.as_ref().unwrap().id() as libc::pid_t).unwrap();
     assert!(proc::pidfd_signal(&pidfd, libc::SIGKILL).unwrap());
     let ep = event::epoll().unwrap();
     event::epoll_add(&ep, pidfd.as_raw_fd(), libc::EPOLLIN as u32, 1).unwrap();
     wait_one(&ep);
     let raw = proc::reap_pidfd(&pidfd).unwrap().expect("exited");
+    // Reaped: never signal its numeric pid again, including on assertion failure.
+    child.0.take();
     assert!(libc::WIFSIGNALED(raw));
     assert_eq!(libc::WTERMSIG(raw), libc::SIGKILL);
 }
