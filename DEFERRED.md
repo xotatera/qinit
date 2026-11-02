@@ -27,12 +27,12 @@ approved design amendment.
 
 ### D3 — Product workspace gates · `RESOLVED`
 
-Resolved by sub-project 2 Task 1: `qinit-sys` is the first product package; the four gates run.
+Resolved by the event-loop sub-project: `qinit-sys` is the first product package; the four gates run.
 
 ### D4 — no-std tooling gate · `ACCEPTED`
 
-The root `no-std` gate runs since sub-project 2 Task 2 (`qinit-event-core` is
-the first core crate). The tooling `no-std` gate is separately blocked: the
+The root `no-std` gate runs since the event-loop sub-project added `qinit-event-core`,
+the first core crate. The tooling `no-std` gate is separately blocked: the
 `xtask` workspace has no kernel or core crate.
 Unblock it only in the change that adds a primitive, kernel, or core crate to the `xtask` workspace.
 
@@ -87,7 +87,7 @@ cannot survive.
 While a cell is Stopping or Killing, the proved machine records the main
 process's exit status (`Main::Reaped`) but emits no `MainExited` report; the
 stop ends with `Empty` (or `Failed(Stuck)`). By design: the stop's outcome is
-the report the caller waits for. Sub-project 2 Task 9's `escalate` suite
+the report the caller waits for. The cell sub-project's `escalate` suite
 therefore asserts escalation by the report sequence ending `Empty` after the
 kill deadline path plus the helper's own evidence, not by a
 `MainExited(SIGKILL)` report.
@@ -165,7 +165,10 @@ unprivileged: not root, empty capability sets, no-new-privileges on (see
 `docs/db-format.md`, "Privilege contract"). The compiler and the policy check
 rely on it: such nodes need no policy rule, even under `default = "deny"`.
 Sub-project 5 (overseer) must enforce the contract, choosing the unprivileged
-default identity itself; until then nothing runs these nodes.
+default identity itself; until then nothing runs these nodes. The overseer must also refuse a
+hand-made database whose credential record has an empty user but non-zero caps or
+no-new-privileges off: the compiler never emits one, the policy check treats it as privileged,
+and the format contract says an empty user is unprivileged.
 
 ### D22 — no-new-privileges default for declared credentials · `DECISION`
 

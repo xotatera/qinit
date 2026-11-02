@@ -118,7 +118,10 @@ capability sets are empty and no-new-privileges is on. The same holds for a cred
 with an empty user (`C_USER_LEN` 0): an empty user means the unprivileged default identity, not
 "keep the overseer's uid". The compiler writes such a record, for a frame with only a `sandbox`
 table, with `C_CAPS` 0 and `C_NNP` 1, so no reader can take it for a privileged one. Which
-unprivileged identity runs these nodes is chosen by the overseer, not stored in the database.
+unprivileged identity runs these nodes is chosen by the overseer, not stored in the database. The overseer must refuse a hand-made
+database whose credential record has an empty user but non-zero `C_CAPS` or `C_NNP` 0: the
+compiler never emits one, the policy check treats it as privileged and this contract says an
+empty user is unprivileged, so the record contradicts itself.
 
 ## Validation rules
 
