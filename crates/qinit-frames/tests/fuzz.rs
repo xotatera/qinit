@@ -188,7 +188,6 @@ fn mutated_databases_never_panic_the_reader() {
 }
 
 #[test]
-#[ignore = "open accepts NUL-separated lists with empty elements, which write refuses"]
 fn mutated_databases_are_rejected_or_well_formed() {
     for (truncated, bytes) in mutations() {
         if open(&bytes).is_ok() {
