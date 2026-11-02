@@ -314,6 +314,7 @@ pub fn failed_restart(ns: NodeState, p: Params, now: u64) -> (r: NodeState)
         ns.timer is None,
         p.kind != 1,
     ensures
+        r.state != State::Quarantined(Reason::Cascade),
         r.timer is None || r.timer == Some(TimerKind::Backoff),
         !r.to_stop,
         r.state is Quarantined || r.state is Waiting,
@@ -358,13 +359,16 @@ pub fn finalize(ns: NodeState, p: Params, shutdown: bool, now: u64) -> (r: NodeS
         inv_node(ns, p),
         ns.state is Starting || ns.state is Ready || ns.state is Stopping,
     ensures
+        r.state != State::Quarantined(Reason::Cascade),
         inv_node(r, p),
         !(r.state is Starting) && !(r.state is Ready) && !(r.state is Stopping),
         !r.to_stop,
         keeps_emits(r, ns),
+        r.wanted ==> ns.wanted,
         !shutdown && counts(ns, p) && p.max > 0 && r.burst_count > p.max ==> r.state
             == State::Quarantined(Reason::Breaker),
         shutdown ==> r.state == State::Off,
+        shutdown ==> r.emit_arm == ns.emit_arm,
 {
     let n = cancel_timer(ns);
     let n = NodeState { to_stop: false, ..n };
@@ -418,6 +422,7 @@ pub fn begin_start(ns: NodeState, p: Params, now: u64) -> (r: NodeState)
         ns.state is Off || ns.state is Waiting,
         spec_paced(ns, p.delay_ms as int, now as int),
     ensures
+        r.emit_stop == ns.emit_stop,
         inv_node(r, p),
         r.state == State::Starting,
         r.emit_start,
@@ -461,6 +466,8 @@ fn on_start(ns: NodeState, p: Params, shutdown: bool) -> (r: NodeState)
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.emit_arm == ns.emit_arm,
+        shutdown ==> (r.wanted ==> ns.wanted),
 {
     if shutdown || p.kind == 1 || matches!(ns.state, State::Quarantined(_)) {
         refused(ns)
@@ -479,6 +486,8 @@ fn on_stop(ns: NodeState, p: Params) -> (r: NodeState)
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.emit_arm == ns.emit_arm,
+        r.wanted ==> ns.wanted,
 {
     match ns.state {
         State::Off | State::Quarantined(_) => NodeState { wanted: false, ..ns },
@@ -508,6 +517,8 @@ fn on_restart(ns: NodeState, p: Params, shutdown: bool) -> (r: NodeState)
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.emit_arm == ns.emit_arm,
+        shutdown ==> (r.wanted ==> ns.wanted),
 {
     if shutdown || p.kind == 1 {
         return refused(ns);
@@ -532,6 +543,8 @@ fn on_clear(ns: NodeState, p: Params) -> (r: NodeState)
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.emit_arm == ns.emit_arm,
+        r.wanted ==> ns.wanted,
 {
     match ns.state {
         State::Quarantined(_) => NodeState {
@@ -557,6 +570,8 @@ fn on_run(ns: NodeState, p: Params, shutdown: bool) -> (r: NodeState)
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.emit_arm == ns.emit_arm,
+        shutdown ==> (r.wanted ==> ns.wanted),
 {
     if p.kind == 1 && !shutdown && matches!(ns.state, State::Off | State::Done) {
         NodeState { state: State::Off, wanted: true, done: false, left: Left::Restart, ..ns }
@@ -573,6 +588,7 @@ fn on_shutdown(ns: NodeState, p: Params) -> (r: NodeState)
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.emit_arm == ns.emit_arm,
         !r.wanted,
 {
     match ns.state {
@@ -599,6 +615,8 @@ fn on_exit(ns: NodeState, p: Params, status: Option<i32>, starting: bool) -> (r:
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.emit_arm == ns.emit_arm,
+        r.wanted ==> ns.wanted,
 {
     let ns = NodeState { status, ..ns };
     if ns.to_stop {
@@ -625,6 +643,8 @@ fn on_cell_failed(ns: NodeState, p: Params) -> (r: NodeState)
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.emit_arm == ns.emit_arm,
+        r.wanted ==> ns.wanted,
 {
     let n = cancel_timer(ns);
     let n = NodeState { to_stop: false, restart_after: false, ..n };
@@ -644,6 +664,8 @@ fn on_cell(ns: NodeState, p: Params, shutdown: bool, rep: CellReport, now: u64) 
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        shutdown ==> r.emit_arm == ns.emit_arm,
+        shutdown ==> (r.wanted ==> ns.wanted),
 {
     match (ns.state, rep) {
         (State::Starting, CellReport::Ready) => {
@@ -694,6 +716,8 @@ fn on_deadline(ns: NodeState, p: Params, t: TimerKind, now: u64) -> (r: NodeStat
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.emit_arm == ns.emit_arm,
+        r.wanted ==> ns.wanted,
 {
     match (ns.state, t) {
         (State::Starting, TimerKind::StartTimeout) => {
@@ -741,6 +765,9 @@ pub fn node_step(ns: NodeState, p: Params, shutdown: bool, input: NodeInput, now
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        shutdown ==> r.emit_arm == ns.emit_arm,
+        input == NodeInput::Shutdown ==> !r.wanted,
+        shutdown ==> (r.wanted ==> ns.wanted),
 {
     match input {
         NodeInput::Req(Request::Start) => on_start(ns, p, shutdown),
@@ -763,6 +790,7 @@ pub fn enter_waiting(ns: NodeState, p: Params, now: u64, watch: bool) -> (r: Nod
         inv_node(ns, p),
         ns.state is Off,
     ensures
+        r.emit_stop == ns.emit_stop,
         inv_node(r, p),
         r.state == State::Waiting(Why::Deps),
         r.wait_since_ms == now,
@@ -787,6 +815,7 @@ pub fn brood_ready(ns: NodeState, p: Params) -> (r: NodeState)
         inv_node(ns, p),
         ns.state is Waiting,
     ensures
+        r.emit_stop == ns.emit_stop,
         inv_node(r, p),
         r.state == State::Ready,
         r.wanted == ns.wanted,
@@ -804,6 +833,7 @@ pub fn to_backoff(ns: NodeState, p: Params, now: u64) -> (r: NodeState)
         ns.state == State::Waiting(Why::Deps),
         p.kind != 1,
     ensures
+        r.emit_stop == ns.emit_stop,
         inv_node(r, p),
         r.state == State::Waiting(Why::Backoff),
         r.wanted == ns.wanted,
@@ -828,12 +858,62 @@ pub fn arm_edge(ns: NodeState, p: Params, ms: u32) -> (r: NodeState)
         ns.state == State::Waiting(Why::Deps),
         ns.timer is None,
     ensures
+        r.emit_stop == ns.emit_stop,
         inv_node(r, p),
         r.state == ns.state,
         r.wanted == ns.wanted,
         r.emit_start == ns.emit_start,
 {
     NodeState { timer: Some(TimerKind::Edge), emit_arm: Some((TimerKind::Edge, ms)), ..ns }
+}
+
+/// The scheduler issues the stop of a running node whose hard dependents have stopped. A brood
+/// has no cell: it is finalized at once.
+#[must_use]
+pub fn begin_stop(ns: NodeState, p: Params, shutdown: bool, now: u64) -> (r: NodeState)
+    requires
+        inv_node(ns, p),
+        ns.state is Starting || ns.state is Ready,
+        ns.to_stop,
+    ensures
+        r.state != State::Quarantined(Reason::Cascade),
+        r.wanted ==> ns.wanted,
+        inv_node(r, p),
+        p.kind != 2 ==> r.state == State::Stopping && r.emit_stop,
+        !r.to_stop,
+        r.emit_start == ns.emit_start,
+        shutdown ==> r.emit_arm == ns.emit_arm,
+{
+    if p.kind == 2 {
+        finalize(ns, p, shutdown, now)
+    } else {
+        let n = cancel_timer(ns);
+        NodeState { state: State::Stopping, to_stop: false, emit_stop: true, ..n }
+    }
+}
+
+/// A node that would run is quarantined because a cascade-flagged `require_all` dependency is
+/// (spec §4, obligation 8).
+#[must_use]
+#[allow(unused_variables)]  // `p` appears only in the specification
+pub fn quarantine_cascade(ns: NodeState, p: Params) -> (r: NodeState)
+    requires
+        inv_node(ns, p),
+        ns.state is Off || ns.state is Waiting,
+        p.kind != 1,
+    ensures
+        inv_node(r, p),
+        r.state == State::Quarantined(Reason::Cascade),
+        r.wanted == ns.wanted,
+        r.emit_start == ns.emit_start,
+        r.emit_stop == ns.emit_stop,
+        r.emit_arm == ns.emit_arm,
+{
+    let n = cancel_timer(ns);
+    push_report(
+        NodeState { state: State::Quarantined(Reason::Cascade), ..n },
+        Report::Quarantined(Reason::Cascade),
+    )
 }
 
 } // verus!

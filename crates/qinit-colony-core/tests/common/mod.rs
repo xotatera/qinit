@@ -238,3 +238,23 @@ pub fn starts(h: &Harness, actions: &[Action]) -> Vec<String> {
         })
         .collect()
 }
+
+/// Just the `Stop` actions, as node names.
+pub fn stops(h: &Harness, actions: &[Action]) -> Vec<String> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::Stop(n, _, _) => Some(h.model.nodes[*n as usize].name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// An edge with a cascade flag.
+pub fn cascade_edge(to: u32) -> Edge {
+    Edge {
+        cascade: true,
+        restart_on: RestartOn::None,
+        ..edge(to)
+    }
+}

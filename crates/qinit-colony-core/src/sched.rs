@@ -71,6 +71,14 @@ pub fn params(db: &[u8], i: usize) -> (p: Params)
 }
 
 // ---- evaluation ----
+/// A node is available to its dependents: ready and not about to stop, or finished.
+fn is_sat(ns: NodeState) -> (r: bool)
+    ensures
+        r == ((ns.state is Ready && !ns.to_stop) || ns.state is Done),
+{
+    (matches!(ns.state, State::Ready) && !ns.to_stop) || matches!(ns.state, State::Done)
+}
+
 /// Edge `x` is satisfied.
 #[allow(clippy::cast_lossless)]  // `u64::from` is not available inside `verus!`
 fn edge_satisfied(
@@ -92,7 +100,7 @@ fn edge_satisfied(
     }
     let target_ok = if edge_word(db, x, E_TARGET_KIND) == 0 {
         let t = edge_word(db, x, E_TARGET) as usize;
-        matches!(ns[t].state, State::Ready | State::Done)
+        is_sat(ns[t])
     } else {
         paths[x]
     };
@@ -423,6 +431,7 @@ fn set_late(db: &[u8], ns: &[NodeState], paths: &[bool], late: &mut [bool], i: u
         proof {
             lemma_group_edges(db@, g as int);
         }
+        let kind = group_word(db, g, G_KIND);
         let efirst = group_word(db, g, G_EDGE_FIRST) as usize;
         let ecount = group_word(db, g, G_EDGE_COUNT) as usize;
         let mut b: usize = 0;
@@ -438,9 +447,9 @@ fn set_late(db: &[u8], ns: &[NodeState], paths: &[bool], late: &mut [bool], i: u
             proof {
                 lemma_edge_target(db@, x as int);
             }
-            let is_late = if edge_word(db, x, E_MODE) == 1 && edge_word(db, x, E_TARGET_KIND) == 0 {
+            let is_late = if kind <= 2 && edge_word(db, x, E_TARGET_KIND) == 0 {
                 let t = edge_word(db, x, E_TARGET) as usize;
-                !matches!(ns[t].state, State::Ready | State::Done)
+                !is_sat(ns[t])
             } else {
                 false
             };
@@ -462,6 +471,7 @@ fn mark_edges(db: &[u8], tbl: &mut [NodeState], i: usize) -> (changed: bool)
     ensures
         final(tbl)@.len() == old(tbl)@.len(),
         inv_all(db@, final(tbl)@),
+        quiet_emits(final(tbl)@, old(tbl)@),
 {
     proof {
         lemma_node_groups(db@, i as int);
@@ -477,6 +487,7 @@ fn mark_edges(db: &[u8], tbl: &mut [NodeState], i: usize) -> (changed: bool)
             well_formed(db@),
             tbl@.len() == nodes(db@),
             inv_all(db@, tbl@),
+            quiet_emits(tbl@, old(tbl)@),
         decreases gcount - a,
     {
         let g = gfirst + a;
@@ -494,6 +505,7 @@ fn mark_edges(db: &[u8], tbl: &mut [NodeState], i: usize) -> (changed: bool)
                 well_formed(db@),
                 tbl@.len() == nodes(db@),
                 inv_all(db@, tbl@),
+                quiet_emits(tbl@, old(tbl)@),
             decreases ecount - b,
         {
             let x = efirst + b;
@@ -536,6 +548,7 @@ fn mark_closure(db: &[u8], tbl: &mut [NodeState])
     ensures
         final(tbl)@.len() == old(tbl)@.len(),
         inv_all(db@, final(tbl)@),
+        quiet_emits(final(tbl)@, old(tbl)@),
 {
     let n = tbl.len();
     let mut pass: usize = 0;
@@ -547,6 +560,7 @@ fn mark_closure(db: &[u8], tbl: &mut [NodeState])
             well_formed(db@),
             tbl@.len() == nodes(db@),
             inv_all(db@, tbl@),
+            quiet_emits(tbl@, old(tbl)@),
         decreases n - pass,
     {
         changed = false;
@@ -558,15 +572,289 @@ fn mark_closure(db: &[u8], tbl: &mut [NodeState])
                 well_formed(db@),
                 tbl@.len() == nodes(db@),
                 inv_all(db@, tbl@),
+                quiet_emits(tbl@, old(tbl)@),
             decreases n - i,
         {
+            let ghost before = tbl@;
             if tbl[i].wanted && mark_edges(db, tbl, i) {
                 changed = true;
+            }
+            proof {
+                // mark_edges, when called, keeps the emits of `before`.
+                if !(before[i as int].wanted) {
+                    assert(tbl@ == before);
+                } else {
+                    lemma_quiet_trans(tbl@, before, old(tbl)@);
+                }
             }
             i += 1;
         }
         pass += 1;
     }
+}
+
+// ---- hard dependents (obligation 2) ----
+/// Whether group `g` has a hard edge to node `t`.
+fn group_blocks(db: &[u8], g: usize, t: usize) -> (r: bool)
+    requires
+        well_formed(db@),
+        g < tcnt(db@, T_GROUPS as int),
+    ensures
+        r == group_hard_to(db@, g as int, t as int),
+{
+    proof {
+        lemma_group_edges(db@, g as int);
+    }
+    let kind = group_word(db, g, G_KIND);
+    let first = group_word(db, g, G_EDGE_FIRST) as usize;
+    let count = group_word(db, g, G_EDGE_COUNT) as usize;
+    let mut k: usize = 0;
+    let mut found = false;
+    while k < count
+        invariant
+            k <= count,
+            first + count <= tcnt(db@, T_EDGES as int),
+            well_formed(db@),
+            first == gf(db@, g as int, G_EDGE_FIRST),
+            count == gf(db@, g as int, G_EDGE_COUNT),
+            kind == gf(db@, g as int, G_KIND),
+            found == group_hard_upto(db@, g as int, t as int, k as nat),
+        decreases count - k,
+    {
+        let x = first + k;
+        if kind <= 1 && edge_word(db, x, E_MODE) == 0 && edge_word(db, x, E_TARGET_KIND) == 0
+            && edge_word(db, x, E_TARGET) as usize == t {
+            found = true;
+        }
+        k += 1;
+    }
+    found
+}
+
+/// Whether node `i` has a hard edge to node `t`.
+fn node_blocks(db: &[u8], i: usize, t: usize) -> (r: bool)
+    requires
+        well_formed(db@),
+        i < nodes(db@),
+    ensures
+        r == node_hard_to(db@, i as int, t as int),
+{
+    proof {
+        lemma_node_groups(db@, i as int);
+    }
+    let first = node_word(db, i, N_GROUP_FIRST) as usize;
+    let count = node_word(db, i, N_GROUP_COUNT) as usize;
+    let mut k: usize = 0;
+    let mut found = false;
+    while k < count
+        invariant
+            k <= count,
+            first + count <= tcnt(db@, T_GROUPS as int),
+            well_formed(db@),
+            i < nodes(db@),
+            first == nf(db@, i as int, N_GROUP_FIRST),
+            count == nf(db@, i as int, N_GROUP_COUNT),
+            found == node_hard_upto(db@, i as int, t as int, k as nat),
+        decreases count - k,
+    {
+        if group_blocks(db, first + k, t) {
+            found = true;
+        }
+        k += 1;
+    }
+    found
+}
+
+/// Whether some node that is going away still has a hard edge to node `t`.
+fn is_blocked(db: &[u8], tbl: &[NodeState], t: usize) -> (r: bool)
+    requires
+        well_formed(db@),
+        tbl@.len() == nodes(db@),
+    ensures
+        r == hard_blocked(db@, tbl@, t as int),
+{
+    let n = tbl.len();
+    let mut i: usize = 0;
+    let mut found = false;
+    while i < n
+        invariant
+            i <= n,
+            n == tbl@.len(),
+            well_formed(db@),
+            tbl@.len() == nodes(db@),
+            found == blocked_upto(db@, tbl@, t as int, i as nat),
+        decreases n - i,
+    {
+        let ns = tbl[i];
+        if (matches!(ns.state, State::Stopping) || ns.to_stop) && node_blocks(db, i, t) {
+            found = true;
+        }
+        i += 1;
+    }
+    found
+}
+
+// ---- cascade (obligation 8) ----
+/// Whether group `g` has a cascade edge to a quarantined node.
+fn group_cascades(db: &[u8], tbl: &[NodeState], g: usize) -> (r: bool)
+    requires
+        well_formed(db@),
+        tbl@.len() == nodes(db@),
+        g < tcnt(db@, T_GROUPS as int),
+    ensures
+        r == group_cascade_upto(db@, tbl@, g as int, gf(db@, g as int, G_EDGE_COUNT) as nat),
+{
+    proof {
+        lemma_group_edges(db@, g as int);
+    }
+    let kind = group_word(db, g, G_KIND);
+    let first = group_word(db, g, G_EDGE_FIRST) as usize;
+    let count = group_word(db, g, G_EDGE_COUNT) as usize;
+    let mut k: usize = 0;
+    let mut found = false;
+    while k < count
+        invariant
+            k <= count,
+            first + count <= tcnt(db@, T_EDGES as int),
+            well_formed(db@),
+            tbl@.len() == nodes(db@),
+            first == gf(db@, g as int, G_EDGE_FIRST),
+            count == gf(db@, g as int, G_EDGE_COUNT),
+            kind == gf(db@, g as int, G_KIND),
+            found == group_cascade_upto(db@, tbl@, g as int, k as nat),
+        decreases count - k,
+    {
+        let x = first + k;
+        proof {
+            lemma_edge_target(db@, x as int);
+        }
+        if kind == 0 && edge_word(db, x, E_TARGET_KIND) == 0 && edge_word(db, x, E_FLAGS) >= 2 {
+            let t = edge_word(db, x, E_TARGET) as usize;
+            if matches!(tbl[t].state, State::Quarantined(_)) {
+                found = true;
+            }
+        }
+        k += 1;
+    }
+    found
+}
+
+/// Whether node `i` has a cascade edge to a quarantined node.
+fn cascades(db: &[u8], tbl: &[NodeState], i: usize) -> (r: bool)
+    requires
+        well_formed(db@),
+        tbl@.len() == nodes(db@),
+        i < nodes(db@),
+    ensures
+        r == cascade_hit(db@, tbl@, i as int),
+{
+    proof {
+        lemma_node_groups(db@, i as int);
+    }
+    let first = node_word(db, i, N_GROUP_FIRST) as usize;
+    let count = node_word(db, i, N_GROUP_COUNT) as usize;
+    let mut k: usize = 0;
+    let mut found = false;
+    while k < count
+        invariant
+            k <= count,
+            first + count <= tcnt(db@, T_GROUPS as int),
+            well_formed(db@),
+            tbl@.len() == nodes(db@),
+            i < nodes(db@),
+            first == nf(db@, i as int, N_GROUP_FIRST),
+            count == nf(db@, i as int, N_GROUP_COUNT),
+            found == node_cascade_upto(db@, tbl@, i as int, k as nat),
+        decreases count - k,
+    {
+        if group_cascades(db, tbl, first + k) {
+            found = true;
+        }
+        k += 1;
+    }
+    found
+}
+
+// ---- propagation (spec §4) ----
+/// Whether node `i`, which is running, has to stop and come back: an edge's target went away
+/// and the edge's `restart_on` asks for it, an excluded node became wanted or active, or a
+/// cascade-flagged dependency was quarantined. Also clears the `late` bit of an edge whose
+/// target became ready at last, and asks for a restart if that edge says `restart` or `refresh`.
+#[allow(unused_variables)]  // `paths` appears only in the specification
+fn scan_running(db: &[u8], tbl: &[NodeState], paths: &[bool], late: &mut [bool], i: usize) -> (r:
+    bool)
+    requires
+        sized(db@, tbl@.len() as int, paths@.len() as int, old(late)@.len() as int),
+        i < nodes(db@),
+    ensures
+        final(late)@.len() == old(late)@.len(),
+{
+    proof {
+        lemma_node_groups(db@, i as int);
+    }
+    let gfirst = node_word(db, i, N_GROUP_FIRST) as usize;
+    let gcount = node_word(db, i, N_GROUP_COUNT) as usize;
+    let mut a: usize = 0;
+    let mut trig = false;
+    while a < gcount
+        invariant
+            a <= gcount,
+            gfirst + gcount <= tcnt(db@, T_GROUPS as int),
+            sized(db@, tbl@.len() as int, paths@.len() as int, late@.len() as int),
+            late@.len() == old(late)@.len(),
+        decreases gcount - a,
+    {
+        let g = gfirst + a;
+        proof {
+            lemma_group_edges(db@, g as int);
+        }
+        let kind = group_word(db, g, G_KIND);
+        let efirst = group_word(db, g, G_EDGE_FIRST) as usize;
+        let ecount = group_word(db, g, G_EDGE_COUNT) as usize;
+        let mut b: usize = 0;
+        while b < ecount
+            invariant
+                b <= ecount,
+                efirst + ecount <= tcnt(db@, T_EDGES as int),
+                sized(db@, tbl@.len() as int, paths@.len() as int, late@.len() as int),
+                late@.len() == old(late)@.len(),
+            decreases ecount - b,
+        {
+            let x = efirst + b;
+            proof {
+                lemma_edge_target(db@, x as int);
+            }
+            if edge_word(db, x, E_TARGET_KIND) == 0 {
+                let t = edge_word(db, x, E_TARGET) as usize;
+                let tn = tbl[t];
+                let on = edge_word(db, x, E_RESTART_ON);
+                if kind == 3 {
+                    if tn.wanted
+                        || matches!(
+                        tn.state,
+                        State::Starting | State::Ready | State::Stopping,
+                    ) {
+                        trig = true;
+                    }
+                } else {
+                    let ready = is_sat(tn);
+                    if late[x] {
+                        if ready {
+                            late[x] = false;
+                            if on >= 2 {
+                                trig = true;
+                            }
+                        }
+                    } else if !ready && (on >= 2 || (on == 1 && matches!(tn.left, Left::Error))) {
+                        trig = true;
+                    }
+                }
+            }
+            b += 1;
+        }
+        a += 1;
+    }
+    trig
 }
 
 // ---- the pass ----
@@ -577,18 +865,21 @@ fn mark_closure(db: &[u8], tbl: &mut [NodeState])
 ///
 /// Obligation 1: this is the only function that sets `emit_start`, and its postcondition says
 /// it happens only to a node that was `startable` in the table it read.
-fn reconcile_node(
+#[allow(unused_variables)]  // `shutdown` appears only in the specification
+fn reconcile_idle(
     db: &[u8],
     tbl: &mut [NodeState],
     paths: &[bool],
     late: &mut [bool],
     i: usize,
+    shutdown: bool,
     now: u64,
 ) -> (changed: bool)
     requires
         sized(db@, old(tbl)@.len() as int, paths@.len() as int, old(late)@.len() as int),
         i < old(tbl)@.len(),
         inv_all(db@, old(tbl)@),
+        shutdown_ok(shutdown, old(tbl)@),
     ensures
         final(tbl)@.len() == old(tbl)@.len(),
         final(late)@.len() == old(late)@.len(),
@@ -601,6 +892,13 @@ fn reconcile_node(
             i as int,
             now as int,
         ),
+        final(tbl)@[i as int].wanted == old(tbl)@[i as int].wanted,
+        final(tbl)@[i as int].emit_stop == old(tbl)@[i as int].emit_stop,
+        final(tbl)@[i as int].state == State::Quarantined(Reason::Cascade) && !(old(
+            tbl,
+        )@[i as int].state is Quarantined) ==> cascade_hit(db@, old(tbl)@, i as int),
+        shutdown ==> final(tbl)@[i as int].emit_arm == old(tbl)@[i as int].emit_arm,
+        shutdown ==> final(tbl)@[i as int].emit_start == old(tbl)@[i as int].emit_start,
 {
     let ns = tbl[i];
     let p = params(db, i);
@@ -618,10 +916,15 @@ fn reconcile_node(
             return false;
         },
     };
+    if p.kind != 1 && cascades(db, tbl, i) {
+        tbl[i] = quarantine_cascade(cur, p);
+        return true;
+    }
     let sat = node_satisfied(db, tbl, paths, i, cur.wait_since_ms, now);
     let ghost old_tbl = tbl@;
     if sat {
         if p.kind == 2 {
+            set_late(db, tbl, paths, late, i);
             tbl[i] = brood_ready(cur, p);
             true
         } else if paced(cur, p.delay_ms, now) {
@@ -652,6 +955,104 @@ fn reconcile_node(
     }
 }
 
+/// A running node first looks at its edges (propagation, exclusion, late arrival, cascade);
+/// if it is to stop it stops once none of its hard dependents is still going away
+/// (obligation 2).
+#[allow(unused_variables)]  // `shutdown` appears only in the specification (and in `begin_stop`'s)
+fn reconcile_running(
+    db: &[u8],
+    tbl: &mut [NodeState],
+    paths: &[bool],
+    late: &mut [bool],
+    i: usize,
+    shutdown: bool,
+    now: u64,
+) -> (changed: bool)
+    requires
+        sized(db@, old(tbl)@.len() as int, paths@.len() as int, old(late)@.len() as int),
+        i < old(tbl)@.len(),
+        inv_all(db@, old(tbl)@),
+        old(tbl)@[i as int].state is Starting || old(tbl)@[i as int].state is Ready,
+    ensures
+        final(tbl)@.len() == old(tbl)@.len(),
+        final(late)@.len() == old(late)@.len(),
+        inv_all(db@, final(tbl)@),
+        forall|j: int| 0 <= j < old(tbl)@.len() && j != i ==> final(tbl)@[j] == old(tbl)@[j],
+        final(tbl)@[i as int].emit_stop && !old(tbl)@[i as int].emit_stop ==> !hard_blocked(
+            db@,
+            old(tbl)@,
+            i as int,
+        ),
+        final(tbl)@[i as int].state != State::Quarantined(Reason::Cascade),
+        final(tbl)@[i as int].emit_start == old(tbl)@[i as int].emit_start,
+        final(tbl)@[i as int].wanted ==> old(tbl)@[i as int].wanted,
+        shutdown ==> final(tbl)@[i as int].emit_arm == old(tbl)@[i as int].emit_arm,
+{
+    let ns = tbl[i];
+    let p = params(db, i);
+    proof {
+        assert(inv_node(tbl@[i as int], params_of(db@, i as int)));
+    }
+    let mut cur = ns;
+    if !cur.to_stop && (scan_running(db, tbl, paths, late, i) || cascades(db, tbl, i)) {
+        cur = mark_stop(NodeState { restart_after: true, ..cur }, Left::Restart);
+    }
+    if cur.to_stop && !is_blocked(db, tbl, i) {
+        tbl[i] = begin_stop(cur, p, shutdown, now);
+        true
+    } else {
+        tbl[i] = cur;
+        cur.to_stop && !ns.to_stop
+    }
+}
+
+/// Brings node `i` forward (see `reconcile_idle` and `reconcile_running`).
+fn reconcile_node(
+    db: &[u8],
+    tbl: &mut [NodeState],
+    paths: &[bool],
+    late: &mut [bool],
+    i: usize,
+    shutdown: bool,
+    now: u64,
+) -> (changed: bool)
+    requires
+        sized(db@, old(tbl)@.len() as int, paths@.len() as int, old(late)@.len() as int),
+        i < old(tbl)@.len(),
+        inv_all(db@, old(tbl)@),
+        shutdown_ok(shutdown, old(tbl)@),
+    ensures
+        final(tbl)@.len() == old(tbl)@.len(),
+        final(late)@.len() == old(late)@.len(),
+        inv_all(db@, final(tbl)@),
+        forall|j: int| 0 <= j < old(tbl)@.len() && j != i ==> final(tbl)@[j] == old(tbl)@[j],
+        final(tbl)@[i as int].emit_start && !old(tbl)@[i as int].emit_start ==> startable(
+            db@,
+            old(tbl)@,
+            paths@,
+            i as int,
+            now as int,
+        ),
+        final(tbl)@[i as int].emit_stop && !old(tbl)@[i as int].emit_stop ==> !hard_blocked(
+            db@,
+            old(tbl)@,
+            i as int,
+        ),
+        final(tbl)@[i as int].state == State::Quarantined(Reason::Cascade) && !(old(
+            tbl,
+        )@[i as int].state is Quarantined) ==> cascade_hit(db@, old(tbl)@, i as int),
+        shutdown ==> final(tbl)@[i as int].emit_arm == old(tbl)@[i as int].emit_arm,
+        shutdown ==> final(tbl)@[i as int].emit_start == old(tbl)@[i as int].emit_start,
+        shutdown_ok(shutdown, final(tbl)@),
+{
+    let ns = tbl[i];
+    if matches!(ns.state, State::Starting | State::Ready) {
+        reconcile_running(db, tbl, paths, late, i, shutdown, now)
+    } else {
+        reconcile_idle(db, tbl, paths, late, i, shutdown, now)
+    }
+}
+
 /// Runs passes over the table until nothing changes, at most `n + 1` of them (a chain of
 /// broods needs one pass per link). Returns whether it converged; the proof is of the
 /// invariant, and of obligation 1 through `reconcile_node`.
@@ -660,15 +1061,19 @@ pub fn reconcile(
     tbl: &mut [NodeState],
     paths: &[bool],
     late: &mut [bool],
+    shutdown: bool,
     now: u64,
 ) -> (converged: bool)
     requires
         sized(db@, old(tbl)@.len() as int, paths@.len() as int, old(late)@.len() as int),
         inv_all(db@, old(tbl)@),
+        shutdown_ok(shutdown, old(tbl)@),
     ensures
         final(tbl)@.len() == old(tbl)@.len(),
         final(late)@.len() == old(late)@.len(),
         inv_all(db@, final(tbl)@),
+        shutdown_ok(shutdown, final(tbl)@),
+        shutdown ==> quiet_emits(final(tbl)@, old(tbl)@),
 {
     let n = tbl.len();
     proof {
@@ -684,6 +1089,8 @@ pub fn reconcile(
             sized(db@, tbl@.len() as int, paths@.len() as int, late@.len() as int),
             late@.len() == old(late)@.len(),
             inv_all(db@, tbl@),
+            shutdown_ok(shutdown, tbl@),
+            shutdown ==> quiet_emits(tbl@, old(tbl)@),
         decreases n + 1 - pass,
     {
         let mut changed = false;
@@ -696,10 +1103,19 @@ pub fn reconcile(
                 sized(db@, tbl@.len() as int, paths@.len() as int, late@.len() as int),
                 late@.len() == old(late)@.len(),
                 inv_all(db@, tbl@),
+                shutdown_ok(shutdown, tbl@),
+                shutdown ==> quiet_emits(tbl@, old(tbl)@),
             decreases n - i,
         {
-            if reconcile_node(db, tbl, paths, late, i, now) {
+            let ghost before = tbl@;
+            if reconcile_node(db, tbl, paths, late, i, shutdown, now) {
                 changed = true;
+            }
+            proof {
+                if shutdown {
+                    assert(quiet_emits(tbl@, before));
+                    lemma_quiet_trans(tbl@, before, old(tbl)@);
+                }
             }
             i += 1;
         }
@@ -729,6 +1145,10 @@ fn apply_node(
     ensures
         final(tbl)@.len() == old(tbl)@.len(),
         inv_all(db@, final(tbl)@),
+        shutdown ==> (final(tbl)@[i as int].wanted ==> old(tbl)@[i as int].wanted),
+        shutdown ==> quiet_emits(final(tbl)@, old(tbl)@),
+        forall|j: int| 0 <= j < old(tbl)@.len() && j != i ==> final(tbl)@[j] == old(tbl)@[j],
+        input == NodeInput::Shutdown ==> !final(tbl)@[i as int].wanted,
 {
     let p = params(db, i);
     proof {
@@ -741,6 +1161,7 @@ fn apply_node(
 /// One input to the whole colony: apply it, then settle the table. Returns whether the
 /// settling converged. `meta.cursor` is reset: call `next_action` until it returns `None`
 /// before the next `step`.
+#[allow(clippy::semicolon_if_nothing_returned)]  // a `proof` block ends one branch
 pub fn step(
     db: &[u8],
     tbl: &mut [NodeState],
@@ -753,12 +1174,17 @@ pub fn step(
     requires
         sized(db@, old(tbl)@.len() as int, old(paths)@.len() as int, old(late)@.len() as int),
         inv_all(db@, old(tbl)@),
+        shutdown_ok(old(meta).shutdown, old(tbl)@),
     ensures
         final(tbl)@.len() == old(tbl)@.len(),
         final(paths)@.len() == old(paths)@.len(),
         final(late)@.len() == old(late)@.len(),
         inv_all(db@, final(tbl)@),
+        shutdown_ok(final(meta).shutdown, final(tbl)@),
+        old(meta).shutdown ==> quiet_emits(final(tbl)@, old(tbl)@),
 {
+    let ghost t0 = tbl@;
+    let ghost sd = meta.shutdown;
     meta.cursor = 0;
     let n = tbl.len();
     match input {
@@ -766,25 +1192,34 @@ pub fn step(
             let i = node as usize;
             if i < n {
                 apply_node(db, tbl, i, meta.shutdown, NodeInput::Req(req), now);
+                let ghost t1 = tbl@;
                 if matches!(req, Request::Start) && tbl[i].wanted {
                     mark_closure(db, tbl);
+                    proof {
+                        if sd {
+                            lemma_quiet_trans(tbl@, t1, t0);
+                        }
+                    }
                 }
             }
         },
         Input::Shutdown => {
-            meta.shutdown = true;
-            let mut i: usize = 0;
-            while i < n
-                invariant
-                    i <= n,
-                    n == tbl@.len(),
-                    well_formed(db@),
-                    tbl@.len() == nodes(db@),
-                    inv_all(db@, tbl@),
-                decreases n - i,
-            {
-                apply_node(db, tbl, i, true, NodeInput::Shutdown, now);
-                i += 1;
+            if !meta.shutdown {
+                meta.shutdown = true;
+                let mut i: usize = 0;
+                while i < n
+                    invariant
+                        i <= n,
+                        n == tbl@.len(),
+                        well_formed(db@),
+                        tbl@.len() == nodes(db@),
+                        inv_all(db@, tbl@),
+                        forall|k: int| 0 <= k < i ==> !(#[trigger] tbl@[k]).wanted,
+                    decreases n - i,
+                {
+                    apply_node(db, tbl, i, true, NodeInput::Shutdown, now);
+                    i += 1;
+                }
             }
         },
         Input::Cell { node, report } => {
@@ -806,7 +1241,85 @@ pub fn step(
             }
         },
     }
-    reconcile(db, tbl, paths, late, now)
+    let ghost t1 = tbl@;
+    proof {
+        if sd {
+            assert(meta.shutdown);
+            assert(quiet_emits(t1, t0));
+        }
+    }
+    let converged = reconcile(db, tbl, paths, late, meta.shutdown, now);
+    let ghost t2 = tbl@;
+    report_shutdown(db, tbl, meta);
+    proof {
+        if sd {
+            lemma_quiet_trans(t2, t1, t0);
+            lemma_quiet_trans(tbl@, t2, t0);
+        }
+    }
+    converged
+}
+
+// ---- the end of a shutdown ----
+/// Whether no node holds a process or waits (`Off`, `Done` or `Quarantined` all round), and how
+/// many are quarantined because their cell would not stop.
+#[allow(clippy::implicit_saturating_add)]  // `saturating_add` is not available inside `verus!`
+fn quiet_count(tbl: &[NodeState]) -> (r: (bool, u32)) {
+    let n = tbl.len();
+    let mut i: usize = 0;
+    let mut quiet = true;
+    let mut stuck: u32 = 0;
+    while i < n
+        invariant
+            i <= n,
+            n == tbl@.len(),
+        decreases n - i,
+    {
+        match tbl[i].state {
+            State::Quarantined(Reason::StopFailed) => {
+                if stuck < u32::MAX {
+                    stuck += 1;
+                }
+            },
+            State::Off | State::Done | State::Quarantined(_) => {},
+            _ => {
+                quiet = false;
+            },
+        }
+        i += 1;
+    }
+    (quiet, stuck)
+}
+
+/// Reports `ShutdownComplete` once, on node 0, when the whole graph has stopped.
+#[allow(unused_variables)]  // `db` appears only in the specification
+#[allow(clippy::len_zero)]  // `is_empty` is not available inside `verus!`
+fn report_shutdown(db: &[u8], tbl: &mut [NodeState], meta: &mut Meta)
+    requires
+        well_formed(db@),
+        old(tbl)@.len() == nodes(db@),
+        inv_all(db@, old(tbl)@),
+        shutdown_ok(old(meta).shutdown, old(tbl)@),
+    ensures
+        final(tbl)@.len() == old(tbl)@.len(),
+        inv_all(db@, final(tbl)@),
+        final(meta).shutdown == old(meta).shutdown,
+        shutdown_ok(final(meta).shutdown, final(tbl)@),
+        quiet_emits(final(tbl)@, old(tbl)@),
+{
+    if meta.shutdown && !meta.reported && tbl.len() > 0 {
+        let (quiet, stuck) = quiet_count(tbl);
+        if quiet {
+            let s0 = tbl[0];
+            let new = push_report(s0, Report::ShutdownComplete { still_populated: stuck });
+            proof {
+                assert(inv_node(s0, params_of(db@, 0)));
+                assert(inv_node(new, params_of(db@, 0)));
+            }
+            tbl[0] = new;
+            meta.reported = true;
+        }
+    }
 }
 
 // ---- the drain (obligation 9) ----
@@ -1128,7 +1641,7 @@ pub fn load(
     }
     meta.cursor = 0;
     mark_enabled(db, tbl);
-    reconcile(db, tbl, paths, late, now)
+    reconcile(db, tbl, paths, late, false, now)
 }
 
 } // verus!
