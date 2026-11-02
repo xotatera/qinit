@@ -88,7 +88,7 @@ pub(crate) fn rid(i: usize) -> (r: u32)
 
 /// Validates `bytes` as a compiled database (spec §3.1): `Ok` only if it is
 /// [`well_formed`], and then every reader accessor is in bounds
-/// ([`lemma_accessors_in_bounds`], V9). `edges` and `levels` are scratch space (Q5).
+/// ([`lemma_accessors_in_bounds`], V9). `edges` and `levels` are scratch space.
 ///
 /// # Errors
 /// The first rule the database breaks, checked in the order header, tables, pool references,

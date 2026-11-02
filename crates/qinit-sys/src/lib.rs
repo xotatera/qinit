@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `qinit-sys`: the one crate that may use `unsafe` (spec 2026-10-27 R1). Every public function
+//! `qinit-sys`: the one crate that may use `unsafe`. Every public function
 //! is a safe wrapper around system calls; each `unsafe` block holds one operation and states in
 //! its `SAFETY` comment what it relies on. Seeded from alloy's `common-sys`.
 // Every fallible function returns the errno of the one system call it wraps; a per-function

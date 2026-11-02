@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! V1: the header and the table bounds, and the record field reader built on them.
 
-#[allow(unused_imports, clippy::wildcard_imports)]
-// spec-only items: Verus erases them outside verification
+#[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use super::spec::*;
 use super::{DbError, tid};
 #[allow(clippy::wildcard_imports)] // the layout constants, used throughout

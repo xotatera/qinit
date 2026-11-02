@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! V1 and the field accessors: header words, table bounds and record words.
 
-#[allow(unused_imports, clippy::wildcard_imports)]
-// spec-only items: Verus erases them outside verification
+#[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use crate::layout::*;
 use vstd::prelude::*;
 

@@ -223,8 +223,8 @@ fn a_producer_piping_to_the_syslog_worker_is_not_presyslog() {
 
 #[test]
 fn stop_parallel_on_a_sync_require_path_edge_is_hard_parallel() {
-    // Ruling R12: the check also fires for a path target, which is stricter than the validator
-    // (a path edge has no node to stop in parallel); it is accepted and documented.
+    // The check also fires for a path target, which is stricter than the validator (a path
+    // edge has no node to stop in parallel); this is deliberate and documented.
     let src = |mode: &str, group: &str| {
         format!(
             "[worker.b]\nexec = [\"/b\"]\ndeps = [{{ group = \"{group}\", edges = \

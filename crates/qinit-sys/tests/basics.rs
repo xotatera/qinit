@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The shim's foundations on the host: descriptors, epoll, timers, signals and pidfd reaping.
-//! Only kernel features far below qinit's floor (plan P7).
+//! Only kernel features far below qinit's floor.
 use qinit_sys::{event, fd, proc, signal};
 use std::os::fd::AsRawFd;
 use std::time::Duration;

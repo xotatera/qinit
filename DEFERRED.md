@@ -67,7 +67,7 @@ so `qinit-cell` watches its pidfd without reaping it and reports its exit as
 `MainExited(None)`. If that handed-over main is actually our child, its exit
 is separately reported as an Orphan with its real status, while its cell gets
 `MainExited(None)`. The status of a process that is not a child is only readable
-through `PIDFD_INFO_EXIT` (Linux 6.15), above the 6.13 floor (spec R9). Revisit
+through `PIDFD_INFO_EXIT` (Linux 6.15), above the 6.13 floor. Revisit
 if the floor reaches 6.15.
 
 ### D9 — Released child the loop refuses to watch · `ACCEPTED`

@@ -4,8 +4,7 @@
 
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only use: Verus erases it
 use super::tables::*;
-#[allow(unused_imports, clippy::wildcard_imports)]
-// spec-only items: Verus erases them outside verification
+#[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use crate::layout::*;
 use vstd::prelude::*;
 

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! What the engine asks of the system (plan P3). `Kernel` performs it; `Sim` records it.
+//! What the engine asks of the system. `Kernel` performs it; `Sim` records it.
 use qinit_cell_core::{Handle, ReadyMode, Sig, Timer};
 use qinit_cell_drive::Source;
 use qinit_sys::Errno;

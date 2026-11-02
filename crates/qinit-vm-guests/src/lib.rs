@@ -23,7 +23,7 @@ pub type Case = (&'static str, fn() -> Result<(), String>);
 pub const HELPER_FLAG: &str = "--qinit-helper";
 /// The test comb: cells live directly under it.
 pub const COMB: &str = "/sys/fs/cgroup/qinit-test";
-/// A hang guard for each wait (cases assert order, never durations: spec R7).
+/// A hang guard for each wait (cases assert order, never durations).
 pub const HANG_GUARD: Duration = Duration::from_secs(60);
 /// The grace of a stop that must reach its kill deadline: long enough for a TERM-noting
 /// helper to write its one-byte note before the kill. A margin, not an expectation.

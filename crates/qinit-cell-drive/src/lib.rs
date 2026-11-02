@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! `qinit-cell-drive`: the drive's decisions (spec 2026-10-27 §5.2, plan P1), proved by Verus
+//! `qinit-cell-drive`: the drive's decisions (spec 2026-10-27 §5.2), proved by Verus
 //! (`proof:qinit-cell-drive`). A loop token is `slot << 3 | source`: every token routes to at
 //! most one (slot, source) pair and every pair has its own token, so each event reaches exactly
 //! one cell. The table has a compile-time capacity; `first_free` finds the slot for a new cell
@@ -23,7 +23,7 @@ pub enum Source {
     Main,
     /// The readiness pipe.
     Ready,
-    /// The exec-error pipe (plan P8).
+    /// The exec-error pipe.
     ExecError,
     /// `cgroup.events`.
     Events,

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! `qinit-db`: the compiled database runtime (frames and compiled database spec).
+//! `qinit-db`: the compiled database runtime (spec 2026-11-02 §3, database format).
 //!
 //! [`write`] flattens a [`Model`] into the byte format of `docs/db-format.md`; [`open`] checks
 //! the length and CRC and runs the proved validator of `qinit-db-core`; [`Reader::decode`]

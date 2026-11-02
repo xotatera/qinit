@@ -4,8 +4,7 @@
 //! surrogates and values above U+10FFFF as `core::str::from_utf8` does.
 
 use vstd::prelude::*;
-#[allow(unused_imports, clippy::wildcard_imports)]
-// spec-only items: Verus erases them outside verification
+#[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use vstd::utf8::*;
 
 verus! {

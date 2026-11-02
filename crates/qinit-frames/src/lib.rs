@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! `qinit-frames`: frames loading (frames and compiled database spec).
+//! `qinit-frames`: the frame compiler (spec 2026-11-02 §5-§8: frame schema, amend layers,
+//! compile pipeline, errors).
 #![forbid(unsafe_code)]
 
 pub mod compile;

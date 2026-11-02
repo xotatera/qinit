@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The kernel facts the cell substrate relies on (spec 2026-10-27 §5.3, plan P9). Every
+//! The kernel facts the cell substrate relies on (spec 2026-10-27 §5.3). Every
 //! notification case reads `cgroup.events` (clearing its pending priority state), registers
 //! its watch and only then triggers the change, and accepts a state only after a notification
 //! (`await_notified`).
@@ -86,7 +86,7 @@ fn events_inotify() -> Result<(), String> {
     events_by("ino", true)
 }
 
-/// A cell's inode number is the cgroup id `PIDFD_GET_INFO` reports for a member (plan P9).
+/// A cell's inode number is the cgroup id `PIDFD_GET_INFO` reports for a member.
 fn cgroup_id() -> Result<(), String> {
     let (cell, _events) = make_cell("id")?;
     let (_pid, pidfd) = spawn_helper(cell.as_fd(), "wait-term")?;

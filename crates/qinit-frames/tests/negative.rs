@@ -150,7 +150,7 @@ fn an_unknown_key_is_an_unknown_key_error() {
 
 #[test]
 fn a_worker_is_its_own_logger_is_a_cycle() {
-    // Review Focus 5: the implicit logger edge would point at the producer itself.
+    // The implicit logger edge would point at the producer itself.
     let es = refuse(
         "neg-ownlog",
         "[worker.a]\nexec = [\"/a\"]\noutput = { pipe = \"a\" }\n",
@@ -160,7 +160,7 @@ fn a_worker_is_its_own_logger_is_a_cycle() {
 
 #[test]
 fn a_logger_that_depends_on_its_producer_is_a_cycle() {
-    // Review Focus 5: app pipes to log (implicit app -> log), and log requires app.
+    // App pipes to log (implicit app -> log), and log requires app.
     let es = refuse(
         "neg-backlog",
         "[worker.app]\nexec = [\"/app\"]\nerrors = { pipe = \"log\" }\n\

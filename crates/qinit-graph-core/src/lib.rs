@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! `qinit-graph-core`: the dependency graph model (frames and compiled database spec), proved
+//! `qinit-graph-core`: the dependency graph model (spec 2026-11-02 §4, graph core), proved
 //! by Verus (`proof:qinit-graph-core`). [`levels`] gives every node a level such that each
 //! constraining edge goes strictly up: a dependent sits below its dependency, so stopping walks
 //! the levels upwards and starting walks them downwards.

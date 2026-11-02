@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! A sample model shared by the integration tests.
-#![allow(dead_code)]
+#![allow(dead_code)] // each test binary uses a different part of the helpers
 
 use qinit_db::{
     Cred, Edge, Group, GroupKind, Kind, Mode, Model, Node, Ready, Restart, RestartOn,

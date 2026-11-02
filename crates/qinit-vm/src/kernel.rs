@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The pinned guest kernel (plan P5): fetched once, checked against its sha256, configured
+//! The pinned guest kernel: fetched once, checked against its sha256, configured
 //! from `allnoconfig` plus `kernel.config`, built once into qinit's cache.
 use crate::supervise::run_logged;
 use sha2::{Digest, Sha256};

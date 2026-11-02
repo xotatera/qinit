@@ -28,7 +28,7 @@ pub struct Cells {
 }
 
 impl Cells {
-    /// Opens comb `root`; refuses a kernel below the floor (spec R9).
+    /// Opens comb `root`; refuses a kernel below the floor (Linux 6.13).
     ///
     /// # Errors
     ///

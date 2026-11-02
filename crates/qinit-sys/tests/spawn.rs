@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The spawn path on the host, without a cgroup (plan P7: cells are tested in guests).
+//! The spawn path on the host, without a cgroup (cells are tested in guests).
 use qinit_sys::{Errno, fd, proc, signal, spawn};
 use std::ffi::OsStr;
 use std::io::Read;

@@ -7,8 +7,7 @@
 #![allow(clippy::many_single_char_names)] // `b`, `n`, `i`, `g`, `x`, `k` follow the spec names
 
 use super::header::{field, header_word};
-#[allow(unused_imports, clippy::wildcard_imports)]
-// spec-only items: Verus erases them outside verification
+#[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use super::spec::*;
 use super::{DbError, rid, tid};
 #[allow(clippy::wildcard_imports)] // the layout constants, used throughout

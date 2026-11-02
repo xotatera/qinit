@@ -4,8 +4,7 @@
 
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only use: Verus erases it
 use super::tables::*;
-#[allow(unused_imports, clippy::wildcard_imports)]
-// spec-only items: Verus erases them outside verification
+#[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use crate::layout::*;
 #[allow(unused_imports)] // spec-only use: Verus erases it outside verification
 use qinit_graph_core::GEdge;
@@ -13,13 +12,13 @@ use vstd::prelude::*;
 
 verus! {
 
-/// Edge `x` of group `g` orders (Q2): a node target in a `require_all`, `require_any` or
+/// Edge `x` of group `g` orders: a node target in a `require_all`, `require_any` or
 /// `optional_all` group.
 pub open spec fn is_ordering(b: Seq<u8>, g: int, x: int) -> bool {
     ef(b, x, E_TARGET_KIND) == 0 && gf(b, g, G_KIND) <= 2
 }
 
-/// The graph edge for edge `x` of group `g` of node `i` (Q2).
+/// The graph edge for edge `x` of group `g` of node `i`.
 pub open spec fn ord_edge(b: Seq<u8>, i: int, g: int, x: int) -> GEdge {
     GEdge {
         from: i as u32,

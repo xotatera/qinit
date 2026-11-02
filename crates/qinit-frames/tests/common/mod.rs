@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Helpers shared by the integration tests.
-#![allow(dead_code, reason = "each test file uses a subset")]
+#![allow(dead_code)] // each test file uses a subset of the helpers
 use qinit_db::Model;
 use qinit_frames::compile::CompileInput;
 use qinit_frames::error::Error;

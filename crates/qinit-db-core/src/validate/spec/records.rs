@@ -6,8 +6,7 @@
 use super::pool::*;
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only use: Verus erases it
 use super::tables::*;
-#[allow(unused_imports, clippy::wildcard_imports)]
-// spec-only items: Verus erases them outside verification
+#[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use crate::layout::*;
 use vstd::prelude::*;
 
@@ -58,13 +57,13 @@ pub open spec fn gesum(b: Seq<u8>, g: int) -> int
     }
 }
 
-/// Node `i`'s groups start at the running sum (Q3), and there are few enough.
+/// Node `i`'s groups start at the running sum, and there are few enough.
 pub open spec fn node_tile_ok(b: Seq<u8>, i: int) -> bool {
     &&& nf(b, i, N_GROUP_FIRST) == ngsum(b, i)
     &&& nf(b, i, N_GROUP_COUNT) <= MAX_GROUPS_PER_NODE
 }
 
-/// Group `g`'s edges start at the running sum (Q3), and there are few enough.
+/// Group `g`'s edges start at the running sum, and there are few enough.
 pub open spec fn group_tile_ok(b: Seq<u8>, g: int) -> bool {
     &&& gf(b, g, G_EDGE_FIRST) == gesum(b, g)
     &&& gf(b, g, G_EDGE_COUNT) <= MAX_EDGES_PER_GROUP

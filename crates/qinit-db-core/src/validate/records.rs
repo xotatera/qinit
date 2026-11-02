@@ -1,13 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! V3 and V4 for the records: indices in range, enums in range, consistent fields, the group
-//! and edge tables tiled (Q3), and the nodes sorted by name.
+//! and edge tables tiled, and the nodes sorted by name.
 
 #![allow(clippy::many_single_char_names)] // `b`, `n`, `i`, `g`, `x`, `k` follow the spec names
 
 use super::header::{field, header_word};
-#[allow(unused_imports, clippy::wildcard_imports)]
-// spec-only items: Verus erases them outside verification
+#[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use super::spec::*;
 use super::{DbError, rid, tid};
 #[allow(clippy::wildcard_imports)] // the layout constants, used throughout
