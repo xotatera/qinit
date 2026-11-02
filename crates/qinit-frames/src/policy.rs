@@ -13,8 +13,9 @@
 //! user is empty (only a `sandbox` table was given, so no uid change) is not checked against
 //! `users`, as there is no uid to compare; its capability ceiling and `require_nnp` still apply.
 use crate::error::{Code, Error};
+use crate::expand::kind_name;
 use crate::resolve::{cap_bit, cap_name};
-use qinit_db::{Cred, Model};
+use qinit_db::{Cred, Model, Node};
 use serde::Deserialize;
 use std::path::Path;
 
@@ -216,8 +217,9 @@ pub fn load_policy(path: &Path) -> Result<Policy, Vec<Error>> {
     }
 }
 
-fn violation(name: &str, detail: String) -> Error {
-    Error::new(Code::Policy, format!("worker.{name}.credentials"), detail)
+fn violation(node: &Node, detail: String) -> Error {
+    let key = format!("{}.{}.credentials", kind_name(node.kind), node.name);
+    Error::new(Code::Policy, key, detail)
 }
 
 fn cap_names(bits: u64) -> String {
@@ -228,7 +230,7 @@ fn cap_names(bits: u64) -> String {
         .join(", ")
 }
 
-fn check_rule(rule: &Rule, name: &str, cred: &Cred, errs: &mut Vec<Error>) {
+fn check_rule(rule: &Rule, node: &Node, cred: &Cred, errs: &mut Vec<(usize, Error)>, i: usize) {
     if let Some(users) = &rule.users
         && !cred.user.is_empty()
         && !users.contains(&cred.user)
@@ -237,7 +239,7 @@ fn check_rule(rule: &Rule, name: &str, cred: &Cred, errs: &mut Vec<Error>) {
             "user `{}` is not allowed by rule `{}`",
             cred.user, rule.pattern
         );
-        errs.push(violation(name, why));
+        errs.push((i, violation(node, why)));
     }
     let over = cred.caps & !rule.ceiling;
     if over != 0 {
@@ -246,24 +248,21 @@ fn check_rule(rule: &Rule, name: &str, cred: &Cred, errs: &mut Vec<Error>) {
             rule.pattern,
             cap_names(over)
         );
-        errs.push(violation(name, why));
+        errs.push((i, violation(node, why)));
     }
     if rule.require_nnp && !cred.nnp {
         let why = format!("nnp required by rule `{}`", rule.pattern);
-        errs.push(violation(name, why));
+        errs.push((i, violation(node, why)));
     }
 }
 
-/// Check every node that has credentials against the policy; all violations are returned.
-///
-/// # Errors
-/// One `Policy` error per violation, keyed `worker.<name>.credentials`.
-pub fn check(policy: &Policy, model: &Model) -> Result<(), Vec<Error>> {
+/// Every violation of `policy` by `model`, with the index of the offending node.
+pub(crate) fn violations(policy: &Policy, model: &Model) -> Vec<(usize, Error)> {
     let mut errs = Vec::new();
-    for node in &model.nodes {
+    for (i, node) in model.nodes.iter().enumerate() {
         let Some(cred) = node
             .cred
-            .and_then(|i| model.creds.get(usize::try_from(i).ok()?))
+            .and_then(|c| model.creds.get(usize::try_from(c).ok()?))
         else {
             continue;
         };
@@ -272,13 +271,26 @@ pub fn check(policy: &Policy, model: &Model) -> Result<(), Vec<Error>> {
             .iter()
             .find(|r| glob_match(&r.pattern, &node.name))
         {
-            Some(rule) => check_rule(rule, &node.name, cred, &mut errs),
+            Some(rule) => check_rule(rule, node, cred, &mut errs, i),
             None if policy.allow_by_default => {}
-            None => errs.push(violation(
-                &node.name,
-                "no rule matches and the default is deny".to_string(),
+            None => errs.push((
+                i,
+                violation(node, "no rule matches and the default is deny".to_string()),
             )),
         }
     }
+    errs
+}
+
+/// Check every node that has credentials against the policy; all violations are returned.
+///
+/// # Errors
+/// One `Policy` error per violation, keyed `<kind>.<name>.credentials` with the node's kind
+/// word (`worker`, `forager` or `brood`).
+pub fn check(policy: &Policy, model: &Model) -> Result<(), Vec<Error>> {
+    let errs: Vec<Error> = violations(policy, model)
+        .into_iter()
+        .map(|(_, e)| e)
+        .collect();
     if errs.is_empty() { Ok(()) } else { Err(errs) }
 }

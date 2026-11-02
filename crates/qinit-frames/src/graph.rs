@@ -13,8 +13,9 @@ use qinit_graph_core::{GEdge, GraphError, MAX_EDGES, MAX_NODES, levels};
 /// # Errors
 /// `Cycle` keyed by the first node of one cycle (in table order) with the cycle as
 /// `a -> b -> a` in `detail`; `HardParallel` keyed by the dependent of the first hard parallel
-/// edge; `Limit` past the graph limits; `SelfCheck` for an edge outside the node table.
-pub(crate) fn check(model: &Model) -> Result<(), Error> {
+/// edge; `Limit` past the graph limits; `SelfCheck` for an edge outside the node table. With the
+/// error, the index of the node it is keyed by, if any.
+pub(crate) fn check(model: &Model) -> Result<(), (Option<usize>, Error)> {
     let edges = ordering_edges(model);
     let n = model.nodes.len();
     if n > MAX_NODES || edges.len() > MAX_EDGES {
@@ -22,7 +23,7 @@ pub(crate) fn check(model: &Model) -> Result<(), Error> {
             "{n} nodes and {} ordering edges; the limits are {MAX_NODES} and {MAX_EDGES}",
             edges.len()
         );
-        return Err(Error::new(Code::Limit, "", why));
+        return Err((None, Error::new(Code::Limit, "", why)));
     }
     let mut out = vec![0u32; n];
     for honour_parallel in [false, true] {
@@ -32,7 +33,7 @@ pub(crate) fn check(model: &Model) -> Result<(), Error> {
             Err(GraphError::HardParallel) => return Err(hard_parallel_error(model, &edges)),
             Err(GraphError::BadIndex) => {
                 let why = "an ordering edge names a node outside the table";
-                return Err(Error::new(Code::SelfCheck, "", why));
+                return Err((None, Error::new(Code::SelfCheck, "", why)));
             }
         }
     }
@@ -50,13 +51,10 @@ fn key(model: &Model, i: usize) -> String {
         .map_or_else(String::new, |n| format!("{}.{}", kind_name(n.kind), n.name))
 }
 
-fn hard_parallel_error(model: &Model, edges: &[GEdge]) -> Error {
+fn hard_parallel_error(model: &Model, edges: &[GEdge]) -> (Option<usize>, Error) {
     let Some(e) = edges.iter().find(|e| e.hard && e.parallel) else {
-        return Error::new(
-            Code::HardParallel,
-            "",
-            "a hard edge has stop = \"parallel\"",
-        );
+        let why = "a hard edge has stop = \"parallel\"";
+        return (None, Error::new(Code::HardParallel, "", why));
     };
     let (from, to) = (e.from as usize, e.to as usize);
     let why = format!(
@@ -64,12 +62,18 @@ fn hard_parallel_error(model: &Model, edges: &[GEdge]) -> Error {
         name(model, from),
         name(model, to)
     );
-    Error::new(Code::HardParallel, key(model, from), why)
+    (
+        Some(from),
+        Error::new(Code::HardParallel, key(model, from), why),
+    )
 }
 
-fn cycle_error(model: &Model, edges: &[GEdge]) -> Error {
+fn cycle_error(model: &Model, edges: &[GEdge]) -> (Option<usize>, Error) {
     let Some(mut cycle) = find_cycle(model.nodes.len(), edges) else {
-        return Error::new(Code::Cycle, "", "the ordering edges form a cycle");
+        return (
+            None,
+            Error::new(Code::Cycle, "", "the ordering edges form a cycle"),
+        );
     };
     let first = cycle
         .iter()
@@ -80,7 +84,8 @@ fn cycle_error(model: &Model, edges: &[GEdge]) -> Error {
     let head = cycle.first().copied().unwrap_or(0);
     let mut detail: Vec<&str> = cycle.iter().map(|&v| name(model, v)).collect();
     detail.push(name(model, head));
-    Error::new(Code::Cycle, key(model, head), detail.join(" -> "))
+    let e = Error::new(Code::Cycle, key(model, head), detail.join(" -> "));
+    (Some(head), e)
 }
 
 /// The nodes of one cycle over `edges` (`from` before `to`), found by an iterative depth-first

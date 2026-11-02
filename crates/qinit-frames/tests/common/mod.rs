@@ -8,6 +8,7 @@ use qinit_frames::error::Error;
 use qinit_frames::expand::expand;
 use qinit_frames::layers::LayerInput;
 use qinit_frames::layers::{Enable, Merged};
+use qinit_frames::provenance::{FrameKey, Provenance};
 use qinit_frames::resolve::{Resolved, resolve};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,12 @@ pub fn merged(src: &str) -> Merged {
         table: src.parse::<toml::Table>().expect("test toml"),
         provenance: BTreeMap::new(),
     }
+}
+
+/// The layer that set `keys` of frame `kind.name`, by exact key.
+pub fn set_in<'a>(prov: &'a Provenance, kind: &str, name: &str, keys: &[&str]) -> Option<&'a str> {
+    prov.get(&FrameKey::new(kind, name, keys))
+        .map(|o| o.layer.as_str())
 }
 
 pub fn enable(roots: &[&str], syslog: &[&str]) -> Enable {

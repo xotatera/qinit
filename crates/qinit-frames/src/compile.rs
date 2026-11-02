@@ -7,8 +7,9 @@
 //! self-check (`qinit_db::open` and `decode`, compared with the model) and the dump. A stage that
 //! fails returns every error it found; later stages do not run.
 use crate::error::{Code, Error, Warning};
-use crate::expand::{expand, with_layer};
+use crate::expand::{expand, kind_name};
 use crate::layers::{self, LayerInput};
+use crate::provenance::locate;
 use crate::resolve::resolve;
 use crate::{dump, graph, policy};
 use qinit_db::Model;
@@ -50,13 +51,24 @@ pub fn compile(input: &CompileInput) -> Result<Compiled, Vec<Error>> {
     let expanded = expand(&merged)?;
     let resolved = resolve(&expanded, &enable)?;
     let prov = &expanded.provenance;
-    let located =
-        |es: Vec<Error>| -> Vec<Error> { es.into_iter().map(|e| with_layer(prov, e)).collect() };
+    let model = &resolved.model;
+    let located = |node: Option<usize>, mut e: Error| -> Error {
+        if let Some(n) = node.and_then(|i| model.nodes.get(i)) {
+            locate(prov, kind_name(n.kind), &n.name, &mut e);
+        }
+        e
+    };
     if let Some(path) = &input.policy {
         let p = policy::load_policy(path)?;
-        policy::check(&p, &resolved.model).map_err(located)?;
+        let errs: Vec<Error> = policy::violations(&p, model)
+            .into_iter()
+            .map(|(i, e)| located(Some(i), e))
+            .collect();
+        if !errs.is_empty() {
+            return Err(errs);
+        }
     }
-    graph::check(&resolved.model).map_err(|e| located(vec![e]))?;
+    graph::check(model).map_err(|(i, e)| vec![located(i, e)])?;
     let bytes = self_checked(&resolved.model).map_err(|e| vec![e])?;
     let dump = dump::render(&resolved, prov);
     Ok(Compiled {

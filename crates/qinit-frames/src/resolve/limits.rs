@@ -3,6 +3,7 @@
 //! The `qinit_db_core` table limits, checked before the writer sees the model.
 use crate::error::{Code, Error};
 use crate::expand::kind_name;
+use crate::provenance::{Provenance, locate_all};
 use qinit_db::{Model, Ready, Target};
 use qinit_db_core::{
     MAX_CREDS, MAX_EDGES, MAX_EDGES_PER_GROUP, MAX_GROUPS, MAX_GROUPS_PER_NODE, MAX_NODES,
@@ -46,10 +47,12 @@ fn pool_bytes(m: &Model) -> usize {
     seen.iter().map(String::len).sum()
 }
 
-/// Push a `Limit` error for every table over its limit; the detail names the table.
-pub(super) fn check(errs: &mut Vec<Error>, m: &Model) {
+/// Push a `Limit` error for every table over its limit; the detail names the table. A per-node
+/// error carries the file and layer of its frame from `prov`.
+pub(super) fn check(errs: &mut Vec<Error>, m: &Model, prov: &Provenance) {
     over(errs, "", "nodes", m.nodes.len(), MAX_NODES);
     for n in &m.nodes {
+        let start = errs.len();
         let key = format!("{}.{}", kind_name(n.kind), n.name);
         over(
             errs,
@@ -67,6 +70,7 @@ pub(super) fn check(errs: &mut Vec<Error>, m: &Model) {
                 MAX_EDGES_PER_GROUP,
             );
         }
+        locate_all(prov, kind_name(n.kind), &n.name, &mut errs[start..]);
     }
     let groups: usize = m.nodes.iter().map(|n| n.groups.len()).sum();
     let edges: usize = m

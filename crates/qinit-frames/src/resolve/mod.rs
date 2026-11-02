@@ -25,8 +25,9 @@ mod deps;
 mod limits;
 
 use crate::error::{Code, Error, Warning};
-use crate::expand::{Expanded, kind_name, with_layer};
+use crate::expand::{Expanded, kind_name};
 use crate::layers::Enable;
+use crate::provenance::{locate, locate_all};
 use crate::schema::{Frame, Output, Ready as SReady};
 use crate::units::{duration_ms, size_kib};
 pub(crate) use cred::{cap_bit, cap_name, ns_name};
@@ -37,12 +38,17 @@ use std::collections::BTreeMap;
 /// The resolved model and the non-fatal findings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resolved {
+    /// The model `qinit_db::write` turns into bytes.
     pub model: Model,
+    /// Non-fatal findings, such as a dropped optional edge.
     pub warnings: Vec<Warning>,
     /// Per node, per group, per edge of `model`: the edge's index in the frame's
     /// `deps[g].edges` list, which differs once a missing optional edge was dropped. The
     /// implicit logger group, which has no frame key, maps each edge to its own index.
     pub edge_origins: Vec<Vec<Vec<usize>>>,
+    /// Per node of `model`: how many of its groups come from the frame's `deps`. A further
+    /// group is the implicit logger group.
+    pub frame_groups: Vec<usize>,
 }
 
 /// The state shared by the per-node conversions.
@@ -54,6 +60,7 @@ pub(super) struct Cx<'a> {
     pub routes: Vec<Route>,
     pub path_routes: BTreeMap<String, u32>,
     pub edge_origins: Vec<Vec<Vec<usize>>>,
+    pub frame_groups: Vec<usize>,
 }
 
 impl Cx<'_> {
@@ -231,6 +238,7 @@ fn node(
     let restart = restart(cx, &base, f);
     let (output, errors, logger) = streams(cx, &base, f, me);
     let (mut groups, mut origins) = deps::groups(cx, &base, f.deps.as_deref().unwrap_or_default());
+    cx.frame_groups.push(groups.len());
     origins.extend(logger.iter().map(|g| (0..g.edges.len()).collect()));
     groups.extend(logger);
     cx.edge_origins.push(origins);
@@ -287,38 +295,40 @@ pub fn resolve(expanded: &Expanded, enable: &Enable) -> Result<Resolved, Vec<Err
         routes: Vec::new(),
         path_routes: BTreeMap::new(),
         edge_origins: Vec::new(),
+        frame_groups: Vec::new(),
     };
+    let prov = &expanded.provenance;
     for (i, (name, kind, _)) in frames.iter().enumerate() {
         let i = u32::try_from(i).unwrap_or(u32::MAX);
         if cx.names.insert(name.as_str(), (i, *kind)).is_some() {
             let key = format!("{}.{name}", kind_name(*kind));
-            cx.errs.push(Error::new(
-                Code::DuplicateName,
-                key,
-                format!("`{name}` appears twice"),
-            ));
+            let mut e = Error::new(Code::DuplicateName, key, format!("`{name}` appears twice"));
+            locate(prov, kind_name(*kind), name, &mut e);
+            cx.errs.push(e);
         }
     }
     let mut model = Model::default();
     for (i, (name, kind, f)) in frames.iter().enumerate() {
         let me = u32::try_from(i).unwrap_or(u32::MAX);
+        let start = cx.errs.len();
         let n = node(&mut cx, &mut model.creds, me, name, *kind, f);
+        locate_all(prov, kind_name(*kind), name, &mut cx.errs[start..]);
         model.nodes.push(n);
     }
     model.enabled = closure::enabled(&mut cx, &model.nodes, &enable.roots);
     model.presyslog = closure::presyslog(&mut cx, &model.nodes, &model.enabled, &enable.syslog);
     model.routes = std::mem::take(&mut cx.routes);
     if cx.errs.is_empty() {
-        limits::check(&mut cx.errs, &model);
+        limits::check(&mut cx.errs, &model, prov);
     }
     if cx.errs.is_empty() {
         Ok(Resolved {
             model,
             warnings: cx.warnings,
             edge_origins: cx.edge_origins,
+            frame_groups: cx.frame_groups,
         })
     } else {
-        let prov = &expanded.provenance;
-        Err(cx.errs.into_iter().map(|e| with_layer(prov, e)).collect())
+        Err(cx.errs)
     }
 }

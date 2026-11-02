@@ -3,33 +3,38 @@
 //! A deterministic, human-readable dump of a resolved model with the layer behind each key.
 //!
 //! One block per node in name order: a `<kind> <name>` heading, then indented
-//! `key = value  # <layer>` lines in frame key syntax, then the dependency groups and their
-//! edges. The layer is the one that set the key or its nearest enclosing key (`-` if none).
+//! `key = value  # <origin>` lines in frame key syntax, then the dependency groups and their
+//! edges. The origin is the layer that set the key (or the list it sits in); `template <name>`
+//! when the frame inherited it from that template; `default` when no layer set it (a default,
+//! or a value derived from other keys, such as `errors` following `output`). An instance's
+//! `instance_of` carries the origin of its frame. The implicit logger group carries the origin
+//! of the `output` or `errors` key that pipes to each logger.
 //! Edge keys use the frame's own edge index (`Resolved::edge_origins`), so an edge after a
 //! dropped optional edge keeps the key its frame and any warning give it; the implicit logger
 //! group comes after the frame's groups.
 //! The trailer lists the enabled closure and the pre-syslog nodes.
-use crate::expand::{kind_name, layer_of};
+use crate::expand::kind_name;
+use crate::provenance::{FrameKey, Origin, Provenance, parse_path, set_by};
 use crate::resolve::{Resolved, cap_name, ns_name};
 use qinit_db::{
     Cred, Edge, GroupKind, Kind, Mode, Model, Node, Ready, RestartOn, RestartPolicy, Route,
     Seccomp, Securebits, Target,
 };
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-/// Render `resolved`; `provenance` maps dotted key paths to the layer that set them.
+/// Render `resolved` with the origin of each key from `provenance`.
 #[must_use]
-pub fn render(resolved: &Resolved, provenance: &BTreeMap<String, String>) -> String {
+pub fn render(resolved: &Resolved, provenance: &Provenance) -> String {
     let model = &resolved.model;
     let mut out = String::new();
     for (i, node) in model.nodes.iter().enumerate() {
-        let base = format!("{}.{}", kind_name(node.kind), node.name);
         let mut b = Block {
             out: &mut out,
             prov: provenance,
-            base: &base,
+            kind: kind_name(node.kind),
+            name: &node.name,
             origins: resolved.edge_origins.get(i).map_or(&[], Vec::as_slice),
+            frame_groups: resolved.frame_groups.get(i).copied().unwrap_or(0),
         };
         b.node(model, node);
         out.push('\n');
@@ -43,22 +48,63 @@ pub fn render(resolved: &Resolved, provenance: &BTreeMap<String, String>) -> Str
 /// The lines of one node.
 struct Block<'a> {
     out: &'a mut String,
-    prov: &'a BTreeMap<String, String>,
-    base: &'a str,
+    prov: &'a Provenance,
+    kind: &'a str,
+    name: &'a str,
     /// Per group, the frame index of each edge.
     origins: &'a [Vec<usize>],
+    /// How many groups come from the frame's `deps`; a further group is the implicit logger
+    /// group.
+    frame_groups: usize,
+}
+
+/// The comment the dump puts after a value with origin `o`.
+fn label(o: Option<&Origin>) -> String {
+    match o {
+        Some(Origin {
+            template: Some(t), ..
+        }) => format!("template {t}"),
+        Some(o) => o.layer.clone(),
+        None => "default".to_owned(),
+    }
 }
 
 impl Block<'_> {
+    /// The origin of `key` (frame key syntax) as the dump shows it.
+    fn origin(&self, key: &str) -> String {
+        label(set_by(self.prov, self.kind, self.name, &parse_path(key)))
+    }
+
+    fn line_from(&mut self, key: &str, value: &str, origin: &str) {
+        let _ = writeln!(self.out, "  {key} = {value}  # {origin}");
+    }
+
     fn line(&mut self, key: &str, value: &str) {
-        let layer = layer_of(self.prov, &format!("{}.{key}", self.base)).unwrap_or("-");
-        let _ = writeln!(self.out, "  {key} = {value}  # {layer}");
+        let origin = self.origin(key);
+        self.line_from(key, value, &origin);
+    }
+
+    /// The origin of an implicit logger edge to `logger`: that of the stream piping to it.
+    fn logger_origin(&self, model: &Model, n: &Node, logger: Option<u32>) -> String {
+        let pipes_to = |r: Option<u32>| {
+            r.and_then(|r| model.routes.get(r as usize))
+                .is_some_and(|r| matches!(r, Route::Pipe(l) if Some(*l) == logger))
+        };
+        if pipes_to(n.output) {
+            self.origin("output")
+        } else if pipes_to(n.errors) {
+            self.origin("errors")
+        } else {
+            label(None)
+        }
     }
 
     fn node(&mut self, model: &Model, n: &Node) {
         let _ = writeln!(self.out, "{} {}", kind_name(n.kind), n.name);
         if let Some(t) = &n.instance_of {
-            self.line("instance_of", &quote(t));
+            let frame = FrameKey::new(self.kind, self.name, &[]);
+            let origin = label(self.prov.get(&frame));
+            self.line_from("instance_of", &quote(t), &origin);
         }
         if n.kind != Kind::Brood {
             self.line("exec", &list(n.exec.iter().map(|s| quote(s))));
@@ -85,11 +131,24 @@ impl Block<'_> {
             self.cred(c);
         }
         for (gi, g) in n.groups.iter().enumerate() {
-            self.line(&format!("deps[{gi}].group"), &quote(group(g.kind)));
+            let implicit = gi >= self.frame_groups;
+            let group_key = format!("deps[{gi}].group");
+            if implicit {
+                let first = g.edges.first().and_then(node_target);
+                let origin = self.logger_origin(model, n, first);
+                self.line_from(&group_key, &quote(group(g.kind)), &origin);
+            } else {
+                self.line(&group_key, &quote(group(g.kind)));
+            }
             for (ei, e) in g.edges.iter().enumerate() {
                 let fi = self.origins.get(gi).and_then(|o| o.get(ei)).copied();
-                let fi = fi.unwrap_or(ei);
-                self.line(&format!("deps[{gi}].edges[{fi}]"), &edge(model, e));
+                let key = format!("deps[{gi}].edges[{}]", fi.unwrap_or(ei));
+                if implicit {
+                    let origin = self.logger_origin(model, n, node_target(e));
+                    self.line_from(&key, &edge(model, e), &origin);
+                } else {
+                    self.line(&key, &edge(model, e));
+                }
             }
         }
     }
@@ -120,6 +179,13 @@ impl Block<'_> {
             "sandbox.landlock",
             &list(c.landlock.iter().map(|s| quote(s))),
         );
+    }
+}
+
+fn node_target(e: &Edge) -> Option<u32> {
+    match e.target {
+        Target::Node(i) => Some(i),
+        Target::Path(_) => None,
     }
 }
 

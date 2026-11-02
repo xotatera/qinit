@@ -3,6 +3,7 @@
 //! Layer loading and the amend merge (spec §6): scalars replace, tables merge key by key, lists
 //! change only through the explicit `append`, `remove` and `replace` forms.
 use crate::error::{Code, Error};
+use crate::provenance::{FrameKey, Origin, Provenance, Seg};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use toml::{Table, Value};
@@ -12,12 +13,18 @@ const VERBS: [&str; 3] = ["append", "remove", "replace"];
 const ENABLE_FILE: &str = "enable.toml";
 const ENABLE_KEYS: [&str; 2] = ["enable", "syslog"];
 
-/// The merged frames and, per dotted key path, the layer that set it last.
+/// The merged frames and, per frame key, the layer and file that set it last.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Merged {
+    /// `kind` to `name` to the merged frame table.
     pub table: Table,
-    pub provenance: BTreeMap<String, String>,
+    /// Where each recorded frame key was set; see [`crate::provenance`].
+    pub provenance: Provenance,
 }
+
+/// Provenance during the merge: a key path from the top of the merged table (`kind`, `name`,
+/// then the keys inside the frame; or an `enable.toml` key) to where it was set.
+type Paths = BTreeMap<Vec<String>, Origin>;
 
 /// One layer: a name for provenance and the directory holding its files.
 #[derive(Clone, Debug)]
@@ -37,33 +44,36 @@ pub struct Enable {
 struct Cx<'a> {
     layer: &'a str,
     file: &'a Path,
-    prov: &'a mut BTreeMap<String, String>,
+    prov: &'a mut Paths,
     errs: &'a mut Vec<Error>,
 }
 
 impl Cx<'_> {
-    fn err(&mut self, code: Code, key: &str, detail: String) {
+    fn err(&mut self, code: Code, path: &[String], detail: String) {
         self.errs.push(
-            Error::new(code, key, detail)
+            Error::new(code, path.join("."), detail)
                 .in_file(self.file)
                 .in_layer(self.layer),
         );
     }
 
-    /// Record that this layer set `path`, dropping provenance of anything below it.
-    fn set(&mut self, path: &str) {
-        let below = format!("{path}.");
-        self.prov.retain(|k, _| !k.starts_with(&below));
-        self.prov.insert(path.to_string(), self.layer.to_string());
+    /// Record that this layer and file set `path`, dropping provenance of anything below it.
+    fn set(&mut self, path: &[String]) {
+        self.prov
+            .retain(|k, _| !(k.len() > path.len() && k.starts_with(path)));
+        let origin = Origin {
+            layer: self.layer.to_owned(),
+            file: self.file.to_owned(),
+            template: None,
+        };
+        self.prov.insert(path.to_vec(), origin);
     }
 }
 
-fn join(path: &str, key: &str) -> String {
-    if path.is_empty() {
-        key.to_string()
-    } else {
-        format!("{path}.{key}")
-    }
+fn join(path: &[String], key: &str) -> Vec<String> {
+    let mut p = path.to_vec();
+    p.push(key.to_owned());
+    p
 }
 
 fn is_list_op(t: &Table) -> bool {
@@ -71,7 +81,7 @@ fn is_list_op(t: &Table) -> bool {
 }
 
 /// Apply one `append`, `remove` or `replace` table to the list `base`.
-fn apply_list_op(base: &mut Vec<Value>, op: &Table, path: &str, cx: &mut Cx) {
+fn apply_list_op(base: &mut Vec<Value>, op: &Table, path: &[String], cx: &mut Cx) {
     let mut it = op.iter();
     let (Some((verb, arg)), None) = (it.next(), it.next()) else {
         let keys: Vec<_> = op.keys().map(String::as_str).collect();
@@ -101,7 +111,7 @@ fn apply_list_op(base: &mut Vec<Value>, op: &Table, path: &str, cx: &mut Cx) {
 }
 
 /// Merge `overlay` into `base`; every problem goes to `cx.errs` and the merge carries on.
-fn merge(base: &mut Table, overlay: Table, path: &str, cx: &mut Cx) {
+fn merge(base: &mut Table, overlay: Table, path: &[String], cx: &mut Cx) {
     for (key, new) in overlay {
         let p = join(path, &key);
         match (base.get_mut(&key), new) {
@@ -137,7 +147,7 @@ fn merge_frames(acc: &mut Table, file_table: Table, cx: &mut Cx) {
     for (kind, names) in file_table {
         let Value::Table(names) = names else { continue };
         for (name, frame) in names {
-            let path = join(&kind, &name);
+            let path = vec![kind.clone(), name.clone()];
             let Value::Table(mut frame) = frame else {
                 cx.err(Code::BadValue, &path, "a frame must be a table".into());
                 continue;
@@ -163,7 +173,7 @@ fn merge_frames(acc: &mut Table, file_table: Table, cx: &mut Cx) {
             let Value::Table(slot) = slot else { continue };
             let mut one = Table::new();
             one.insert(name, Value::Table(frame));
-            merge(slot, one, &kind, cx);
+            merge(slot, one, std::slice::from_ref(&kind), cx);
         }
     }
 }
@@ -227,7 +237,7 @@ fn check_file(
             continue;
         };
         for name in names.keys() {
-            let path = join(kind, name);
+            let path = format!("{kind}.{name}");
             if !seen.insert(path.clone()) {
                 let why = "defined twice in one layer";
                 errs.push(
@@ -254,7 +264,7 @@ fn check_file(
 /// # Errors
 /// Every I/O, parse, duplicate, unknown-key and list-op error found in all layers.
 pub fn load(layers: &[LayerInput]) -> Result<Merged, Vec<Error>> {
-    let (mut table, mut provenance, mut errs) = (Table::new(), BTreeMap::new(), Vec::new());
+    let (mut table, mut paths, mut errs) = (Table::new(), Paths::new(), Vec::new());
     let mut blocked = false;
     for layer in layers {
         let files = match layer_files(layer) {
@@ -283,17 +293,37 @@ pub fn load(layers: &[LayerInput]) -> Result<Merged, Vec<Error>> {
             let mut cx = Cx {
                 layer: &layer.name,
                 file: &file,
-                prov: &mut provenance,
+                prov: &mut paths,
                 errs: &mut errs,
             };
             merge_frames(&mut table, t, &mut cx);
         }
     }
     if errs.is_empty() {
-        Ok(Merged { table, provenance })
+        Ok(Merged {
+            table,
+            provenance: frame_keys(paths),
+        })
     } else {
         Err(errs)
     }
+}
+
+/// The frame keys of `paths`: every path of at least `kind` and `name`.
+fn frame_keys(paths: Paths) -> Provenance {
+    paths
+        .into_iter()
+        .filter_map(|(mut p, origin)| {
+            if p.len() < 2 {
+                return None;
+            }
+            let rest = p.split_off(2);
+            let name = p.pop()?;
+            let kind = p.pop()?;
+            let path = rest.into_iter().map(Seg::Key).collect();
+            Some((FrameKey { kind, name, path }, origin))
+        })
+        .collect()
 }
 
 /// Read the string list at `key` of the merged enable table. A missing key is empty; a
@@ -302,26 +332,13 @@ pub fn load(layers: &[LayerInput]) -> Result<Merged, Vec<Error>> {
 /// Attribution is to the last layer that set the key (the provenance entry of `key`), not to the
 /// layer that wrote the offending element: a bad element from `vendor` that `etc` then appended
 /// to is reported against `etc`.
-fn string_list(
-    t: &Table,
-    key: &str,
-    prov: &BTreeMap<String, String>,
-    layers: &[LayerInput],
-    errs: &mut Vec<Error>,
-) -> Vec<String> {
+fn string_list(t: &Table, key: &str, prov: &Paths, errs: &mut Vec<Error>) -> Vec<String> {
     let Some(value) = t.get(key) else {
         return Vec::new();
     };
-    let layer = prov.get(key);
-    let at = |e: Error| match layer {
-        Some(name) => {
-            let dir = layers
-                .iter()
-                .find(|l| &l.name == name)
-                .map(|l| l.dir.join(ENABLE_FILE));
-            let e = e.in_layer(name.clone());
-            dir.map_or(e.clone(), |d| e.in_file(d))
-        }
+    let origin = prov.get(&[key.to_owned()][..]);
+    let at = |e: Error| match origin {
+        Some(o) => e.in_layer(o.layer.clone()).in_file(o.file.clone()),
         None => e,
     };
     let Value::Array(items) = value else {
@@ -346,7 +363,7 @@ fn string_list(
 /// # Errors
 /// Every I/O, parse, unknown-key, list-op and bad-value error found in all layers.
 pub fn load_enable(layers: &[LayerInput]) -> Result<Enable, Vec<Error>> {
-    let (mut table, mut prov, mut errs) = (Table::new(), BTreeMap::new(), Vec::new());
+    let (mut table, mut prov, mut errs) = (Table::new(), Paths::new(), Vec::new());
     for layer in layers {
         let file = layer.dir.join(ENABLE_FILE);
         let t = match read_toml(&file, &layer.name) {
@@ -370,10 +387,10 @@ pub fn load_enable(layers: &[LayerInput]) -> Result<Enable, Vec<Error>> {
             prov: &mut prov,
             errs: &mut errs,
         };
-        merge(&mut table, known, "", &mut cx);
+        merge(&mut table, known, &[], &mut cx);
     }
-    let roots = string_list(&table, "enable", &prov, layers, &mut errs);
-    let syslog = string_list(&table, "syslog", &prov, layers, &mut errs);
+    let roots = string_list(&table, "enable", &prov, &mut errs);
+    let syslog = string_list(&table, "syslog", &prov, &mut errs);
     if errs.is_empty() {
         Ok(Enable { roots, syslog })
     } else {

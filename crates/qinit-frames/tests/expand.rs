@@ -5,6 +5,7 @@ use qinit_db::Kind;
 use qinit_frames::error::{Code, Error};
 use qinit_frames::expand::{Expanded, expand};
 use qinit_frames::layers::Merged;
+use qinit_frames::provenance::{FrameKey, Origin};
 use qinit_frames::schema::{Frame, Output, Ready};
 use std::collections::BTreeMap;
 
@@ -228,9 +229,19 @@ fn a_template_cannot_smuggle_forbidden_keys_into_a_brood() {
 #[test]
 fn an_error_carries_the_layer_that_set_the_key() {
     let mut m = merged("[worker.a]\nready = \"banana\"\n");
-    m.provenance.insert("worker.a".into(), "etc".into());
+    let origin = Origin {
+        layer: "etc".into(),
+        file: "/etc/qinit/a.toml".into(),
+        template: None,
+    };
+    m.provenance
+        .insert(FrameKey::new("worker", "a", &[]), origin);
     let es = expand(&m).expect_err("refused");
     assert_eq!(es[0].layer.as_deref(), Some("etc"));
+    assert_eq!(
+        es[0].file.as_deref(),
+        Some(std::path::Path::new("/etc/qinit/a.toml"))
+    );
 }
 
 #[test]

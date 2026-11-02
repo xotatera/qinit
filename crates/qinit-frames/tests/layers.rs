@@ -3,9 +3,10 @@
 //! Layer loading and amend merge.
 mod common;
 
-use common::TempDir;
+use common::{TempDir, set_in};
 use qinit_frames::error::Code;
 use qinit_frames::layers::{LayerInput, load, load_enable};
+use qinit_frames::provenance::FrameKey;
 use std::path::Path;
 
 fn layer(root: &Path, name: &str, files: &[(&str, &str)]) -> LayerInput {
@@ -256,9 +257,12 @@ fn provenance_names_the_layer_that_set_each_key() {
         ),
     ];
     let m = load(&ls).expect("loads");
-    assert_eq!(m.provenance["worker.x.restart.policy"], "vendor");
-    assert_eq!(m.provenance["worker.x.restart.max"], "etc");
-    assert_eq!(m.provenance["worker.x.exec"], "etc");
+    let at = |keys: &[&str]| set_in(&m.provenance, "worker", "x", keys);
+    assert_eq!(at(&["restart", "policy"]), Some("vendor"));
+    assert_eq!(at(&["restart", "max"]), Some("etc"));
+    assert_eq!(at(&["exec"]), Some("etc"));
+    let origin = &m.provenance[&FrameKey::new("worker", "x", &["exec"])];
+    assert_eq!(origin.file, root.join("etc/b.toml"));
 }
 
 #[test]

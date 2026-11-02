@@ -3,7 +3,7 @@
 //! Layer rules: disable semantics, error accumulation, enable validation, missing directories.
 mod common;
 
-use common::TempDir;
+use common::{TempDir, set_in};
 use qinit_frames::error::Code;
 use qinit_frames::layers::{LayerInput, load, load_enable};
 use std::path::Path;
@@ -49,9 +49,12 @@ fn disable_true_removes_the_frame_and_its_provenance() {
     let m = load(&ls).expect("loads");
     assert!(m.table["worker"].as_table().expect("t").get("x").is_none());
     assert!(m.table["worker"].as_table().expect("t").get("y").is_some());
-    assert!(!m.provenance.contains_key("worker.x.exec"));
-    assert_eq!(m.provenance["worker.x"], "etc");
-    assert_eq!(m.provenance["worker.y.exec"], "vendor");
+    assert_eq!(set_in(&m.provenance, "worker", "x", &["exec"]), None);
+    assert_eq!(set_in(&m.provenance, "worker", "x", &[]), Some("etc"));
+    assert_eq!(
+        set_in(&m.provenance, "worker", "y", &["exec"]),
+        Some("vendor")
+    );
 }
 
 #[test]
@@ -66,7 +69,10 @@ fn a_later_layer_can_redefine_a_disabled_frame() {
     );
     let m = load(&ls).expect("loads");
     assert_eq!(m.table["worker"]["x"]["exec"][0].as_str(), Some("/new"));
-    assert_eq!(m.provenance["worker.x.exec"], "local");
+    assert_eq!(
+        set_in(&m.provenance, "worker", "x", &["exec"]),
+        Some("local")
+    );
 }
 
 #[test]
@@ -84,7 +90,7 @@ fn disable_true_discards_other_keys_in_the_same_table() {
     );
     let m = load(&ls).expect("loads");
     assert!(m.table["worker"].as_table().expect("t").get("x").is_none());
-    assert!(!m.provenance.contains_key("worker.x.ready"));
+    assert_eq!(set_in(&m.provenance, "worker", "x", &["ready"]), None);
 }
 
 #[test]

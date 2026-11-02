@@ -77,12 +77,90 @@ fn an_etc_amend_changes_only_the_amended_key() {
         .find(|l| l.trim_start().starts_with("restart.max ="))
         .expect("restart.max line");
     assert!(max.ends_with("  # etc"), "{max}");
+    // Keys no layer set are defaults, not the frame's layer.
+    let defaults = ["ready", "cell.memory_max"];
     for l in lines
         .iter()
         .filter(|l| !l.trim_start().starts_with("restart.max"))
     {
-        assert!(l.ends_with("  # vendor"), "{l}");
+        let key = l.trim_start().split(" = ").next().unwrap_or_default();
+        let want = if defaults.contains(&key) {
+            "  # default"
+        } else {
+            "  # vendor"
+        };
+        assert!(l.ends_with(want), "{l}");
     }
+}
+
+#[test]
+fn dump_and_errors_keep_frames_with_dots_in_their_names_apart() {
+    // `a.b` is set by vendor and `a` by etc: neither may take the other's provenance.
+    let t = Tree::new("pipe-dots");
+    t.file(
+        "vendor",
+        "ab.toml",
+        "[worker.\"a.b\"]\nexec = [\"/ab\"]\nrestart = { policy = \"always\" }\n",
+    );
+    t.file("etc", "a.toml", "[worker.a]\nexec = [\"/a\"]\n");
+    let c = compile(&t.input(&["vendor", "etc"])).expect("compiles");
+    let block = |name: &str| -> Vec<String> {
+        c.dump
+            .split("\n\n")
+            .find(|b| b.starts_with(&format!("worker {name}\n")))
+            .expect("block")
+            .lines()
+            .skip(1)
+            .map(str::to_owned)
+            .collect()
+    };
+    let ab = block("a.b");
+    let exec = ab.iter().find(|l| l.contains("exec =")).expect("exec");
+    assert!(exec.ends_with("  # vendor"), "{}", c.dump);
+    let policy = ab
+        .iter()
+        .find(|l| l.contains("restart.policy"))
+        .expect("policy");
+    assert!(policy.ends_with("  # vendor"), "{}", c.dump);
+    let a = block("a");
+    let exec = a.iter().find(|l| l.contains("exec =")).expect("exec");
+    assert!(exec.ends_with("  # etc"), "{}", c.dump);
+
+    // An error on a.b's key names vendor and a.b's file, not etc.
+    t.file(
+        "vendor",
+        "ab.toml",
+        "[worker.\"a.b\"]\nexec = [\"/ab\"]\nrestart = { policy = \"always\", window = \"soon\" }\n",
+    );
+    let es = compile(&t.input(&["vendor", "etc"])).expect_err("refused");
+    assert_eq!(es.len(), 1, "{es:?}");
+    assert_eq!(es[0].key, "worker.a.b.restart.window");
+    assert_eq!(es[0].layer.as_deref(), Some("vendor"));
+    assert_eq!(es[0].file, Some(t.root.join("vendor/ab.toml")));
+}
+
+#[test]
+fn template_values_and_defaults_are_labelled_in_the_dump() {
+    let t = Tree::new("pipe-tpl");
+    t.file(
+        "vendor",
+        "t.toml",
+        "[template.base]\nexec = [\"/t\"]\n\
+         deps = [{ group = \"optional_all\", edges = [{ path = \"/t\" }] }]\n",
+    );
+    t.file(
+        "etc",
+        "w.toml",
+        "[worker.w]\ntemplate = \"base\"\nrestart = { policy = \"always\" }\n\
+         deps = [{ group = \"optional_all\", edges = [{ path = \"/w\" }] }]\n",
+    );
+    let c = compile(&t.input(&["vendor", "etc"])).expect("compiles");
+    let has = |l: &str| assert!(c.dump.lines().any(|x| x == l), "{l}\n{}", c.dump);
+    has("  exec = [\"/t\"]  # template base");
+    has("  restart.policy = \"always\"  # etc");
+    has("  restart.max = 0  # default");
+    has("  deps[0].group = \"optional_all\"  # template base");
+    has("  deps[1].group = \"optional_all\"  # etc");
 }
 
 #[test]

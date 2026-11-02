@@ -4,35 +4,35 @@ brood boot-complete
 
 worker getty@tty1
   instance_of = "getty"  # vendor
-  exec = ["/sbin/agetty", "--noclear", "tty1", "38400"]  # vendor
-  ready = "pipe"  # vendor
-  restart.policy = "always"  # vendor
-  restart.max = 0  # vendor
-  restart.window = "0ms"  # vendor
+  exec = ["/sbin/agetty", "--noclear", "tty1", "38400"]  # template tty-login
+  ready = "pipe"  # default
+  restart.policy = "always"  # template tty-login
+  restart.max = 0  # default
+  restart.window = "0ms"  # default
   output = "/var/log/getty-tty1.log"  # vendor
-  errors = "/var/log/getty-tty1.log"  # vendor
-  cell.memory_max = "0K"  # vendor
-  cell.pids_max = 0  # vendor
-  deps[0].group = "require_all"  # vendor
-  deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "none" }  # vendor
+  errors = "/var/log/getty-tty1.log"  # default
+  cell.memory_max = "0K"  # default
+  cell.pids_max = 0  # default
+  deps[0].group = "require_all"  # template tty-login
+  deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "none" }  # template tty-login
 
 worker getty@tty2
   instance_of = "getty"  # vendor
-  exec = ["/sbin/agetty", "--noclear", "tty2", "38400"]  # vendor
-  ready = "pipe"  # vendor
-  restart.policy = "always"  # vendor
-  restart.max = 0  # vendor
-  restart.window = "0ms"  # vendor
+  exec = ["/sbin/agetty", "--noclear", "tty2", "38400"]  # template tty-login
+  ready = "pipe"  # default
+  restart.policy = "always"  # template tty-login
+  restart.max = 0  # default
+  restart.window = "0ms"  # default
   output = "/var/log/getty-tty2.log"  # vendor
-  errors = "/var/log/getty-tty2.log"  # vendor
-  cell.memory_max = "0K"  # vendor
-  cell.pids_max = 0  # vendor
-  deps[0].group = "require_all"  # vendor
-  deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "none" }  # vendor
+  errors = "/var/log/getty-tty2.log"  # default
+  cell.memory_max = "0K"  # default
+  cell.pids_max = 0  # default
+  deps[0].group = "require_all"  # template tty-login
+  deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "none" }  # template tty-login
 
 worker logd
   exec = ["/usr/lib/qinit/logd", "--dir", "/var/log/qinit"]  # vendor
-  ready = "pipe"  # vendor
+  ready = "pipe"  # default
   restart.policy = "on-failure"  # vendor
   restart.max = 3  # vendor
   restart.window = "60000ms"  # vendor
@@ -43,9 +43,9 @@ worker logd
 
 forager mount-var
   exec = ["/usr/bin/mount", "/var"]  # vendor
-  ready = "exit"  # vendor
-  cell.memory_max = "0K"  # vendor
-  cell.pids_max = 0  # vendor
+  ready = "exit"  # default
+  cell.memory_max = "0K"  # default
+  cell.pids_max = 0  # default
   deps[0].group = "require_all"  # vendor
   deps[0].edges[0] = { path = "/dev/disk/by-label/var", mode = "sync", restart_on = "none" }  # vendor
 
@@ -65,7 +65,7 @@ worker sshd
   restart.max = 9  # etc
   restart.window = "60000ms"  # vendor
   output = { pipe = "logd" }  # vendor
-  errors = { pipe = "logd" }  # vendor
+  errors = { pipe = "logd" }  # default
   cell.memory_max = "65536K"  # vendor
   cell.pids_max = 64  # vendor
   credentials.uid = "root"  # vendor
@@ -92,9 +92,9 @@ worker syslog-ng
   restart.max = 5  # vendor
   restart.window = "30000ms"  # vendor
   output = "/var/log/syslog-ng.out"  # vendor
-  errors = "/var/log/syslog-ng.out"  # vendor
-  cell.memory_max = "0K"  # vendor
-  cell.pids_max = 0  # vendor
+  errors = "/var/log/syslog-ng.out"  # default
+  cell.memory_max = "0K"  # default
+  cell.pids_max = 0  # default
   deps[0].group = "require_all"  # vendor
   deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "none" }  # vendor
 

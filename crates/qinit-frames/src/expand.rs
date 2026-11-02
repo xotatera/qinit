@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Template and instance expansion (spec §5, plan ruling Q8).
+//! Template and instance expansion (spec §5).
 //!
 //! Every merged frame goes through `schema::parse_frame`. A frame naming a `template` inherits
 //! each field the frame leaves unset; `deps` concatenate, template groups first. A template
@@ -10,18 +10,20 @@
 //! its `@` is always the instanced frame's name (`resolve` stores it as `instance_of`).
 use crate::error::{Code, Error};
 use crate::layers::Merged;
+use crate::provenance::{FrameKey, Origin, Provenance, Seg, locate_all};
 use crate::schema::{self, Creds, DepEdge, DepGroup, Frame, Output, Ready, Sandbox};
 use qinit_db::Kind;
 use qinit_db_core::MAX_NAME_LEN;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Bound;
 
 /// The flat frame set: templates applied, instances expanded, sorted by name.
 #[derive(Clone, Debug, Default)]
 pub struct Expanded {
+    /// Name, kind and frame of every node, sorted by name.
     pub frames: Vec<(String, Kind, Frame)>,
-    /// Per dotted key path, the layer that set it last; instance keys copy their frame's.
-    pub provenance: BTreeMap<String, String>,
+    /// The merged provenance, plus the keys each frame inherits from its template (marked
+    /// with the template's name) and, for every instance, a copy of its frame's keys.
+    pub provenance: Provenance,
 }
 
 const NODE_KINDS: [(&str, Kind); 3] = [
@@ -57,25 +59,6 @@ fn valid_instance(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b != b'@' && name_byte(b))
 }
 
-/// Attach the layer that set `e.key`, or the nearest enclosing key that has one.
-pub(crate) fn with_layer(prov: &BTreeMap<String, String>, mut e: Error) -> Error {
-    if let Some(layer) = layer_of(prov, &e.key) {
-        e.layer = Some(layer.to_owned());
-    }
-    e
-}
-
-/// The layer that set `key` or its nearest enclosing key path.
-pub(crate) fn layer_of<'a>(prov: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
-    let mut key = key;
-    loop {
-        if let Some(layer) = prov.get(key) {
-            return Some(layer);
-        }
-        key = &key[..key.rfind(['.', '['])?];
-    }
-}
-
 fn frames_of<'a>(
     merged: &'a Merged,
     kind: &str,
@@ -97,6 +80,7 @@ fn templates(
 ) -> BTreeMap<String, Frame> {
     let mut out = BTreeMap::new();
     for (name, value) in frames_of(merged, "template") {
+        let start = errs.len();
         match schema::parse_frame("template", name, value) {
             Ok(f) if f.template.is_some() => {
                 let key = format!("template.{name}.template");
@@ -115,11 +99,12 @@ fn templates(
                 failed.insert(name.clone());
             }
         }
+        locate_all(&merged.provenance, "template", name, &mut errs[start..]);
     }
     out
 }
 
-/// Q8: every field the frame sets replaces the template's; `deps` concatenate, template first.
+/// Every field the frame sets replaces the template's; `deps` concatenate, template first.
 fn inherit(f: Frame, t: &Frame) -> Frame {
     let deps = match (&t.deps, f.deps) {
         (None, None) => None,
@@ -143,6 +128,75 @@ fn inherit(f: Frame, t: &Frame) -> Frame {
         credentials: f.credentials.or_else(|| t.credentials.clone()),
         sandbox: f.sandbox.or_else(|| t.sandbox.clone()),
         deps,
+    }
+}
+
+/// Which of the fields a template can pass on `f` sets.
+fn fields_set(f: &Frame) -> [(&'static str, bool); 10] {
+    [
+        ("exec", f.exec.is_some()),
+        ("instances", f.instances.is_some()),
+        ("ready", f.ready.is_some()),
+        ("restart", f.restart.is_some()),
+        ("output", f.output.is_some()),
+        ("errors", f.errors.is_some()),
+        ("cell", f.cell.is_some()),
+        ("credentials", f.credentials.is_some()),
+        ("sandbox", f.sandbox.is_some()),
+        ("deps", f.deps.is_some()),
+    ]
+}
+
+/// The recorded keys of template `tname` at or below `path`, marked with the template.
+fn template_keys(prov: &Provenance, tname: &str, path: &[Seg]) -> Vec<(Vec<Seg>, Origin)> {
+    let start = FrameKey {
+        kind: "template".to_owned(),
+        name: tname.to_owned(),
+        path: path.to_vec(),
+    };
+    prov.range(start..)
+        .take_while(|(k, _)| k.kind == "template" && k.name == tname && k.path.starts_with(path))
+        .map(|(k, o)| {
+            let mut o = o.clone();
+            o.template = Some(tname.to_owned());
+            (k.path.clone(), o)
+        })
+        .collect()
+}
+
+/// Record in `prov` the keys frame `kind.name` (`f`, before inheriting) takes from template
+/// `tname` (`t`): each field the frame leaves unset and the template sets, and, when both have
+/// `deps`, each of the template's groups at the head of the concatenated list.
+fn inherit_provenance(
+    prov: &mut Provenance,
+    kind: &str,
+    name: &str,
+    f: &Frame,
+    tname: &str,
+    t: &Frame,
+) {
+    let mut add = Vec::new();
+    for ((field, mine), (_, theirs)) in fields_set(f).into_iter().zip(fields_set(t)) {
+        if theirs && !mine {
+            add.extend(template_keys(prov, tname, &[Seg::Key(field.to_owned())]));
+        }
+    }
+    if let (Some(_), Some(td)) = (&f.deps, &t.deps) {
+        let deps = Seg::Key("deps".to_owned());
+        if let Some((_, o)) = template_keys(prov, tname, std::slice::from_ref(&deps))
+            .into_iter()
+            .next()
+        {
+            add.extend((0..td.len()).map(|i| (vec![deps.clone(), Seg::Index(i)], o.clone())));
+        }
+    }
+    for (path, o) in add {
+        let key = FrameKey {
+            kind: kind.to_owned(),
+            name: name.to_owned(),
+            path,
+        };
+        prov.insert(key, o);
     }
 }
 
@@ -215,13 +269,14 @@ fn instantiate(f: &Frame, inst: &str) -> Frame {
     }
 }
 
-/// Parse one frame and apply its template.
+/// Parse one frame and apply its template, recording the inherited keys in `prov`.
 fn one(
     kname: &str,
     name: &str,
     value: &toml::Value,
     tpl: &BTreeMap<String, Frame>,
     failed: &BTreeSet<String>,
+    prov: &mut Provenance,
 ) -> Result<Option<Frame>, Error> {
     let base = format!("{kname}.{name}");
     let mut f = schema::parse_frame(kname, name, value)?;
@@ -237,6 +292,7 @@ fn one(
                 format!("no template `{t}`"),
             ));
         };
+        inherit_provenance(prov, kname, name, &f, &t, tf);
         f = inherit(f, tf);
         schema::check_kind(kname, &f, &base)?;
     }
@@ -254,7 +310,8 @@ fn instances(
 ) {
     let key = format!("{}.{name}.instances", kind_name(kind));
     if list.is_empty() {
-        // Ruling R11: an empty list would silently drop the frame, so it is refused.
+        // An empty list would silently drop the frame, so it is refused; a deliberate mask is
+        // `disable = true`.
         let why = "an empty instance list defines nothing; use `disable = true` to mask a frame";
         errs.push(Error::new(Code::Instance, key, why));
         return;
@@ -274,74 +331,96 @@ fn instances(
     }
 }
 
-/// Copy the provenance of `kind.name` and every key below it to each of its instances.
-fn instance_provenance(
-    prov: &BTreeMap<String, String>,
-    out: &[(String, Kind, Frame)],
-) -> BTreeMap<String, String> {
-    let mut all = prov.clone();
+/// Copy the provenance of every key of an instanced frame to each of its instances.
+fn instance_provenance(prov: &mut Provenance, out: &[(String, Kind, Frame)]) {
+    let mut add = Vec::new();
     for (full, kind, _) in out {
         let Some((name, _)) = full.split_once('@') else {
             continue;
         };
-        let base = format!("{}.{name}", kind_name(*kind));
-        let below = format!("{base}.");
-        // The frame's own key, then the contiguous run of keys under `base.`. Siblings such as
-        // `base-x` sort between the two, so they need two lookups rather than one range.
-        let own = prov.get_key_value(&base);
-        let under = prov
-            .range::<str, _>((Bound::Included(below.as_str()), Bound::Unbounded))
-            .take_while(|(k, _)| k.starts_with(&below));
-        for (k, layer) in own.into_iter().chain(under) {
-            let key = format!("{}.{full}{}", kind_name(*kind), &k[base.len()..]);
-            all.insert(key, layer.clone());
+        let kind = kind_name(*kind);
+        let keys = prov
+            .range(FrameKey::new(kind, name, &[])..)
+            .take_while(|(k, _)| k.kind == kind && k.name == name);
+        for (k, o) in keys {
+            let key = FrameKey {
+                kind: kind.to_owned(),
+                name: full.clone(),
+                path: k.path.clone(),
+            };
+            add.push((key, o.clone()));
         }
     }
-    all
+    prov.extend(add);
+}
+
+/// The state `expand` threads through each frame.
+struct Run<'a> {
+    tpl: BTreeMap<String, Frame>,
+    failed: BTreeSet<String>,
+    /// Bare frame name to the kind word that defined it first.
+    seen: BTreeMap<&'a str, &'static str>,
+    prov: Provenance,
+    out: Vec<(String, Kind, Frame)>,
+    errs: Vec<Error>,
+}
+
+impl<'a> Run<'a> {
+    /// Check one merged frame's name, apply its template and expand its instances.
+    fn frame(&mut self, kname: &'static str, kind: Kind, name: &'a str, value: &toml::Value) {
+        let base = format!("{kname}.{name}");
+        if !valid_name(name) || name.contains('@') {
+            let why = format!("{name:?} is not a valid frame name");
+            return self.errs.push(Error::new(Code::BadName, base, why));
+        }
+        if let Some(prev) = self.seen.insert(name, kname) {
+            let why = format!("`{name}` is also a {prev}");
+            return self.errs.push(Error::new(Code::DuplicateName, base, why));
+        }
+        match one(kname, name, value, &self.tpl, &self.failed, &mut self.prov) {
+            Ok(Some(mut f)) => match f.instances.take() {
+                Some(list) => instances(name, kind, &f, &list, &mut self.out, &mut self.errs),
+                None => self.out.push((name.to_owned(), kind, f)),
+            },
+            Ok(None) => {}
+            Err(e) => self.errs.push(e),
+        }
+    }
 }
 
 /// Expand templates and instances of the merged frames.
+///
+/// Every error is located: its file and layer are those of the key it names (or of the nearest
+/// enclosing key a layer set, down to the frame itself), the template's when the frame inherited
+/// the key.
 ///
 /// # Errors
 /// Every parse, `Template`, `BadName`, `Instance` and `DuplicateName` error of every frame.
 pub fn expand(merged: &Merged) -> Result<Expanded, Vec<Error>> {
     let (mut errs, mut failed) = (Vec::new(), BTreeSet::new());
     let tpl = templates(merged, &mut failed, &mut errs);
-    let mut out = Vec::new();
-    let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut run = Run {
+        tpl,
+        failed,
+        seen: BTreeMap::new(),
+        prov: merged.provenance.clone(),
+        out: Vec::new(),
+        errs,
+    };
     for (kname, kind) in NODE_KINDS {
         for (name, value) in frames_of(merged, kname) {
-            let base = format!("{kname}.{name}");
-            if !valid_name(name) || name.contains('@') {
-                let why = format!("{name:?} is not a valid frame name");
-                errs.push(Error::new(Code::BadName, base, why));
-                continue;
-            }
-            if let Some(prev) = seen.insert(name, kname) {
-                let why = format!("`{name}` is also a {prev}");
-                errs.push(Error::new(Code::DuplicateName, base, why));
-                continue;
-            }
-            match one(kname, name, value, &tpl, &failed) {
-                Ok(Some(mut f)) => match f.instances.take() {
-                    Some(list) => instances(name, kind, &f, &list, &mut out, &mut errs),
-                    None => out.push((name.clone(), kind, f)),
-                },
-                Ok(None) => {}
-                Err(e) => errs.push(e),
-            }
+            let start = run.errs.len();
+            run.frame(kname, kind, name, value);
+            locate_all(&run.prov, kname, name, &mut run.errs[start..]);
         }
     }
-    if !errs.is_empty() {
-        return Err(errs
-            .into_iter()
-            .map(|e| with_layer(&merged.provenance, e))
-            .collect());
+    if !run.errs.is_empty() {
+        return Err(run.errs);
     }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    let provenance = instance_provenance(&merged.provenance, &out);
+    run.out.sort_by(|a, b| a.0.cmp(&b.0));
+    instance_provenance(&mut run.prov, &run.out);
     Ok(Expanded {
-        frames: out,
-        provenance,
+        frames: run.out,
+        provenance: run.prov,
     })
 }
