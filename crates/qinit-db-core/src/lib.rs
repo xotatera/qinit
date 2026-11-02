@@ -4,10 +4,6 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
-use vstd::prelude::*;
+mod layout;
 
-verus! {
-
-// Specs and proofs arrive with the following tasks.
-
-} // verus!
+pub use layout::*;
