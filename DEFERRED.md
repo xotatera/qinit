@@ -116,12 +116,10 @@ synccall signal, lets a threaded caller create a child with credentials from
 before a concurrent setxid change. Sub-project 5 (privilege) must revisit
 this before using spawn from a threaded caller that changes credentials.
 
-### D15 — Runtime group evaluation · `OPEN`
+### D15 — Runtime group evaluation · `RESOLVED`
 
-The database stores dependency groups (`require_all`, `require_any`,
-`optional_all`, `exclude_all`) and the compiler checks their shape and the
-graph they imply, but nothing evaluates them at run time. Sub-project 4
-(colony) implements start-time group evaluation.
+Resolved by the colony core sub-project: `qinit-colony-core` evaluates the groups over the
+observed node states and `qinit-colony` runs it against simulated cells.
 
 ### D16 — `qctl` command-line tool · `OPEN`
 
