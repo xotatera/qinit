@@ -123,3 +123,26 @@ The validator is total and never panics. It accepts a database only if all of th
 7. **V7** `stop = "parallel"` appears on no hard edge.
 8. **V8** The pre-syslog list and the enabled closure are consistent with the edges: both are ascending and duplicate-free, and every closure member is reachable from an enabled root.
 9. **V9** Every reader accessor is in bounds for any accepted database.
+
+`qinit_db_core::validate` proves `Ok(())` implies `well_formed`, the conjunction of the spec
+functions `v1` to `v8` in `crates/qinit-db-core/src/validate/spec.rs`, and
+`lemma_accessors_in_bounds` proves V9 from it. In detail:
+
+- Tables appear in header order, each starting at or after the end of the one before (the
+  first after the header). Every table but the pool starts on a 4-byte boundary.
+- Every pool reference (names, argv, readiness arguments, template names, path targets, users,
+  Landlock entries, route paths) is in the pool and valid UTF-8, as `core::str::from_utf8`
+  defines it. Node names are 1 to `MAX_NAME_LEN` bytes and strictly ascending, bytewise.
+- Tiling: node `i`'s groups start where node `i - 1`'s end (node 0's at 0), and the last node's
+  end at the group count; groups tile the edge table the same way. A node has at most
+  `MAX_GROUPS_PER_NODE` groups, a group at most `MAX_EDGES_PER_GROUP` edges.
+- A forager or brood has restart policy 0, and a brood has no argv. A node-target edge has
+  `target_len` 0. A pipe route names a worker and has `b` 0. `caps_hi` uses bits 0..=8 only.
+- Ordering edges are the node-target edges of `require_all`, `require_any` and `optional_all`
+  groups; an ordering edge is hard when its group is `require_all` or `require_any` and its
+  mode is sync. `exclude_all` edges and path targets do not order anything.
+- The enabled list is closed: every node target of a `require_all` or `require_any` group of
+  an enabled node is enabled.
+
+Errors are reported for the first rule broken, in the order header, tables, pool references,
+records (nodes, groups, edges, credentials, routes, then name order), graph, lists.

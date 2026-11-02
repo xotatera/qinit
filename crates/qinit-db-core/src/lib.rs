@@ -5,5 +5,7 @@
 #![forbid(unsafe_code)]
 
 mod layout;
+mod validate;
 
 pub use layout::*;
+pub use validate::*;
