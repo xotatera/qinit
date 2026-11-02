@@ -133,8 +133,7 @@ impl Cells {
     /// # Errors
     ///
     /// [`Error::Sys`] when the loop or an effect failed (an empty loop is `EINVAL`).
-    // Fallible and blocking, so not an `Iterator`; the guest suites call it `next`.
-    #[allow(clippy::should_implement_trait)]
+    #[allow(clippy::should_implement_trait)] // fallible and blocking, so not an `Iterator`; the guest suites call it `next`
     pub fn next(&mut self) -> Result<Vec<Notice>, Error> {
         if let Some(error) = self.pending_error.take() {
             return Err(error);

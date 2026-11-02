@@ -23,7 +23,9 @@ pub enum Watch {
     Inotify,
 }
 
-/// What the `probe` suite found on the pinned kernel (Task 5; `notes/2026-10-27-probe-results.md`).
+/// How the cell code watches `cgroup.events`: on the pinned kernel a change raises EPOLLPRI on the
+/// open file (checked by the `probe` guest suite), so the priority watch is used; the inotify
+/// watch is the fallback.
 pub const EVENTS_WATCH: Watch = Watch::Priority;
 
 /// First loop token of a stray: a child process no cell tracks any more. Far above every cell

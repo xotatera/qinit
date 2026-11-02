@@ -30,8 +30,7 @@ pub enum Reaped {
 }
 
 /// Effects per cell slot. Every error is an errno; the engine decides what it means.
-// Each method's error is the errno of the system operation its doc names.
-#[allow(clippy::missing_errors_doc)]
+#[allow(clippy::missing_errors_doc)] // each method's error is the errno of the operation its doc names
 pub trait Effects {
     /// Makes cell directory `name`, opens it and its `cgroup.events`, and watches the latter.
     fn create(&mut self, slot: u16, name: &CStr) -> Result<(), Errno>;
