@@ -96,6 +96,10 @@ pub open spec fn node_enum_ok(b: Seq<u8>, i: int) -> bool {
     &&& nf(b, i, N_RESTART_POLICY) <= 2
     &&& (nf(b, i, N_KIND) != 0 ==> nf(b, i, N_RESTART_POLICY) == 0)
     &&& (nf(b, i, N_KIND) == 2 ==> nf(b, i, N_EXEC_LEN) == 0)
+    &&& nf(b, i, N_STOP_MODE) <= 1
+    &&& nf(b, i, N_RESTART_DELAY_MS) >= MIN_DELAY_MS
+    &&& nf(b, i, N_STOP_GRACE_MS) >= MIN_DELAY_MS
+    &&& (nf(b, i, N_RESTART_MAX) > 0 ==> nf(b, i, N_RESTART_WINDOW_MS) > 0)
 }
 
 pub open spec fn group_enum_ok(b: Seq<u8>, g: int) -> bool {
@@ -106,7 +110,7 @@ pub open spec fn edge_enum_ok(b: Seq<u8>, x: int) -> bool {
     &&& ef(b, x, E_TARGET_KIND) <= 1
     &&& ef(b, x, E_MODE) <= 1
     &&& ef(b, x, E_RESTART_ON) <= 3
-    &&& ef(b, x, E_FLAGS) <= 1
+    &&& ef(b, x, E_FLAGS) <= 3
     &&& (ef(b, x, E_TARGET_KIND) == 0 ==> ef(b, x, E_TARGET_LEN) == 0)
     &&& (ef(b, x, E_MODE) == 0 ==> ef(b, x, E_DEADLINE_MS) == 0)
 }

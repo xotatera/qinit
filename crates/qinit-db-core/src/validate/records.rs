@@ -41,10 +41,21 @@ fn check_node(b: &[u8], i: usize) -> (r: Result<(), DbError>)
     }
     let kind = field(b, t, i, N_KIND);
     let policy = field(b, t, i, N_RESTART_POLICY);
-    if kind > 2 || field(b, t, i, N_READY_KIND) > 3 || policy > 2 {
+    if kind > 2 || field(b, t, i, N_READY_KIND) > 3 || policy > 2 || field(b, t, i, N_STOP_MODE)
+        > 1 {
         return Err(DbError::Enum { table: tid(t), record: rid(i) });
     }
-    if (kind != 0 && policy != 0) || (kind == 2 && field(b, t, i, N_EXEC_LEN) != 0) {
+    if (kind != 0 && policy != 0) || (kind == 2 && field(b, t, i, N_EXEC_LEN) != 0) || field(
+        b,
+        t,
+        i,
+        N_RESTART_DELAY_MS,
+    ) < MIN_DELAY_MS || field(b, t, i, N_STOP_GRACE_MS) < MIN_DELAY_MS || (field(
+        b,
+        t,
+        i,
+        N_RESTART_MAX,
+    ) > 0 && field(b, t, i, N_RESTART_WINDOW_MS) == 0) {
         return Err(DbError::Consistency { table: tid(t), record: rid(i) });
     }
     Ok(())
@@ -60,7 +71,7 @@ fn check_edge(b: &[u8], x: usize) -> (r: Result<(), DbError>)
     let t = T_EDGES;
     let kind = field(b, t, x, E_TARGET_KIND);
     let mode = field(b, t, x, E_MODE);
-    if kind > 1 || mode > 1 || field(b, t, x, E_RESTART_ON) > 3 || field(b, t, x, E_FLAGS) > 1 {
+    if kind > 1 || mode > 1 || field(b, t, x, E_RESTART_ON) > 3 || field(b, t, x, E_FLAGS) > 3 {
         return Err(DbError::Enum { table: tid(t), record: rid(x) });
     }
     if kind == 0 && field(b, t, x, E_TARGET) >= header_word(b, 5 + 2 * T_NODES) {

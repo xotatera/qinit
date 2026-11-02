@@ -151,7 +151,9 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
         } else {
             intern(&mut pool, b"/bin/true")
         };
-        let mut rec = [0u32; 20];
+        let mut rec = [0u32; 24];
+        rec[N_RESTART_DELAY_MS] = 1000;
+        rec[N_STOP_GRACE_MS] = 10_000;
         rec[N_KIND] = n.kind;
         rec[N_NAME_OFF] = name_off;
         rec[N_NAME_LEN] = name_len;
