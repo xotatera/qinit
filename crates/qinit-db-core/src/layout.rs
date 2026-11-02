@@ -82,7 +82,7 @@ pub const H_VERSION: usize = 1;
 /// Header word: total length in bytes.
 pub const H_TOTAL_LEN: usize = 2;
 
-/// Header word: CRC-32 of the body.
+/// Header word: CRC-32 (IEEE) of the whole file with this word taken as zero.
 pub const H_CRC32: usize = 3;
 
 /// Node record word 0: `kind`.

@@ -135,9 +135,7 @@ it belongs to the later privilege project (see D1).
 
 ### D18 — Ready line plus exit in one wait · `ACCEPTED`
 
-The ruling on a readiness line and the same process's exit arriving in one
-wait is left as it is. The maintainer decided to revisit it in the colony
-sub-project (sub-project 4), which owns service state.
+A service that writes its ready line and exits within the same wait is reported as exited, never as ready. The event loop sorts exits first in a batch (`qinit-event`, `Loop::wait`: `Ready::Exited` before the rest), so the cell engine handles the main exit (`qinit-cell`, `main_exited`) before the readable ready pipe and the machine goes to Empty without a `Ready` report. Accepted as is: a service that is already gone when readiness is read cannot be supervised as ready. The maintainer decided to revisit this in the colony sub-project (sub-project 4), which owns service state.
 
 ### D19 — Validator worst-case cost · `ACCEPTED`
 
