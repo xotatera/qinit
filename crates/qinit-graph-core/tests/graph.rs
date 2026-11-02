@@ -92,3 +92,62 @@ fn a_soft_parallel_edge_never_loosens_a_hard_edge() {
     let l = run(2, &[hard(0, 1), par(0, 1)], true).unwrap();
     assert!(l[0] < l[1]);
 }
+
+/// Reference: DFS cycle detection over the constraining edges.
+fn has_cycle(n: usize, edges: &[GEdge], honour: bool) -> bool {
+    fn visit(v: usize, adj: &[Vec<usize>], state: &mut [u8]) -> bool {
+        state[v] = 1;
+        for &w in &adj[v] {
+            if state[w] == 1 || (state[w] == 0 && visit(w, adj, state)) {
+                return true;
+            }
+        }
+        state[v] = 2;
+        false
+    }
+    let mut adj = vec![Vec::new(); n];
+    for ed in edges {
+        if !(honour && ed.parallel) {
+            adj[ed.from as usize].push(ed.to as usize);
+        }
+    }
+    let mut state = vec![0u8; n];
+    (0..n).any(|v| state[v] == 0 && visit(v, &adj, &mut state))
+}
+
+#[test]
+fn levels_agree_with_a_dfs_reference_on_random_graphs() {
+    // xorshift, fixed seed: deterministic.
+    let mut s = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut next = move || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        s
+    };
+    for _ in 0..2000 {
+        let n = 1 + (next() % 12) as usize;
+        let m = (next() % 20) as usize;
+        let edges: Vec<GEdge> = (0..m)
+            .map(|_| GEdge {
+                from: u32::try_from(next() % n as u64).unwrap(),
+                to: u32::try_from(next() % n as u64).unwrap(),
+                hard: false,
+                parallel: next() % 4 == 0,
+            })
+            .collect();
+        for honour in [false, true] {
+            let got = run(n, &edges, honour);
+            assert_eq!(
+                got.is_err(),
+                has_cycle(n, &edges, honour),
+                "n={n} edges={edges:?} honour={honour}"
+            );
+            if let Ok(l) = got {
+                for ed in edges.iter().filter(|e| !(honour && e.parallel)) {
+                    assert!(l[ed.from as usize] < l[ed.to as usize]);
+                }
+            }
+        }
+    }
+}
