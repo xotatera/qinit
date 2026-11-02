@@ -19,33 +19,74 @@ pub(super) fn logger_edge(logger: u32) -> Edge {
     }
 }
 
-/// The group kind of a word `schema::parse_frame` has checked.
-fn group_kind(g: &str) -> GroupKind {
+/// The group kind of a word, or a `BadValue` at `key`. `schema::parse_frame` rejects the same
+/// words first on the compile path; `resolve` is public, so it checks them again.
+fn group_kind(cx: &mut Cx, key: &str, g: &str) -> Option<GroupKind> {
     match g {
-        "require_all" => GroupKind::RequireAll,
-        "require_any" => GroupKind::RequireAny,
-        "optional_all" => GroupKind::OptionalAll,
-        _ => GroupKind::ExcludeAll,
+        "require_all" => Some(GroupKind::RequireAll),
+        "require_any" => Some(GroupKind::RequireAny),
+        "optional_all" => Some(GroupKind::OptionalAll),
+        "exclude_all" => Some(GroupKind::ExcludeAll),
+        _ => {
+            cx.bad(key, format!("unknown group `{g}`"));
+            None
+        }
     }
 }
 
-/// One edge; `None` when it is dropped (a missing optional or exclude target) or wrong.
-/// `schema::parse_frame` has checked the mode, deadline, `restart_on` and `stop` words and
-/// that exactly one of `to` and `path` is given.
-fn edge(cx: &mut Cx, at: &str, kind: GroupKind, e: &DepEdge) -> Option<Edge> {
-    let requires = matches!(kind, GroupKind::RequireAll | GroupKind::RequireAny);
+/// The words of one edge, each a `BadValue` at `{at}.<field>` when it is not one the schema
+/// admits. Returns the mode, deadline, `restart_on` and whether `stop` is set.
+fn edge_fields(cx: &mut Cx, at: &str, e: &DepEdge) -> (Mode, u32, RestartOn, bool) {
     let mode = match e.mode.as_deref() {
+        None | Some("sync") => Mode::Sync,
         Some("async") => Mode::Async,
-        _ => Mode::Sync,
+        Some(m) => {
+            cx.bad(format!("{at}.mode"), format!("`{m}` is not sync or async"));
+            Mode::Sync
+        }
     };
-    let deadline_ms = e.deadline.as_deref().and_then(duration_ms).unwrap_or(0);
+    let deadline_ms = match e.deadline.as_deref() {
+        None => 0,
+        Some(d) => duration_ms(d).unwrap_or_else(|| {
+            cx.bad(
+                format!("{at}.deadline"),
+                format!("`{d}` is not a duration like 1s"),
+            );
+            0
+        }),
+    };
+    if e.deadline.is_some() && mode != Mode::Async {
+        cx.bad(
+            format!("{at}.deadline"),
+            "a deadline needs mode = \"async\"",
+        );
+    }
     let restart_on = match e.restart_on.as_deref() {
+        None | Some("none") => RestartOn::None,
         Some("error") => RestartOn::Error,
         Some("restart") => RestartOn::Restart,
         Some("refresh") => RestartOn::Refresh,
-        _ => RestartOn::None,
+        Some(r) => {
+            let why = format!("`{r}` is not none, error, restart or refresh");
+            cx.bad(format!("{at}.restart_on"), why);
+            RestartOn::None
+        }
     };
-    let stop_parallel = e.stop.is_some();
+    let stop_parallel = match e.stop.as_deref() {
+        None => false,
+        Some("parallel") => true,
+        Some(s) => {
+            cx.bad(format!("{at}.stop"), format!("`{s}` is not parallel"));
+            false
+        }
+    };
+    (mode, deadline_ms, restart_on, stop_parallel)
+}
+
+/// One edge; `None` when it is dropped (a missing optional or exclude target) or wrong.
+fn edge(cx: &mut Cx, at: &str, kind: GroupKind, e: &DepEdge) -> Option<Edge> {
+    let requires = matches!(kind, GroupKind::RequireAll | GroupKind::RequireAny);
+    let (mode, deadline_ms, restart_on, stop_parallel) = edge_fields(cx, at, e);
     // This fires for every sync require edge, including one whose target is a path. That is
     // stricter than the validator, which only looks at node targets, so that a hard edge never
     // carries `stop = "parallel"`, whatever it points at.
@@ -55,7 +96,7 @@ fn edge(cx: &mut Cx, at: &str, kind: GroupKind, e: &DepEdge) -> Option<Edge> {
             .push(Error::new(Code::HardParallel, format!("{at}.stop"), why));
     }
     let target = match (&e.to, &e.path) {
-        (Some(to), _) => match cx.names.get(to.as_str()) {
+        (Some(to), None) => match cx.names.get(to.as_str()) {
             Some((i, _)) => Target::Node(*i),
             None if requires => {
                 let why = format!("no frame `{to}`");
@@ -77,7 +118,10 @@ fn edge(cx: &mut Cx, at: &str, kind: GroupKind, e: &DepEdge) -> Option<Edge> {
             }
             Target::Path(p.clone())
         }
-        (None, None) => return None,
+        (Some(_), Some(_)) | (None, None) => {
+            cx.bad(at, "an edge needs exactly one of `to` and `path`");
+            return None;
+        }
     };
     Some(Edge {
         target,
@@ -94,7 +138,9 @@ pub(super) fn groups(cx: &mut Cx, base: &str, deps: &[DepGroup]) -> (Vec<Group>,
     let mut out = Vec::with_capacity(deps.len());
     let mut origins = Vec::with_capacity(deps.len());
     for (gi, g) in deps.iter().enumerate() {
-        let kind = group_kind(&g.group);
+        let Some(kind) = group_kind(cx, &format!("{base}.deps[{gi}].group"), &g.group) else {
+            continue;
+        };
         let (mut edges, mut from) = (Vec::new(), Vec::new());
         for (ei, e) in g.edges.iter().enumerate() {
             if let Some(kept) = edge(cx, &format!("{base}.deps[{gi}].edges[{ei}]"), kind, e) {
