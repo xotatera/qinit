@@ -62,13 +62,14 @@ timeout = "45s"
 
 # Measured 2026-11-02: 14 verified; cold build directory (as in a container) 12.4-12.7 s
 # (18.5-18.9 s CPU), 0.95-1.0 GB peak; warm 0.6 s (0.5 s CPU), 221-289 MB peak.
-# 40s covers 2x the slowest measured 18.9s CPU.
+# Re-measured 2026-11-02 at host load ~23 on 32 threads: cold 19.7-20.7 s (29.7-31.3 s CPU over
+# all processes). 45s, like the other cores, covers about 2x the slowest quiet-host 18.9s CPU.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-graph-core"
 kind = "verus"
 package = "qinit-graph-core"
 memory = "4G"
-timeout = "40s"
+timeout = "45s"
 
 # Measured 2026-11-02 (layout, validator and NUL-list rule): 142 verified; cold build directory
 # 17.4-21.7 s run (25.2-29.6 s CPU), 0.9-1.0 GB peak; warm 3.4 s (3.1 s CPU), 370 MB peak.

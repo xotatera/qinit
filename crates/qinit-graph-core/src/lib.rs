@@ -76,6 +76,7 @@ pub open spec fn labellable(n: int, edges: Seq<GEdge>, honour: bool) -> bool {
 }
 
 /// `lv` is a labelling that witnesses [`labellable`].
+/// Keep this body identical to the body of [`labellable`] and the ghost `choose` in [`levels`].
 pub open spec fn labelling(n: int, edges: Seq<GEdge>, honour: bool, lv: Seq<int>) -> bool {
     lv.len() == n && forall|i: int|
         #![trigger edges[i]]
