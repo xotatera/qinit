@@ -209,12 +209,14 @@ fn a_missing_default_is_a_bad_value() {
     )
     .expect_err("refused");
     assert_eq!(es[0].code, Code::BadValue);
+    assert_eq!(es[0].key, "rule[0].caps_max");
 }
 
 #[test]
 fn an_unknown_policy_key_is_an_unknown_key() {
     let es = policy("unk", "default = \"deny\"\nbogus = 1\n").expect_err("refused");
     assert_eq!(es[0].code, Code::UnknownKey);
+    assert_eq!(es[0].key, "bogus");
     assert!(es[0].file.is_some());
     let es = policy(
         "unk2",
@@ -222,6 +224,7 @@ fn an_unknown_policy_key_is_an_unknown_key() {
     )
     .expect_err("refused");
     assert_eq!(es[0].code, Code::UnknownKey);
+    assert_eq!(es[0].key, "rule[0].bogus");
     let es = policy("syn", "default = \n").expect_err("refused");
     assert_eq!(es[0].code, Code::Parse);
 }
@@ -232,4 +235,58 @@ fn a_missing_policy_file_is_an_io_error() {
     let es = load_policy(&path).expect_err("refused");
     assert_eq!(es[0].code, Code::Io);
     assert_eq!(es[0].file.as_deref(), Some(path.as_path()));
+}
+
+#[test]
+fn shape_errors_name_the_rule_and_field() {
+    let key = |tag: &str, body: &str| {
+        let es = policy(tag, body).expect_err("refused");
+        assert_eq!(es.len(), 1, "{es:?}");
+        assert_eq!(es[0].code, Code::BadValue, "{es:?}");
+        es[0].key.clone()
+    };
+    assert_eq!(key("sh-def", "default = 3\n"), "default");
+    let two = "default = \"deny\"\n[[rule]]\nmatch = \"a\"\n[[rule]]\nmatch = \"b\"\n";
+    assert_eq!(
+        key("sh-users", &format!("{two}users = \"root\"\n")),
+        "rule[1].users"
+    );
+    assert_eq!(
+        key("sh-match", "default = \"deny\"\n[[rule]]\nmatch = 3\n"),
+        "rule[0].match"
+    );
+    assert_eq!(
+        key("sh-miss", "default = \"deny\"\n[[rule]]\nusers = []\n"),
+        "rule[0].match"
+    );
+    // Never an empty key, even for a shape the line scan cannot place.
+    assert!(!key("sh-inline", "default = \"deny\"\nrule = 3\n").is_empty());
+}
+
+#[test]
+fn the_first_matching_rule_decides_and_later_rules_are_not_tried() {
+    // `ssh*` matches first and does not list the user; the later exact rule would allow it.
+    let p = pol(
+        "nofall",
+        "default = \"allow\"\n\
+         [[rule]]\nmatch = \"ssh*\"\nusers = [\"other\"]\ncaps_max = [\"net_bind_service\"]\n\
+         [[rule]]\nmatch = \"sshd\"\nusers = [\"sshd\"]\ncaps_max = [\"net_bind_service\"]\n",
+    );
+    let es = check(&p, &model(SSHD)).expect_err("refused");
+    assert_eq!(es.len(), 1, "{es:?}");
+    assert_eq!(es[0].code, Code::Policy);
+    assert!(es[0].detail.contains("`ssh*`"), "{}", es[0].detail);
+}
+
+#[test]
+fn an_empty_users_list_allows_no_user_but_omitting_users_allows_any() {
+    let rule = |users: &str| {
+        format!(
+            "default = \"deny\"\n[[rule]]\nmatch = \"sshd\"\n{users}caps_max = [\"net_bind_service\"]\n"
+        )
+    };
+    let es = check(&pol("users-empty", &rule("users = []\n")), &model(SSHD)).expect_err("refused");
+    assert_eq!(es[0].code, Code::Policy);
+    assert!(es[0].detail.contains("sshd"), "{}", es[0].detail);
+    assert_eq!(check(&pol("users-any", &rule("")), &model(SSHD)), Ok(()));
 }

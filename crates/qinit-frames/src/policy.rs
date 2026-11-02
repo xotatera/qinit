@@ -5,7 +5,15 @@
 //! A policy file has a required `default = "allow" | "deny"` and ordered `[[rule]]` tables
 //! (`match`, `users`, `caps_max`, `require_nnp`). For each node that has a credential set, the
 //! first rule whose `match` glob fits the node name decides; later rules are never consulted. A
-//! node no rule matches follows `default`. A node without a credential set needs no rule.
+//! node no rule matches follows `default`. A rule that matches but rejects a node is final: the
+//! node is never retried against a later rule.
+//!
+//! `users` is a list of allowed uids by name. Omitting `users` allows any user; `users = []`
+//! allows no user at all, so every node the rule matches with a user set is refused. A node without a credential set needs no rule.
+//!
+//! `users` lists the user names a rule allows. Omitting `users` allows any user; `users = []`
+//! allows no user at all, so every node with a user that the rule matches is refused. A rule
+//! that matches and rejects a node is final: the node is not retried against a later rule.
 //!
 //! A credential set whose user is empty (only a `sandbox` table was given, so no uid change)
 //! is not checked against `users`: there is no uid to compare. Its capability ceiling and
@@ -80,17 +88,69 @@ pub fn glob_match(pattern: &str, name: &str) -> bool {
     p[pi..].iter().all(|c| *c == b'*')
 }
 
-fn serde_error(path: &Path, e: &toml::de::Error) -> Error {
-    let msg = e.message();
-    let field = msg
-        .strip_prefix("unknown field `")
-        .and_then(|rest| rest.split_once('`'))
-        .map(|(f, _)| f);
-    match field {
-        Some(f) => Error::new(Code::UnknownKey, f, msg),
-        None => Error::new(Code::BadValue, "", msg),
+/// The bare key at the end of `before` when it is a `key = ` prefix of a line, else `None`.
+fn key_before_value(before: &str) -> Option<&str> {
+    let line = before.rsplit('\n').next()?;
+    let (key, _) = line.split_once('=')?;
+    let key = key.trim();
+    let bare = !key.is_empty()
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    bare.then_some(key)
+}
+
+/// The text between the first pair of backticks of `msg` after `prefix`.
+fn quoted<'a>(msg: &'a str, prefix: &str) -> Option<&'a str> {
+    let rest = msg.strip_prefix(prefix)?;
+    rest.split_once('`').map(|(f, _)| f)
+}
+
+/// The index of the `[[rule]]` table that contains byte `at`: the last `[[rule]]` header line at
+/// or before it. This is a line scan, not a TOML parse, so a `[[rule]]` line inside a
+/// multi-line string, or rules written as an inline `rule = [...]` array, are not recognised.
+fn rule_at(text: &str, at: usize) -> Option<usize> {
+    let mut headers = 0usize;
+    let mut offset = 0usize;
+    for line in text.split_inclusive('\n') {
+        if offset > at {
+            break;
+        }
+        if line.trim_start().starts_with("[[rule]]") {
+            headers += 1;
+        }
+        offset += line.len();
     }
-    .in_file(path)
+    headers.checked_sub(1)
+}
+
+/// The error for a policy whose TOML is valid but whose shape is not.
+///
+/// The key is `rule[i].<field>` inside the `i`-th `[[rule]]` table, the bare field at top level
+/// (`default`, or an unknown key), and `policy` when neither the rule nor the field can be told.
+/// Both come from the error's byte span: the field is the unknown or missing field the message
+/// names, else the key on the span's line; the rule is found by [`rule_at`], so the limits
+/// documented there apply. An unknown field is an `UnknownKey`, anything else a `BadValue`.
+fn serde_error(path: &Path, text: &str, e: &toml::de::Error) -> Error {
+    let msg = e.message();
+    let unknown = quoted(msg, "unknown field `");
+    let start = e.span().map(|s| s.start.min(text.len()));
+    let field = unknown
+        .or_else(|| quoted(msg, "missing field `"))
+        .or_else(|| key_before_value(text.get(..start?)?));
+    let rule = start.and_then(|at| rule_at(text, at));
+    let key = match (rule, field) {
+        (Some(i), Some(f)) => format!("rule[{i}].{f}"),
+        (Some(i), None) => format!("rule[{i}]"),
+        (None, Some(f)) => f.to_string(),
+        (None, None) => "policy".to_string(),
+    };
+    let code = if unknown.is_some() {
+        Code::UnknownKey
+    } else {
+        Code::BadValue
+    };
+    Error::new(code, key, msg).in_file(path)
 }
 
 fn build_rule(path: &Path, i: usize, r: RawRule, errs: &mut Vec<Error>) -> Rule {
@@ -124,12 +184,10 @@ fn build_rule(path: &Path, i: usize, r: RawRule, errs: &mut Vec<Error>) -> Rule 
 pub fn load_policy(path: &Path) -> Result<Policy, Vec<Error>> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| vec![Error::new(Code::Io, "", e.to_string()).in_file(path)])?;
-    let table: toml::Table = text.parse().map_err(|e: toml::de::Error| {
+    text.parse::<toml::Table>().map_err(|e: toml::de::Error| {
         vec![Error::new(Code::Parse, "", e.message()).in_file(path)]
     })?;
-    let raw: RawPolicy = table
-        .try_into()
-        .map_err(|e: toml::de::Error| vec![serde_error(path, &e)])?;
+    let raw: RawPolicy = toml::from_str(&text).map_err(|e| vec![serde_error(path, &text, &e)])?;
     let mut errs = Vec::new();
     let allow_by_default = match raw.default.as_deref() {
         Some("allow") => true,
