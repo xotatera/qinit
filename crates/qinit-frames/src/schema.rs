@@ -62,9 +62,6 @@ pub struct Creds {
     pub caps: Option<Vec<String>>,
     pub nnp: Option<bool>,
     pub securebits: Option<String>,
-    pub namespaces: Option<Vec<String>>,
-    pub seccomp: Option<String>,
-    pub landlock: Option<Vec<String>>,
 }
 
 /// The `sandbox` table of the spec §5 example.
@@ -112,15 +109,7 @@ pub fn parse_frame(kind: &str, name: &str, value: &toml::Value) -> Result<Frame,
             format!("unknown frame kind `{kind}`"),
         ));
     }
-    let frame = Frame::deserialize(value.clone()).map_err(|e| {
-        let msg = e.message().to_string();
-        let code = if msg.contains("unknown field") {
-            Code::UnknownKey
-        } else {
-            Code::BadValue
-        };
-        Error::new(code, base.clone(), msg)
-    })?;
+    let frame = Frame::deserialize(value.clone()).map_err(|e| serde_error(&base, e.message()))?;
     check_kind(kind, &frame, &base)?;
     check_values(&frame, &base)?;
     Ok(frame)
@@ -245,4 +234,18 @@ fn check_edge(e: &DepEdge, at: &str, base: &str) -> Result<(), Error> {
         ));
     }
     Ok(())
+}
+
+/// Map a serde message to an error. Serde reports an unknown field as "unknown field `x`, ...";
+/// the field then joins the key path. Anything else (wrong type, no matching untagged variant,
+/// so an unknown key inside `ready` or `output` too) is a `BadValue` on the frame.
+fn serde_error(base: &str, msg: &str) -> Error {
+    let field = msg
+        .strip_prefix("unknown field `")
+        .and_then(|rest| rest.split_once('`'))
+        .map(|(f, _)| f);
+    match field {
+        Some(f) => Error::new(Code::UnknownKey, format!("{base}.{f}"), msg),
+        None => Error::new(Code::BadValue, base, msg),
+    }
 }

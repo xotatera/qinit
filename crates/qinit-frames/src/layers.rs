@@ -242,19 +242,30 @@ fn check_file(
 
 /// Load every layer in order and merge the frames across them.
 ///
+/// Layers are listed explicitly by the caller, so a missing layer directory is an `Io` error.
+/// Read, parse, unknown-key and duplicate-frame errors are all collected, and once one exists
+/// nothing is merged (the data is incomplete). List-operation errors do not stop the merge: those
+/// from every layer and frame are reported together.
+///
+/// Disable rules: `disable = true` removes the frame and discards every other key in the same
+/// table; a later layer that defines the frame again inserts it fresh, with that layer as the
+/// provenance; `disable` on a frame that does not exist is accepted; `disable = false` is ignored.
+///
 /// # Errors
 /// Every I/O, parse, duplicate, unknown-key and list-op error found in all layers.
 pub fn load(layers: &[LayerInput]) -> Result<Merged, Vec<Error>> {
     let (mut table, mut provenance, mut errs) = (Table::new(), BTreeMap::new(), Vec::new());
+    let mut blocked = false;
     for layer in layers {
         let files = match layer_files(layer) {
             Ok(f) => f,
             Err(e) => {
                 errs.push(e);
+                blocked = true;
                 continue;
             }
         };
-        let (mut seen, mut parsed) = (BTreeSet::new(), Vec::new());
+        let (mut seen, mut parsed, before) = (BTreeSet::new(), Vec::new(), errs.len());
         for file in files {
             match read_toml(&file, &layer.name) {
                 Ok(t) => {
@@ -264,7 +275,8 @@ pub fn load(layers: &[LayerInput]) -> Result<Merged, Vec<Error>> {
                 Err(e) => errs.push(e),
             }
         }
-        if !errs.is_empty() {
+        blocked |= errs.len() > before;
+        if blocked {
             continue;
         }
         for (file, t) in parsed {
@@ -284,8 +296,33 @@ pub fn load(layers: &[LayerInput]) -> Result<Merged, Vec<Error>> {
     }
 }
 
-fn string_list(t: &Table, key: &str, file: &Path, errs: &mut Vec<Error>) -> Vec<String> {
-    let Some(Value::Array(items)) = t.get(key) else {
+/// Read the string list at `key` of the merged enable table. A missing key is empty; a
+/// non-array value or a non-string element is a `BadValue` naming the layer and file that set it.
+fn string_list(
+    t: &Table,
+    key: &str,
+    prov: &BTreeMap<String, String>,
+    layers: &[LayerInput],
+    errs: &mut Vec<Error>,
+) -> Vec<String> {
+    let Some(value) = t.get(key) else {
+        return Vec::new();
+    };
+    let layer = prov.get(key);
+    let at = |e: Error| match layer {
+        Some(name) => {
+            let dir = layers
+                .iter()
+                .find(|l| &l.name == name)
+                .map(|l| l.dir.join(ENABLE_FILE));
+            let e = e.in_layer(name.clone());
+            dir.map_or(e.clone(), |d| e.in_file(d))
+        }
+        None => e,
+    };
+    let Value::Array(items) = value else {
+        let why = format!("expected an array of strings, got {value:?}");
+        errs.push(at(Error::new(Code::BadValue, key, why)));
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -294,7 +331,7 @@ fn string_list(t: &Table, key: &str, file: &Path, errs: &mut Vec<Error>) -> Vec<
             out.push(s.to_string());
         } else {
             let why = format!("expected a string, got {item:?}");
-            errs.push(Error::new(Code::BadValue, key, why).in_file(file));
+            errs.push(at(Error::new(Code::BadValue, key, why)));
         }
     }
     out
@@ -306,7 +343,6 @@ fn string_list(t: &Table, key: &str, file: &Path, errs: &mut Vec<Error>) -> Vec<
 /// Every I/O, parse, unknown-key, list-op and bad-value error found in all layers.
 pub fn load_enable(layers: &[LayerInput]) -> Result<Enable, Vec<Error>> {
     let (mut table, mut prov, mut errs) = (Table::new(), BTreeMap::new(), Vec::new());
-    let mut last = PathBuf::from(ENABLE_FILE);
     for layer in layers {
         let file = layer.dir.join(ENABLE_FILE);
         let t = match read_toml(&file, &layer.name) {
@@ -331,10 +367,9 @@ pub fn load_enable(layers: &[LayerInput]) -> Result<Enable, Vec<Error>> {
             errs: &mut errs,
         };
         merge(&mut table, known, "", &mut cx);
-        last = file;
     }
-    let roots = string_list(&table, "enable", &last, &mut errs);
-    let syslog = string_list(&table, "syslog", &last, &mut errs);
+    let roots = string_list(&table, "enable", &prov, layers, &mut errs);
+    let syslog = string_list(&table, "syslog", &prov, layers, &mut errs);
     if errs.is_empty() {
         Ok(Enable { roots, syslog })
     } else {

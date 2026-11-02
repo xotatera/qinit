@@ -74,23 +74,26 @@ fn output_pipe_and_path_both_parse() {
 fn restart_on_a_forager_is_a_bad_value() {
     let e = parse("forager", "restart = { policy = \"always\" }").unwrap_err();
     assert_eq!(e.code, Code::BadValue);
+    assert_eq!(e.key, "forager.t.restart");
 }
 
 #[test]
 fn exec_on_a_brood_is_a_bad_value() {
     let e = parse("brood", "exec = [\"/x\"]").unwrap_err();
     assert_eq!(e.code, Code::BadValue);
+    assert_eq!(e.key, "brood.t.exec");
 }
 
 #[test]
 fn a_brood_with_runtime_keys_is_a_bad_value() {
-    for k in [
-        "ready = \"pipe\"",
-        "output = \"/dev/log\"",
-        "credentials = { uid = \"a\" }",
+    for (k, key) in [
+        ("ready = \"pipe\"", "ready"),
+        ("output = \"/dev/log\"", "output"),
+        ("credentials = { uid = \"a\" }", "credentials"),
     ] {
         let e = parse("brood", k).unwrap_err();
         assert_eq!(e.code, Code::BadValue, "{k}");
+        assert_eq!(e.key, format!("brood.t.{key}"));
     }
 }
 
@@ -107,8 +110,11 @@ fn a_brood_with_only_deps_parses() {
 fn an_edge_needs_exactly_one_of_to_and_path() {
     let none = "deps = [ { group = \"require_all\", edges = [ { mode = \"sync\" } ] } ]";
     let both = "deps = [ { group = \"require_all\", edges = [ { to = \"a\", path = \"/p\" } ] } ]";
-    assert_eq!(parse("worker", none).unwrap_err().code, Code::BadValue);
-    assert_eq!(parse("worker", both).unwrap_err().code, Code::BadValue);
+    for src in [none, both] {
+        let e = parse("worker", src).unwrap_err();
+        assert_eq!(e.code, Code::BadValue);
+        assert_eq!(e.key, "worker.t.deps[0].edges[0]");
+    }
 }
 
 #[test]
@@ -117,8 +123,16 @@ fn a_deadline_needs_async_mode_and_stop_must_be_parallel() {
     let s = "deps = [ { group = \"require_all\", edges = [ { to = \"a\", stop = \"serial\" } ] } ]";
     let ok =
         "deps = [ { group = \"optional_all\", edges = [ { to = \"a\", stop = \"parallel\" } ] } ]";
-    assert_eq!(parse("worker", d).unwrap_err().code, Code::BadValue);
-    assert_eq!(parse("worker", s).unwrap_err().code, Code::BadValue);
+    let e = parse("worker", d).unwrap_err();
+    assert_eq!(
+        (e.code, e.key.as_str()),
+        (Code::BadValue, "worker.t.deps[0].edges[0].deadline")
+    );
+    let e = parse("worker", s).unwrap_err();
+    assert_eq!(
+        (e.code, e.key.as_str()),
+        (Code::BadValue, "worker.t.deps[0].edges[0].stop")
+    );
     assert!(parse("worker", ok).is_ok());
 }
 
@@ -143,4 +157,60 @@ fn a_wrong_type_is_a_bad_value() {
 #[test]
 fn a_template_accepts_defaults_of_any_kind() {
     assert!(parse("template", SSHD).is_ok());
+}
+
+#[test]
+fn credentials_no_longer_carry_sandbox_keys() {
+    for k in [
+        "namespaces = [\"mount\"]",
+        "seccomp = \"default\"",
+        "landlock = []",
+    ] {
+        let src = format!("credentials = {{ uid = \"x\", {k} }}");
+        let e = parse("worker", &src).unwrap_err();
+        assert_eq!(e.code, Code::UnknownKey, "{k}");
+    }
+}
+
+#[test]
+fn sandbox_keys_parse_and_unknown_sandbox_keys_are_unknown_keys() {
+    let f = parse(
+        "worker",
+        "sandbox = { namespaces = [\"net\"], seccomp = \"default\", landlock = [\"ro:/etc\"] }",
+    )
+    .unwrap();
+    assert!(f.sandbox.is_some());
+    let e = parse("worker", "sandbox = { colour = 1 }").unwrap_err();
+    assert_eq!(e.code, Code::UnknownKey);
+}
+
+#[test]
+fn an_unknown_key_names_the_field_in_the_key_path() {
+    let e = parse("worker", "colour = 1").unwrap_err();
+    assert_eq!(
+        (e.code, e.key.as_str()),
+        (Code::UnknownKey, "worker.t.colour")
+    );
+    assert!(e.detail.contains("colour"));
+}
+
+#[test]
+fn a_message_that_merely_mentions_unknown_field_is_a_bad_value() {
+    let e = parse("worker", "exec = \"unknown field\"").unwrap_err();
+    assert_eq!((e.code, e.key.as_str()), (Code::BadValue, "worker.t"));
+}
+
+#[test]
+fn an_unknown_key_inside_an_untagged_enum_is_a_bad_value() {
+    // Serde cannot tell which variant was meant, so it reports no matching variant.
+    for src in [
+        "ready = { socket = \"/x\", x = 1 }",
+        "output = { pipe = \"l\", x = 1 }",
+    ] {
+        assert_eq!(
+            parse("worker", src).unwrap_err().code,
+            Code::BadValue,
+            "{src}"
+        );
+    }
 }

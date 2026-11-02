@@ -39,7 +39,19 @@ fn sizes_parse() {
 
 #[test]
 fn bad_sizes_are_none() {
-    for s in ["512", "1T", "4294967296K", "", "K", "1.5M", "-1K", "4096G"] {
+    for s in [
+        "512",
+        "1T",
+        "4294967296K",
+        "",
+        "K",
+        "1.5M",
+        "-1K",
+        "4096G",
+        "+1K",
+        " 1K",
+        "\u{661}K",
+    ] {
         assert_eq!(size_kib(s), None, "{s:?}");
     }
 }
