@@ -128,7 +128,7 @@ empty user is unprivileged, so the record contradicts itself.
 The validator is total and never panics. It accepts a database only if all of the following hold:
 
 1. **V1** Header fields, offsets and counts are in bounds and within the limits, and tables do not overlap.
-2. **V2** Every pool reference is an in-bounds slice, valid UTF-8, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, Landlock entries) holds no empty element. `N_INSTANCE_OF` is not held to `MAX_NAME_LEN` here: the compiler bounds it (it is a frame name, at most `MAX_NAME_LEN` bytes), the validator checks only that it is an in-bounds, valid UTF-8 slice.
+2. **V2** Every pool reference is an in-bounds slice, valid UTF-8, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, Landlock entries) holds no empty element. `N_INSTANCE_OF` may be empty, but at most `MAX_NAME_LEN` bytes.
 3. **V3** Every cross-table index is `NONE` or in range of its table.
 4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline).
 5. **V5** The ordering-edge graph is acyclic.
