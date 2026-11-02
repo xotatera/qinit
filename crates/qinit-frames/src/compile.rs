@@ -19,15 +19,20 @@ use std::path::PathBuf;
 /// [`layers`] defines the amend rules.
 #[derive(Clone, Debug)]
 pub struct CompileInput {
+    /// The layers, earliest first; each later layer amends the ones before it.
     pub layers: Vec<LayerInput>,
+    /// The privilege policy file to check the credentials against; none means no check.
     pub policy: Option<PathBuf>,
 }
 
 /// A compiled database, the non-fatal findings and a human-readable dump with provenance.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Compiled {
+    /// The database, validated and decoded back to the resolved model before it is returned.
     pub bytes: Vec<u8>,
+    /// Non-fatal findings, such as dropped optional edges.
     pub warnings: Vec<Warning>,
+    /// The resolved model with the origin of each key; see [`crate::dump`].
     pub dump: String,
 }
 

@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Deterministic fuzzing: random frame sets through the whole pipeline, and mutated golden
-//! databases through the reader (Review Focus 3: never a panic, never a malformed accept).
+//! databases through the reader: never a panic, never a malformed database accepted, and never
+//! a compiler self-check failure.
 mod common;
 
 use common::{Tree, golden_input};
@@ -132,6 +133,12 @@ fn random_frame_sets_compile_validate_and_round_trip() {
             Err(es) => {
                 refused += 1;
                 assert!(!es.is_empty(), "case {case}: empty error list");
+                // A SelfCheck is the compiler disagreeing with the validator: a bug, never an
+                // ordinary refusal.
+                assert!(
+                    es.iter().all(|e| e.code != Code::SelfCheck),
+                    "case {case}: self-check failed: {es:?}\n{src}"
+                );
                 if es.iter().any(|e| e.code == Code::Cycle) {
                     cycles += 1;
                 }
@@ -179,7 +186,7 @@ fn mutations() -> Vec<(bool, Vec<u8>)> {
 
 #[test]
 fn mutated_databases_never_panic_the_reader() {
-    // Review Focus 3: open is total, and decode is total on whatever open accepts.
+    // open is total, and decode is total on whatever open accepts.
     let mut accepted = 0;
     for (truncated, bytes) in mutations() {
         if let Ok(r) = open(&bytes) {

@@ -1,11 +1,34 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Errors found after the merge carry the file and layer of the frame key they name.
+//! Errors found after the merge carry the file and layer of the frame key they name, and an
+//! error displays them.
 mod common;
 
 use common::Tree;
 use qinit_frames::compile::compile;
 use qinit_frames::error::{Code, Error};
+
+#[test]
+fn an_error_displays_file_key_layer_code_and_detail_leaving_out_absent_parts() {
+    let e = Error::new(Code::BadValue, "worker.a.ready", "`x` is not pipe or exit");
+    assert_eq!(
+        e.to_string(),
+        "worker.a.ready: BadValue: `x` is not pipe or exit"
+    );
+    let e = e.in_layer("etc").in_file("/etc/qinit/a.toml");
+    assert_eq!(
+        e.to_string(),
+        "/etc/qinit/a.toml: worker.a.ready [etc]: BadValue: `x` is not pipe or exit"
+    );
+    let e = Error::new(Code::Parse, "", "expected `=`").in_file("/v/a.toml");
+    assert_eq!(e.to_string(), "/v/a.toml: Parse: expected `=`");
+    let e = Error::new(Code::Io, "", "gone").in_layer("vendor");
+    assert_eq!(e.to_string(), "[vendor]: Io: gone");
+    let e = Error::new(Code::Limit, "", "too many");
+    assert_eq!(e.to_string(), "Limit: too many");
+    let boxed: Box<dyn std::error::Error> = Box::new(e);
+    assert_eq!(boxed.to_string(), "Limit: too many");
+}
 
 fn one(es: &[Error]) -> &Error {
     assert_eq!(es.len(), 1, "{es:?}");
