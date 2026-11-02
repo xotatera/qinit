@@ -77,6 +77,9 @@ fn edge(cx: &mut Cx, at: &str, kind: GroupKind, e: &DepEdge) -> Option<Edge> {
             false
         }
     };
+    // Ruling R12: this fires for every sync require edge, including one whose target is a path.
+    // That is stricter than the validator, which only looks at node targets; it is accepted so
+    // that a hard edge never carries `stop = "parallel"`, whatever it points at.
     if stop_parallel && requires && mode == Mode::Sync {
         let why = "stop = \"parallel\" on a hard (sync require) edge";
         cx.errs

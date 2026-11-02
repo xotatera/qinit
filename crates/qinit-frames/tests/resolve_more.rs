@@ -179,3 +179,45 @@ fn a_resolved_tree_passes_the_proved_validator() {
     let db = qinit_db::open(&bytes).expect("the proved validator accepts it");
     assert_eq!(&db.decode(), m);
 }
+
+#[test]
+fn a_worker_that_is_its_own_logger_through_output_is_a_cycle() {
+    let es = errs("[worker.a]\nexec = [\"/a\"]\noutput = { pipe = \"a\" }\n");
+    assert_eq!(es[0].code, Code::Cycle);
+    assert_eq!(es[0].key, "worker.a.output");
+}
+
+#[test]
+fn a_producer_piping_to_the_syslog_worker_is_not_presyslog() {
+    let src = r#"
+        [worker.syslog-ng]
+        exec = ["/s"]
+        [worker.app]
+        exec = ["/app"]
+        output = { pipe = "syslog-ng" }
+        [worker.early]
+        exec = ["/e"]
+        [brood.boot]
+        deps = [{ group = "require_all", edges = [{ to = "app" }, { to = "early" }, { to = "syslog-ng" }] }]
+    "#;
+    let r = run(src, &enable(&["boot"], &["syslog-ng"])).expect("resolves");
+    // `app` reaches the syslog worker over its implicit logger edge, so it is not listed.
+    assert_eq!(r.model.presyslog, [idx(&r.model, "early")]);
+}
+
+#[test]
+fn stop_parallel_on_a_sync_require_path_edge_is_hard_parallel() {
+    // Ruling R12: the check also fires for a path target, which is stricter than the validator
+    // (a path edge has no node to stop in parallel); it is accepted and documented.
+    let src = |mode: &str, group: &str| {
+        format!(
+            "[worker.b]\nexec = [\"/b\"]\ndeps = [{{ group = \"{group}\", edges = \
+             [{{ path = \"/run/x\", stop = \"parallel\"{mode} }}] }}]\n"
+        )
+    };
+    let es = errs(&src("", "require_all"));
+    assert_eq!(es[0].code, Code::HardParallel);
+    assert_eq!(es[0].key, "worker.b.deps[0].edges[0].stop");
+    ok(&src(", mode = \"async\"", "require_all"));
+    ok(&src("", "optional_all"));
+}

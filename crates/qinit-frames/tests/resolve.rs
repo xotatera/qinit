@@ -79,6 +79,7 @@ fn a_target_masked_by_disable_is_missing_target_for_require() {
     let m = load(&ls).expect("loads");
     let es = resolve(&expand(&m).expect("expands"), &Enable::default()).expect_err("refused");
     assert_eq!(es[0].code, Code::MissingTarget);
+    assert_eq!(es[0].key, "worker.b.deps[0].edges[0].to");
 }
 
 #[test]
