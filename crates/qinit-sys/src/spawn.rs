@@ -7,7 +7,7 @@
 //! routes the given descriptors to their target numbers, closes every other number up to the
 //! highest target, marks everything above close-on-exec, and execs. An exec failure writes the
 //! errno (four native-endian bytes) to the caller's close-on-exec error pipe; a successful exec
-//! closes it (plan P8). No allocation and no libc locking happens in the child, so a caller
+//! closes it. No allocation and no libc locking happens in the child, so a caller
 //! with threads is safe.
 use crate::fd::dup_above;
 use crate::{Errno, Result, check_long, cpath};

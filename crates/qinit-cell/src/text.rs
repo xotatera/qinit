@@ -4,7 +4,7 @@
 //! The text the runtime reads: `cgroup.events`, `cgroup.procs`, a pidfd's fdinfo, the kernel
 //! release, cell names and the readiness pipe. Pure functions.
 
-/// The kernel floor (spec R9): `PIDFD_GET_INFO`.
+/// The kernel floor, Linux 6.13: the first with `PIDFD_GET_INFO`.
 pub const FLOOR: (u32, u32) = (6, 13);
 
 /// `(populated, frozen)` from `cgroup.events`; `None` unless both keys are there.

@@ -12,6 +12,32 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `qinit-graph-core`: the dependency graph model, Verus-proved: cycle detection
+  (a graph is reported cyclic exactly when it has a cycle) and level assignment
+  in which every hard edge strictly orders its two ends, so a stop order exists
+  whatever the opt-outs. Limits of 4096 nodes and 32768 edges.
+- `qinit-db-core`: the compiled database layout (header, eight tables, limits,
+  record word indices; `docs/db-format.md`) and a total, Verus-proved validator
+  (V1-V9): bounds and tiling, UTF-8 pool references, non-empty NUL-separated
+  argv and Landlock lists, enums and reserved bits, acyclic ordering edges,
+  stop order, no parallel stop on a hard edge, sorted lists and a closed
+  enabled set. An accepted database cannot make a reader accessor go out of bounds.
+- `qinit-db`: the database runtime: `Model`, a deterministic writer (CRC-32,
+  refuses models that cannot round-trip) and `open`, which checks length, CRC
+  and the proved validator before `Reader::decode` returns the model.
+- `qinit-frames`: the frames compiler library: strict TOML schema, units and
+  amend-layer merge, template and instance expansion, reference resolution,
+  credential policy ceilings (policy file with ordered rules), graph passes, a
+  compile pipeline with a self-check (write, open, decode, compare) and a
+  provenance dump, with golden, negative and fuzz tests. Provenance is kept
+  per frame key with its layer and file; the dump marks each value with the
+  layer that set it, `template <name>` or `default`. Errors carry codes, keys
+  and, wherever the key belongs to a frame, its file and layer, and display as
+  `<file>: <key> [<layer>]: <code>: <detail>`; policy shape errors name their
+  rule and field. Least privilege by default: a worker without `credentials`,
+  or with only a `sandbox` table, is unprivileged by contract (no root, no
+  capabilities, no-new-privileges on) and needs no policy rule.
+- Workspace pins for `serde` and `toml`.
 - Guest suites for cells: spawn (placement, exec failure, only routed
   descriptors), ready (pipe, EOF, exit), stop_main, stop_cell (setsid
   escapee, member dying mid-enumeration), escalate, reuse_guard, adopt (with a

@@ -38,7 +38,7 @@ pub enum Error {
     Full,
     BadName(String),
     NoSuchCell(u16),
-    /// The running kernel is below the floor (spec R9).
+    /// The running kernel is below the floor (Linux 6.13).
     Floor(String),
     Sys(Errno),
 }

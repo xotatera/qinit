@@ -1,0 +1,102 @@
+brood boot-complete
+  deps[0].group = "require_all"  # vendor
+  deps[0].edges[0] = { to = "multi-user", mode = "async", deadline = "90000ms", restart_on = "none", stop = "parallel" }  # vendor
+
+worker getty@tty1
+  instance_of = "getty"  # vendor
+  exec = ["/sbin/agetty", "--noclear", "tty1", "38400"]  # template tty-login
+  ready = "pipe"  # default
+  restart.policy = "always"  # template tty-login
+  restart.max = 0  # default
+  restart.window = "0ms"  # default
+  output = "/var/log/getty-tty1.log"  # vendor
+  errors = "/var/log/getty-tty1.log"  # default
+  cell.memory_max = "0K"  # default
+  cell.pids_max = 0  # default
+  deps[0].group = "require_all"  # template tty-login
+  deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "none" }  # template tty-login
+
+worker getty@tty2
+  instance_of = "getty"  # vendor
+  exec = ["/sbin/agetty", "--noclear", "tty2", "38400"]  # template tty-login
+  ready = "pipe"  # default
+  restart.policy = "always"  # template tty-login
+  restart.max = 0  # default
+  restart.window = "0ms"  # default
+  output = "/var/log/getty-tty2.log"  # vendor
+  errors = "/var/log/getty-tty2.log"  # default
+  cell.memory_max = "0K"  # default
+  cell.pids_max = 0  # default
+  deps[0].group = "require_all"  # template tty-login
+  deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "none" }  # template tty-login
+
+worker logd
+  exec = ["/usr/lib/qinit/logd", "--dir", "/var/log/qinit"]  # vendor
+  ready = "pipe"  # default
+  restart.policy = "on-failure"  # vendor
+  restart.max = 3  # vendor
+  restart.window = "60000ms"  # vendor
+  cell.memory_max = "16384K"  # vendor
+  cell.pids_max = 4  # vendor
+  deps[0].group = "require_all"  # vendor
+  deps[0].edges[0] = { to = "syslog-ng", mode = "sync", restart_on = "restart" }  # vendor
+
+forager mount-var
+  exec = ["/usr/bin/mount", "/var"]  # vendor
+  ready = "exit"  # default
+  cell.memory_max = "0K"  # default
+  cell.pids_max = 0  # default
+  deps[0].group = "require_all"  # vendor
+  deps[0].edges[0] = { path = "/dev/disk/by-label/var", mode = "sync", restart_on = "none" }  # vendor
+
+brood multi-user
+  deps[0].group = "require_all"  # vendor
+  deps[0].edges[0] = { to = "sshd", mode = "sync", restart_on = "none" }  # vendor
+  deps[0].edges[1] = { to = "getty@tty1", mode = "sync", restart_on = "none" }  # vendor
+  deps[0].edges[2] = { to = "getty@tty2", mode = "sync", restart_on = "none" }  # vendor
+  deps[1].group = "require_any"  # vendor
+  deps[1].edges[0] = { to = "logd", mode = "sync", restart_on = "none" }  # vendor
+  deps[1].edges[1] = { to = "syslog-ng", mode = "sync", restart_on = "none" }  # vendor
+
+worker sshd
+  exec = ["/usr/sbin/sshd", "-D", "-e"]  # vendor
+  ready = "pipe"  # vendor
+  restart.policy = "on-failure"  # vendor
+  restart.max = 9  # etc
+  restart.window = "60000ms"  # vendor
+  output = { pipe = "logd" }  # vendor
+  errors = { pipe = "logd" }  # default
+  cell.memory_max = "65536K"  # vendor
+  cell.pids_max = 64  # vendor
+  credentials.uid = "root"  # vendor
+  credentials.caps = ["setgid", "setuid", "net_bind_service", "sys_chroot"]  # vendor
+  credentials.nnp = false  # vendor
+  credentials.securebits = "noroot"  # vendor
+  sandbox.namespaces = ["ipc", "uts"]  # vendor
+  sandbox.seccomp = "default"  # vendor
+  sandbox.landlock = ["ro:/etc/ssh", "rw:/run/sshd"]  # vendor
+  deps[0].group = "require_all"  # vendor
+  deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "error" }  # vendor
+  deps[0].edges[1] = { path = "/etc/ssh/sshd_config", mode = "sync", restart_on = "none" }  # vendor
+  deps[1].group = "optional_all"  # vendor
+  deps[1].edges[0] = { to = "syslog-ng", mode = "async", deadline = "5000ms", restart_on = "none", stop = "parallel" }  # vendor
+  deps[2].group = "exclude_all"  # vendor
+  deps[2].edges[0] = { to = "getty@tty2", mode = "sync", restart_on = "none" }  # vendor
+  deps[3].group = "require_all"  # vendor
+  deps[3].edges[0] = { to = "logd", mode = "sync", restart_on = "none" }  # vendor
+
+worker syslog-ng
+  exec = ["/usr/sbin/syslog-ng", "-F", "--no-caps"]  # vendor
+  ready = { socket = "/dev/log" }  # vendor
+  restart.policy = "always"  # vendor
+  restart.max = 5  # vendor
+  restart.window = "30000ms"  # vendor
+  output = "/var/log/syslog-ng.out"  # vendor
+  errors = "/var/log/syslog-ng.out"  # default
+  cell.memory_max = "0K"  # default
+  cell.pids_max = 0  # default
+  deps[0].group = "require_all"  # vendor
+  deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "none" }  # vendor
+
+enabled = ["boot-complete", "getty@tty1", "getty@tty2", "logd", "mount-var", "multi-user", "sshd", "syslog-ng"]
+presyslog = ["getty@tty1", "getty@tty2"]

@@ -78,7 +78,7 @@ pub fn read_from_start(fd: impl AsFd, buf: &mut [u8]) -> Result<usize> {
     usize::try_from(n).map_err(|_| Errno::last())
 }
 
-/// The inode number of `fd`: for a cgroup2 directory, its cgroup id (plan P9).
+/// The inode number of `fd`: for a cgroup2 directory, its cgroup id.
 pub fn inode(fd: impl AsFd) -> Result<u64> {
     let mut st = MaybeUninit::<libc::stat>::zeroed();
     // SAFETY: `st` is a stat buffer the kernel fills.

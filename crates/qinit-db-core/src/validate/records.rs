@@ -1,0 +1,318 @@
+// SPDX-FileCopyrightText: 2026 Xota Tera
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! V3 and V4 for the records: indices in range, enums in range, consistent fields, the group
+//! and edge tables tiled, and the nodes sorted by name.
+
+#![allow(clippy::many_single_char_names)] // `b`, `n`, `i`, `g`, `x`, `k` follow the spec names
+
+use super::header::{field, header_word};
+#[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
+use super::spec::*;
+use super::{DbError, rid, tid};
+#[allow(clippy::wildcard_imports)] // the layout constants, used throughout
+use crate::layout::*;
+use vstd::prelude::*;
+
+verus! {
+
+fn index_or_none_ok(v: u32, n: u32) -> (r: bool)
+    ensures
+        r == index_or_none(v as int, n as int),
+{
+    v == NONE || v < n
+}
+
+fn check_node(b: &[u8], i: usize) -> (r: Result<(), DbError>)
+    requires
+        v1(b@),
+        i < nodes(b@),
+    ensures
+        r is Ok ==> node_index_ok(b@, i as int) && node_enum_ok(b@, i as int),
+{
+    let t = T_NODES;
+    let index = DbError::Index { table: tid(t), record: rid(i) };
+    let routes = header_word(b, 5 + 2 * T_ROUTES);
+    let creds = header_word(b, 5 + 2 * T_CREDS);
+    if !index_or_none_ok(field(b, t, i, N_OUTPUT), routes) || !index_or_none_ok(
+        field(b, t, i, N_ERRORS),
+        routes,
+    ) || !index_or_none_ok(field(b, t, i, N_CRED), creds) {
+        return Err(index);
+    }
+    let kind = field(b, t, i, N_KIND);
+    let policy = field(b, t, i, N_RESTART_POLICY);
+    if kind > 2 || field(b, t, i, N_READY_KIND) > 3 || policy > 2 {
+        return Err(DbError::Enum { table: tid(t), record: rid(i) });
+    }
+    if (kind != 0 && policy != 0) || (kind == 2 && field(b, t, i, N_EXEC_LEN) != 0) {
+        return Err(DbError::Consistency { table: tid(t), record: rid(i) });
+    }
+    Ok(())
+}
+
+fn check_edge(b: &[u8], x: usize) -> (r: Result<(), DbError>)
+    requires
+        v1(b@),
+        x < tcnt(b@, T_EDGES as int),
+    ensures
+        r is Ok ==> edge_index_ok(b@, x as int) && edge_enum_ok(b@, x as int),
+{
+    let t = T_EDGES;
+    let kind = field(b, t, x, E_TARGET_KIND);
+    let mode = field(b, t, x, E_MODE);
+    if kind > 1 || mode > 1 || field(b, t, x, E_RESTART_ON) > 3 || field(b, t, x, E_FLAGS) > 1 {
+        return Err(DbError::Enum { table: tid(t), record: rid(x) });
+    }
+    if kind == 0 && field(b, t, x, E_TARGET) >= header_word(b, 5 + 2 * T_NODES) {
+        return Err(DbError::Index { table: tid(t), record: rid(x) });
+    }
+    if (kind == 0 && field(b, t, x, E_TARGET_LEN) != 0) || (mode == 0 && field(
+        b,
+        t,
+        x,
+        E_DEADLINE_MS,
+    ) != 0) {
+        return Err(DbError::Consistency { table: tid(t), record: rid(x) });
+    }
+    Ok(())
+}
+
+fn check_cred(b: &[u8], c: usize) -> (r: Result<(), DbError>)
+    requires
+        v1(b@),
+        c < tcnt(b@, T_CREDS as int),
+    ensures
+        r is Ok ==> cred_enum_ok(b@, c as int),
+{
+    let t = T_CREDS;
+    if field(b, t, c, C_CAPS_HI) > 0x1ff || field(b, t, c, C_SECUREBITS) > 2 || field(
+        b,
+        t,
+        c,
+        C_NNP,
+    ) > 1 || field(b, t, c, C_NS) > 0x1f || field(b, t, c, C_SECCOMP) > 1 {
+        return Err(DbError::Enum { table: tid(t), record: rid(c) });
+    }
+    Ok(())
+}
+
+fn check_route(b: &[u8], r: usize) -> (res: Result<(), DbError>)
+    requires
+        v1(b@),
+        r < tcnt(b@, T_ROUTES as int),
+    ensures
+        res is Ok ==> route_index_ok(b@, r as int) && route_enum_ok(b@, r as int),
+{
+    let t = T_ROUTES;
+    let kind = field(b, t, r, R_KIND);
+    if kind > 1 {
+        return Err(DbError::Enum { table: tid(t), record: rid(r) });
+    }
+    if kind == 1 {
+        let a = field(b, t, r, R_A);
+        if a >= header_word(b, 5 + 2 * T_NODES) {
+            return Err(DbError::Index { table: tid(t), record: rid(r) });
+        }
+        if field(b, T_NODES, a as usize, N_KIND) != 0 || field(b, t, r, R_B) != 0 {
+            return Err(DbError::Consistency { table: tid(t), record: rid(r) });
+        }
+    }
+    Ok(())
+}
+
+/// `b[pa..pa + la]` sorts strictly before `b[pc..pc + lc]`, bytewise.
+fn bytes_lt(b: &[u8], pa: usize, la: usize, pc: usize, lc: usize) -> (r: bool)
+    requires
+        pa + la <= b@.len(),
+        pc + lc <= b@.len(),
+    ensures
+        r ==> lex_lt(b@.subrange(pa as int, pa + la), b@.subrange(pc as int, pc + lc)),
+{
+    let ghost a = b@.subrange(pa as int, pa + la);
+    let ghost c = b@.subrange(pc as int, pc + lc);
+    assert(b@.len() == b.len());
+    let mut k: usize = 0;
+    while k < la && k < lc
+        invariant
+            pa + la <= b.len(),
+            pc + lc <= b.len(),
+            a == b@.subrange(pa as int, pa + la),
+            c == b@.subrange(pc as int, pc + lc),
+            k <= la,
+            k <= lc,
+            a.subrange(0, k as int) == c.subrange(0, k as int),
+        decreases la - k,
+    {
+        let x = b[pa + k];
+        let y = b[pc + k];
+        if x != y {
+            assert(a[k as int] == x && c[k as int] == y);
+            return x < y;
+        }
+        assert(a.subrange(0, k + 1) =~= a.subrange(0, k as int).push(x));
+        assert(c.subrange(0, k + 1) =~= c.subrange(0, k as int).push(y));
+        k += 1;
+    }
+    k == la && k < lc
+}
+
+/// Checks that node names are strictly ascending (V4, `Order`).
+fn check_names(b: &[u8]) -> (r: Result<(), DbError>)
+    requires
+        v1(b@),
+        v2(b@),
+    ensures
+        r is Ok ==> forall|i: int| 0 < i < nodes(b@) ==> #[trigger] name_sorted(b@, i),
+{
+    let n = header_word(b, 5 + 2 * T_NODES) as usize;
+    let pool = header_word(b, 4 + 2 * T_POOL) as usize;
+    let mut i: usize = 1;
+    while i < n
+        invariant
+            v1(b@),
+            v2(b@),
+            n == nodes(b@),
+            pool == toff(b@, T_POOL as int),
+            1 <= i,
+            i <= n || n == 0,
+            forall|j: int| 0 < j < i && j < n ==> #[trigger] name_sorted(b@, j),
+        decreases n - i,
+    {
+        assert(node_pool_ok(b@, i - 1));
+        assert(node_pool_ok(b@, i as int));
+        assert(table_ok(b@, T_POOL as int));
+        let pa = pool + field(b, T_NODES, i - 1, N_NAME_OFF) as usize;
+        let la = field(b, T_NODES, i - 1, N_NAME_LEN) as usize;
+        let pc = pool + field(b, T_NODES, i, N_NAME_OFF) as usize;
+        let lc = field(b, T_NODES, i, N_NAME_LEN) as usize;
+        if !bytes_lt(b, pa, la, pc, lc) {
+            return Err(DbError::Order);
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
+/// Checks every record (V3 less the lists, and V4).
+#[allow(clippy::too_many_lines)]  // one loop per table, each with its Verus invariants
+pub(crate) fn check_records(b: &[u8]) -> (r: Result<(), DbError>)
+    requires
+        v1(b@),
+        v2(b@),
+    ensures
+        r is Ok ==> {
+            &&& forall|i: int| 0 <= i < nodes(b@) ==> #[trigger] node_index_ok(b@, i)
+            &&& forall|x: int| 0 <= x < tcnt(b@, T_EDGES as int) ==> #[trigger] edge_index_ok(b@, x)
+            &&& forall|r: int|
+                0 <= r < tcnt(b@, T_ROUTES as int) ==> #[trigger] route_index_ok(b@, r)
+            &&& tiled(b@)
+            &&& v4(b@)
+        },
+{
+    let n = header_word(b, 5 + 2 * T_NODES) as usize;
+    let groups = header_word(b, 5 + 2 * T_GROUPS) as usize;
+    let edges = header_word(b, 5 + 2 * T_EDGES) as usize;
+    assert(table_ok(b@, T_NODES as int));
+    assert(table_ok(b@, T_GROUPS as int));
+    assert(table_ok(b@, T_EDGES as int));
+    // Nodes, and the running sum of their groups.
+    let mut sum: usize = 0;
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            v1(b@),
+            n == nodes(b@),
+            n <= MAX_NODES,
+            i <= n,
+            sum == ngsum(b@, i as int),
+            sum <= MAX_GROUPS_PER_NODE * i,
+            forall|j: int| 0 <= j < i ==> #[trigger] node_index_ok(b@, j),
+            forall|j: int| 0 <= j < i ==> #[trigger] node_enum_ok(b@, j),
+            forall|j: int| 0 <= j < i ==> #[trigger] node_tile_ok(b@, j),
+        decreases n - i,
+    {
+        check_node(b, i)?;
+        let count = field(b, T_NODES, i, N_GROUP_COUNT) as usize;
+        if field(b, T_NODES, i, N_GROUP_FIRST) as usize != sum || count > MAX_GROUPS_PER_NODE {
+            return Err(DbError::Tiling { table: tid(T_NODES), record: rid(i) });
+        }
+        sum += count;
+        i += 1;
+    }
+    if sum != groups {
+        return Err(DbError::Tiling { table: tid(T_NODES), record: rid(n) });
+    }
+    // Groups, and the running sum of their edges.
+
+    let mut sum: usize = 0;
+    let mut g: usize = 0;
+    while g < groups
+        invariant
+            v1(b@),
+            groups == tcnt(b@, T_GROUPS as int),
+            groups <= MAX_GROUPS,
+            g <= groups,
+            sum == gesum(b@, g as int),
+            sum <= MAX_EDGES_PER_GROUP * g,
+            forall|j: int| 0 <= j < g ==> #[trigger] group_enum_ok(b@, j),
+            forall|j: int| 0 <= j < g ==> #[trigger] group_tile_ok(b@, j),
+        decreases groups - g,
+    {
+        if field(b, T_GROUPS, g, G_KIND) > 3 {
+            return Err(DbError::Enum { table: tid(T_GROUPS), record: rid(g) });
+        }
+        let count = field(b, T_GROUPS, g, G_EDGE_COUNT) as usize;
+        if field(b, T_GROUPS, g, G_EDGE_FIRST) as usize != sum || count > MAX_EDGES_PER_GROUP {
+            return Err(DbError::Tiling { table: tid(T_GROUPS), record: rid(g) });
+        }
+        sum += count;
+        g += 1;
+    }
+    if sum != edges {
+        return Err(DbError::Tiling { table: tid(T_GROUPS), record: rid(groups) });
+    }
+    let mut x: usize = 0;
+    while x < edges
+        invariant
+            v1(b@),
+            edges == tcnt(b@, T_EDGES as int),
+            x <= edges,
+            forall|j: int| 0 <= j < x ==> #[trigger] edge_index_ok(b@, j),
+            forall|j: int| 0 <= j < x ==> #[trigger] edge_enum_ok(b@, j),
+        decreases edges - x,
+    {
+        check_edge(b, x)?;
+        x += 1;
+    }
+    let creds = header_word(b, 5 + 2 * T_CREDS) as usize;
+    let mut c: usize = 0;
+    while c < creds
+        invariant
+            v1(b@),
+            creds == tcnt(b@, T_CREDS as int),
+            c <= creds,
+            forall|j: int| 0 <= j < c ==> #[trigger] cred_enum_ok(b@, j),
+        decreases creds - c,
+    {
+        check_cred(b, c)?;
+        c += 1;
+    }
+    let routes = header_word(b, 5 + 2 * T_ROUTES) as usize;
+    let mut r: usize = 0;
+    while r < routes
+        invariant
+            v1(b@),
+            routes == tcnt(b@, T_ROUTES as int),
+            r <= routes,
+            forall|j: int| 0 <= j < r ==> #[trigger] route_index_ok(b@, j),
+            forall|j: int| 0 <= j < r ==> #[trigger] route_enum_ok(b@, j),
+        decreases routes - r,
+    {
+        check_route(b, r)?;
+        r += 1;
+    }
+    check_names(b)?;
+    Ok(())
+}
+
+} // verus!

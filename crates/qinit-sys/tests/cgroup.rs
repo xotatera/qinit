@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The dirfd wrappers on a plain directory: cgroup semantics are tested in guests (plan P7).
+//! The dirfd wrappers on a plain directory: cgroup semantics are tested in guests.
 use qinit_sys::cgroup;
 use std::ffi::CString;
 use std::os::unix::fs::MetadataExt;

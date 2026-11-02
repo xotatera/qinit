@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+[template.tty-login]
+exec = ["/sbin/agetty", "--noclear", "%i", "38400"]
+restart = { policy = "always" }
+deps = [{ group = "require_all", edges = [{ to = "mount-var" }] }]

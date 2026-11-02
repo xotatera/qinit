@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Booting a guest: KVM when `/dev/kvm` opens read-write, TCG otherwise (spec R7). The serial
+//! Booting a guest: KVM when `/dev/kvm` opens read-write, TCG otherwise. The serial
 //! console is QEMU's stdout; a guest powers off when its suite ends.
 use qinit_event::{Loop, Ready};
 use std::ffi::OsString;

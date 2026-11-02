@@ -3,7 +3,7 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/qinit-cell", "crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests"]
+members = ["crates/qinit-cell", "crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-db", "crates/qinit-db-core", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-frames", "crates/qinit-graph-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests"]
 
 [workspace.package]
 edition = "2024"
@@ -13,8 +13,10 @@ license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
 libc = { version = "=0.2.189", default-features = false }
+serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = "=1.0.154"
 sha2 = "=0.10.9"
+toml = { version = "=1.1.8", default-features = false, features = ["parse", "serde", "std"] }
 vstd = { version = "=0.0.0-2026-10-04-0306", default-features = false }
 
 [workspace.lints.rust]
@@ -57,3 +59,25 @@ kind = "verus"
 package = "qinit-cell-drive"
 memory = "4G"
 timeout = "45s"
+
+# Measured 2026-11-02: 14 verified; cold build directory (as in a container) 12.4-12.7 s
+# (18.5-18.9 s CPU), 0.95-1.0 GB peak; warm 0.6 s (0.5 s CPU), 221-289 MB peak.
+# Re-measured 2026-11-02 (cold): 12.8-13.0 s (19.2-19.5 s CPU) at load ~6, 19.7-20.7 s (29.7-31.3 s
+# CPU, summed over processes) at load ~23 on 32 threads. 45s covers about 2x the quiet 19.5s CPU.
+[[workspace.metadata.disciplines.proof]]
+name = "qinit-graph-core"
+kind = "verus"
+package = "qinit-graph-core"
+memory = "4G"
+timeout = "45s"
+
+# Measured 2026-11-02 (layout, validator and NUL-list rule): 142 verified; cold build directory
+# 17.4-21.7 s run (25.2-29.6 s CPU), 0.9-1.0 GB peak; warm 3.4 s (3.1 s CPU), 370 MB peak.
+# After the spec split: 142 verified, cold 14.9-15.4 s (21.1-21.6 s CPU), 0.94-0.95 GB peak.
+# 60s covers 2x the slowest measured 29.6s CPU.
+[[workspace.metadata.disciplines.proof]]
+name = "qinit-db-core"
+kind = "verus"
+package = "qinit-db-core"
+memory = "4G"
+timeout = "60s"

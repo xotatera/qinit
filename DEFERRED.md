@@ -27,12 +27,12 @@ approved design amendment.
 
 ### D3 — Product workspace gates · `RESOLVED`
 
-Resolved by sub-project 2 Task 1: `qinit-sys` is the first product package; the four gates run.
+Resolved by the event-loop sub-project: `qinit-sys` is the first product package; the four gates run.
 
 ### D4 — no-std tooling gate · `ACCEPTED`
 
-The root `no-std` gate runs since sub-project 2 Task 2 (`qinit-event-core` is
-the first core crate). The tooling `no-std` gate is separately blocked: the
+The root `no-std` gate runs since the event-loop sub-project added `qinit-event-core`,
+the first core crate. The tooling `no-std` gate is separately blocked: the
 `xtask` workspace has no kernel or core crate.
 Unblock it only in the change that adds a primitive, kernel, or core crate to the `xtask` workspace.
 
@@ -67,7 +67,7 @@ so `qinit-cell` watches its pidfd without reaping it and reports its exit as
 `MainExited(None)`. If that handed-over main is actually our child, its exit
 is separately reported as an Orphan with its real status, while its cell gets
 `MainExited(None)`. The status of a process that is not a child is only readable
-through `PIDFD_INFO_EXIT` (Linux 6.15), above the 6.13 floor (spec R9). Revisit
+through `PIDFD_INFO_EXIT` (Linux 6.15), above the 6.13 floor. Revisit
 if the floor reaches 6.15.
 
 ### D9 — Released child the loop refuses to watch · `ACCEPTED`
@@ -87,7 +87,7 @@ cannot survive.
 While a cell is Stopping or Killing, the proved machine records the main
 process's exit status (`Main::Reaped`) but emits no `MainExited` report; the
 stop ends with `Empty` (or `Failed(Stuck)`). By design: the stop's outcome is
-the report the caller waits for. Sub-project 2 Task 9's `escalate` suite
+the report the caller waits for. The cell sub-project's `escalate` suite
 therefore asserts escalation by the report sequence ending `Empty` after the
 kill deadline path plus the helper's own evidence, not by a
 `MainExited(SIGKILL)` report.
@@ -115,3 +115,97 @@ Blocking all signals around clone3, including glibc's SIGSETXID and musl's
 synccall signal, lets a threaded caller create a child with credentials from
 before a concurrent setxid change. Sub-project 5 (privilege) must revisit
 this before using spawn from a threaded caller that changes credentials.
+
+### D15 — Runtime group evaluation · `OPEN`
+
+The database stores dependency groups (`require_all`, `require_any`,
+`optional_all`, `exclude_all`) and the compiler checks their shape and the
+graph they imply, but nothing evaluates them at run time. Sub-project 4
+(colony) implements start-time group evaluation.
+
+### D16 — `qctl` command-line tool · `OPEN`
+
+`qinit-frames` is a library: it has no command-line front end. The `qctl`
+compiler and administrative CLI, which will call it, is a later sub-project.
+
+### D17 — Policy signature verification · `OPEN`
+
+The policy file given to the compiler is read as is. Verifying a signature on
+it belongs to the later privilege project (see D1).
+
+### D18 — Ready line plus exit in one wait · `ACCEPTED`
+
+A service that writes its ready line and exits within the same wait is
+reported as exited, never as ready. The event loop sorts exits first in a
+batch (`qinit-event`, `Loop::wait`: `Ready::Exited` before the rest), so the
+cell engine handles the main exit (`qinit-cell`, `main_exited`) before the
+readable ready pipe and the machine goes to Empty without a `Ready` report.
+Accepted as is: a service that is already gone when readiness is read cannot
+be supervised as ready. The maintainer decided to revisit this in the colony
+sub-project (sub-project 4), which owns service state.
+
+### D19 — Validator worst-case cost · `ACCEPTED`
+
+`pool_ref_ok` checks UTF-8 by rescanning the pool bytes for every reference.
+The validator is still total and bounded, but a crafted maximal database costs
+about 6.9e10 byte steps. Optional future work: validate the pool once, then
+prove that each reference starts and ends on a character boundary.
+
+### D20 — Policy error rule index by line scan · `ACCEPTED`
+
+`qinit-frames` finds the `[[rule]]` index of a policy shape error by scanning
+for `[[rule]]` header lines, not by parsing TOML. The limits of that scan are
+documented in `crates/qinit-frames/src/policy.rs`.
+
+### D21 — Overseer runs undeclared workers unprivileged · `OPEN`
+
+The compiled database leaves privilege out for a node with `N_CRED = NONE`
+and for a credential record with an empty user. By contract both are
+unprivileged: not root, empty capability sets, no-new-privileges on (see
+`docs/db-format.md`, "Privilege contract"). The compiler and the policy check
+rely on it: such nodes need no policy rule, even under `default = "deny"`.
+Sub-project 5 (overseer) must enforce the contract, choosing the unprivileged
+default identity itself; until then nothing runs these nodes. The overseer must also refuse a
+hand-made database whose credential record has an empty user but non-zero caps or
+no-new-privileges off: the compiler never emits one, the policy check treats it as privileged,
+and the format contract says an empty user is unprivileged.
+
+### D22 — no-new-privileges default for declared credentials · `DECISION`
+
+A frame with only a `sandbox` table gets no-new-privileges on. A frame that
+declares `credentials` without `nnp` gets it off, as before. Should `nnp`
+default to on for declared credentials too, so a frame has to ask for
+`nnp = false`? The maintainer decides; a policy rule with
+`require_nnp = true` covers it meanwhile.
+
+### D23 — Instanced-frame name not bounded by the validator · `ACCEPTED`
+
+`N_INSTANCE_OF` is checked as an in-bounds, valid UTF-8 pool slice, but not
+against `MAX_NAME_LEN`. The compiler bounds it (it is a frame name of at most
+`MAX_NAME_LEN` bytes); a hand-made database can carry a longer one. Readers
+must not assume the bound.
+
+### D24 — Validator scratch buffers and the second graph pass · `ACCEPTED`
+
+`qinit_db_core::validate` is public and takes caller-provided scratch slices;
+its requirement that they hold at least `MAX_EDGES` and `MAX_NODES` entries is
+a proof precondition, not a run-time check. Callers other than `qinit-db`
+(sub-project 4) should go through an owning scratch type, or the signature
+should take `&mut [GEdge; MAX_EDGES]` and `&mut [u32; MAX_NODES]`. The second
+`levels` call in `check_graph` (stop order, honouring `stop = "parallel"`) is
+logically redundant once the first succeeded: honouring the opt-outs only
+drops constraints, so the first pass's labelling also satisfies the second,
+and the hard-parallel check is the same in both. A lemma stating that could
+halve the worst-case graph cost (about 134 million steps).
+
+### D25 — Pool and UTF-8 errors carry no position · `ACCEPTED`
+
+`DbError::Pool` and `DbError::Utf8` name no table or record, unlike the
+record errors. The validator rejects the database either way; a position
+would only help someone debugging a corrupt file.
+
+### D26 — No ownership or mode check on policy and layers · `ACCEPTED`
+
+The compiler reads the policy file and the layer directories as given, with
+no check of their owner or mode, although the design calls the policy
+root-owned. The `qctl` front end (D16) is the place to enforce it.
