@@ -24,11 +24,11 @@ fn spec() -> DbSpec {
     spec
 }
 
-/// [`spec`] laid out, with word `w` of record `r` in table `t` set to `v`.
-fn patched(t: usize, r: usize, w: usize, v: u32) -> Vec<u8> {
+/// [`spec`] laid out, with word `w` of record `r` in table `t` set to `value`.
+fn patched(t: usize, r: usize, w: usize, value: u32) -> Vec<u8> {
     with(&build(&spec()), |words| {
-        let i = at(words, t, r, w);
-        words[i] = v;
+        let index = at(words, t, r, w);
+        words[index] = value;
     })
 }
 
