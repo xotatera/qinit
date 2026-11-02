@@ -115,3 +115,39 @@ Blocking all signals around clone3, including glibc's SIGSETXID and musl's
 synccall signal, lets a threaded caller create a child with credentials from
 before a concurrent setxid change. Sub-project 5 (privilege) must revisit
 this before using spawn from a threaded caller that changes credentials.
+
+### D15 — Runtime group evaluation · `OPEN`
+
+The database stores dependency groups (`require_all`, `require_any`,
+`optional_all`, `exclude_all`) and the compiler checks their shape and the
+graph they imply, but nothing evaluates them at run time. Sub-project 4
+(colony) implements start-time group evaluation.
+
+### D16 — `qctl` command-line tool · `OPEN`
+
+`qinit-frames` is a library: it has no command-line front end. The `qctl`
+compiler and administrative CLI, which will call it, is a later sub-project.
+
+### D17 — Policy signature verification · `OPEN`
+
+The policy file given to the compiler is read as is. Verifying a signature on
+it belongs to the later privilege project (see D1).
+
+### D18 — Ready line plus exit in one wait · `ACCEPTED`
+
+The ruling on a readiness line and the same process's exit arriving in one
+wait is left as it is. The maintainer decided to revisit it in the colony
+sub-project (sub-project 4), which owns service state.
+
+### D19 — Validator worst-case cost · `ACCEPTED`
+
+`pool_ref_ok` checks UTF-8 by rescanning the pool bytes for every reference.
+The validator is still total and bounded, but a crafted maximal database costs
+about 6.9e10 byte steps. Optional future work: validate the pool once, then
+prove that each reference starts and ends on a character boundary.
+
+### D20 — Policy error rule index by line scan · `ACCEPTED`
+
+`qinit-frames` finds the `[[rule]]` index of a policy shape error by scanning
+for `[[rule]]` header lines, not by parsing TOML. The limits of that scan are
+documented in `crates/qinit-frames/src/policy.rs`.

@@ -18,7 +18,7 @@ The header is `HEADER_WORDS` = 20 words:
 | 0 | `MAGIC` = `0x3142_4451` (the bytes `QDB1`) |
 | 1 | `VERSION` = 1 |
 | 2 | total length in bytes |
-| 3 | CRC-32 of the body (detects corruption only; no integrity or authenticity claim) |
+| 3 | CRC-32 (IEEE) of the whole file with this word taken as zero (detects corruption only; no integrity or authenticity claim). `qinit-db`'s reader checks it; the validator does not |
 | 4 + 2t | byte offset of table `t` |
 | 5 + 2t | record count of table `t` (for the pool: its length in bytes) |
 

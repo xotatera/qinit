@@ -12,6 +12,8 @@ qinit is an init and service-supervision system for Linux. It is one design buil
 - **qctl**: the configuration compiler and administrative CLI.
 - **client library**: the library for the control protocol.
 
+The compiled service database is described in [docs/db-format.md](docs/db-format.md).
+
 Status: cell substrate implemented; no init daemon or service manager is usable yet.
 
 qinit is a standalone project. Alloy Linux consumes it as a package.
