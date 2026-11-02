@@ -119,11 +119,12 @@ fn bad(base: &str, field: &str, detail: impl Into<String>) -> Error {
     Error::new(Code::BadValue, format!("{base}.{field}"), detail)
 }
 
-/// Keys a forager or brood must not carry.
-fn check_kind(kind: &str, f: &Frame, base: &str) -> Result<(), Error> {
+/// Keys a forager or brood must not carry. Expansion runs it again after a template merge.
+pub(crate) fn check_kind(kind: &str, f: &Frame, base: &str) -> Result<(), Error> {
     let mut banned: Vec<(&str, bool)> = Vec::new();
     if kind == "forager" {
         banned.push(("restart", f.restart.is_some()));
+        banned.push(("instances", f.instances.is_some()));
     }
     if kind == "brood" {
         banned.extend([

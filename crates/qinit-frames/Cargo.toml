@@ -11,6 +11,7 @@ license.workspace = true
 
 [dependencies]
 qinit-db = { path = "../qinit-db" }
+qinit-db-core = { path = "../qinit-db-core" }
 qinit-graph-core = { path = "../qinit-graph-core" }
 serde.workspace = true
 toml.workspace = true
@@ -20,4 +21,4 @@ workspace = true
 
 [package.metadata.disciplines]
 layer = "runtime"
-allow = ["qinit-db", "qinit-graph-core", "serde", "toml"]
+allow = ["qinit-db", "qinit-db-core", "qinit-graph-core", "serde", "toml"]

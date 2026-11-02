@@ -4,6 +4,8 @@
 #![forbid(unsafe_code)]
 
 pub mod error;
+pub mod expand;
 pub mod layers;
+pub mod resolve;
 pub mod schema;
 pub mod units;
