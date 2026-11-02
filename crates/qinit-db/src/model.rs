@@ -26,7 +26,7 @@ pub struct Node {
     pub kind: Kind,
     /// Its name: 1 to 96 bytes, unique.
     pub name: String,
-    /// Its argv.
+    /// Its argv; elements are non-empty and hold no NUL.
     pub exec: Vec<String>,
     /// How readiness is detected.
     pub ready: Ready,
@@ -44,7 +44,7 @@ pub struct Node {
     pub memory_max_kib: u32,
     /// Process limit.
     pub pids_max: u32,
-    /// The template this node instantiates (an empty name reads back as absent).
+    /// The template this node instantiates ; `Some` must be non-empty.
     pub instance_of: Option<String>,
 }
 
@@ -177,7 +177,7 @@ pub struct Cred {
     pub ns: u32,
     /// Seccomp filter.
     pub seccomp: Seccomp,
-    /// Landlock entries, `ro:/path` or `rw:/path`.
+    /// Landlock entries, `ro:/path` or `rw:/path`; non-empty, no NUL.
     pub landlock: Vec<String>,
 }
 

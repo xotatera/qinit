@@ -51,8 +51,17 @@ impl Pool {
         Ok((off, len))
     }
 
-    /// Several strings joined by NUL.
+    /// Several strings joined by NUL. An empty or NUL-bearing element would not decode back
+    /// to the same list, so it is refused.
     fn intern_list(&mut self, list: &[String]) -> Result<(u32, u32), WriteError> {
+        for item in list {
+            if item.is_empty() {
+                return Err(WriteError::Limit("empty list element"));
+            }
+            if item.contains('\0') {
+                return Err(WriteError::Limit("nul in list element"));
+            }
+        }
         self.intern(&list.join("\0"))
     }
 }
@@ -134,6 +143,7 @@ fn node_words(
         Ready::Path(s) => (3, pool.intern(s)?),
     };
     let instance = match &n.instance_of {
+        Some(s) if s.is_empty() => return Err(WriteError::Limit("empty instance_of")),
         Some(s) => pool.intern(s)?,
         None => (0, 0),
     };
@@ -229,7 +239,13 @@ fn list_words(list: &[u32], nodes: usize) -> Result<Vec<u32>, WriteError> {
     Ok(list.to_vec())
 }
 
-/// Writes `model` as a database. Equal models give identical bytes.
+/// Writes `model` as a database. Equal models give identical bytes, and every model it accepts
+/// decodes back to itself.
+///
+/// It checks only ranges, limits and sort order. It does NOT check the validator's semantic
+/// rules (forager/brood restart policy, brood exec, sync-edge deadline, pipe route target
+/// kind, caps/ns bit ranges, enabled/presyslog order and closure): callers must run
+/// [`crate::open`] on the result.
 ///
 /// # Errors
 /// A limit overflow, unsorted node names, or an index out of range.

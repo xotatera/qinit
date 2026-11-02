@@ -73,6 +73,52 @@ fn the_writer_refuses_a_dangling_index() {
     assert_eq!(write(&model), Err(WriteError::Index));
 }
 
+fn with_node(f: impl FnOnce(&mut qinit_db::Node)) -> Model {
+    let mut n = node("a", Kind::Worker);
+    f(&mut n);
+    Model {
+        nodes: vec![n],
+        ..Model::default()
+    }
+}
+
+fn with_landlock(entries: &[&str]) -> Model {
+    let mut m = Model::default();
+    m.creds.push(sample().creds.remove(0));
+    m.creds[0].landlock = entries.iter().map(|s| (*s).to_owned()).collect();
+    m
+}
+
+#[test]
+fn the_writer_refuses_an_empty_exec_element() {
+    let m = with_node(|n| n.exec = vec![String::new()]);
+    assert_eq!(write(&m), Err(WriteError::Limit("empty list element")));
+}
+
+#[test]
+fn the_writer_refuses_an_empty_landlock_element() {
+    let m = with_landlock(&["ro:/a", ""]);
+    assert_eq!(write(&m), Err(WriteError::Limit("empty list element")));
+}
+
+#[test]
+fn the_writer_refuses_a_nul_in_an_exec_element() {
+    let m = with_node(|n| n.exec = vec!["a\0b".into()]);
+    assert_eq!(write(&m), Err(WriteError::Limit("nul in list element")));
+}
+
+#[test]
+fn the_writer_refuses_a_nul_in_a_landlock_element() {
+    let m = with_landlock(&["ro:/a\0b"]);
+    assert_eq!(write(&m), Err(WriteError::Limit("nul in list element")));
+}
+
+#[test]
+fn the_writer_refuses_an_empty_instance_of() {
+    let m = with_node(|n| n.instance_of = Some(String::new()));
+    assert_eq!(write(&m), Err(WriteError::Limit("empty instance_of")));
+}
+
 #[test]
 fn crc32_matches_the_standard_check_value() {
     assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
