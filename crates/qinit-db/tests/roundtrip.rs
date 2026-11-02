@@ -1,0 +1,88 @@
+// SPDX-FileCopyrightText: 2026 Xota Tera
+// SPDX-License-Identifier: GPL-3.0-or-later
+mod common;
+
+use common::{node, sample};
+use qinit_db::{Kind, Model, ReadError, Target, WriteError, crc32, open, write};
+use qinit_db_core::{T_POOL, word};
+
+#[test]
+fn a_model_round_trips_through_write_open_decode() {
+    let model = sample();
+    let bytes = write(&model).expect("writes");
+    let reader = open(&bytes).expect("opens");
+    assert_eq!(reader.decode(), model);
+}
+
+#[test]
+fn equal_models_write_byte_identical_databases() {
+    assert_eq!(write(&sample()).unwrap(), write(&sample()).unwrap());
+}
+
+#[test]
+fn the_writer_interns_equal_strings_once() {
+    let mut model = Model::default();
+    for name in ["a", "b", "c"] {
+        let mut n = node(name, Kind::Worker);
+        n.exec = vec!["/usr/bin/same".into(), "-x".into()];
+        model.nodes.push(n);
+    }
+    let bytes = write(&model).unwrap();
+    let pool_len = word(&bytes, 5 + 2 * T_POOL) as usize;
+    let sum: usize = "/usr/bin/same\0-x".len() * 3 + 3;
+    assert!(pool_len < sum, "pool {pool_len} vs {sum}");
+    assert_eq!(pool_len, "/usr/bin/same\0-x".len() + 3);
+    assert_eq!(open(&bytes).unwrap().decode(), model);
+}
+
+#[test]
+fn the_writer_refuses_unsorted_nodes() {
+    let model = Model {
+        nodes: vec![node("b", Kind::Worker), node("a", Kind::Worker)],
+        ..Model::default()
+    };
+    assert_eq!(write(&model), Err(WriteError::Unsorted));
+    let dup = Model {
+        nodes: vec![node("a", Kind::Worker), node("a", Kind::Worker)],
+        ..Model::default()
+    };
+    assert_eq!(write(&dup), Err(WriteError::Unsorted));
+}
+
+#[test]
+fn the_writer_refuses_a_limit_overflow() {
+    let model = Model {
+        nodes: (0..4097)
+            .map(|i| node(&format!("n{i:05}"), Kind::Worker))
+            .collect(),
+        ..Model::default()
+    };
+    assert_eq!(write(&model), Err(WriteError::Limit("nodes")));
+}
+
+#[test]
+fn the_writer_refuses_a_dangling_index() {
+    let mut model = Model {
+        nodes: vec![node("a", Kind::Worker)],
+        ..Model::default()
+    };
+    model.nodes[0].groups = vec![qinit_db::Group {
+        kind: qinit_db::GroupKind::RequireAll,
+        edges: vec![common::edge(Target::Node(9), qinit_db::Mode::Sync, 0)],
+    }];
+    assert_eq!(write(&model), Err(WriteError::Index));
+}
+
+#[test]
+fn crc32_matches_the_standard_check_value() {
+    assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+    assert_eq!(crc32(b""), 0);
+}
+
+#[test]
+fn the_empty_model_is_a_valid_database() {
+    let bytes = write(&Model::default()).unwrap();
+    let reader = open(&bytes).expect("opens");
+    assert_eq!(reader.decode(), Model::default());
+    assert!(matches!(open(&bytes[..10]), Err(ReadError::Db(_))));
+}
