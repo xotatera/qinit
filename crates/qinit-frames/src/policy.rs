@@ -103,7 +103,8 @@ fn quoted<'a>(msg: &'a str, prefix: &str) -> Option<&'a str> {
 /// The index of the `[[rule]]` table that contains byte `at`: the last `[[rule]]` header line at
 /// or before it. This is a line scan, not a TOML parse, so a `[[rule]]` line inside a
 /// multi-line string, rules written as an inline `rule = [...]` array, and a header with inner
-/// spaces such as `[[ rule ]]` are not recognised (the error is then keyed by its bare field).
+/// spaces such as `[[ rule ]]` are not recognised, so the error is keyed by the last recognised
+/// `[[rule]]` before it (or by the bare field when none precedes it).
 fn rule_at(text: &str, at: usize) -> Option<usize> {
     let mut headers = 0usize;
     let mut offset = 0usize;
@@ -125,7 +126,8 @@ fn rule_at(text: &str, at: usize) -> Option<usize> {
 /// (`default`, or an unknown key), and `policy` when neither the rule nor the field can be told.
 /// Both come from the error's byte span: the field is the unknown or missing field the message
 /// names, else the key on the span's line; the rule is found by [`rule_at`], so the limits
-/// documented there apply. An unknown field is an `UnknownKey`, anything else a `BadValue`.
+/// documented there apply: an unrecognised header is keyed by the last recognised `[[rule]]`
+/// before it, or by the bare field when none precedes it. An unknown field is an `UnknownKey`, anything else a `BadValue`.
 fn serde_error(path: &Path, text: &str, e: &toml::de::Error) -> Error {
     let msg = e.message();
     let unknown = quoted(msg, "unknown field `");
