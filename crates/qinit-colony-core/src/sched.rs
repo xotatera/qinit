@@ -1856,8 +1856,31 @@ fn mark_enabled(db: &[u8], tbl: &mut [NodeState])
     }
 }
 
-/// Starts colony on a database: the enabled nodes are wanted, then the table settles. Every
-/// node of `tbl` must be off (`off()`); `paths` and `late` are all false.
+/// Starts colony on a database whose nodes may already be in any state that satisfies the
+/// invariant (workers colony found running when it started): the enabled nodes are wanted,
+/// then the table settles.
+pub fn load_from(
+    db: &[u8],
+    tbl: &mut [NodeState],
+    paths: &[bool],
+    late: &mut [bool],
+    meta: &mut Meta,
+    now: u64,
+) -> (converged: bool)
+    requires
+        sized(db@, old(tbl)@.len() as int, paths@.len() as int, old(late)@.len() as int),
+        inv_all(db@, old(tbl)@),
+    ensures
+        final(tbl)@.len() == old(tbl)@.len(),
+        final(late)@.len() == old(late)@.len(),
+        inv_all(db@, final(tbl)@),
+{
+    meta.cursor = 0;
+    mark_enabled(db, tbl);
+    reconcile(db, tbl, paths, late, false, now)
+}
+
+/// Starts colony on a database with every node off (`off()`); `paths` and `late` are all false.
 pub fn load(
     db: &[u8],
     tbl: &mut [NodeState],
@@ -1877,9 +1900,7 @@ pub fn load(
     proof {
         lemma_off_inv(db@, tbl@);
     }
-    meta.cursor = 0;
-    mark_enabled(db, tbl);
-    reconcile(db, tbl, paths, late, false, now)
+    load_from(db, tbl, paths, late, meta, now)
 }
 
 } // verus!

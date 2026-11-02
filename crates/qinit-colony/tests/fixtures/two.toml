@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+# a needs b.
+[worker.b]
+exec = ["/bin/b"]
+
+[worker.a]
+exec = ["/bin/a"]
+deps = [{ group = "require_all", edges = [{ to = "b" }] }]

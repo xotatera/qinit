@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[package]
+name = "qinit-colony"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+qinit-cell-core = { path = "../qinit-cell-core" }
+qinit-colony-core = { path = "../qinit-colony-core" }
+qinit-db = { path = "../qinit-db" }
+
+[dev-dependencies]
+qinit-frames = { path = "../qinit-frames" }
+
+[lints]
+workspace = true
+
+[package.metadata.disciplines]
+layer = "runtime"
+allow = ["qinit-cell-core", "qinit-colony-core", "qinit-db"]

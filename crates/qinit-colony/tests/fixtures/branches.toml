@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Two independent chains under one brood.
+[worker.a1]
+exec = ["/bin/a1"]
+
+[worker.a2]
+exec = ["/bin/a2"]
+deps = [{ group = "require_all", edges = [{ to = "a1" }] }]
+
+[worker.b1]
+exec = ["/bin/b1"]
+
+[worker.b2]
+exec = ["/bin/b2"]
+deps = [{ group = "require_all", edges = [{ to = "b1" }] }]
+
+[brood.multi-user]
+deps = [{ group = "require_all", edges = [{ to = "a2" }, { to = "b2" }] }]

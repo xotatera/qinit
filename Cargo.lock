@@ -138,6 +138,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "qinit-colony"
+version = "0.1.0"
+dependencies = [
+ "qinit-cell-core",
+ "qinit-colony-core",
+ "qinit-db",
+ "qinit-frames",
+]
+
+[[package]]
 name = "qinit-colony-core"
 version = "0.1.0"
 dependencies = [
