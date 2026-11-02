@@ -121,7 +121,7 @@ The validator is total and never panics. It accepts a database only if all of th
 5. **V5** The ordering-edge graph is acyclic.
 6. **V6** The stop order derived by `qinit-graph-core` places every hard dependent before its dependency, whatever the opt-outs.
 7. **V7** `stop = "parallel"` appears on no hard edge.
-8. **V8** The pre-syslog list and the enabled closure are consistent with the edges: both are ascending and duplicate-free, and every closure member is reachable from an enabled root.
+8. **V8** The pre-syslog list and the enabled closure are both ascending and duplicate-free, and the enabled closure is closed under the edges: every node target of a `require_all` or `require_any` group of an enabled node is enabled, sync or async. The roots are not stored, so the validator does not check that every member is reachable from one; the compiler builds the closure from the roots.
 9. **V9** Every reader accessor is in bounds for any accepted database.
 
 `qinit_db_core::validate` proves `Ok(())` implies `well_formed`, the conjunction of the spec

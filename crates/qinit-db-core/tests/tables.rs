@@ -296,7 +296,14 @@ fn a_node_whose_groups_do_not_tile_is_a_tiling_error() {
         let i = at(w, T_GROUPS, 0, G_EDGE_COUNT);
         w[i] = 0;
     });
-    assert!(matches!(check(&db), Err(DbError::Tiling { .. })));
+    // The group run ends short of the edge count, reported at the group count.
+    assert_eq!(
+        check(&db),
+        Err(DbError::Tiling {
+            table: tid(T_GROUPS),
+            record: 1
+        })
+    );
 }
 
 #[test]

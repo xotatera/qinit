@@ -12,6 +12,19 @@ fn word_reads_little_endian() {
 }
 
 #[test]
+fn word_keeps_the_high_bit() {
+    assert_eq!(word(&[0x00, 0x00, 0x00, 0x80], 0), 0x8000_0000);
+    assert_eq!(word(&[0xff, 0xff, 0xff, 0xff], 0), u32::MAX);
+}
+
+#[test]
+fn word_reads_the_last_whole_word() {
+    // 13 bytes hold three whole words; the trailing byte belongs to none.
+    let buf = [0, 0, 0, 0, 0, 0, 0, 0, 0x01, 0x02, 0x03, 0x84, 0xee];
+    assert_eq!(word(&buf, buf.len() / 4 - 1), 0x8403_0201);
+}
+
+#[test]
 fn the_magic_spells_qdb1() {
     assert_eq!(&MAGIC.to_le_bytes(), b"QDB1");
     assert_eq!(VERSION, 1);

@@ -15,6 +15,7 @@ use qinit_db::Model;
 use std::path::PathBuf;
 
 /// What to compile: the layers in order (later amends earlier) and an optional policy file.
+/// [`layers`] defines the amend rules.
 #[derive(Clone, Debug)]
 pub struct CompileInput {
     pub layers: Vec<LayerInput>,

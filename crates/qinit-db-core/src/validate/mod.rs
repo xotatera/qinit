@@ -57,7 +57,8 @@ pub enum DbError {
     Cycle,
     /// A hard edge may stop in parallel.
     HardParallel,
-    /// The enabled set is not closed under its hard requirements.
+    /// The enabled set is not closed under the `require_all` and `require_any` node targets of
+    /// its members, sync and async alike.
     Closure,
     /// Node names, or a node list, are not strictly ascending.
     Order,
