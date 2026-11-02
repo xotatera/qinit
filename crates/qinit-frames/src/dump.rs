@@ -5,9 +5,12 @@
 //! One block per node in name order: a `<kind> <name>` heading, then indented
 //! `key = value  # <layer>` lines in frame key syntax, then the dependency groups and their
 //! edges. The layer is the one that set the key or its nearest enclosing key (`-` if none).
+//! Edge keys use the frame's own edge index (`Resolved::edge_origins`), so an edge after a
+//! dropped optional edge keeps the key its frame and any warning give it; the implicit logger
+//! group comes after the frame's groups.
 //! The trailer lists the enabled closure and the pre-syslog nodes.
 use crate::expand::{kind_name, layer_of};
-use crate::resolve::{cap_name, ns_name};
+use crate::resolve::{Resolved, cap_name, ns_name};
 use qinit_db::{
     Cred, Edge, GroupKind, Kind, Mode, Model, Node, Ready, RestartOn, RestartPolicy, Route,
     Seccomp, Securebits, Target,
@@ -15,16 +18,18 @@ use qinit_db::{
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-/// Render `model`; `provenance` maps dotted key paths to the layer that set them.
+/// Render `resolved`; `provenance` maps dotted key paths to the layer that set them.
 #[must_use]
-pub fn render(model: &Model, provenance: &BTreeMap<String, String>) -> String {
+pub fn render(resolved: &Resolved, provenance: &BTreeMap<String, String>) -> String {
+    let model = &resolved.model;
     let mut out = String::new();
-    for node in &model.nodes {
+    for (i, node) in model.nodes.iter().enumerate() {
         let base = format!("{}.{}", kind_name(node.kind), node.name);
         let mut b = Block {
             out: &mut out,
             prov: provenance,
             base: &base,
+            origins: resolved.edge_origins.get(i).map_or(&[], Vec::as_slice),
         };
         b.node(model, node);
         out.push('\n');
@@ -40,6 +45,8 @@ struct Block<'a> {
     out: &'a mut String,
     prov: &'a BTreeMap<String, String>,
     base: &'a str,
+    /// Per group, the frame index of each edge.
+    origins: &'a [Vec<usize>],
 }
 
 impl Block<'_> {
@@ -80,7 +87,9 @@ impl Block<'_> {
         for (gi, g) in n.groups.iter().enumerate() {
             self.line(&format!("deps[{gi}].group"), &quote(group(g.kind)));
             for (ei, e) in g.edges.iter().enumerate() {
-                self.line(&format!("deps[{gi}].edges[{ei}]"), &edge(model, e));
+                let fi = self.origins.get(gi).and_then(|o| o.get(ei)).copied();
+                let fi = fi.unwrap_or(ei);
+                self.line(&format!("deps[{gi}].edges[{fi}]"), &edge(model, e));
             }
         }
     }

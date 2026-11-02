@@ -119,18 +119,22 @@ fn edge(cx: &mut Cx, at: &str, kind: GroupKind, e: &DepEdge) -> Option<Edge> {
     })
 }
 
-/// The groups of one frame, `base` its `kind.name` key.
-pub(super) fn groups(cx: &mut Cx, base: &str, deps: &[DepGroup]) -> Vec<Group> {
+/// The groups of one frame, `base` its `kind.name` key, and per group the frame index of each
+/// kept edge.
+pub(super) fn groups(cx: &mut Cx, base: &str, deps: &[DepGroup]) -> (Vec<Group>, Vec<Vec<usize>>) {
     let mut out = Vec::with_capacity(deps.len());
+    let mut origins = Vec::with_capacity(deps.len());
     for (gi, g) in deps.iter().enumerate() {
         let kind = group_kind(cx, &format!("{base}.deps[{gi}].group"), &g.group);
-        let edges = g
-            .edges
-            .iter()
-            .enumerate()
-            .filter_map(|(ei, e)| edge(cx, &format!("{base}.deps[{gi}].edges[{ei}]"), kind, e))
-            .collect();
+        let (mut edges, mut from) = (Vec::new(), Vec::new());
+        for (ei, e) in g.edges.iter().enumerate() {
+            if let Some(kept) = edge(cx, &format!("{base}.deps[{gi}].edges[{ei}]"), kind, e) {
+                edges.push(kept);
+                from.push(ei);
+            }
+        }
         out.push(Group { kind, edges });
+        origins.push(from);
     }
-    out
+    (out, origins)
 }

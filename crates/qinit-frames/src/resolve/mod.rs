@@ -39,6 +39,10 @@ use std::collections::BTreeMap;
 pub struct Resolved {
     pub model: Model,
     pub warnings: Vec<Warning>,
+    /// Per node, per group, per edge of `model`: the edge's index in the frame's
+    /// `deps[g].edges` list, which differs once a missing optional edge was dropped. The
+    /// implicit logger group, which has no frame key, maps each edge to its own index.
+    pub edge_origins: Vec<Vec<Vec<usize>>>,
 }
 
 /// The state shared by the per-node conversions.
@@ -49,6 +53,7 @@ pub(super) struct Cx<'a> {
     pub warnings: Vec<Warning>,
     pub routes: Vec<Route>,
     pub path_routes: BTreeMap<String, u32>,
+    pub edge_origins: Vec<Vec<Vec<usize>>>,
 }
 
 impl Cx<'_> {
@@ -225,8 +230,10 @@ fn node(
     let ready = ready(cx, &base, kind, f);
     let restart = restart(cx, &base, f);
     let (output, errors, logger) = streams(cx, &base, f, me);
-    let mut groups = deps::groups(cx, &base, f.deps.as_deref().unwrap_or_default());
+    let (mut groups, mut origins) = deps::groups(cx, &base, f.deps.as_deref().unwrap_or_default());
+    origins.extend(logger.iter().map(|g| (0..g.edges.len()).collect()));
     groups.extend(logger);
+    cx.edge_origins.push(origins);
     let cred = cred::cred(cx, &base, f.credentials.as_ref(), f.sandbox.as_ref()).map(|c| {
         creds.push(c);
         u32::try_from(creds.len() - 1).unwrap_or(u32::MAX)
@@ -279,6 +286,7 @@ pub fn resolve(expanded: &Expanded, enable: &Enable) -> Result<Resolved, Vec<Err
         warnings: Vec::new(),
         routes: Vec::new(),
         path_routes: BTreeMap::new(),
+        edge_origins: Vec::new(),
     };
     for (i, (name, kind, _)) in frames.iter().enumerate() {
         let i = u32::try_from(i).unwrap_or(u32::MAX);
@@ -307,6 +315,7 @@ pub fn resolve(expanded: &Expanded, enable: &Enable) -> Result<Resolved, Vec<Err
         Ok(Resolved {
             model,
             warnings: cx.warnings,
+            edge_origins: cx.edge_origins,
         })
     } else {
         let prov = &expanded.provenance;

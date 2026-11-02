@@ -7,6 +7,7 @@ mod common;
 use common::{Tree, golden_input};
 use qinit_db::{Model, crc32, open, write};
 use qinit_frames::compile::compile;
+use qinit_frames::error::Code;
 use std::fmt::Write as _;
 
 /// Byte offset of the CRC word in the header.
@@ -112,7 +113,7 @@ fn round_trips(bytes: &[u8]) -> Model {
 fn random_frame_sets_compile_validate_and_round_trip() {
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let t = Tree::new("fuzz-frames");
-    let (mut ok, mut refused) = (0, 0);
+    let (mut ok, mut refused, mut cycles) = (0, 0, 0);
     for case in 0..300 {
         let (src, enable) = frames(&mut rng);
         let layer = format!("c{case}");
@@ -131,11 +132,15 @@ fn random_frame_sets_compile_validate_and_round_trip() {
             Err(es) => {
                 refused += 1;
                 assert!(!es.is_empty(), "case {case}: empty error list");
+                if es.iter().any(|e| e.code == Code::Cycle) {
+                    cycles += 1;
+                }
             }
         }
     }
-    // The generator must exercise both outcomes.
+    // The generator must exercise both outcomes, and the graph pass's cycle refusal.
     assert!(ok > 30 && refused > 30, "ok {ok}, refused {refused}");
+    assert!(cycles > 10, "only {cycles} cycle refusals");
 }
 
 /// Recompute the CRC word after a patch.
@@ -185,14 +190,19 @@ fn mutated_databases_never_panic_the_reader() {
     }
     // Most flips land in data the validator checks; some (a name byte, a path) stay valid.
     assert!(accepted < 4000, "every flip was accepted");
+    assert!(accepted > 100, "only {accepted} flips were accepted");
 }
 
 #[test]
 fn mutated_databases_are_rejected_or_well_formed() {
+    let mut accepted = 0;
     for (truncated, bytes) in mutations() {
         if open(&bytes).is_ok() {
             assert!(!truncated, "a truncation was accepted");
+            accepted += 1;
             round_trips(&bytes);
         }
     }
+    // Enough accepted flips that the round trip is really exercised.
+    assert!(accepted > 100, "only {accepted} flips were accepted");
 }

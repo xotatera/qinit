@@ -57,10 +57,11 @@ pub fn compile(input: &CompileInput) -> Result<Compiled, Vec<Error>> {
     }
     graph::check(&resolved.model).map_err(|e| located(vec![e]))?;
     let bytes = self_checked(&resolved.model).map_err(|e| vec![e])?;
+    let dump = dump::render(&resolved, prov);
     Ok(Compiled {
         bytes,
         warnings: resolved.warnings,
-        dump: dump::render(&resolved.model, prov),
+        dump,
     })
 }
 

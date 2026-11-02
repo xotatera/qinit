@@ -86,6 +86,25 @@ fn an_etc_amend_changes_only_the_amended_key() {
 }
 
 #[test]
+fn dump_edge_keys_follow_the_frame_after_a_dropped_edge() {
+    let t = Tree::new("pipe-dropped");
+    t.file(
+        "vendor",
+        "a.toml",
+        "[brood.b]\n[worker.a]\nexec = [\"/a\"]\n\
+         deps = [{ group = \"optional_all\", edges = [{ to = \"nope\" }, { to = \"b\" }] }]\n",
+    );
+    let c = compile(&t.input(&["vendor"])).expect("compiles");
+    assert_eq!(c.warnings[0].key, "worker.a.deps[0].edges[0].to");
+    let kept =
+        "  deps[0].edges[1] = { to = \"b\", mode = \"sync\", restart_on = \"none\" }  # vendor";
+    assert!(c.dump.lines().any(|l| l == kept), "{}", c.dump);
+    assert!(!c.dump.contains("deps[0].edges[0]"), "{}", c.dump);
+}
+
+/// The golden dump. `UPDATE_GOLDEN` rewrites it from `tests/golden.rs` only; run that update
+/// with `--test golden` so this test never reads a half-written file.
+#[test]
 fn the_dump_is_stable() {
     let c = compile(&golden_input()).expect("golden compiles");
     let want = std::fs::read_to_string(golden_dir().join("expected.dump")).expect("expected.dump");
