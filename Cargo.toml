@@ -3,7 +3,7 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/qinit-cell", "crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests"]
+members = ["crates/qinit-cell", "crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-db", "crates/qinit-db-core", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-frames", "crates/qinit-graph-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests"]
 
 [workspace.package]
 edition = "2024"
@@ -13,8 +13,10 @@ license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
 libc = { version = "=0.2.189", default-features = false }
+serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = "=1.0.154"
 sha2 = "=0.10.9"
+toml = { version = "=1.1.8", default-features = false, features = ["parse", "serde", "std"] }
 vstd = { version = "=0.0.0-2026-10-04-0306", default-features = false }
 
 [workspace.lints.rust]
@@ -57,3 +59,17 @@ kind = "verus"
 package = "qinit-cell-drive"
 memory = "4G"
 timeout = "45s"
+
+[[workspace.metadata.disciplines.proof]]
+name = "qinit-graph-core"
+kind = "verus"
+package = "qinit-graph-core"
+memory = "4G"
+timeout = "90s"
+
+[[workspace.metadata.disciplines.proof]]
+name = "qinit-db-core"
+kind = "verus"
+package = "qinit-db-core"
+memory = "4G"
+timeout = "90s"

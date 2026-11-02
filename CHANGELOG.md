@@ -12,6 +12,9 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Scaffold for frames and the compiled database: empty `qinit-graph-core` and
+  `qinit-db-core` (core, Verus), `qinit-db` and `qinit-frames` (runtime) crates;
+  workspace pins for `serde` and `toml`.
 - Guest suites for cells: spawn (placement, exec failure, only routed
   descriptors), ready (pipe, EOF, exit), stop_main, stop_cell (setsid
   escapee, member dying mid-enumeration), escalate, reuse_guard, adopt (with a
