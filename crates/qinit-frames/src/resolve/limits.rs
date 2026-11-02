@@ -81,3 +81,68 @@ pub(super) fn check(errs: &mut Vec<Error>, m: &Model) {
     over(errs, "", "routes", m.routes.len(), MAX_ROUTES);
     over(errs, "", "pool", pool_bytes(m), MAX_POOL);
 }
+#[cfg(test)]
+mod tests {
+    use super::pool_bytes;
+    use crate::expand::expand;
+    use crate::layers::{Enable, LayerInput, Merged, load};
+    use crate::resolve::resolve;
+    use qinit_db_core::T_POOL;
+    use std::path::Path;
+
+    /// The pool COUNT word of the database `qinit_db::write` makes from `merged`, against the
+    /// estimate resolve's limit check uses.
+    fn assert_estimate_is_exact(merged: &Merged, what: &str) {
+        let resolved = resolve(&expand(merged).expect("expands"), &Enable::default());
+        let model = resolved.expect("resolves").model;
+        let bytes = qinit_db::write(&model).expect("writes");
+        let at = 4 * (5 + 2 * T_POOL);
+        let word = bytes[at..at + 4].try_into().expect("four bytes");
+        let actual = u32::from_le_bytes(word) as usize;
+        assert!(actual > 0, "{what}: the tree has strings");
+        assert_eq!(pool_bytes(&model), actual, "{what}");
+    }
+
+    #[test]
+    fn the_estimate_equals_the_written_pool_on_the_golden_tree() {
+        let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+        let layers: Vec<_> = ["vendor", "etc"]
+            .iter()
+            .map(|l| LayerInput {
+                name: (*l).to_string(),
+                dir: golden.join(l),
+            })
+            .collect();
+        assert_estimate_is_exact(&load(&layers).expect("loads"), "golden");
+    }
+
+    #[test]
+    fn the_estimate_equals_the_written_pool_with_shared_strings() {
+        // Shared strings: equal exec lists, one path
+        // used by a socket, a ready path and an edge, and a repeated landlock list.
+        let src = r#"
+            [worker.a]
+            exec = ["/bin/a"]
+            ready = { socket = "/run/s" }
+            output = "/var/log/shared"
+            credentials = { uid = "u" }
+            sandbox = { landlock = ["ro:/etc"] }
+            [worker.b]
+            exec = ["/bin/a"]
+            ready = { path = "/run/s" }
+            output = "/var/log/shared"
+            errors = "/var/log/shared"
+            credentials = { uid = "u" }
+            sandbox = { landlock = ["ro:/etc"] }
+            deps = [{ group = "require_all", edges = [{ path = "/run/s" }] }]
+            [worker.c]
+            exec = ["/x"]
+            instances = ["i", "j"]
+        "#;
+        let merged = Merged {
+            table: src.parse::<toml::Table>().expect("toml"),
+            provenance: std::collections::BTreeMap::new(),
+        };
+        assert_estimate_is_exact(&merged, "shared");
+    }
+}
