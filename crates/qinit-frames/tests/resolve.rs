@@ -3,7 +3,7 @@
 //! Reference resolution, logger pipes, pre-syslog list, enable closure and limits.
 mod common;
 
-use common::{enable, errs, idx, node, ok, run};
+use common::{TempDir, enable, errs, idx, node, ok, run};
 use qinit_db::{Edge, Group, GroupKind, Mode, RestartOn, Route, Target};
 use qinit_frames::error::Code;
 use qinit_frames::expand::expand;
@@ -58,8 +58,7 @@ fn a_missing_require_target_is_missing_target() {
 
 #[test]
 fn a_target_masked_by_disable_is_missing_target_for_require() {
-    let root = std::env::temp_dir().join(format!("qinit-frames-mask-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = TempDir::new("mask");
     let mk = |name: &str, body: &str| {
         let dir = root.join(name);
         std::fs::create_dir_all(&dir).expect("mkdir");
@@ -78,7 +77,6 @@ fn a_target_masked_by_disable_is_missing_target_for_require() {
         mk("etc", "[brood.a]\ndisable = true\n"),
     ];
     let m = load(&ls).expect("loads");
-    let _ = std::fs::remove_dir_all(&root);
     let es = resolve(&expand(&m).expect("expands"), &Enable::default()).expect_err("refused");
     assert_eq!(es[0].code, Code::MissingTarget);
 }

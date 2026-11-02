@@ -3,21 +3,17 @@
 //! Credential policy: rules, ceilings, glob matching and file errors.
 mod common;
 
-use common::ok;
+use common::{TempDir, ok};
 use qinit_db::Model;
 use qinit_frames::error::{Code, Error};
 use qinit_frames::policy::{Policy, check, glob_match, load_policy};
 use std::path::PathBuf;
 
 fn policy(tag: &str, body: &str) -> Result<Policy, Vec<Error>> {
-    let dir = std::env::temp_dir().join(format!("qinit-policy-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let dir = TempDir::new(tag);
     let path = dir.join("policy.toml");
     std::fs::write(&path, body).expect("write");
-    let r = load_policy(&path);
-    let _ = std::fs::remove_dir_all(&dir);
-    r
+    load_policy(&path)
 }
 
 fn pol(tag: &str, body: &str) -> Policy {

@@ -1,9 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Layer rules: disable semantics, error accumulation, enable validation, missing directories.
+mod common;
+
+use common::TempDir;
 use qinit_frames::error::Code;
 use qinit_frames::layers::{LayerInput, load, load_enable};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 fn layer(root: &Path, name: &str, files: &[(&str, &str)]) -> LayerInput {
     let dir = root.join(name);
@@ -17,14 +20,11 @@ fn layer(root: &Path, name: &str, files: &[(&str, &str)]) -> LayerInput {
     }
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let p = std::env::temp_dir().join(format!("qinit-frames-more-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).expect("mkdir");
-    p
+fn tmp(tag: &str) -> TempDir {
+    TempDir::new(tag)
 }
 
-fn layers(tag: &str, specs: &[(&str, &str, &str)]) -> (PathBuf, Vec<LayerInput>) {
+fn layers(tag: &str, specs: &[(&str, &str, &str)]) -> (TempDir, Vec<LayerInput>) {
     let root = tmp(tag);
     let ls = specs
         .iter()
@@ -35,7 +35,7 @@ fn layers(tag: &str, specs: &[(&str, &str, &str)]) -> (PathBuf, Vec<LayerInput>)
 
 #[test]
 fn disable_true_removes_the_frame_and_its_provenance() {
-    let (root, ls) = layers(
+    let (_root, ls) = layers(
         "dis-prov",
         &[
             (
@@ -52,12 +52,11 @@ fn disable_true_removes_the_frame_and_its_provenance() {
     assert!(!m.provenance.contains_key("worker.x.exec"));
     assert_eq!(m.provenance["worker.x"], "etc");
     assert_eq!(m.provenance["worker.y.exec"], "vendor");
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn a_later_layer_can_redefine_a_disabled_frame() {
-    let (root, ls) = layers(
+    let (_root, ls) = layers(
         "redefine",
         &[
             ("vendor", "a.toml", "[worker.x]\nexec=[\"/x\"]"),
@@ -68,12 +67,11 @@ fn a_later_layer_can_redefine_a_disabled_frame() {
     let m = load(&ls).expect("loads");
     assert_eq!(m.table["worker"]["x"]["exec"][0].as_str(), Some("/new"));
     assert_eq!(m.provenance["worker.x.exec"], "local");
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn disable_true_discards_other_keys_in_the_same_table() {
-    let (root, ls) = layers(
+    let (_root, ls) = layers(
         "dis-keys",
         &[
             ("vendor", "a.toml", "[worker.x]\nexec=[\"/x\"]"),
@@ -87,12 +85,11 @@ fn disable_true_discards_other_keys_in_the_same_table() {
     let m = load(&ls).expect("loads");
     assert!(m.table["worker"].as_table().expect("t").get("x").is_none());
     assert!(!m.provenance.contains_key("worker.x.ready"));
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn disable_of_an_absent_frame_is_accepted() {
-    let (root, ls) = layers(
+    let (_root, ls) = layers(
         "dis-absent",
         &[("vendor", "a.toml", "[worker.ghost]\ndisable=true")],
     );
@@ -102,12 +99,11 @@ fn disable_of_an_absent_frame_is_accepted() {
             .get("worker")
             .is_none_or(|w| w.as_table().expect("t").is_empty())
     );
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn list_op_errors_from_different_layers_are_all_reported() {
-    let (root, ls) = layers(
+    let (_root, ls) = layers(
         "listops",
         &[
             (
@@ -124,12 +120,11 @@ fn list_op_errors_from_different_layers_are_all_reported() {
     assert!(e.iter().all(|x| x.code == Code::ListOp));
     assert_eq!(e[0].layer.as_deref(), Some("etc"));
     assert_eq!(e[1].layer.as_deref(), Some("local"));
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn a_parse_error_stops_the_merge_but_not_the_reading() {
-    let (root, ls) = layers(
+    let (_root, ls) = layers(
         "stops",
         &[
             ("vendor", "a.toml", "[worker.x\n"),
@@ -142,7 +137,6 @@ fn a_parse_error_stops_the_merge_but_not_the_reading() {
         e.iter().map(|x| x.code).collect::<Vec<_>>(),
         [Code::Parse, Code::UnknownKey]
     );
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -156,7 +150,6 @@ fn a_missing_layer_directory_is_an_io_error() {
     assert_eq!(e[0].code, Code::Io);
     assert_eq!(e[0].layer.as_deref(), Some("etc"));
     assert_eq!(e[0].file.as_deref(), Some(root.join("nope").as_path()));
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -176,16 +169,14 @@ fn a_scalar_enable_is_a_bad_value_naming_its_file_and_layer() {
         e[0].file.as_deref(),
         Some(root.join("etc/enable.toml").as_path())
     );
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn a_scalar_syslog_is_a_bad_value() {
-    let (root, ls) = layers("syslog-scalar", &[("vendor", "enable.toml", "syslog=3")]);
+    let (_root, ls) = layers("syslog-scalar", &[("vendor", "enable.toml", "syslog=3")]);
     let e = load_enable(&ls).unwrap_err();
     assert_eq!((e[0].code, e[0].key.as_str()), (Code::BadValue, "syslog"));
     assert_eq!(e[0].layer.as_deref(), Some("vendor"));
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -205,5 +196,4 @@ fn a_non_string_element_is_a_bad_value_from_the_layer_that_set_it() {
         e[0].file.as_deref(),
         Some(root.join("etc/enable.toml").as_path())
     );
-    let _ = std::fs::remove_dir_all(&root);
 }

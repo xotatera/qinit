@@ -11,6 +11,7 @@ use qinit_frames::layers::{Enable, Merged};
 use qinit_frames::resolve::{Resolved, resolve};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub fn merged(src: &str) -> Merged {
     Merged {
@@ -48,19 +49,51 @@ pub fn node<'a>(m: &'a Model, name: &str) -> &'a qinit_db::Node {
     &m.nodes[idx(m, name) as usize]
 }
 
+/// A unique scratch directory, removed on drop (also when the test panics).
+pub struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    /// A fresh, empty directory unique to `tag`, this process and this call.
+    pub fn new(tag: &str) -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let path = std::env::temp_dir().join(format!("qinit-frames-{tag}-{pid}-{n}"));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("mkdir temp dir");
+        Self { path }
+    }
+}
+
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 /// A throwaway directory of layers, removed on drop.
 pub struct Tree {
     pub root: PathBuf,
+    _dir: TempDir,
 }
 
 impl Tree {
     /// A fresh, empty tree unique to `tag` and this process.
     pub fn new(tag: &str) -> Self {
-        let pid = std::process::id();
-        let root = std::env::temp_dir().join(format!("qinit-frames-{tag}-{pid}"));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("mkdir tree");
-        Self { root }
+        let dir = TempDir::new(tag);
+        Self {
+            root: dir.to_path_buf(),
+            _dir: dir,
+        }
     }
 
     /// Write `body` to `<layer>/<file>`.
@@ -74,12 +107,6 @@ impl Tree {
     /// The compile input over `layers` in order, creating any empty layer directory.
     pub fn input(&self, layers: &[&str]) -> CompileInput {
         compile_input(&self.root, layers)
-    }
-}
-
-impl Drop for Tree {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 

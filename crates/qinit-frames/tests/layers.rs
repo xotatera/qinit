@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Layer loading and amend merge.
+mod common;
+
+use common::TempDir;
 use qinit_frames::error::Code;
 use qinit_frames::layers::{LayerInput, load, load_enable};
 use std::path::Path;
@@ -17,11 +20,8 @@ fn layer(root: &Path, name: &str, files: &[(&str, &str)]) -> LayerInput {
     }
 }
 
-fn tmp(tag: &str) -> std::path::PathBuf {
-    let p = std::env::temp_dir().join(format!("qinit-frames-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).expect("mkdir");
-    p
+fn tmp(tag: &str) -> TempDir {
+    TempDir::new(tag)
 }
 
 /// Merge a vendor layer and an etc layer; return the worker.x table or the errors.
@@ -32,7 +32,6 @@ fn two(tag: &str, a: &str, b: &str) -> Result<toml::Table, Vec<qinit_frames::err
         layer(&root, "etc", &[("b.toml", b)]),
     ];
     let r = load(&ls).map(|m| m.table);
-    let _ = std::fs::remove_dir_all(&root);
     r
 }
 
@@ -65,7 +64,6 @@ fn one_layer_loads_every_toml_file_in_name_order() {
         .cloned()
         .collect();
     assert_eq!(names, ["a", "b"]);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -83,7 +81,6 @@ fn a_frame_defined_twice_in_one_layer_is_a_duplicate() {
     assert_eq!(e[0].code, Code::DuplicateFrame);
     assert_eq!(e[0].key, "worker.a");
     assert_eq!(e[0].layer.as_deref(), Some("vendor"));
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -263,7 +260,6 @@ fn provenance_names_the_layer_that_set_each_key() {
     assert_eq!(m.provenance["worker.x.restart.policy"], "vendor");
     assert_eq!(m.provenance["worker.x.restart.max"], "etc");
     assert_eq!(m.provenance["worker.x.exec"], "etc");
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -281,7 +277,6 @@ fn the_enable_list_merges_with_the_same_list_ops() {
     let e = load_enable(&ls).expect("loads");
     assert_eq!(e.roots, ["b", "c"]);
     assert!(e.syslog.is_empty());
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -307,7 +302,6 @@ fn the_syslog_list_merges_with_the_same_list_ops() {
     let e = load_enable(&ls).expect("loads");
     assert_eq!(e.roots, ["a"]);
     assert_eq!(e.syslog, ["logd", "extra"]);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -323,7 +317,6 @@ fn enable_plain_array_over_existing_and_unknown_key_are_errors() {
         e.iter()
             .any(|x| x.code == Code::ListOp && x.key == "syslog")
     );
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -332,7 +325,6 @@ fn a_missing_enable_file_is_an_empty_enable() {
     let ls = [layer(&root, "vendor", &[])];
     let e = load_enable(&ls).expect("loads");
     assert!(e.roots.is_empty() && e.syslog.is_empty());
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -345,7 +337,6 @@ fn an_io_error_names_the_file() {
     let e = load(&ls).unwrap_err();
     assert_eq!(e[0].code, Code::Io);
     assert!(e[0].file.is_some());
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -355,7 +346,6 @@ fn a_toml_syntax_error_names_the_file() {
     let e = load(&ls).unwrap_err();
     assert_eq!(e[0].code, Code::Parse);
     assert!(e[0].file.as_ref().is_some_and(|f| f.ends_with("a.toml")));
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -368,7 +358,6 @@ fn parse_errors_from_different_files_accumulate() {
     )];
     let e = load(&ls).unwrap_err();
     assert_eq!(e.len(), 2);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -382,5 +371,4 @@ fn an_unknown_top_level_table_is_an_unknown_key() {
     let e = load(&ls).unwrap_err();
     assert_eq!(e[0].code, Code::UnknownKey);
     assert_eq!(e[0].key, "daemon");
-    let _ = std::fs::remove_dir_all(&root);
 }
