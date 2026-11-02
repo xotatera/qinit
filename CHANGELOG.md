@@ -29,8 +29,14 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   amend-layer merge, template and instance expansion, reference resolution,
   credential policy ceilings (policy file with ordered rules), graph passes, a
   compile pipeline with a self-check (write, open, decode, compare) and a
-  provenance dump, with golden, negative and fuzz tests. Errors carry codes
-  and keys; policy shape errors name their rule and field.
+  provenance dump, with golden, negative and fuzz tests. Provenance is kept
+  per frame key with its layer and file; the dump marks each value with the
+  layer that set it, `template <name>` or `default`. Errors carry codes, keys
+  and, wherever the key belongs to a frame, its file and layer, and display as
+  `<file>: <key> [<layer>]: <code>: <detail>`; policy shape errors name their
+  rule and field. Least privilege by default: a worker without `credentials`,
+  or with only a `sandbox` table, is unprivileged by contract (no root, no
+  capabilities, no-new-privileges on) and needs no policy rule.
 - Workspace pins for `serde` and `toml`.
 - Guest suites for cells: spawn (placement, exec failure, only routed
   descriptors), ready (pipe, EOF, exit), stop_main, stop_cell (setsid
