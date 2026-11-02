@@ -214,3 +214,69 @@ fn an_unknown_key_inside_an_untagged_enum_is_a_bad_value() {
         );
     }
 }
+
+#[test]
+fn an_unknown_key_in_a_nested_table_names_its_true_path() {
+    let key = |src: &str| {
+        let e = parse("worker", src).unwrap_err();
+        assert_eq!(e.code, Code::UnknownKey, "{src}");
+        e.key
+    };
+    assert_eq!(
+        key("restart = { policy = \"never\", bogus = 1 }"),
+        "worker.t.restart.bogus"
+    );
+    assert_eq!(
+        key("credentials = { uid = \"u\", bogus = 1 }"),
+        "worker.t.credentials.bogus"
+    );
+    assert_eq!(
+        key("sandbox = { seccomp = \"default\", bogus = 1 }"),
+        "worker.t.sandbox.bogus"
+    );
+    assert_eq!(key("cell = { bogus = 1 }"), "worker.t.cell.bogus");
+    assert_eq!(
+        key(
+            "deps = [{ group = \"require_all\", edges = [{ to = \"a\" }, { to = \"b\", bogus = 1 }] }]"
+        ),
+        "worker.t.deps[0].edges[1].bogus"
+    );
+    assert_eq!(
+        key("deps = [{ group = \"require_all\", edges = [{ to = \"a\" }], bogus = 1 }]"),
+        "worker.t.deps[0].bogus"
+    );
+    // `max` is a restart key, so only the edge holding it is a candidate.
+    assert_eq!(
+        key("restart = { policy = \"never\", max = 1 }\n\
+             deps = [{ group = \"require_all\", edges = [{ to = \"a\", max = 1 }] }]"),
+        "worker.t.deps[0].edges[0].max"
+    );
+}
+
+#[test]
+fn an_unknown_key_in_two_tables_is_keyed_on_the_frame() {
+    let e = parse(
+        "worker",
+        "restart = { policy = \"never\", bogus = 1 }\ncell = { bogus = 1 }",
+    )
+    .unwrap_err();
+    assert_eq!((e.code, e.key.as_str()), (Code::UnknownKey, "worker.t"));
+    assert!(e.detail.contains("could not be told"), "{}", e.detail);
+}
+
+#[test]
+fn an_empty_require_group_is_a_bad_value() {
+    for g in ["require_all", "require_any"] {
+        let src = format!("deps = [{{ group = \"{g}\", edges = [] }}]");
+        let e = parse("worker", &src).unwrap_err();
+        assert_eq!(
+            (e.code, e.key.as_str()),
+            (Code::BadValue, "worker.t.deps[0].edges"),
+            "{g}"
+        );
+    }
+    for g in ["optional_all", "exclude_all"] {
+        let src = format!("deps = [{{ group = \"{g}\", edges = [] }}]");
+        assert!(parse("worker", &src).is_ok(), "{g}");
+    }
+}

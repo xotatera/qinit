@@ -109,7 +109,8 @@ pub fn parse_frame(kind: &str, name: &str, value: &toml::Value) -> Result<Frame,
             format!("unknown frame kind `{kind}`"),
         ));
     }
-    let frame = Frame::deserialize(value.clone()).map_err(|e| serde_error(&base, e.message()))?;
+    let frame =
+        Frame::deserialize(value.clone()).map_err(|e| serde_error(&base, value, e.message()))?;
     check_kind(kind, &frame, &base)?;
     check_values(&frame, &base)?;
     Ok(frame)
@@ -181,6 +182,13 @@ fn check_values(f: &Frame, base: &str) -> Result<(), Error> {
                 format!("unknown group `{}`", g.group),
             ));
         }
+        if g.group.starts_with("require_") && g.edges.is_empty() {
+            return Err(bad(
+                base,
+                &format!("deps[{gi}].edges"),
+                format!("a {} group needs at least one edge", g.group),
+            ));
+        }
         for (ei, e) in g.edges.iter().enumerate() {
             check_edge(e, &format!("deps[{gi}].edges[{ei}]"), base)?;
         }
@@ -237,16 +245,84 @@ fn check_edge(e: &DepEdge, at: &str, base: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Map a serde message to an error. Serde reports an unknown field as "unknown field `x`, ...";
-/// the field then joins the key path. Anything else (wrong type, no matching untagged variant,
-/// so an unknown key inside `ready` or `output` too) is a `BadValue` on the frame.
-fn serde_error(base: &str, msg: &str) -> Error {
+/// The keys each table of a frame allows: the frame itself, then the named tables, then a
+/// `deps` group and an edge.
+const FRAME_KEYS: [&str; 11] = [
+    "exec",
+    "template",
+    "instances",
+    "ready",
+    "restart",
+    "output",
+    "errors",
+    "cell",
+    "credentials",
+    "sandbox",
+    "deps",
+];
+const TABLE_KEYS: [(&str, &[&str]); 4] = [
+    ("restart", &["policy", "max", "window"]),
+    ("cell", &["memory_max", "pids_max"]),
+    ("credentials", &["uid", "caps", "nnp", "securebits"]),
+    ("sandbox", &["namespaces", "seccomp", "landlock"]),
+];
+const GROUP_KEYS: [&str; 2] = ["group", "edges"];
+const EDGE_KEYS: [&str; 6] = ["to", "path", "mode", "deadline", "restart_on", "stop"];
+
+/// Every place in `frame` where `field` is a key its table does not allow, as a path below the
+/// frame (`restart.bogus`, `deps[0].edges[1].bogus`). `ready` and `output` are left out: an
+/// unknown key there is reported as a `BadValue`, not by name.
+fn unknown_at(frame: &toml::Value, field: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(t) = frame.as_table() else {
+        return out;
+    };
+    let mut check = |table: &toml::Table, allowed: &[&str], at: String| {
+        if table.contains_key(field) && !allowed.contains(&field) {
+            out.push(if at.is_empty() {
+                field.to_owned()
+            } else {
+                format!("{at}.{field}")
+            });
+        }
+    };
+    check(t, &FRAME_KEYS, String::new());
+    for (name, allowed) in TABLE_KEYS {
+        if let Some(inner) = t.get(name).and_then(toml::Value::as_table) {
+            check(inner, allowed, name.to_owned());
+        }
+    }
+    let groups = t.get("deps").and_then(toml::Value::as_array);
+    for (gi, g) in groups.into_iter().flatten().enumerate() {
+        let Some(g) = g.as_table() else { continue };
+        check(g, &GROUP_KEYS, format!("deps[{gi}]"));
+        let edges = g.get("edges").and_then(toml::Value::as_array);
+        for (ei, e) in edges.into_iter().flatten().enumerate() {
+            if let Some(e) = e.as_table() {
+                check(e, &EDGE_KEYS, format!("deps[{gi}].edges[{ei}]"));
+            }
+        }
+    }
+    out
+}
+
+/// Map a serde message about `frame` to an error. Serde reports an unknown field as "unknown
+/// field `x`, ..." without saying where; the key is the path of the one table in the frame that
+/// holds `x` and does not allow it (`worker.t.restart.x`). When no such table, or more than one,
+/// is found, the key is the frame's and the detail says so. Anything else (wrong type, no
+/// matching untagged variant, so an unknown key inside `ready` or `output` too) is a `BadValue`
+/// on the frame.
+fn serde_error(base: &str, frame: &toml::Value, msg: &str) -> Error {
     let field = msg
         .strip_prefix("unknown field `")
         .and_then(|rest| rest.split_once('`'))
         .map(|(f, _)| f);
-    match field {
-        Some(f) => Error::new(Code::UnknownKey, format!("{base}.{f}"), msg),
-        None => Error::new(Code::BadValue, base, msg),
+    let Some(f) = field else {
+        return Error::new(Code::BadValue, base, msg);
+    };
+    if let [one] = unknown_at(frame, f).as_slice() {
+        return Error::new(Code::UnknownKey, format!("{base}.{one}"), msg);
     }
+    let why = format!("{msg} (the table holding `{f}` could not be told)");
+    Error::new(Code::UnknownKey, base, why)
 }

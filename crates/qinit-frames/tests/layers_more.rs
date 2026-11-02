@@ -224,3 +224,29 @@ fn a_bad_enable_element_is_blamed_on_the_last_layer_that_set_the_list() {
     assert_eq!((e[0].code, e[0].key.as_str()), (Code::BadValue, "enable"));
     assert_eq!(e[0].layer.as_deref(), Some("etc"));
 }
+
+#[test]
+fn a_list_verb_given_a_non_array_is_a_list_op_error() {
+    for (tag, change, verb) in [
+        ("verb-table", "exec = { replace = { a = 1 } }", "replace"),
+        ("verb-string", "exec = { append = \"x\" }", "append"),
+    ] {
+        let (root, ls) = layers(
+            tag,
+            &[
+                ("vendor", "a.toml", "[worker.x]\nexec = [\"/x\"]"),
+                ("etc", "b.toml", &format!("[worker.x]\n{change}")),
+            ],
+        );
+        let e = load(&ls).unwrap_err();
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert_eq!(
+            (e[0].code, e[0].key.as_str()),
+            (Code::ListOp, "worker.x.exec"),
+            "{change}"
+        );
+        assert_eq!(e[0].detail, format!("`{verb}` takes an array"));
+        assert_eq!(e[0].layer.as_deref(), Some("etc"));
+        assert_eq!(e[0].file, Some(root.join("etc/b.toml")));
+    }
+}

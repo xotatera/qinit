@@ -177,12 +177,9 @@ fn ready(cx: &mut Cx, base: &str, kind: Kind, f: &Frame) -> Ready {
     match &f.ready {
         None if kind == Kind::Worker => Ready::Pipe,
         None => Ready::Exit,
-        Some(SReady::Kind(k)) if k == "pipe" => Ready::Pipe,
+        // `schema::parse_frame` admits only `pipe` and `exit`.
         Some(SReady::Kind(k)) if k == "exit" => Ready::Exit,
-        Some(SReady::Kind(k)) => {
-            cx.bad(&key, format!("`{k}` is not pipe or exit"));
-            Ready::Exit
-        }
+        Some(SReady::Kind(_)) => Ready::Pipe,
         Some(SReady::Socket { socket }) => {
             cx.text(&key, socket);
             Ready::Socket(socket.clone())
@@ -194,36 +191,24 @@ fn ready(cx: &mut Cx, base: &str, kind: Kind, f: &Frame) -> Ready {
     }
 }
 
-fn restart(cx: &mut Cx, base: &str, f: &Frame) -> Restart {
-    let mut r = Restart {
-        policy: RestartPolicy::Never,
-        max: 0,
-        window_ms: 0,
+/// The restart record. `schema::parse_frame` has checked the policy word and the window.
+fn restart(f: &Frame) -> Restart {
+    let Some(s) = &f.restart else {
+        return Restart {
+            policy: RestartPolicy::Never,
+            max: 0,
+            window_ms: 0,
+        };
     };
-    let Some(s) = &f.restart else { return r };
-    r.policy = match s.policy.as_str() {
-        "never" => RestartPolicy::Never,
-        "on-failure" => RestartPolicy::OnFailure,
-        "always" => RestartPolicy::Always,
-        p => {
-            cx.bad(
-                format!("{base}.restart.policy"),
-                format!("`{p}` is not a policy"),
-            );
-            RestartPolicy::Never
-        }
-    };
-    r.max = s.max.unwrap_or(0);
-    if let Some(w) = &s.window {
-        r.window_ms = duration_ms(w).unwrap_or_else(|| {
-            cx.bad(
-                format!("{base}.restart.window"),
-                format!("`{w}` is not a duration"),
-            );
-            0
-        });
+    Restart {
+        policy: match s.policy.as_str() {
+            "on-failure" => RestartPolicy::OnFailure,
+            "always" => RestartPolicy::Always,
+            _ => RestartPolicy::Never,
+        },
+        max: s.max.unwrap_or(0),
+        window_ms: s.window.as_deref().and_then(duration_ms).unwrap_or(0),
     }
-    r
 }
 
 fn node(
@@ -237,7 +222,7 @@ fn node(
     let base = format!("{}.{name}", kind_name(kind));
     let exec = exec(cx, &base, kind, f);
     let ready = ready(cx, &base, kind, f);
-    let restart = restart(cx, &base, f);
+    let restart = restart(f);
     let (output, errors, logger) = streams(cx, &base, f, me);
     let (mut groups, mut origins) = deps::groups(cx, &base, f.deps.as_deref().unwrap_or_default());
     cx.frame_groups.push(groups.len());
@@ -249,16 +234,11 @@ fn node(
         u32::try_from(creds.len() - 1).unwrap_or(u32::MAX)
     });
     let cell = f.cell.as_ref();
-    let memory_max_kib = match cell.and_then(|c| c.memory_max.as_deref()) {
-        None => 0,
-        Some(m) => size_kib(m).unwrap_or_else(|| {
-            cx.bad(
-                format!("{base}.cell.memory_max"),
-                format!("`{m}` is not a size"),
-            );
-            0
-        }),
-    };
+    // `schema::parse_frame` has checked the size.
+    let memory_max_kib = cell
+        .and_then(|c| c.memory_max.as_deref())
+        .and_then(size_kib)
+        .unwrap_or(0);
     Node {
         kind,
         name: name.to_owned(),
@@ -276,6 +256,10 @@ fn node(
 }
 
 /// Resolve the expanded frames against each other and the enable set.
+///
+/// The frames must come from [`crate::expand::expand`]: the values `schema::parse_frame`
+/// checks (the ready word, restart policy and window, memory size, group kinds and edge
+/// fields) are not checked again here.
 ///
 /// # Errors
 /// Every `BadValue`, `MissingTarget`, `Cycle` (a worker logging to itself), `HardParallel`,
