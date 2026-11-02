@@ -17,7 +17,7 @@ fn flipping_a_crc_byte_is_a_crc_error() {
 }
 
 #[test]
-fn every_single_byte_flip_is_rejected_or_validates() {
+fn every_single_byte_flip_is_rejected() {
     let bytes = write(&sample()).unwrap();
     for i in 0..bytes.len() {
         for mask in [0x01u8, 0x80, 0xFF] {
