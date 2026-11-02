@@ -5,7 +5,7 @@
 
 use qinit_db::{
     Cred, Edge, Group, GroupKind, Kind, Mode, Model, Node, Ready, Restart, RestartOn,
-    RestartPolicy, Route, Seccomp, Securebits, Target,
+    RestartPolicy, Route, Seccomp, Securebits, Stop, StopMode, Target,
 };
 
 pub fn node(name: &str, kind: Kind) -> Node {
@@ -18,7 +18,13 @@ pub fn node(name: &str, kind: Kind) -> Node {
             policy: RestartPolicy::Never,
             max: 0,
             window_ms: 0,
+            delay_ms: 1000,
         },
+        stop: Stop {
+            mode: StopMode::Main,
+            grace_ms: 10_000,
+        },
+        start_timeout_ms: 90_000,
         output: None,
         errors: None,
         cred: None,
@@ -36,6 +42,7 @@ pub fn edge(target: Target, mode: Mode, deadline_ms: u32) -> Edge {
         deadline_ms,
         restart_on: RestartOn::None,
         stop_parallel: false,
+        cascade: false,
     }
 }
 
@@ -49,6 +56,7 @@ pub fn sample() -> Model {
         policy: RestartPolicy::Always,
         max: 5,
         window_ms: 10_000,
+        delay_ms: 1000,
     };
     logd.output = Some(0);
     let net = node("net", Kind::Forager);
@@ -59,6 +67,7 @@ pub fn sample() -> Model {
         policy: RestartPolicy::OnFailure,
         max: 3,
         window_ms: 60_000,
+        delay_ms: 1000,
     };
     sshd.output = Some(1);
     sshd.errors = Some(0);

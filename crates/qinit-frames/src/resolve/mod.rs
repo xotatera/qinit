@@ -201,6 +201,7 @@ fn restart(cx: &mut Cx, base: &str, f: &Frame) -> Restart {
             policy: RestartPolicy::Never,
             max: 0,
             window_ms: 0,
+            delay_ms: 1000,
         };
     };
     let policy = match s.policy.as_str() {
@@ -227,6 +228,7 @@ fn restart(cx: &mut Cx, base: &str, f: &Frame) -> Restart {
         policy,
         max: s.max.unwrap_or(0),
         window_ms,
+        delay_ms: 1000,
     }
 }
 
@@ -269,6 +271,11 @@ fn node(
         exec,
         ready,
         restart,
+        stop: qinit_db::Stop {
+            mode: qinit_db::StopMode::Main,
+            grace_ms: 10_000,
+        },
+        start_timeout_ms: 90_000,
         output,
         errors,
         cred,

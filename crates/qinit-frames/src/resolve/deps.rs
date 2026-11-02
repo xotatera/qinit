@@ -16,6 +16,7 @@ pub(super) fn logger_edge(logger: u32) -> Edge {
         deadline_ms: 0,
         restart_on: RestartOn::None,
         stop_parallel: false,
+        cascade: false,
     }
 }
 
@@ -129,6 +130,7 @@ fn edge(cx: &mut Cx, at: &str, kind: GroupKind, e: &DepEdge) -> Option<Edge> {
         deadline_ms,
         restart_on,
         stop_parallel,
+        cascade: false,
     })
 }
 

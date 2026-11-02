@@ -32,6 +32,10 @@ pub struct Node {
     pub ready: Ready,
     /// Its restart policy.
     pub restart: Restart,
+    /// How it is stopped.
+    pub stop: Stop,
+    /// Start timeout in milliseconds; 0 for none.
+    pub start_timeout_ms: u32,
     /// Route index for standard output.
     pub output: Option<u32>,
     /// Route index for standard error.
@@ -81,6 +85,26 @@ pub struct Restart {
     pub max: u32,
     /// The window in milliseconds.
     pub window_ms: u32,
+    /// The base of the restart back-off in milliseconds; at least 100.
+    pub delay_ms: u32,
+}
+
+/// How a stop asks politely first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopMode {
+    /// TERM to the main process.
+    Main,
+    /// Freeze the cell and TERM every member.
+    Cell,
+}
+
+/// How a node is stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stop {
+    /// The polite mode.
+    pub mode: StopMode,
+    /// The grace period in milliseconds; at least 100.
+    pub grace_ms: u32,
 }
 
 /// When a node restarts.
@@ -129,6 +153,8 @@ pub struct Edge {
     pub restart_on: RestartOn,
     /// `stop = "parallel"`.
     pub stop_parallel: bool,
+    /// A quarantined target quarantines the dependent (`require_all` node edges only).
+    pub cascade: bool,
 }
 
 /// An edge target.
