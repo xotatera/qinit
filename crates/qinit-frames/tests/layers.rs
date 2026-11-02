@@ -31,8 +31,7 @@ fn two(tag: &str, a: &str, b: &str) -> Result<toml::Table, Vec<qinit_frames::err
         layer(&root, "vendor", &[("a.toml", a)]),
         layer(&root, "etc", &[("b.toml", b)]),
     ];
-    let r = load(&ls).map(|m| m.table);
-    r
+    load(&ls).map(|m| m.table)
 }
 
 fn exec_of(t: &toml::Table) -> Vec<String> {
