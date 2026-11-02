@@ -232,7 +232,8 @@ pub open spec fn inv_node(ns: NodeState, p: Params) -> bool {
     &&& timer_matches(ns, p.start_timeout_ms as int)
     &&& (ns.state == State::Quarantined(Reason::Breaker) ==> p.max > 0 && ns.burst_count > p.max)
     &&& (ns.to_stop ==> ns.state is Starting || ns.state is Ready)
-    &&& (p.kind == 1 ==> !(ns.state is Quarantined) && ns.state != State::Waiting(Why::Backoff))
+    &&& (p.kind == 1 ==> !(ns.state is Quarantined) && ns.state != State::Waiting(Why::Backoff)
+        && ns.backoff_exp == 0)
 }
 
 // ---- small constructors ----
@@ -751,6 +752,88 @@ pub fn node_step(ns: NodeState, p: Params, shutdown: bool, input: NodeInput, now
         NodeInput::Deadline(t) => on_deadline(ns, p, t, now),
         NodeInput::Shutdown => on_shutdown(ns, p),
     }
+}
+
+// ---- transitions the scheduler makes ----
+/// A wanted node that was off starts waiting for its dependencies.
+#[must_use]
+#[allow(unused_variables)]  // `p` appears only in the specification
+pub fn enter_waiting(ns: NodeState, p: Params, now: u64, watch: bool) -> (r: NodeState)
+    requires
+        inv_node(ns, p),
+        ns.state is Off,
+    ensures
+        inv_node(r, p),
+        r.state == State::Waiting(Why::Deps),
+        r.wait_since_ms == now,
+        r.wanted == ns.wanted,
+        r.last_start_ms == ns.last_start_ms,
+        r.backoff_exp == ns.backoff_exp,
+        r.emit_start == ns.emit_start,
+{
+    NodeState {
+        state: State::Waiting(Why::Deps),
+        wait_since_ms: now,
+        emit_watch: watch || ns.emit_watch,
+        ..ns
+    }
+}
+
+/// A brood whose groups are satisfied is ready at once.
+#[must_use]
+#[allow(unused_variables)]  // `p` appears only in the specification
+pub fn brood_ready(ns: NodeState, p: Params) -> (r: NodeState)
+    requires
+        inv_node(ns, p),
+        ns.state is Waiting,
+    ensures
+        inv_node(r, p),
+        r.state == State::Ready,
+        r.wanted == ns.wanted,
+        r.emit_start == ns.emit_start,
+{
+    let n = cancel_timer(ns);
+    push_report(NodeState { state: State::Ready, left: Left::Restart, ..n }, Report::Ready)
+}
+
+/// The groups are satisfied but the back-off has not elapsed: wait it out.
+#[must_use]
+pub fn to_backoff(ns: NodeState, p: Params, now: u64) -> (r: NodeState)
+    requires
+        inv_node(ns, p),
+        ns.state == State::Waiting(Why::Deps),
+        p.kind != 1,
+    ensures
+        inv_node(r, p),
+        r.state == State::Waiting(Why::Backoff),
+        r.wanted == ns.wanted,
+        r.emit_start == ns.emit_start,
+{
+    let rem = remaining_ms(ns, p.delay_ms, now);
+    let n = cancel_timer(ns);
+    NodeState {
+        state: State::Waiting(Why::Backoff),
+        timer: Some(TimerKind::Backoff),
+        emit_arm: Some((TimerKind::Backoff, rem)),
+        ..n
+    }
+}
+
+/// A waiting node arms the timer of its earliest pending async deadline.
+#[must_use]
+#[allow(unused_variables)]  // `p` appears only in the specification
+pub fn arm_edge(ns: NodeState, p: Params, ms: u32) -> (r: NodeState)
+    requires
+        inv_node(ns, p),
+        ns.state == State::Waiting(Why::Deps),
+        ns.timer is None,
+    ensures
+        inv_node(r, p),
+        r.state == ns.state,
+        r.wanted == ns.wanted,
+        r.emit_start == ns.emit_start,
+{
+    NodeState { timer: Some(TimerKind::Edge), emit_arm: Some((TimerKind::Edge, ms)), ..ns }
 }
 
 } // verus!

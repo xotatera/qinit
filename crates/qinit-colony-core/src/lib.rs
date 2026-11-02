@@ -9,8 +9,13 @@
 #![forbid(unsafe_code)]
 
 mod node;
+mod sched;
+mod spec;
 
 pub use node::*;
+pub use sched::*;
+#[allow(unused_imports)] // the specification is erased outside verification
+pub use spec::*;
 
 use vstd::prelude::*;
 
@@ -201,6 +206,26 @@ pub struct NodeState {
     pub emit_arm: Option<(TimerKind, u32)>,
     pub report_a: Option<Report>,
     pub report_b: Option<Report>,
+}
+
+/// What the scheduler remembers between inputs besides the node table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Meta {
+    /// Colony is shutting down: nothing starts and nothing restarts.
+    pub shutdown: bool,
+    /// The next node `next_action` looks at.
+    pub cursor: usize,
+    /// `ShutdownComplete` was reported.
+    pub reported: bool,
+}
+
+/// The scheduler's starting state.
+#[must_use]
+pub fn meta() -> (r: Meta)
+    ensures
+        !r.shutdown && r.cursor == 0 && !r.reported,
+{
+    Meta { shutdown: false, cursor: 0, reported: false }
 }
 
 /// A node that is off, wanted by nobody, with nothing pending.
