@@ -219,7 +219,7 @@ fn settle(c: &mut Colony<Sim>) {
     }
 }
 
-fn run(seed: u64, seen: &mut BTreeSet<&'static str>) -> bool {
+fn run(seed: u64, reached: &mut BTreeSet<&'static str>) -> bool {
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let n = 3 + usize::try_from(rng.below(8)).unwrap();
     let (text, roots) = frames(&mut rng, n);
@@ -280,18 +280,17 @@ fn run(seed: u64, seen: &mut BTreeSet<&'static str>) -> bool {
             what,
         );
         for i in 0..n {
-            seen.insert(state_text(c.state(u32::try_from(i).unwrap()).unwrap()));
+            reached.insert(state_text(c.state(u32::try_from(i).unwrap()).unwrap()));
         }
         if step % 15 == 14 {
             settle(&mut c);
             for i in 0..n {
                 let st = c.state(u32::try_from(i).unwrap()).unwrap();
-                if st == State::Waiting(Why::Deps) && requires_met(&c, i) == Some(true) {
-                    panic!(
-                        "seed {seed} step {step}: node {i} waits for dependencies that are met\n{}\n{text}",
-                        c.status(c.effects.now())
-                    );
-                }
+                assert!(
+                    !(st == State::Waiting(Why::Deps) && requires_met(&c, i) == Some(true)),
+                    "seed {seed} step {step}: node {i} waits for dependencies that are met\n{}\n{text}",
+                    c.status(c.effects.now())
+                );
             }
         }
     }
@@ -301,9 +300,9 @@ fn run(seed: u64, seen: &mut BTreeSet<&'static str>) -> bool {
 #[test]
 fn random_graphs_keep_their_invariants() {
     let mut ran = 0;
-    let mut seen = BTreeSet::new();
+    let mut reached = BTreeSet::new();
     for seed in 0..300 {
-        if run(seed, &mut seen) {
+        if run(seed, &mut reached) {
             ran += 1;
         }
     }
@@ -320,8 +319,8 @@ fn random_graphs_keep_their_invariants() {
         "quarantined (too many failures)",
     ] {
         assert!(
-            seen.contains(want),
-            "no random graph reached `{want}`; saw {seen:?}"
+            reached.contains(want),
+            "no random graph reached `{want}`; saw {reached:?}"
         );
     }
 }
