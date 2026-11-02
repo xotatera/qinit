@@ -197,6 +197,8 @@ pub struct NodeState {
     pub status: Option<i32>,
     pub timer: Option<TimerKind>,
     pub last_start_ms: u64,
+    /// When the main process last exited (a run is measured to here, not to the empty cell).
+    pub ended_ms: u64,
     pub wait_since_ms: u64,
     pub burst_begin_ms: u64,
     pub burst_count: u32,
@@ -257,6 +259,7 @@ pub fn off() -> (r: NodeState)
         status: None,
         timer: None,
         last_start_ms: 0,
+        ended_ms: 0,
         wait_since_ms: 0,
         burst_begin_ms: 0,
         burst_count: 0,

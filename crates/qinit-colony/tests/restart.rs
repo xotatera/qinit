@@ -163,3 +163,57 @@ fn a_failed_forager_is_not_restarted() {
         "never run again without a request"
     );
 }
+
+// ---- final review fixes ----
+
+#[test]
+fn an_adopted_node_waiting_for_a_path_is_watched_and_comes_back() {
+    let frames = "[worker.a]\nexec = [\"/bin/a\"]\nrestart = { policy = \"on-failure\" }\n\
+                  deps = [{ group = \"require_all\", edges = [{ path = \"/run/x\" }] }]\n";
+    let mut sim = Sim::new();
+    sim.paths.insert("/run/x".to_owned());
+    sim.cells.insert(0);
+    let (mut c, out) =
+        qinit_colony::Colony::load(database(frames, &["a"]), &[(0, true)], sim, 0).expect("loads");
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert!(
+        c.effects.calls.contains(&Call::Watch("/run/x".to_owned())),
+        "{:?}",
+        c.effects.calls
+    );
+    c.on_cell(0, qinit_cell_core::Report::MainExited(Some(1)), 10);
+    c.on_cell(0, qinit_cell_core::Report::Empty, 10);
+    pass(&mut c, 5000);
+    assert_eq!(c.state(0), Some(State::Ready), "{}", c.status(5000));
+}
+
+#[test]
+fn a_failed_start_is_not_stopped_through_the_effects() {
+    // There is no cell to stop: a layer that refuses `stop` for it must not strand the node.
+    let mut sim = Sim::new();
+    sim.fail_start.insert(0);
+    let (c, _) = boot("[worker.a]\nexec = [\"/bin/a\"]\n", &["a"], sim);
+    assert_eq!(c.state(0), Some(State::Off), "{}", c.status(0));
+    assert!(
+        !c.effects
+            .calls
+            .iter()
+            .any(|x| matches!(x, Call::Stop(..) | Call::Release(_))),
+        "{:?}",
+        c.effects.calls
+    );
+}
+
+#[test]
+fn a_stale_empty_does_not_release_a_cell_twice() {
+    let (mut c, _) = boot("crashy.toml", &["crashy"], Sim::new());
+    c.on_cell(0, qinit_cell_core::Report::Empty, 5);
+    c.on_cell(0, qinit_cell_core::Report::Empty, 6);
+    let releases = c
+        .effects
+        .calls
+        .iter()
+        .filter(|x| matches!(x, Call::Release(0)))
+        .count();
+    assert_eq!(releases, 1);
+}

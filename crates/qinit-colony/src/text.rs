@@ -25,26 +25,26 @@ pub fn state_text(s: State) -> &'static str {
 }
 
 /// The millisecond clock reading at which the node entered its state, where it records one.
-fn since(n: &NodeState) -> u64 {
+fn since(n: &NodeState) -> Option<u64> {
     match n.state {
-        State::Waiting(_) => n.wait_since_ms,
-        State::Starting | State::Ready | State::Stopping => n.last_start_ms,
-        _ => 0,
+        State::Waiting(_) => Some(n.wait_since_ms),
+        State::Starting | State::Ready | State::Stopping => Some(n.last_start_ms),
+        _ => None,
     }
 }
 
-/// One line per node: `name state since <ms>`, the numbers right-aligned.
+/// One line per node: `name state since <ms>`, the numbers right-aligned. A state that records
+/// no time (off, done, quarantined) shows `-`.
 #[must_use]
 pub fn status(model: &Model, nodes: &[NodeState], now: u64) -> String {
     let mut out = String::new();
     for (node, ns) in model.nodes.iter().zip(nodes) {
+        let since = since(ns).map_or_else(|| "-".to_owned(), |ms| format!("{ms} ms"));
         let _ = writeln!(
             out,
-            "{:<24} {:<32} since {:>9} ms (now {:>9} ms)",
+            "{:<24} {:<32} since {since:>12} (now {now:>9} ms)",
             node.name,
             state_text(ns.state),
-            since(ns),
-            now
         );
     }
     out

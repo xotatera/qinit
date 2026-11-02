@@ -40,7 +40,7 @@ pub fn node_word(b: &[u8], i: usize, w: usize) -> (v: u32)
     requires
         well_formed(b@),
         i < nodes(b@),
-        w < 24,
+        w < spec_words(T_NODES as int),
     ensures
         v as int == nf(b@, i as int, w),
 {
@@ -53,7 +53,7 @@ pub fn group_word(b: &[u8], g: usize, w: usize) -> (v: u32)
     requires
         well_formed(b@),
         g < tcnt(b@, T_GROUPS as int),
-        w < 3,
+        w < spec_words(T_GROUPS as int),
     ensures
         v as int == gf(b@, g as int, w),
 {
@@ -66,7 +66,7 @@ pub fn edge_word(b: &[u8], x: usize, w: usize) -> (v: u32)
     requires
         well_formed(b@),
         x < tcnt(b@, T_EDGES as int),
-        w < 7,
+        w < spec_words(T_EDGES as int),
     ensures
         v as int == ef(b@, x as int, w),
 {

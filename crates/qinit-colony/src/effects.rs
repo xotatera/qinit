@@ -31,9 +31,11 @@ pub struct NodeSpec {
 pub trait Effects {
     /// Creates the node's cell and starts its main process in it.
     fn start(&mut self, node: u32, spec: &NodeSpec) -> Result<(), Errno>;
-    /// Begins the polite stop of the node: `mode`, then the kill after `grace_ms`.
+    /// Begins the polite stop of the node: `mode`, then the kill after `grace_ms`. Only called
+    /// for a node with a cell: one whose `start` succeeded and that has not been released.
     fn stop(&mut self, node: u32, mode: StopMode, grace_ms: u32) -> Result<(), Errno>;
-    /// The node's cell is empty: remove it and free its slot.
+    /// The node's cell is empty, or its creation or spawn failed: remove it and free its slot.
+    /// Called once per cell.
     fn release(&mut self, node: u32);
     /// Watches `path`; `Ok(true)` when it already exists.
     fn watch_path(&mut self, path: &str) -> Result<bool, Errno>;

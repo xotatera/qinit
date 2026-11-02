@@ -24,3 +24,10 @@ fn accessors_read_what_the_builder_wrote() {
     assert_eq!(enabled_count(&db), 2);
     assert_eq!((enabled(&db, 0), enabled(&db, 1)), (0, 1));
 }
+
+#[test]
+fn the_edge_count_is_the_header_count() {
+    let db = valid_minimal();
+    assert_eq!(check(&db), Ok(()));
+    assert_eq!(edge_count(&db), 1);
+}

@@ -142,3 +142,23 @@ fn the_start_timeout_timer_is_armed_and_cancelled() {
             .contains(&Call::Cancel(b, TimerKind::StartTimeout))
     );
 }
+
+#[test]
+fn the_status_shows_no_time_for_a_state_that_records_none() {
+    let (mut c, _) = boot("two.toml", &["a"], Sim::new());
+    let a = idx(&c, "a");
+    c.request(a, qinit_colony::Request::Stop, 10);
+    pass(&mut c, 10);
+    assert_eq!(c.state(a), Some(State::Off));
+    let status = c.status(250);
+    let line = status
+        .lines()
+        .find(|l| l.starts_with("a "))
+        .expect("a's line");
+    assert!(line.contains("since            -"), "{line}");
+    let b = status
+        .lines()
+        .find(|l| l.starts_with("b "))
+        .expect("b's line");
+    assert!(b.contains("ready") && b.contains(" ms (now"), "{b}");
+}

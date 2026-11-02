@@ -193,7 +193,13 @@ pub fn count_failure(ns: NodeState, p: Params, now: u64) -> (r: NodeState)
         } == ns),
 {
     let cap: u64 = 10 * (p.delay_ms as u64);
-    let long_run = now >= ns.last_start_ms && now - ns.last_start_ms >= cap;
+    // The run ends when the main process exits; without that exit it ends now.
+    let end: u64 = if ns.ended_ms >= ns.last_start_ms {
+        ns.ended_ms
+    } else {
+        now
+    };
+    let long_run = end >= ns.last_start_ms && end - ns.last_start_ms >= cap;
     let exp0: u32 = if long_run {
         0
     } else {
@@ -332,7 +338,15 @@ pub fn failed_restart(ns: NodeState, p: Params, now: u64) -> (r: NodeState)
         r.wanted == ns.wanted,
 {
     let c = count_failure(ns, p, now);
-    let c = push_report(c, Report::Failed(ns.status));
+    // A clean exit of an `always` worker is paced and counted, but it is not a failure.
+    let c = push_report(
+        c,
+        if ns.exited_clean {
+            Report::Stopped
+        } else {
+            Report::Failed(ns.status)
+        },
+    );
     if p.max > 0 && c.burst_count > p.max {
         let c = push_report(c, Report::Quarantined(Reason::Breaker));
         NodeState {
@@ -639,7 +653,8 @@ fn on_shutdown(ns: NodeState, p: Params) -> (r: NodeState)
 
 // ---- cell reports ----
 /// The main process exited (D18: before its ready line is a failure).
-fn on_exit(ns: NodeState, p: Params, status: Option<i32>, starting: bool) -> (r: NodeState)
+fn on_exit(ns: NodeState, p: Params, status: Option<i32>, starting: bool, now: u64) -> (r:
+    NodeState)
     requires
         inv_node(ns, p),
         ns.state is Starting || ns.state is Ready,
@@ -652,7 +667,7 @@ fn on_exit(ns: NodeState, p: Params, status: Option<i32>, starting: bool) -> (r:
         r.emit_arm == ns.emit_arm,
         r.wanted ==> ns.wanted,
 {
-    let ns = NodeState { status, ..ns };
+    let ns = NodeState { status, ended_ms: now, ..ns };
     if ns.to_stop {
         ns
     } else if p.ready_kind == 1 || p.kind == 1 {
@@ -729,8 +744,8 @@ fn on_cell(ns: NodeState, p: Params, shutdown: bool, rep: CellReport, now: u64) 
                 mark_stop(ns, Left::Error)
             }
         },
-        (State::Starting, CellReport::MainExited(s)) => on_exit(ns, p, s, true),
-        (State::Ready, CellReport::MainExited(s)) => on_exit(ns, p, s, false),
+        (State::Starting, CellReport::MainExited(s)) => on_exit(ns, p, s, true, now),
+        (State::Ready, CellReport::MainExited(s)) => on_exit(ns, p, s, false, now),
         (State::Stopping, CellReport::MainExited(s)) => NodeState { status: s, ..ns },
         (State::Starting | State::Ready | State::Stopping, CellReport::Empty) => finalize(
             ns,

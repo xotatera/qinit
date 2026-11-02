@@ -41,7 +41,7 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   database read in place. Group evaluation (`require_all`, `require_any`, `optional_all`,
   `exclude_all` over sync and async edges), parallel starts, the restart breaker (more than `max`
   failures in `window` quarantine a node) with doubling back-off, start timeouts, hard-dependency
-  stop order, `restart_on` propagation, per-edge quarantine cascade, foragers, and an ordered
+  stop order (a finished one-shot no longer excludes a dependent), `restart_on` propagation, per-edge quarantine cascade, foragers, and an ordered
   shutdown of the whole graph. Proved: a start needs satisfied groups and an elapsed back-off, a
   stop waits for every dependent that is going away, nothing starts or arms a timer once shut
   down, the breaker trips exactly past `max`, a forager is never quarantined or restarted, and

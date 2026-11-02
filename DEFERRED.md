@@ -216,12 +216,15 @@ worker yet. The refresh operation belongs to the control protocol sub-project, w
 `qinit-colony` runs against a simulated cell layer. Wiring the real `Cells`, the event loop and
 the timers behind its `Effects` trait, and building the list of nodes already running from the
 comb after a colony restart (the `initial` argument of `Colony::load`), belong to the colony
-daemon sub-project.
+daemon sub-project. The real `Effects::arm` can fail; the engine reports that as an error and the
+core still believes the timer is armed, so a back-off or start-timeout timer that failed to arm
+leaves its node waiting for good. That sub-project must re-arm or synthesize the deadline.
 
 ### D30 — Reconcile worst case · `ACCEPTED`
 
 After each input the scheduler repeats a pass over all nodes and edges until nothing changes, at
-most `MAX_NODES` passes, so the worst case is `MAX_NODES` times a pass over `MAX_NODES` nodes and
-`MAX_EDGES` edges. A long chain of broods can need that many passes; ordinary graphs need a
-handful. A reverse-adjacency index would remove the edge scan; add it if a real graph makes this
-visible.
+most `MAX_NODES` passes. A pass runs propagation to a fixpoint (at most `MAX_NODES` rounds over
+the edges) and lets every running node that is to stop check its dependents (an edge scan each),
+so the worst case is about `MAX_NODES`² times `MAX_EDGES` steps per input. A long chain of broods
+can need that many passes; ordinary graphs need a handful. A reverse-adjacency index would remove
+the edge scans; add it if a real graph makes this visible.

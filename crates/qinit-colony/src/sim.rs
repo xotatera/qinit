@@ -78,6 +78,10 @@ pub struct Sim {
     pub paths: HashSet<String>,
     /// Starts of these nodes fail with ENOENT before spawning.
     pub fail_start: HashSet<u32>,
+    /// Nodes that have a cell. A start that succeeds adds the node, `release` removes it; a
+    /// test that adopts a node adds it by hand. `stop` of a node without one does nothing, as
+    /// the cell layer refuses it.
+    pub cells: HashSet<u32>,
     now: u64,
     seq: u64,
     due: BTreeMap<(u64, u64), Due>,
@@ -149,6 +153,7 @@ impl Effects for Sim {
         if script.spawn_fails || self.fail_start.contains(&node) {
             return Err(Errno(2));
         }
+        self.cells.insert(node);
         let t = self.now;
         self.cell_event(node, t, CellPhase::Running);
         if let Some(ms) = script.ready_after_ms {
@@ -165,6 +170,9 @@ impl Effects for Sim {
 
     fn stop(&mut self, node: u32, mode: StopMode, grace_ms: u32) -> Result<(), Errno> {
         self.calls.push(Call::Stop(node, mode, grace_ms));
+        if !self.cells.contains(&node) {
+            return Ok(());
+        }
         self.drop_cell_events(node);
         let script = self.scripts.get(&node).cloned().unwrap_or_default();
         let t = self.now;
@@ -184,6 +192,7 @@ impl Effects for Sim {
 
     fn release(&mut self, node: u32) {
         self.calls.push(Call::Release(node));
+        self.cells.remove(&node);
     }
 
     fn watch_path(&mut self, path: &str) -> Result<bool, Errno> {

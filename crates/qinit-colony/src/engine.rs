@@ -51,6 +51,9 @@ pub struct Colony<E: Effects> {
     meta: Meta,
     /// Per node, its path edges as `(path, global edge index)`.
     path_edges: Vec<Vec<(String, u32)>>,
+    /// Per node, whether a cell exists for it: set by a start that succeeded (or an adoption),
+    /// cleared when the cell is released.
+    live: Vec<bool>,
 }
 
 /// The state of a worker colony found already running when it started.
@@ -122,12 +125,14 @@ impl<E: Effects> Colony<E> {
             path_edges.push(here);
         }
         let mut nodes = vec![off(); n];
+        let mut live = vec![false; n];
         for &(node, ready) in initial {
             let i = node as usize;
             if i >= n {
                 return Err(Error::UnknownNode(node));
             }
             nodes[i] = adopted(params(&bytes, i), ready, now_ms);
+            live[i] = true;
         }
         let mut c = Colony {
             effects,
@@ -138,6 +143,7 @@ impl<E: Effects> Colony<E> {
             db: bytes,
             model,
             path_edges,
+            live,
         };
         let mut out = Outcome::default();
         let converged = qinit_colony_core::load_from(
@@ -152,7 +158,14 @@ impl<E: Effects> Colony<E> {
             out.errors.push(Error::Unconverged);
         }
         let mut queue = VecDeque::new();
-        c.drain(now_ms, &mut queue, &mut out);
+        // An adopted node never goes through `Off -> Waiting`, which is what asks for the watch;
+        // without it a restart would wait for a path nobody reports.
+        for &(node, _) in initial {
+            if !c.path_edges[node as usize].is_empty() {
+                c.perform(Action::WatchPath(node), &mut queue, &mut out);
+            }
+        }
+        c.drain(&mut queue, &mut out);
         c.run_queue(&mut queue, now_ms, &mut out);
         Ok((c, out))
     }
@@ -175,7 +188,13 @@ impl<E: Effects> Colony<E> {
         let Some(r) = cell_report(report) else {
             return Outcome::default();
         };
-        if self.known(node) && r == CellReport::Empty {
+        // The cell is gone (empty) or never came to be (create or spawn failed): free its slot.
+        let gone = matches!(
+            report,
+            CellPhase::Empty | CellPhase::Failed(Failure::Create | Failure::Spawn)
+        );
+        if gone && self.known(node) && self.live[node as usize] {
+            self.live[node as usize] = false;
             self.effects.release(node);
         }
         self.input(node, Input::Cell { node, report: r }, now_ms)
@@ -256,11 +275,11 @@ impl<E: Effects> Colony<E> {
             if !converged {
                 out.errors.push(Error::Unconverged);
             }
-            self.drain(now, queue, out);
+            self.drain(queue, out);
         }
     }
 
-    fn drain(&mut self, _now: u64, queue: &mut VecDeque<Input>, out: &mut Outcome) {
+    fn drain(&mut self, queue: &mut VecDeque<Input>, out: &mut Outcome) {
         while let Some(action) = next_action(&self.db, &mut self.nodes, &mut self.meta) {
             self.perform(action, queue, out);
         }
@@ -286,7 +305,9 @@ impl<E: Effects> Colony<E> {
         match action {
             Action::Start(node) => {
                 let spec = self.spec(node);
-                if self.effects.start(node, &spec).is_err() {
+                if self.effects.start(node, &spec).is_ok() {
+                    self.live[node as usize] = true;
+                } else {
                     queue.push_back(Input::Cell {
                         node,
                         report: CellReport::SpawnFailed,
@@ -294,7 +315,14 @@ impl<E: Effects> Colony<E> {
                 }
             }
             Action::Stop(node, mode, grace) => {
-                if self.effects.stop(node, mode, grace).is_err() {
+                if !self.live[node as usize] {
+                    // No cell (the start failed): there is nothing to stop, and the node is
+                    // already as empty as it will get.
+                    queue.push_back(Input::Cell {
+                        node,
+                        report: CellReport::Empty,
+                    });
+                } else if self.effects.stop(node, mode, grace).is_err() {
                     queue.push_back(Input::Cell {
                         node,
                         report: CellReport::CellFailed,

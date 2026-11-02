@@ -455,3 +455,31 @@ fn a_report_that_does_not_fit_is_marked_lost() {
         "the overflow is visible, not silent"
     );
 }
+
+#[test]
+fn a_clean_exit_of_an_always_worker_reports_a_clean_stop() {
+    let p = worker(2, 3, 60_000, 1000);
+    let s = ready_at(p, 0);
+    let s = cell(s, p, CellReport::MainExited(Some(0)), 100);
+    let s = cell(s, p, CellReport::Empty, 100);
+    assert_eq!(s.report_a, Some(Report::Stopped));
+    assert_eq!(s.burst_count, 1, "it is still counted and paced");
+}
+
+#[test]
+fn a_slow_stop_does_not_count_as_a_long_run() {
+    // The main process dies at once; stragglers hold the cell for the whole grace period.
+    let p = worker(1, 0, 60_000, 1000);
+    let s = ready_at(p, 0);
+    let s = cell(s, p, CellReport::MainExited(Some(1)), 1);
+    let s = cell(s, p, CellReport::Empty, 10_001);
+    assert_eq!(s.backoff_exp, 1);
+    let s = NodeState {
+        wait_since_ms: 10_001,
+        ..s
+    };
+    let (s, due) = restart(s, p);
+    let s = cell(s, p, CellReport::MainExited(Some(1)), due + 1);
+    let s = cell(s, p, CellReport::Empty, due + 10_001);
+    assert_eq!(s.backoff_exp, 2, "the exponent keeps growing");
+}

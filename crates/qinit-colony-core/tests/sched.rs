@@ -697,3 +697,150 @@ fn shutdown_of_a_quiet_graph_reports_at_once() {
     let done = Report::ShutdownComplete { still_populated: 0 };
     assert!(actions.contains(&Action::Report(0, done)), "{actions:?}");
 }
+
+// ---- final review fixes ----
+
+#[test]
+fn a_refused_start_leaves_the_table_unchanged() {
+    // a requires b and is breaker-quarantined (still wanted). b was stopped by the administrator.
+    // Start(a) is refused and must not pull b back in.
+    let a = requires(
+        restarting(worker("a"), RestartPolicy::OnFailure, 1, 60_000),
+        vec![edge(1)],
+    );
+    let (mut h, _) = Harness::load(model(vec![a, worker("b")], &[0, 1]));
+    h.cell("b", CellReport::Ready, 1);
+    h.cell("a", CellReport::Ready, 2);
+    h.cell("a", CellReport::MainExited(Some(1)), 3);
+    h.cell("a", CellReport::Empty, 3);
+    h.deadline("a", TimerKind::Backoff, 1003);
+    h.cell("a", CellReport::Ready, 1004);
+    h.cell("a", CellReport::MainExited(Some(1)), 1005);
+    h.cell("a", CellReport::Empty, 1005);
+    assert!(
+        matches!(h.state("a"), State::Quarantined(_)),
+        "{:?}",
+        h.state("a")
+    );
+    h.request("b", Request::Stop, 2000);
+    h.cell("b", CellReport::Empty, 2001);
+    assert_eq!(h.state("b"), State::Off);
+    let actions = h.request("a", Request::Start, 3000);
+    assert!(
+        actions.contains(&Action::Report(0, Report::Refused)),
+        "{actions:?}"
+    );
+    assert!(starts(&h, &actions).is_empty(), "{actions:?}");
+    assert_eq!(h.state("b"), State::Off);
+    assert!(!h.node("b").wanted);
+}
+
+#[test]
+fn a_finished_one_shot_does_not_exclude() {
+    // b runs to completion (ready = exit); a excludes it. Once b is Done it holds nothing.
+    let mut a = worker("a");
+    a.groups.push(group(GroupKind::ExcludeAll, vec![edge(1)]));
+    let mut b = worker("b");
+    b.ready = qinit_db::Ready::Exit;
+    let (mut h, actions) = Harness::load(model(vec![a, b], &[0, 1]));
+    assert_eq!(starts(&h, &actions), ["b"]);
+    h.cell("b", CellReport::MainExited(Some(0)), 5);
+    let actions = h.cell("b", CellReport::Empty, 5);
+    assert_eq!(h.state("b"), State::Done);
+    assert_eq!(starts(&h, &actions), ["a"], "{actions:?}");
+}
+
+#[test]
+fn a_cascade_reaches_a_dependent_in_backoff() {
+    // a requires b with cascade, and fails into back-off; b is then quarantined: a follows
+    // at once, not when its timer fires.
+    let mut e = edge(1);
+    e.cascade = true;
+    let a = requires(
+        restarting(worker("a"), RestartPolicy::OnFailure, 0, 0),
+        vec![e],
+    );
+    let b = restarting(worker("b"), RestartPolicy::OnFailure, 1, 60_000);
+    let (mut h, _) = Harness::load(model(vec![a, b], &[0, 1]));
+    h.cell("b", CellReport::Ready, 1);
+    h.cell("a", CellReport::Ready, 2);
+    h.cell("a", CellReport::MainExited(Some(1)), 3);
+    h.cell("a", CellReport::Empty, 3);
+    assert_eq!(h.state("a"), State::Waiting(Why::Backoff));
+    // b fails twice: quarantined (max 1), once a is waiting for it.
+    for t in [10u64, 2000] {
+        h.cell("b", CellReport::MainExited(Some(1)), t);
+        h.cell("b", CellReport::Empty, t);
+        if matches!(h.state("b"), State::Waiting(_)) {
+            h.deadline("b", TimerKind::Backoff, t + 1000);
+            h.cell("b", CellReport::Ready, t + 1001);
+        }
+    }
+    assert!(
+        matches!(h.state("b"), State::Quarantined(_)),
+        "{:?}",
+        h.state("b")
+    );
+    assert_eq!(h.state("a"), State::Quarantined(Reason::Cascade));
+}
+
+#[test]
+fn a_forager_whose_clock_went_backwards_waits_on_a_timer() {
+    let f = forager("f");
+    let (mut h, _) = Harness::load(model(vec![f], &[]));
+    h.request("f", Request::Run, 200);
+    h.cell("f", CellReport::MainExited(Some(0)), 210);
+    h.cell("f", CellReport::Empty, 210);
+    // The clock went back to 50: the forager may not run before it catches up.
+    let actions = h.request("f", Request::Run, 50);
+    assert!(starts(&h, &actions).is_empty(), "{actions:?}");
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, Action::Arm(0, TimerKind::Edge, _))),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn a_worker_whose_clock_went_backwards_waits_for_the_gap() {
+    let a = restarting(worker("a"), RestartPolicy::OnFailure, 0, 0);
+    let (mut h, _) = Harness::load(model(vec![a], &[0]));
+    h.cell("a", CellReport::Ready, 1);
+    h.cell("a", CellReport::MainExited(Some(1)), 300);
+    h.cell("a", CellReport::Empty, 300);
+    // The first run began at 0: the one-second back-off is measured from there.
+    let actions = h.deadline("a", TimerKind::Backoff, 1000);
+    assert_eq!(starts(&h, &actions), ["a"]);
+    // That start was at 1000. It fails with the clock reading 400.
+    h.cell("a", CellReport::Ready, 1001);
+    h.cell("a", CellReport::MainExited(Some(1)), 400);
+    let actions = h.cell("a", CellReport::Empty, 400);
+    assert!(starts(&h, &actions).is_empty(), "{actions:?}");
+    assert!(
+        actions
+            .iter()
+            .any(|x| matches!(x, Action::Arm(0, TimerKind::Backoff, ms) if *ms >= 600)),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn a_late_optional_sync_target_does_not_restart_its_dependent() {
+    let mut a = worker("a");
+    a.groups.push(group(
+        GroupKind::OptionalAll,
+        vec![with_restart_on(edge(1), RestartOn::Restart)],
+    ));
+    let b = restarting(worker("b"), RestartPolicy::Never, 0, 0);
+    let (mut h, _) = Harness::load(model(vec![a, b], &[0, 1]));
+    // b fails and is never restarted: a starts without it (b `wont_run`).
+    h.cell("b", CellReport::MainExited(Some(1)), 1);
+    h.cell("b", CellReport::Empty, 1);
+    assert_eq!(h.state("a"), State::Starting);
+    // b is started by hand and becomes ready late: a is not restarted (the edge is sync).
+    h.request("b", Request::Start, 10);
+    let actions = h.cell("b", CellReport::Ready, 11);
+    assert!(stops(&h, &actions).is_empty(), "{actions:?}");
+    assert_eq!(h.state("a"), State::Starting);
+}

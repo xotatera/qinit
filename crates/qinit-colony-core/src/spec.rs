@@ -22,6 +22,12 @@ pub open spec fn active(ns: Seq<NodeState>, t: int) -> bool {
     ns[t].state is Starting || ns[t].state is Ready || ns[t].state is Stopping
 }
 
+/// The target keeps a dependent that excludes it from starting: wanted (and not finished) or
+/// holding a process.
+pub open spec fn excludes(ns: Seq<NodeState>, t: int) -> bool {
+    (ns[t].wanted && !(ns[t].state is Done)) || active(ns, t)
+}
+
 /// The target will not run without a human: unwanted and off, or quarantined.
 pub open spec fn wont_run(ns: Seq<NodeState>, t: int) -> bool {
     (ns[t].state is Off && !ns[t].wanted) || ns[t].state is Quarantined
@@ -57,7 +63,7 @@ pub open spec fn edge_pred(
     let is_node = ef(b, x, E_TARGET_KIND) == 0;
     let t = ef(b, x, E_TARGET);
     if kind == 3 {
-        !is_node || !(ns[t].wanted || active(ns, t))
+        !is_node || !excludes(ns, t)
     } else if kind == 2 {
         edge_ok(b, ns, paths, x, since, now) || (is_node && wont_run(ns, t))
     } else {
@@ -141,7 +147,7 @@ pub proof fn lemma_startable_excludes(
         gf(b, g, G_EDGE_FIRST) <= x < gf(b, g, G_EDGE_FIRST) + gf(b, g, G_EDGE_COUNT),
         ef(b, x, E_TARGET_KIND) == 0,
     ensures
-        !(ns[ef(b, x, E_TARGET)].wanted || active(ns, ef(b, x, E_TARGET))),
+        !excludes(ns, ef(b, x, E_TARGET)),
 {
     let since = since_of(ns, i, now);
     assert(group_ok(b, ns, paths, g, since, now));

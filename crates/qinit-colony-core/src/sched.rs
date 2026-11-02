@@ -134,7 +134,7 @@ fn edge_contributes(
     if kind == 3 {
         if is_node {
             let t = edge_word(db, x, E_TARGET) as usize;
-            !(ns[t].wanted
+            !((ns[t].wanted && !matches!(ns[t].state, State::Done))
                 || matches!(ns[t].state, State::Starting | State::Ready | State::Stopping))
         } else {
             true
@@ -948,7 +948,7 @@ fn scan_running(db: &[u8], tbl: &[NodeState], paths: &[bool], late: &mut [bool],
                 let tn = tbl[t];
                 let on = edge_word(db, x, E_RESTART_ON);
                 if kind == 3 {
-                    if tn.wanted
+                    if (tn.wanted && !matches!(tn.state, State::Done))
                         || matches!(
                         tn.state,
                         State::Starting | State::Ready | State::Stopping,
@@ -1037,6 +1037,14 @@ fn reconcile_idle(
     let cur = match ns.state {
         State::Off => enter_waiting(ns, p, now, has_path_edge(db, i)),
         State::Waiting(Why::Deps) => ns,
+        State::Waiting(Why::Backoff) => {
+            // The dependency is quarantined: do not wait out a timer for nothing.
+            if p.kind != 1 && cascades(db, tbl, i) {
+                tbl[i] = quarantine_cascade(ns, p);
+                return true;
+            }
+            return false;
+        },
         _ => {
             return false;
         },
@@ -1061,6 +1069,11 @@ fn reconcile_idle(
             true
         } else if p.kind != 1 {
             tbl[i] = to_backoff(cur, p, now);
+            true
+        } else if cur.timer.is_none() {
+            // A forager is never in back-off; only a clock that went backwards holds it here,
+            // and it waits for the clock on an edge timer.
+            tbl[i] = arm_edge(cur, p, remaining_ms(cur, p.delay_ms, now));
             true
         } else {
             tbl[i] = cur;
@@ -1439,7 +1452,8 @@ pub fn step(
             if i < n {
                 apply_node(db, tbl, i, meta.shutdown, NodeInput::Req(req), now);
                 let ghost t1 = tbl@;
-                if matches!(req, Request::Start) && tbl[i].wanted {
+                if matches!(req, Request::Start) && tbl[i].wanted
+                    && !matches!(tbl[i].state, State::Quarantined(_)) {
                     mark_closure(db, tbl, i);
                     proof {
                         if sd {
@@ -1801,6 +1815,7 @@ pub open spec fn off_spec() -> NodeState {
         status: None,
         timer: None,
         last_start_ms: 0,
+        ended_ms: 0,
         wait_since_ms: 0,
         burst_begin_ms: 0,
         burst_count: 0,
