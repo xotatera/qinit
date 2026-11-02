@@ -170,13 +170,11 @@ hand-made database whose credential record has an empty user but non-zero caps o
 no-new-privileges off: the compiler never emits one, the policy check treats it as privileged,
 and the format contract says an empty user is unprivileged.
 
-### D22 — no-new-privileges default for declared credentials · `DECISION`
+### D22 — no-new-privileges default for declared credentials · `RESOLVED`
 
-A frame with only a `sandbox` table gets no-new-privileges on. A frame that
-declares `credentials` without `nnp` gets it off, as before. Should `nnp`
-default to on for declared credentials too, so a frame has to ask for
-`nnp = false`? The maintainer decides; a policy rule with
-`require_nnp = true` covers it meanwhile.
+Resolved by the maintainer: a frame that declares `credentials` without `nnp` gets
+no-new-privileges on; it has to write `nnp = false` to opt out. A policy rule with
+`require_nnp = true` still refuses the opt-out where needed.
 
 ### D23 — Instanced-frame name not bounded by the validator · `ACCEPTED`
 

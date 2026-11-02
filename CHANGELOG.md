@@ -107,6 +107,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- A frame that declares `credentials` without `nnp` gets no-new-privileges on; write
+  `nnp = false` to opt out.
 - The clean-container check installs Verus, verusfmt, QEMU and kernel build
   tools; it uses KVM when available, supports a TCG-only run and an optional
   checksum-verified local kernel tarball. Kernel builds scrub ambient make
