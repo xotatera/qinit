@@ -24,6 +24,9 @@ fn bad_durations_are_none() {
         "5",
         "1 s",
         "+1s",
+        " 1s",
+        "1s ",
+        "\u{661}s",
     ] {
         assert_eq!(duration_ms(s), None, "{s:?}");
     }

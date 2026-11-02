@@ -124,19 +124,25 @@ fn list_op_errors_from_different_layers_are_all_reported() {
 
 #[test]
 fn a_parse_error_stops_the_merge_but_not_the_reading() {
-    let (_root, ls) = layers(
-        "stops",
-        &[
-            ("vendor", "a.toml", "[worker.x\n"),
-            ("etc", "b.toml", "[worker.y]\nexec=[\"/y\"]"),
-            ("local", "c.toml", "[daemon.z]\n"),
-        ],
-    );
+    // vendor is fine and merges. etc has a broken file plus an amend (a plain array over the
+    // vendor list) that would be a ListOp error if etc were merged. local is still read.
+    let root = tmp("stops");
+    let ls = [
+        layer(&root, "vendor", &[("a.toml", "[worker.x]\nexec=[\"/x\"]")]),
+        layer(
+            &root,
+            "etc",
+            &[
+                ("a.toml", "[worker.x\n"),
+                ("b.toml", "[worker.x]\nexec=[\"/y\"]"),
+            ],
+        ),
+        layer(&root, "local", &[("c.toml", "[daemon.z]\n")]),
+    ];
     let e = load(&ls).unwrap_err();
-    assert_eq!(
-        e.iter().map(|x| x.code).collect::<Vec<_>>(),
-        [Code::Parse, Code::UnknownKey]
-    );
+    let codes: Vec<_> = e.iter().map(|x| x.code).collect();
+    assert_eq!(codes, [Code::Parse, Code::UnknownKey], "{e:?}");
+    assert!(!codes.contains(&Code::ListOp));
 }
 
 #[test]
@@ -196,4 +202,19 @@ fn a_non_string_element_is_a_bad_value_from_the_layer_that_set_it() {
         e[0].file.as_deref(),
         Some(root.join("etc/enable.toml").as_path())
     );
+}
+
+#[test]
+fn a_bad_enable_element_is_blamed_on_the_last_layer_that_set_the_list() {
+    // vendor wrote the bad element, but etc appended after it and is the last setter.
+    let (_root, ls) = layers(
+        "enable-last",
+        &[
+            ("vendor", "enable.toml", "enable=[\"a\", 1]"),
+            ("etc", "enable.toml", "enable={append=[\"c\"]}"),
+        ],
+    );
+    let e = load_enable(&ls).unwrap_err();
+    assert_eq!((e[0].code, e[0].key.as_str()), (Code::BadValue, "enable"));
+    assert_eq!(e[0].layer.as_deref(), Some("etc"));
 }

@@ -298,6 +298,10 @@ pub fn load(layers: &[LayerInput]) -> Result<Merged, Vec<Error>> {
 
 /// Read the string list at `key` of the merged enable table. A missing key is empty; a
 /// non-array value or a non-string element is a `BadValue` naming the layer and file that set it.
+///
+/// Attribution is to the last layer that set the key (the provenance entry of `key`), not to the
+/// layer that wrote the offending element: a bad element from `vendor` that `etc` then appended
+/// to is reported against `etc`.
 fn string_list(
     t: &Table,
     key: &str,
