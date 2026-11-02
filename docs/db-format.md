@@ -61,11 +61,11 @@ Strings (names, argv, paths) live in the pool and are referenced by (offset, len
 | 10 | `N_RESTART_WINDOW_MS` | restart window, milliseconds |
 | 11 | `N_OUTPUT` | route index or `NONE` |
 | 12 | `N_ERRORS` | route index or `NONE` |
-| 13 | `N_CRED` | credential index or `NONE` |
+| 13 | `N_CRED` | credential index or `NONE` (unprivileged, see the privilege contract) |
 | 14, 15 | `N_GROUP_FIRST`, `N_GROUP_COUNT` | the node's groups, a run in the group table |
 | 16 | `N_MEMORY_MAX_KIB` | memory limit |
 | 17 | `N_PIDS_MAX` | process limit |
-| 18, 19 | `N_INSTANCE_OF_OFF`, `N_INSTANCE_OF_LEN` | template name in the pool (length 0 if not an instance) |
+| 18, 19 | `N_INSTANCE_OF_OFF`, `N_INSTANCE_OF_LEN` | name of the instanced frame (the node name before its `@`) in the pool; length 0 if not an instance |
 
 ### Group (3 words)
 
@@ -90,7 +90,7 @@ Strings (names, argv, paths) live in the pool and are referenced by (offset, len
 
 | Word | Name | Meaning |
 | --- | --- | --- |
-| 0, 1 | `C_USER_OFF`, `C_USER_LEN` | user name in the pool |
+| 0, 1 | `C_USER_OFF`, `C_USER_LEN` | user name in the pool; length 0 is the unprivileged default identity |
 | 2, 3 | `C_CAPS_LO`, `C_CAPS_HI` | capability set as 64 bits; only bits 0..=40 may be set |
 | 4 | `C_SECUREBITS` | 0 none, 1 noroot, 2 noroot-locked |
 | 5 | `C_NNP` | no_new_privs, 0 or 1 |
@@ -110,12 +110,22 @@ Strings (names, argv, paths) live in the pool and are referenced by (offset, len
 
 One word per record, a node index. Both lists are ascending and free of duplicates.
 
+## Privilege contract
+
+Least privilege is the default. A node with `N_CRED = NONE` (its frame declared neither
+`credentials` nor `sandbox`) is unprivileged by contract: it does not run as root, its
+capability sets are empty and no-new-privileges is on. The same holds for a credential record
+with an empty user (`C_USER_LEN` 0): an empty user means the unprivileged default identity, not
+"keep the overseer's uid". The compiler writes such a record, for a frame with only a `sandbox`
+table, with `C_CAPS` 0 and `C_NNP` 1, so no reader can take it for a privileged one. Which
+unprivileged identity runs these nodes is chosen by the overseer, not stored in the database.
+
 ## Validation rules
 
 The validator is total and never panics. It accepts a database only if all of the following hold:
 
 1. **V1** Header fields, offsets and counts are in bounds and within the limits, and tables do not overlap.
-2. **V2** Every pool reference is an in-bounds slice, valid UTF-8, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, Landlock entries) holds no empty element.
+2. **V2** Every pool reference is an in-bounds slice, valid UTF-8, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, Landlock entries) holds no empty element. `N_INSTANCE_OF` is not held to `MAX_NAME_LEN` here: the compiler bounds it (it is a frame name, at most `MAX_NAME_LEN` bytes), the validator checks only that it is an in-bounds, valid UTF-8 slice.
 3. **V3** Every cross-table index is `NONE` or in range of its table.
 4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline).
 5. **V5** The ordering-edge graph is acyclic.
@@ -130,9 +140,9 @@ functions `v1` to `v8` in `crates/qinit-db-core/src/validate/spec/`, and
 
 - Tables appear in header order, each starting at or after the end of the one before (the
   first after the header). Every table but the pool starts on a 4-byte boundary.
-- Every pool reference (names, argv, readiness arguments, template names, path targets, users,
-  Landlock entries, route paths) is in the pool and valid UTF-8, as `core::str::from_utf8`
-  defines it. Node names are 1 to `MAX_NAME_LEN` bytes and strictly ascending, bytewise.
+- Every pool reference (names, argv, readiness arguments, instanced-frame names, path
+  targets, users, Landlock entries, route paths) is in the pool and valid UTF-8, as
+  `core::str::from_utf8` defines it. Node names are 1 to `MAX_NAME_LEN` bytes and strictly ascending, bytewise.
 - The argv and Landlock lists are either empty (length 0) or have no NUL as their first or last
   byte and no two NULs in a row, so every element is non-empty (`DbError::Pool` otherwise).
 - Tiling: node `i`'s groups start where node `i - 1`'s end (node 0's at 0), and the last node's

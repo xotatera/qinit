@@ -135,7 +135,14 @@ it belongs to the later privilege project (see D1).
 
 ### D18 — Ready line plus exit in one wait · `ACCEPTED`
 
-A service that writes its ready line and exits within the same wait is reported as exited, never as ready. The event loop sorts exits first in a batch (`qinit-event`, `Loop::wait`: `Ready::Exited` before the rest), so the cell engine handles the main exit (`qinit-cell`, `main_exited`) before the readable ready pipe and the machine goes to Empty without a `Ready` report. Accepted as is: a service that is already gone when readiness is read cannot be supervised as ready. The maintainer decided to revisit this in the colony sub-project (sub-project 4), which owns service state.
+A service that writes its ready line and exits within the same wait is
+reported as exited, never as ready. The event loop sorts exits first in a
+batch (`qinit-event`, `Loop::wait`: `Ready::Exited` before the rest), so the
+cell engine handles the main exit (`qinit-cell`, `main_exited`) before the
+readable ready pipe and the machine goes to Empty without a `Ready` report.
+Accepted as is: a service that is already gone when readiness is read cannot
+be supervised as ready. The maintainer decided to revisit this in the colony
+sub-project (sub-project 4), which owns service state.
 
 ### D19 — Validator worst-case cost · `ACCEPTED`
 
@@ -149,3 +156,53 @@ prove that each reference starts and ends on a character boundary.
 `qinit-frames` finds the `[[rule]]` index of a policy shape error by scanning
 for `[[rule]]` header lines, not by parsing TOML. The limits of that scan are
 documented in `crates/qinit-frames/src/policy.rs`.
+
+### D21 — Overseer runs undeclared workers unprivileged · `OPEN`
+
+The compiled database leaves privilege out for a node with `N_CRED = NONE`
+and for a credential record with an empty user. By contract both are
+unprivileged: not root, empty capability sets, no-new-privileges on (see
+`docs/db-format.md`, "Privilege contract"). The compiler and the policy check
+rely on it: such nodes need no policy rule, even under `default = "deny"`.
+Sub-project 5 (overseer) must enforce the contract, choosing the unprivileged
+default identity itself; until then nothing runs these nodes.
+
+### D22 — no-new-privileges default for declared credentials · `DECISION`
+
+A frame with only a `sandbox` table gets no-new-privileges on. A frame that
+declares `credentials` without `nnp` gets it off, as before. Should `nnp`
+default to on for declared credentials too, so a frame has to ask for
+`nnp = false`? The maintainer decides; a policy rule with
+`require_nnp = true` covers it meanwhile.
+
+### D23 — Instanced-frame name not bounded by the validator · `ACCEPTED`
+
+`N_INSTANCE_OF` is checked as an in-bounds, valid UTF-8 pool slice, but not
+against `MAX_NAME_LEN`. The compiler bounds it (it is a frame name of at most
+`MAX_NAME_LEN` bytes); a hand-made database can carry a longer one. Readers
+must not assume the bound.
+
+### D24 — Validator scratch buffers and the second graph pass · `ACCEPTED`
+
+`qinit_db_core::validate` is public and takes caller-provided scratch slices;
+its requirement that they hold at least `MAX_EDGES` and `MAX_NODES` entries is
+a proof precondition, not a run-time check. Callers other than `qinit-db`
+(sub-project 4) should go through an owning scratch type, or the signature
+should take `&mut [GEdge; MAX_EDGES]` and `&mut [u32; MAX_NODES]`. The second
+`levels` call in `check_graph` (stop order, honouring `stop = "parallel"`) is
+logically redundant once the first succeeded: honouring the opt-outs only
+drops constraints, so the first pass's labelling also satisfies the second,
+and the hard-parallel check is the same in both. A lemma stating that could
+halve the worst-case graph cost (about 134 million steps).
+
+### D25 — Pool and UTF-8 errors carry no position · `ACCEPTED`
+
+`DbError::Pool` and `DbError::Utf8` name no table or record, unlike the
+record errors. The validator rejects the database either way; a position
+would only help someone debugging a corrupt file.
+
+### D26 — No ownership or mode check on policy and layers · `ACCEPTED`
+
+The compiler reads the policy file and the layer directories as given, with
+no check of their owner or mode, although the design calls the policy
+root-owned. The `qctl` front end (D16) is the place to enforce it.
