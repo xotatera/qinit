@@ -37,6 +37,18 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rule and field. Least privilege by default: a worker without `credentials`,
   or with only a `sandbox` table, is unprivileged by contract (no root, no
   capabilities, no-new-privileges on) and needs no policy rule.
+- `qinit-colony-core`: the node machine and the scheduler, Verus-proved over the compiled
+  database read in place. Group evaluation (`require_all`, `require_any`, `optional_all`,
+  `exclude_all` over sync and async edges), parallel starts, the restart breaker (more than `max`
+  failures in `window` quarantine a node) with doubling back-off, start timeouts, hard-dependency
+  stop order (a finished one-shot no longer excludes a dependent), `restart_on` propagation, per-edge quarantine cascade, foragers, and an ordered
+  shutdown of the whole graph. Proved: a start needs satisfied groups and an elapsed back-off, a
+  stop waits for every dependent that is going away, nothing starts or arms a timer once shut
+  down, the breaker trips exactly past `max`, a forager is never quarantined or restarted, and
+  one input leaves at most seven pending actions per node.
+- `qinit-colony`: the runtime around the core: an `Effects` trait, the engine that feeds the core
+  one input at a time and turns failed effects into events, a scripted simulation with virtual
+  time, status text, scenario tests and a property test over random graphs.
 - Workspace pins for `serde` and `toml`.
 - Guest suites for cells: spawn (placement, exec failure, only routed
   descriptors), ready (pipe, EOF, exit), stop_main, stop_cell (setsid
@@ -107,6 +119,12 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The compiled database carries each node's restart delay, stop mode and grace period and start
+  timeout (node record 20 to 24 words) and an edge cascade flag (edge flags bit 1); frames take
+  `restart.delay`, `stop = { mode, grace }`, `start_timeout` and `cascade = true` on a
+  `require_all` edge to a frame. Defaults: delay 1 s, stop mode `main`, grace 10 s, start timeout
+  90 s (none for a node that is ready when it exits). A restart limit without a window gets
+  `max x 10 x delay`; an explicit window shorter than the back-off up to `max` is a warning.
 - `qinit_db_core::validate` refuses scratch buffers smaller than `MAX_EDGES` and `MAX_NODES` with
   `DbError::Scratch` instead of requiring them, and refuses an instanced-frame name longer than
   `MAX_NAME_LEN` with `DbError::Pool`.

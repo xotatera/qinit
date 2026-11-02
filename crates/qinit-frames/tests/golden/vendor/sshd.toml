@@ -3,7 +3,7 @@
 [worker.sshd]
 exec = ["/usr/sbin/sshd", "-D", "-e"]
 ready = "pipe"
-restart = { policy = "on-failure", max = 3, window = "60s" }
+restart = { policy = "on-failure", max = 3, window = "120s" }
 output = { pipe = "logd" }
 cell = { memory_max = "64M", pids_max = 64 }
 credentials = { uid = "root", caps = ["net_bind_service", "sys_chroot", "setuid", "setgid"], nnp = false, securebits = "noroot" }

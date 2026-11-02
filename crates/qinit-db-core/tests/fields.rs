@@ -192,7 +192,7 @@ fn a_group_over_its_edge_limit_is_a_tiling_error() {
 fn a_reserved_flag_bit_is_an_enum_error() {
     let db = with(&valid_minimal(), |w| {
         let i = at(w, T_EDGES, 0, E_FLAGS);
-        w[i] = 2;
+        w[i] = 4;
     });
     assert_eq!(
         check(&db),
@@ -269,6 +269,92 @@ fn a_pipe_into_a_non_worker_is_a_consistency_error() {
         check(&build(&spec)),
         Err(DbError::Index {
             table: tid(T_ROUTES),
+            record: 0
+        })
+    );
+}
+
+#[test]
+fn a_node_record_has_24_words() {
+    assert_eq!(WORDS[T_NODES], 24);
+    assert_eq!(N_START_TIMEOUT_MS + 1, WORDS[T_NODES]);
+}
+
+#[test]
+fn a_restart_delay_or_grace_under_the_floor_is_a_consistency_error() {
+    for w in [N_RESTART_DELAY_MS, N_STOP_GRACE_MS] {
+        let db = with(&valid_minimal(), |v| {
+            let i = at(v, T_NODES, 0, w);
+            v[i] = MIN_DELAY_MS - 1;
+        });
+        assert_eq!(
+            check(&db),
+            Err(DbError::Consistency {
+                table: 0,
+                record: 0
+            }),
+            "word {w}"
+        );
+        let db = with(&valid_minimal(), |v| {
+            let i = at(v, T_NODES, 0, w);
+            v[i] = MIN_DELAY_MS;
+        });
+        assert_eq!(check(&db), Ok(()), "word {w}");
+    }
+}
+
+#[test]
+fn a_stop_mode_above_1_is_an_enum_error() {
+    let db = with(&valid_minimal(), |v| {
+        let i = at(v, T_NODES, 0, N_STOP_MODE);
+        v[i] = 2;
+    });
+    assert_eq!(
+        check(&db),
+        Err(DbError::Enum {
+            table: 0,
+            record: 0
+        })
+    );
+}
+
+#[test]
+fn a_restart_limit_without_a_window_is_a_consistency_error() {
+    let db = with(&valid_minimal(), |v| {
+        let m = at(v, T_NODES, 0, N_RESTART_MAX);
+        v[m] = 3;
+        let p = at(v, T_NODES, 0, N_RESTART_POLICY);
+        v[p] = 1;
+    });
+    assert_eq!(
+        check(&db),
+        Err(DbError::Consistency {
+            table: 0,
+            record: 0
+        })
+    );
+    let db = with(&db, |v| {
+        let w = at(v, T_NODES, 0, N_RESTART_WINDOW_MS);
+        v[w] = 60_000;
+    });
+    assert_eq!(check(&db), Ok(()));
+}
+
+#[test]
+fn the_cascade_flag_is_accepted_and_bit_2_is_not() {
+    let db = with(&valid_minimal(), |v| {
+        let i = at(v, T_EDGES, 0, E_FLAGS);
+        v[i] = E_FLAG_CASCADE;
+    });
+    assert_eq!(check(&db), Ok(()));
+    let db = with(&valid_minimal(), |v| {
+        let i = at(v, T_EDGES, 0, E_FLAGS);
+        v[i] = 4;
+    });
+    assert_eq!(
+        check(&db),
+        Err(DbError::Enum {
+            table: 2,
             record: 0
         })
     );

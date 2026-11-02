@@ -33,7 +33,9 @@ use crate::provenance::{locate, locate_all};
 use crate::schema::{Frame, Output, Ready as SReady};
 use crate::units::{duration_ms, size_kib};
 pub(crate) use cred::{cap_bit, cap_name, ns_name};
-use qinit_db::{Group, GroupKind, Kind, Model, Node, Ready, Restart, RestartPolicy, Route};
+use qinit_db::{
+    Group, GroupKind, Kind, Model, Node, Ready, Restart, RestartPolicy, Route, Stop, StopMode,
+};
 use qinit_db_core::MAX_NODES;
 use std::collections::BTreeMap;
 
@@ -194,13 +196,43 @@ fn ready(cx: &mut Cx, base: &str, kind: Kind, f: &Frame) -> Ready {
     }
 }
 
-/// The restart record; a bad policy word or window is a `BadValue`.
+/// The restart delay used when a frame sets none, in milliseconds.
+const DEFAULT_DELAY_MS: u32 = 1000;
+
+/// The sum of the back-off delays before restart number `max`: the base delay doubling to ten
+/// times itself.
+fn backoff_sum_ms(delay: u32, max: u32) -> u64 {
+    let cap = u64::from(delay) * 10;
+    (0..max.min(64))
+        .map(|k| (u64::from(delay) << k.min(20)).min(cap))
+        .sum()
+}
+
+/// A duration of at least `MIN_DELAY_MS`, or a `BadValue` at `key`.
+fn floor_duration(cx: &mut Cx, key: &str, v: &str) -> Option<u32> {
+    match duration_ms(v) {
+        Some(ms) if ms >= qinit_db_core::MIN_DELAY_MS => Some(ms),
+        Some(_) => {
+            cx.bad(key, format!("`{v}` is under the 100ms floor"));
+            None
+        }
+        None => {
+            cx.bad(key, format!("`{v}` is not a duration like 1s"));
+            None
+        }
+    }
+}
+
+/// The restart record; a bad policy word, window or delay is a `BadValue`. A limit without a
+/// window gets `max x 10 x delay`, so the breaker can always trip; an explicit window shorter
+/// than the back-off up to `max` is a warning.
 fn restart(cx: &mut Cx, base: &str, f: &Frame) -> Restart {
     let Some(s) = &f.restart else {
         return Restart {
             policy: RestartPolicy::Never,
             max: 0,
             window_ms: 0,
+            delay_ms: DEFAULT_DELAY_MS,
         };
     };
     let policy = match s.policy.as_str() {
@@ -213,7 +245,14 @@ fn restart(cx: &mut Cx, base: &str, f: &Frame) -> Restart {
             RestartPolicy::Never
         }
     };
-    let window_ms = match s.window.as_deref() {
+    let delay_ms = match s.delay.as_deref() {
+        None => DEFAULT_DELAY_MS,
+        Some(d) => {
+            floor_duration(cx, &format!("{base}.restart.delay"), d).unwrap_or(DEFAULT_DELAY_MS)
+        }
+    };
+    let max = s.max.unwrap_or(0);
+    let given = match s.window.as_deref() {
         None => 0,
         Some(w) => duration_ms(w).unwrap_or_else(|| {
             cx.bad(
@@ -223,10 +262,59 @@ fn restart(cx: &mut Cx, base: &str, f: &Frame) -> Restart {
             0
         }),
     };
+    let window_ms = if max > 0 && given == 0 {
+        max.saturating_mul(10).saturating_mul(delay_ms)
+    } else {
+        given
+    };
+    if max > 0 && given > 0 && u64::from(given) < backoff_sum_ms(delay_ms, max) {
+        cx.warnings.push(Warning {
+            key: format!("{base}.restart.window"),
+            detail: "shorter than the back-off up to max; the breaker may never trip".to_owned(),
+        });
+    }
     Restart {
         policy,
-        max: s.max.unwrap_or(0),
+        max,
         window_ms,
+        delay_ms,
+    }
+}
+
+/// How a node is stopped: `main` or `cell` mode, 10 s grace by default.
+fn stop(cx: &mut Cx, base: &str, f: &Frame) -> Stop {
+    let s = f.stop.as_ref();
+    let mode = match s.and_then(|s| s.mode.as_deref()) {
+        None | Some("main") => StopMode::Main,
+        Some("cell") => StopMode::Cell,
+        Some(m) => {
+            cx.bad(
+                format!("{base}.stop.mode"),
+                format!("`{m}` is not main or cell"),
+            );
+            StopMode::Main
+        }
+    };
+    let grace_ms = match s.and_then(|s| s.grace.as_deref()) {
+        None => 10_000,
+        Some(g) => floor_duration(cx, &format!("{base}.stop.grace"), g).unwrap_or(10_000),
+    };
+    Stop { mode, grace_ms }
+}
+
+/// The start timeout: 90 s by default, none for a node that is ready when it exits (its start
+/// is its whole run).
+fn start_timeout(cx: &mut Cx, base: &str, f: &Frame, ready: &Ready) -> u32 {
+    match f.start_timeout.as_deref() {
+        None if *ready == Ready::Exit => 0,
+        None => 90_000,
+        Some(t) => duration_ms(t).unwrap_or_else(|| {
+            cx.bad(
+                format!("{base}.start_timeout"),
+                format!("`{t}` is not a duration like 90s"),
+            );
+            90_000
+        }),
     }
 }
 
@@ -241,6 +329,7 @@ fn node(
     let base = format!("{}.{name}", kind_name(kind));
     let exec = exec(cx, &base, kind, f);
     let ready = ready(cx, &base, kind, f);
+    let start_timeout_ms = start_timeout(cx, &base, f, &ready);
     let restart = restart(cx, &base, f);
     let (output, errors, logger) = streams(cx, &base, f, me);
     let (mut groups, mut origins) = deps::groups(cx, &base, f.deps.as_deref().unwrap_or_default());
@@ -269,6 +358,8 @@ fn node(
         exec,
         ready,
         restart,
+        stop: stop(cx, &base, f),
+        start_timeout_ms,
         output,
         errors,
         cred,

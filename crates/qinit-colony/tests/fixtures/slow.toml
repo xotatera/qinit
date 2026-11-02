@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+# A worker that never becomes ready in time.
+[worker.slow]
+exec = ["/bin/slow"]
+restart = { policy = "on-failure", max = 3 }
+start_timeout = "5s"

@@ -5,7 +5,7 @@
 use crate::crc::file_crc;
 use crate::model::{
     Cred, Edge, Group, GroupKind, Kind, Mode, Model, Node, Ready, Restart, RestartOn,
-    RestartPolicy, Route, Seccomp, Securebits, Target,
+    RestartPolicy, Route, Seccomp, Securebits, Stop, StopMode, Target,
 };
 use qinit_db_core::{
     DbError, H_CRC32, HEADER_WORDS, MAX_EDGES, MAX_NODES, NONE, T_CREDS, T_EDGES, T_ENABLED,
@@ -133,7 +133,17 @@ impl Reader<'_> {
                 },
                 max: f(9),
                 window_ms: f(10),
+                delay_ms: f(20),
             },
+            stop: Stop {
+                mode: if f(21) == 0 {
+                    StopMode::Main
+                } else {
+                    StopMode::Cell
+                },
+                grace_ms: f(22),
+            },
+            start_timeout_ms: f(23),
             output: Self::opt(f(11)),
             errors: Self::opt(f(12)),
             cred: Self::opt(f(13)),
@@ -178,6 +188,7 @@ impl Reader<'_> {
                 _ => RestartOn::Refresh,
             },
             stop_parallel: f(6) & 1 == 1,
+            cascade: f(6) & 2 == 2,
         }
     }
 

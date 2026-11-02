@@ -3,7 +3,7 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/qinit-cell", "crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-db", "crates/qinit-db-core", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-frames", "crates/qinit-graph-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests"]
+members = ["crates/qinit-cell", "crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-colony", "crates/qinit-colony-core", "crates/qinit-db", "crates/qinit-db-core", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-frames", "crates/qinit-graph-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests"]
 
 [workspace.package]
 edition = "2024"
@@ -81,3 +81,13 @@ kind = "verus"
 package = "qinit-db-core"
 memory = "4G"
 timeout = "60s"
+
+# Measured 2026-11-02: 131 verified; warm 12.0-12.2 s (11.6-11.8 s CPU), 0.39-0.48 GB peak. A cold
+# build (vstd included, as in a container) adds the 15-20 s the other crates show. 90s covers
+# about 2.5x the expected cold CPU.
+[[workspace.metadata.disciplines.proof]]
+name = "qinit-colony-core"
+kind = "verus"
+package = "qinit-colony-core"
+memory = "4G"
+timeout = "90s"

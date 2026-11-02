@@ -71,7 +71,7 @@ pub const T_PRESYSLOG: usize = 6;
 pub const T_POOL: usize = 7;
 
 /// Words per record, tables 0..=6.
-pub const WORDS: [usize; 7] = [20, 3, 7, 10, 3, 1, 1];
+pub const WORDS: [usize; 7] = [24, 3, 7, 10, 3, 1, 1];
 
 /// Header word: magic.
 pub const H_MAGIC: usize = 0;
@@ -144,6 +144,27 @@ pub const N_INSTANCE_OF_OFF: usize = 18;
 
 /// Node record word 19: `instance_of_len`.
 pub const N_INSTANCE_OF_LEN: usize = 19;
+
+/// Node record word 20: `restart_delay_ms`, the base of the restart back-off.
+pub const N_RESTART_DELAY_MS: usize = 20;
+
+/// Node record word 21: `stop_mode`, 0 main, 1 cell.
+pub const N_STOP_MODE: usize = 21;
+
+/// Node record word 22: `stop_grace_ms`, the polite-stop grace period.
+pub const N_STOP_GRACE_MS: usize = 22;
+
+/// Node record word 23: `start_timeout_ms`, 0 for none.
+pub const N_START_TIMEOUT_MS: usize = 23;
+
+/// Floor of `restart_delay_ms` and `stop_grace_ms`, milliseconds.
+pub const MIN_DELAY_MS: u32 = 100;
+
+/// Edge flags bit 0: `stop = "parallel"`.
+pub const E_FLAG_PARALLEL: u32 = 1;
+
+/// Edge flags bit 1: a quarantined target quarantines the dependent (`require_all` node edges).
+pub const E_FLAG_CASCADE: u32 = 2;
 
 /// Group record word 0: `kind`.
 pub const G_KIND: usize = 0;

@@ -19,6 +19,7 @@ fn logger_edge(to: u32) -> Group {
             deadline_ms: 0,
             restart_on: RestartOn::None,
             stop_parallel: false,
+            cascade: false,
         }],
     }
 }

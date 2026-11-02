@@ -33,9 +33,10 @@ fn await_main_exit(k: &mut Kernel) {
 #[test]
 fn a_handed_over_main_that_is_not_a_child_is_watched_without_reaping() {
     // A grandchild: its parent shell exits at once, so it is not this process's child. It
-    // runs until its stdin closes.
+    // runs until its stdin closes. The shell keeps the pipe on fd 3 first: POSIX gives a
+    // background command /dev/null for stdin, and dash does so before an explicit `<&0`.
     let mut sh = Command::new("sh")
-        .args(["-c", "cat <&0 >/dev/null & echo $!"])
+        .args(["-c", "exec 3<&0; cat <&3 3<&- >/dev/null & echo $!"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

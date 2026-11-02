@@ -3,7 +3,7 @@
 mod common;
 
 use common::{node, sample};
-use qinit_db::{Kind, Model, ReadError, Target, WriteError, crc32, open, write};
+use qinit_db::{Kind, Model, ReadError, Stop, StopMode, Target, WriteError, crc32, open, write};
 use qinit_db_core::{T_POOL, word};
 
 #[test]
@@ -131,4 +131,25 @@ fn the_empty_model_is_a_valid_database() {
     let reader = open(&bytes).expect("opens");
     assert_eq!(reader.decode(), Model::default());
     assert!(matches!(open(&bytes[..10]), Err(ReadError::Db(_))));
+}
+
+#[test]
+fn the_new_fields_round_trip() {
+    let mut m = sample();
+    m.nodes[1].restart.delay_ms = 250;
+    m.nodes[1].stop = Stop {
+        mode: StopMode::Cell,
+        grace_ms: 3000,
+    };
+    m.nodes[1].start_timeout_ms = 0;
+    m.nodes[3].start_timeout_ms = 12_345;
+    let g = m
+        .nodes
+        .iter()
+        .position(|n| !n.groups.is_empty())
+        .expect("a node with groups");
+    m.nodes[g].groups[0].edges[0].cascade = true;
+    let bytes = write(&m).expect("writes");
+    let back = open(&bytes).expect("opens").decode();
+    assert_eq!(back, m);
 }

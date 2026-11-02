@@ -47,7 +47,7 @@ Strings (names, argv, paths) live in the pool and are referenced by (offset, len
 
 ## Records
 
-### Node (20 words)
+### Node (24 words)
 
 | Word | Name | Meaning |
 | --- | --- | --- |
@@ -66,6 +66,10 @@ Strings (names, argv, paths) live in the pool and are referenced by (offset, len
 | 16 | `N_MEMORY_MAX_KIB` | memory limit |
 | 17 | `N_PIDS_MAX` | process limit |
 | 18, 19 | `N_INSTANCE_OF_OFF`, `N_INSTANCE_OF_LEN` | name of the instanced frame (the node name before its `@`) in the pool; length 0 if not an instance |
+| 20 | `N_RESTART_DELAY_MS` | base of the restart back-off, milliseconds, at least 100 |
+| 21 | `N_STOP_MODE` | 0 main, 1 cell |
+| 22 | `N_STOP_GRACE_MS` | polite-stop grace period, milliseconds, at least 100 |
+| 23 | `N_START_TIMEOUT_MS` | start timeout, milliseconds; 0 for none |
 
 ### Group (3 words)
 
@@ -84,7 +88,7 @@ Strings (names, argv, paths) live in the pool and are referenced by (offset, len
 | 3 | `E_MODE` | 0 sync, 1 async |
 | 4 | `E_DEADLINE_MS` | deadline in milliseconds (0 for a sync edge) |
 | 5 | `E_RESTART_ON` | 0 none, 1 error, 2 restart, 3 refresh |
-| 6 | `E_FLAGS` | bit 0 = `stop = "parallel"`; all other bits zero |
+| 6 | `E_FLAGS` | bit 0 = `stop = "parallel"`, bit 1 = cascade (a quarantined `require_all` target quarantines the dependent); all other bits zero |
 
 ### Credential (10 words)
 
@@ -130,7 +134,7 @@ The validator is total and never panics. It accepts a database only if all of th
 1. **V1** Header fields, offsets and counts are in bounds and within the limits, and tables do not overlap.
 2. **V2** Every pool reference is an in-bounds slice, valid UTF-8, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, Landlock entries) holds no empty element. `N_INSTANCE_OF` may be empty, but at most `MAX_NAME_LEN` bytes.
 3. **V3** Every cross-table index is `NONE` or in range of its table.
-4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline).
+4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline). A node's `stop_mode` is 0 or 1, its `restart_delay_ms` and `stop_grace_ms` are at least 100, and `restart_max > 0` implies `restart_window_ms > 0`.
 5. **V5** The ordering-edge graph is acyclic.
 6. **V6** The stop order derived by `qinit-graph-core` places every hard dependent before its dependency, whatever the opt-outs.
 7. **V7** `stop = "parallel"` appears on no hard edge.

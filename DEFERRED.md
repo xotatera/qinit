@@ -116,12 +116,10 @@ synccall signal, lets a threaded caller create a child with credentials from
 before a concurrent setxid change. Sub-project 5 (privilege) must revisit
 this before using spawn from a threaded caller that changes credentials.
 
-### D15 — Runtime group evaluation · `OPEN`
+### D15 — Runtime group evaluation · `RESOLVED`
 
-The database stores dependency groups (`require_all`, `require_any`,
-`optional_all`, `exclude_all`) and the compiler checks their shape and the
-graph they imply, but nothing evaluates them at run time. Sub-project 4
-(colony) implements start-time group evaluation.
+Resolved by the colony core sub-project: `qinit-colony-core` evaluates the groups over the
+observed node states and `qinit-colony` runs it against simulated cells.
 
 ### D16 — `qctl` command-line tool · `OPEN`
 
@@ -201,3 +199,32 @@ would only help someone debugging a corrupt file.
 The compiler reads the policy file and the layer directories as given, with
 no check of their owner or mode, although the design calls the policy
 root-owned. The `qctl` front end (D16) is the place to enforce it.
+
+### D27 — Real path watching · `OPEN`
+
+The colony core waits for a path edge through a `WatchPath` action and a `PathAppeared` input.
+Watching a real filesystem path (inotify, with the race between setting the watch and the first
+check) belongs to the colony daemon sub-project.
+
+### D28 — Refresh operation · `OPEN`
+
+`restart_on = "refresh"` behaves as `restart` in the colony core, because nothing can refresh a
+worker yet. The refresh operation belongs to the control protocol sub-project, which narrows it.
+
+### D29 — Real cells, event loop and re-adoption · `OPEN`
+
+`qinit-colony` runs against a simulated cell layer. Wiring the real `Cells`, the event loop and
+the timers behind its `Effects` trait, and building the list of nodes already running from the
+comb after a colony restart (the `initial` argument of `Colony::load`), belong to the colony
+daemon sub-project. The real `Effects::arm` can fail; the engine reports that as an error and the
+core still believes the timer is armed, so a back-off or start-timeout timer that failed to arm
+leaves its node waiting for good. That sub-project must re-arm or synthesize the deadline.
+
+### D30 — Reconcile worst case · `ACCEPTED`
+
+After each input the scheduler repeats a pass over all nodes and edges until nothing changes, at
+most `MAX_NODES` passes. A pass runs propagation to a fixpoint (at most `MAX_NODES` rounds over
+the edges) and lets every running node that is to stop check its dependents (an edge scan each),
+so the worst case is about `MAX_NODES`² times `MAX_EDGES` steps per input. A long chain of broods
+can need that many passes; ordinary graphs need a handful. A reverse-adjacency index would remove
+the edge scans; add it if a real graph makes this visible.

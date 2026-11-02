@@ -26,7 +26,7 @@ pub open spec fn tcnt(b: Seq<u8>, t: int) -> int {
 /// Words per record of table `t` (`WORDS`).
 pub open spec fn spec_words(t: int) -> int {
     if t == 0 {
-        20
+        24
     } else if t == 1 {
         3
     } else if t == 2 {

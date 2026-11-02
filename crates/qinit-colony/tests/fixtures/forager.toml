@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+# A one-shot job that needs a worker.
+[worker.w]
+exec = ["/bin/w"]
+
+[forager.job]
+exec = ["/bin/job"]
+deps = [{ group = "require_all", edges = [{ to = "w" }] }]

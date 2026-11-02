@@ -16,7 +16,8 @@ pub use spec::*;
 #[allow(clippy::wildcard_imports)] // the layout constants, used throughout
 use crate::layout::*;
 use graph::check_graph;
-use header::{check_header, check_tables, header_word};
+use header::{check_header, check_tables};
+pub(crate) use header::{field, header_word};
 use lists::check_lists;
 use pool::check_pool_refs;
 use qinit_graph_core::GEdge;

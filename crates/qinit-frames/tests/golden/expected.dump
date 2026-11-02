@@ -9,6 +9,10 @@ worker getty@tty1
   restart.policy = "always"  # template tty-login
   restart.max = 0  # default
   restart.window = "0ms"  # default
+  restart.delay = "1000ms"  # default
+  stop.mode = "main"  # default
+  stop.grace = "10000ms"  # default
+  start_timeout = "90000ms"  # default
   output = "/var/log/getty-tty1.log"  # vendor
   errors = "/var/log/getty-tty1.log"  # default
   cell.memory_max = "0K"  # default
@@ -23,6 +27,10 @@ worker getty@tty2
   restart.policy = "always"  # template tty-login
   restart.max = 0  # default
   restart.window = "0ms"  # default
+  restart.delay = "1000ms"  # default
+  stop.mode = "main"  # default
+  stop.grace = "10000ms"  # default
+  start_timeout = "90000ms"  # default
   output = "/var/log/getty-tty2.log"  # vendor
   errors = "/var/log/getty-tty2.log"  # default
   cell.memory_max = "0K"  # default
@@ -36,6 +44,10 @@ worker logd
   restart.policy = "on-failure"  # vendor
   restart.max = 3  # vendor
   restart.window = "60000ms"  # vendor
+  restart.delay = "1000ms"  # default
+  stop.mode = "main"  # default
+  stop.grace = "10000ms"  # default
+  start_timeout = "90000ms"  # default
   cell.memory_max = "16384K"  # vendor
   cell.pids_max = 4  # vendor
   deps[0].group = "require_all"  # vendor
@@ -44,6 +56,9 @@ worker logd
 forager mount-var
   exec = ["/usr/bin/mount", "/var"]  # vendor
   ready = "exit"  # default
+  stop.mode = "main"  # default
+  stop.grace = "10000ms"  # default
+  start_timeout = "none"  # default
   cell.memory_max = "0K"  # default
   cell.pids_max = 0  # default
   deps[0].group = "require_all"  # vendor
@@ -63,7 +78,11 @@ worker sshd
   ready = "pipe"  # vendor
   restart.policy = "on-failure"  # vendor
   restart.max = 9  # etc
-  restart.window = "60000ms"  # vendor
+  restart.window = "120000ms"  # vendor
+  restart.delay = "1000ms"  # default
+  stop.mode = "main"  # default
+  stop.grace = "10000ms"  # default
+  start_timeout = "90000ms"  # default
   output = { pipe = "logd" }  # vendor
   errors = { pipe = "logd" }  # default
   cell.memory_max = "65536K"  # vendor
@@ -91,6 +110,10 @@ worker syslog-ng
   restart.policy = "always"  # vendor
   restart.max = 5  # vendor
   restart.window = "30000ms"  # vendor
+  restart.delay = "1000ms"  # default
+  stop.mode = "main"  # default
+  stop.grace = "10000ms"  # default
+  start_timeout = "90000ms"  # default
   output = "/var/log/syslog-ng.out"  # vendor
   errors = "/var/log/syslog-ng.out"  # default
   cell.memory_max = "0K"  # default

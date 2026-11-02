@@ -44,6 +44,8 @@ fn instantiate(f: &Frame, inst: &str) -> Frame {
             },
         }),
         restart: f.restart.clone(),
+        stop: f.stop.clone(),
+        start_timeout: f.start_timeout.clone(),
         output: f.output.as_ref().map(|o| sub_output(o, inst)),
         errors: f.errors.as_ref().map(|o| sub_output(o, inst)),
         cell: f.cell.clone(),

@@ -5,7 +5,7 @@
 use crate::crc::file_crc;
 use crate::model::{
     Cred, Edge, GroupKind, Kind, Mode, Model, Node, Ready, RestartOn, RestartPolicy, Route,
-    Seccomp, Securebits, Target,
+    Seccomp, Securebits, StopMode, Target,
 };
 use qinit_db_core::{
     HEADER_WORDS, MAGIC, MAX_CREDS, MAX_EDGES, MAX_EDGES_PER_GROUP, MAX_GROUPS,
@@ -129,7 +129,7 @@ fn node_words(
     pool: &mut Pool,
     group_first: u32,
     limits: (usize, usize),
-) -> Result<[u32; 20], WriteError> {
+) -> Result<[u32; 24], WriteError> {
     let (routes, creds) = limits;
     if n.name.is_empty() || n.name.len() > MAX_NAME_LEN {
         return Err(WriteError::Limit("name"));
@@ -169,6 +169,10 @@ fn node_words(
         n.pids_max,
         instance.0,
         instance.1,
+        n.restart.delay_ms,
+        u32::from(n.stop.mode == StopMode::Cell),
+        n.stop.grace_ms,
+        n.start_timeout_ms,
     ])
 }
 
@@ -190,7 +194,7 @@ fn edge_words(e: &Edge, pool: &mut Pool, nodes: usize) -> Result<[u32; 7], Write
         u32::from(e.mode == Mode::Async),
         e.deadline_ms,
         restart_on_word(e.restart_on),
-        u32::from(e.stop_parallel),
+        u32::from(e.stop_parallel) | (u32::from(e.cascade) << 1),
     ])
 }
 

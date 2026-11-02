@@ -16,6 +16,7 @@ pub(super) fn logger_edge(logger: u32) -> Edge {
         deadline_ms: 0,
         restart_on: RestartOn::None,
         stop_parallel: false,
+        cascade: false,
     }
 }
 
@@ -95,6 +96,13 @@ fn edge(cx: &mut Cx, at: &str, kind: GroupKind, e: &DepEdge) -> Option<Edge> {
         cx.errs
             .push(Error::new(Code::HardParallel, format!("{at}.stop"), why));
     }
+    let cascade = e.cascade == Some(true);
+    if cascade && (kind != GroupKind::RequireAll || e.to.is_none()) {
+        cx.bad(
+            format!("{at}.cascade"),
+            "cascade needs a require_all edge to a frame",
+        );
+    }
     let target = match (&e.to, &e.path) {
         (Some(to), None) => match cx.names.get(to.as_str()) {
             Some((i, _)) => Target::Node(*i),
@@ -129,6 +137,7 @@ fn edge(cx: &mut Cx, at: &str, kind: GroupKind, e: &DepEdge) -> Option<Edge> {
         deadline_ms,
         restart_on,
         stop_parallel,
+        cascade,
     })
 }
 

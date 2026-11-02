@@ -59,6 +59,8 @@ pub(super) fn inherit(f: Frame, t: &Frame) -> Frame {
         instances: f.instances.or_else(|| t.instances.clone()),
         ready: f.ready.or_else(|| t.ready.clone()),
         restart: f.restart.or_else(|| t.restart.clone()),
+        stop: f.stop.or_else(|| t.stop.clone()),
+        start_timeout: f.start_timeout.or_else(|| t.start_timeout.clone()),
         output: f.output.or_else(|| t.output.clone()),
         errors: f.errors.or_else(|| t.errors.clone()),
         cell: f.cell.or_else(|| t.cell.clone()),
@@ -69,12 +71,14 @@ pub(super) fn inherit(f: Frame, t: &Frame) -> Frame {
 }
 
 /// Which of the fields a template can pass on `f` sets.
-fn fields_set(f: &Frame) -> [(&'static str, bool); 10] {
+fn fields_set(f: &Frame) -> [(&'static str, bool); 12] {
     [
         ("exec", f.exec.is_some()),
         ("instances", f.instances.is_some()),
         ("ready", f.ready.is_some()),
         ("restart", f.restart.is_some()),
+        ("stop", f.stop.is_some()),
+        ("start_timeout", f.start_timeout.is_some()),
         ("output", f.output.is_some()),
         ("errors", f.errors.is_some()),
         ("cell", f.cell.is_some()),

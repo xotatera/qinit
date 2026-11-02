@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Two producers pipe to one logger: each waits for it.
+[worker.logd]
+exec = ["/bin/logd"]
+
+[worker.p1]
+exec = ["/bin/p1"]
+output = { pipe = "logd" }
+
+[worker.p2]
+exec = ["/bin/p2"]
+output = { pipe = "logd" }

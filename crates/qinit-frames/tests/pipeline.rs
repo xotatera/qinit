@@ -78,7 +78,14 @@ fn an_etc_amend_changes_only_the_amended_key() {
         .expect("restart.max line");
     assert!(max.ends_with("  # etc"), "{max}");
     // Keys no layer set are defaults, not the frame's layer.
-    let defaults = ["ready", "cell.memory_max"];
+    let defaults = [
+        "ready",
+        "cell.memory_max",
+        "restart.delay",
+        "stop.mode",
+        "stop.grace",
+        "start_timeout",
+    ];
     for l in lines
         .iter()
         .filter(|l| !l.trim_start().starts_with("restart.max"))
