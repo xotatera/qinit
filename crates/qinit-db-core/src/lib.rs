@@ -5,8 +5,10 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+mod access;
 mod layout;
 mod validate;
 
+pub use access::*;
 pub use layout::*;
 pub use validate::*;
