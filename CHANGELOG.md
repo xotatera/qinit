@@ -107,6 +107,9 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `qinit_db_core::validate` refuses scratch buffers smaller than `MAX_EDGES` and `MAX_NODES` with
+  `DbError::Scratch` instead of requiring them, and refuses an instanced-frame name longer than
+  `MAX_NAME_LEN` with `DbError::Pool`.
 - A frame that declares `credentials` without `nnp` gets no-new-privileges on; write
   `nnp = false` to opt out.
 - The clean-container check installs Verus, verusfmt, QEMU and kernel build

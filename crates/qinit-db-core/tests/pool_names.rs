@@ -64,3 +64,48 @@ fn unsorted_node_names_are_refused() {
     spec.nodes[1].name = b"a".to_vec();
     assert_eq!(check(&build(&spec)), Err(DbError::Order));
 }
+
+#[test]
+fn an_instance_of_name_over_the_limit_is_refused() {
+    // A pool long enough that a reference of MAX_NAME_LEN + 1 bytes stays inside it, so only
+    // the bound can refuse it.
+    let mut spec = minimal_spec();
+    spec.nodes[0].name = vec![b'a'; MAX_NAME_LEN];
+    spec.nodes[1].name = b"b".to_vec();
+    let db = build(&spec);
+    for (len, expected) in [
+        (0, Ok(())),
+        (MAX_NAME_LEN as u32, Ok(())),
+        (MAX_NAME_LEN as u32 + 1, Err(DbError::Pool)),
+    ] {
+        let patched = with(&db, |w| {
+            let off = at(w, T_NODES, 1, N_INSTANCE_OF_OFF);
+            w[off] = 0;
+            let l = at(w, T_NODES, 1, N_INSTANCE_OF_LEN);
+            w[l] = len;
+        });
+        assert_eq!(check(&patched), expected, "instance_of length {len}");
+    }
+}
+
+#[test]
+fn scratch_smaller_than_the_limits_is_refused() {
+    let db = valid_minimal();
+    let edge = qinit_graph_core::GEdge {
+        from: 0,
+        to: 0,
+        hard: false,
+        parallel: false,
+    };
+    let mut edges = vec![edge; MAX_EDGES];
+    let mut levels = vec![0u32; MAX_NODES];
+    assert_eq!(validate(&db, &mut edges, &mut levels), Ok(()));
+    assert_eq!(
+        validate(&db, &mut edges[..MAX_EDGES - 1], &mut levels),
+        Err(DbError::Scratch)
+    );
+    assert_eq!(
+        validate(&db, &mut edges, &mut levels[..MAX_NODES - 1]),
+        Err(DbError::Scratch)
+    );
+}

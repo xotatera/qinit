@@ -46,6 +46,7 @@ pub open spec fn node_pool_ok(b: Seq<u8>, i: int) -> bool {
     &&& name_ref(b, nf(b, i, N_NAME_OFF), nf(b, i, N_NAME_LEN))
     &&& list_ref(b, nf(b, i, N_EXEC_OFF), nf(b, i, N_EXEC_LEN))
     &&& pool_ref(b, nf(b, i, N_READY_OFF), nf(b, i, N_READY_LEN))
+    &&& nf(b, i, N_INSTANCE_OF_LEN) <= MAX_NAME_LEN
     &&& pool_ref(b, nf(b, i, N_INSTANCE_OF_OFF), nf(b, i, N_INSTANCE_OF_LEN))
 }
 

@@ -62,6 +62,8 @@ pub enum DbError {
     Closure,
     /// Node names, or a node list, are not strictly ascending.
     Order,
+    /// The caller's scratch buffers are smaller than `MAX_EDGES` edges or `MAX_NODES` levels.
+    Scratch,
 }
 
 /// Table id `t` as a [`DbError`] field.
@@ -88,18 +90,19 @@ pub(crate) fn rid(i: usize) -> (r: u32)
 
 /// Validates `bytes` as a compiled database (spec §3.1): `Ok` only if it is
 /// [`well_formed`], and then every reader accessor is in bounds
-/// ([`lemma_accessors_in_bounds`], V9). `edges` and `levels` are scratch space.
+/// ([`lemma_accessors_in_bounds`], V9). `edges` and `levels` are scratch space of at least
+/// `MAX_EDGES` and `MAX_NODES` entries; smaller buffers are refused with [`DbError::Scratch`].
 ///
 /// # Errors
 /// The first rule the database breaks, checked in the order header, tables, pool references,
 /// records, graph, lists.
 pub fn validate(bytes: &[u8], edges: &mut [GEdge], levels: &mut [u32]) -> (r: Result<(), DbError>)
-    requires
-        old(edges)@.len() >= MAX_EDGES,
-        old(levels)@.len() >= MAX_NODES,
     ensures
         r is Ok ==> well_formed(bytes@),
 {
+    if edges.len() < MAX_EDGES || levels.len() < MAX_NODES {
+        return Err(DbError::Scratch);
+    }
     check_header(bytes)?;
     check_tables(bytes)?;
     check_pool_refs(bytes)?;

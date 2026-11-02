@@ -176,25 +176,19 @@ Resolved by the maintainer: a frame that declares `credentials` without `nnp` ge
 no-new-privileges on; it has to write `nnp = false` to opt out. A policy rule with
 `require_nnp = true` still refuses the opt-out where needed.
 
-### D23 — Instanced-frame name not bounded by the validator · `ACCEPTED`
+### D23 — Instanced-frame name not bounded by the validator · `RESOLVED`
 
-`N_INSTANCE_OF` is checked as an in-bounds, valid UTF-8 pool slice, but not
-against `MAX_NAME_LEN`. The compiler bounds it (it is a frame name of at most
-`MAX_NAME_LEN` bytes); a hand-made database can carry a longer one. Readers
-must not assume the bound.
+The validator now holds `N_INSTANCE_OF` to `MAX_NAME_LEN` (an empty name is still allowed),
+proved with V2. Readers can rely on the bound.
 
-### D24 — Validator scratch buffers and the second graph pass · `ACCEPTED`
+### D24 — Second graph pass in the validator · `ACCEPTED`
 
-`qinit_db_core::validate` is public and takes caller-provided scratch slices;
-its requirement that they hold at least `MAX_EDGES` and `MAX_NODES` entries is
-a proof precondition, not a run-time check. Callers other than `qinit-db`
-(sub-project 4) should go through an owning scratch type, or the signature
-should take `&mut [GEdge; MAX_EDGES]` and `&mut [u32; MAX_NODES]`. The second
-`levels` call in `check_graph` (stop order, honouring `stop = "parallel"`) is
-logically redundant once the first succeeded: honouring the opt-outs only
-drops constraints, so the first pass's labelling also satisfies the second,
-and the hard-parallel check is the same in both. A lemma stating that could
-halve the worst-case graph cost (about 134 million steps).
+The scratch-length precondition of `qinit_db_core::validate` is now a run-time check that
+returns `DbError::Scratch`, so there is nothing left for a caller to break. The second `levels`
+call in `check_graph` (stop order, honouring `stop = "parallel"`) is logically redundant once
+the first succeeded: honouring the opt-outs only drops constraints, so the first pass's
+labelling also satisfies the second, and the hard-parallel check is the same in both. A lemma
+stating that could halve the worst-case graph cost (about 134 million steps).
 
 ### D25 — Pool and UTF-8 errors carry no position · `ACCEPTED`
 

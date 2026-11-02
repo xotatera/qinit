@@ -107,7 +107,11 @@ fn check_node_pool(b: &[u8], i: usize) -> (r: Result<(), DbError>)
     name_ok(b, field(b, t, i, N_NAME_OFF), field(b, t, i, N_NAME_LEN))?;
     list_ok(b, field(b, t, i, N_EXEC_OFF), field(b, t, i, N_EXEC_LEN))?;
     pool_ref_ok(b, field(b, t, i, N_READY_OFF), field(b, t, i, N_READY_LEN))?;
-    pool_ref_ok(b, field(b, t, i, N_INSTANCE_OF_OFF), field(b, t, i, N_INSTANCE_OF_LEN))
+    let of_len = field(b, t, i, N_INSTANCE_OF_LEN);
+    if of_len as usize > MAX_NAME_LEN {
+        return Err(DbError::Pool);
+    }
+    pool_ref_ok(b, field(b, t, i, N_INSTANCE_OF_OFF), of_len)
 }
 
 fn check_edge_pool(b: &[u8], x: usize) -> (r: Result<(), DbError>)
