@@ -70,6 +70,8 @@ enum Due {
 #[derive(Default)]
 pub struct Sim {
     pub calls: Vec<Call>,
+    /// Every start as `(node, virtual time in ms)`.
+    pub starts: Vec<(u32, u64)>,
     /// The script of each node; a node without one runs the default.
     pub scripts: HashMap<u32, Script>,
     /// Paths that exist.
@@ -88,6 +90,12 @@ impl Sim {
     #[must_use]
     pub fn new() -> Sim {
         Sim::default()
+    }
+
+    /// Whether any timer or cell event is still due.
+    #[must_use]
+    pub fn pending(&self) -> bool {
+        !self.due.is_empty()
     }
 
     /// The virtual time in milliseconds.
@@ -135,6 +143,7 @@ impl Sim {
 impl Effects for Sim {
     fn start(&mut self, node: u32, _spec: &NodeSpec) -> Result<(), Errno> {
         self.calls.push(Call::Start(node));
+        self.starts.push((node, self.now));
         self.drop_cell_events(node);
         let script = self.scripts.get(&node).cloned().unwrap_or_default();
         if script.spawn_fails || self.fail_start.contains(&node) {

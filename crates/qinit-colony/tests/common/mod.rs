@@ -40,6 +40,11 @@ pub fn fixtures() -> PathBuf {
 /// Compiles the frames in `frames` (a fixture file name or inline TOML if it holds a newline)
 /// with `enable` as the roots, and returns the database bytes.
 pub fn database(frames: &str, enable: &[&str]) -> Vec<u8> {
+    try_database(frames, enable).expect("fixture compiles")
+}
+
+/// As [`database`], but `None` when the frames do not compile.
+pub fn try_database(frames: &str, enable: &[&str]) -> Option<Vec<u8>> {
     let tmp = TempDir::new();
     let vendor = tmp.0.join("vendor");
     std::fs::create_dir_all(&vendor).expect("layer dir");
@@ -62,7 +67,7 @@ pub fn database(frames: &str, enable: &[&str]) -> Vec<u8> {
         }],
         policy: None,
     };
-    compile(&input).expect("fixture compiles").bytes
+    compile(&input).ok().map(|c| c.bytes)
 }
 
 /// A colony over `frames`, loaded at time 0 against a fresh simulation.
