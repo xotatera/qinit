@@ -160,21 +160,23 @@ pub fn remaining_ms(ns: NodeState, delay: u32, now: u64) -> (r: u32)
                 left as u32
             }
         }
-    } else if w == 0 {
-        1
-    } else if w > u32::MAX as u64 {
-        u32::MAX
     } else {
-        w as u32
+        // The clock went backwards: wait for it to catch up, then out the back-off.
+        let behind = ns.last_start_ms - now;
+        if behind > u32::MAX as u64 {
+            u32::MAX
+        } else {
+            let total = behind + w;
+            if total > u32::MAX as u64 {
+                u32::MAX
+            } else {
+                total as u32
+            }
+        }
     }
 }
 
 // ---- the breaker ----
-/// Obligation 3: the breaker is tripped exactly when there are more failures than `max`.
-pub open spec fn tripped(ns: NodeState, max: u32) -> bool {
-    max > 0 && ns.burst_count > max
-}
-
 /// Counts one failure at `now`: opens a new burst when the window has passed, counts it in the
 /// burst, and advances the back-off exponent (a run at least as long as the cap resets it).
 #[must_use]
@@ -233,7 +235,7 @@ pub open spec fn inv_node(ns: NodeState, p: Params) -> bool {
     &&& (ns.state == State::Quarantined(Reason::Breaker) ==> p.max > 0 && ns.burst_count > p.max)
     &&& (ns.to_stop ==> ns.state is Starting || ns.state is Ready)
     &&& (p.kind == 1 ==> !(ns.state is Quarantined) && ns.state != State::Waiting(Why::Backoff)
-        && ns.backoff_exp == 0)
+        && ns.backoff_exp == 0 && !ns.restart_after)
 }
 
 // ---- small constructors ----
@@ -381,16 +383,23 @@ pub fn finalize(ns: NodeState, p: Params, shutdown: bool, now: u64) -> (r: NodeS
         && p.policy == 2)) {
         failed_restart(n, p, now)
     } else if matches!(n.left, Left::Error) {
-        // Never restarted: a forager, or a worker whose policy is `never`.
-        let n = NodeState { wanted: false, restart_after: false, ..n };
+        // Never restarted: a forager, or a worker whose policy is `never`. A node quarantined
+        // by its start timeout stays wanted, so that `Clear` brings it back.
         if n.timed_out && p.kind != 1 {
             let n = push_report(n, Report::Failed(n.status));
             push_report(
-                NodeState { state: State::Quarantined(Reason::StartTimeout), ..n },
+                NodeState {
+                    state: State::Quarantined(Reason::StartTimeout),
+                    restart_after: false,
+                    ..n
+                },
                 Report::Quarantined(Reason::StartTimeout),
             )
         } else {
-            push_report(NodeState { state: State::Off, ..n }, Report::Failed(n.status))
+            push_report(
+                NodeState { state: State::Off, wanted: false, restart_after: false, ..n },
+                Report::Failed(n.status),
+            )
         }
     } else if n.done {
         let w = n.wanted && p.kind != 1;
@@ -466,6 +475,9 @@ fn on_start(ns: NodeState, p: Params, shutdown: bool) -> (r: NodeState)
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.state == State::Quarantined(Reason::Cascade) ==> ns.state == State::Quarantined(
+            Reason::Cascade,
+        ),
         r.emit_arm == ns.emit_arm,
         shutdown ==> (r.wanted ==> ns.wanted),
 {
@@ -486,6 +498,9 @@ fn on_stop(ns: NodeState, p: Params) -> (r: NodeState)
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.state == State::Quarantined(Reason::Cascade) ==> ns.state == State::Quarantined(
+            Reason::Cascade,
+        ),
         r.emit_arm == ns.emit_arm,
         r.wanted ==> ns.wanted,
 {
@@ -517,6 +532,9 @@ fn on_restart(ns: NodeState, p: Params, shutdown: bool) -> (r: NodeState)
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.state == State::Quarantined(Reason::Cascade) ==> ns.state == State::Quarantined(
+            Reason::Cascade,
+        ),
         r.emit_arm == ns.emit_arm,
         shutdown ==> (r.wanted ==> ns.wanted),
 {
@@ -543,6 +561,9 @@ fn on_clear(ns: NodeState, p: Params) -> (r: NodeState)
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.state == State::Quarantined(Reason::Cascade) ==> ns.state == State::Quarantined(
+            Reason::Cascade,
+        ),
         r.emit_arm == ns.emit_arm,
         r.wanted ==> ns.wanted,
 {
@@ -570,6 +591,9 @@ fn on_run(ns: NodeState, p: Params, shutdown: bool) -> (r: NodeState)
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.state == State::Quarantined(Reason::Cascade) ==> ns.state == State::Quarantined(
+            Reason::Cascade,
+        ),
         r.emit_arm == ns.emit_arm,
         shutdown ==> (r.wanted ==> ns.wanted),
 {
@@ -588,6 +612,9 @@ fn on_shutdown(ns: NodeState, p: Params) -> (r: NodeState)
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.state == State::Quarantined(Reason::Cascade) ==> ns.state == State::Quarantined(
+            Reason::Cascade,
+        ),
         r.emit_arm == ns.emit_arm,
         !r.wanted,
 {
@@ -615,6 +642,9 @@ fn on_exit(ns: NodeState, p: Params, status: Option<i32>, starting: bool) -> (r:
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.state == State::Quarantined(Reason::Cascade) ==> ns.state == State::Quarantined(
+            Reason::Cascade,
+        ),
         r.emit_arm == ns.emit_arm,
         r.wanted ==> ns.wanted,
 {
@@ -643,6 +673,9 @@ fn on_cell_failed(ns: NodeState, p: Params) -> (r: NodeState)
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.state == State::Quarantined(Reason::Cascade) ==> ns.state == State::Quarantined(
+            Reason::Cascade,
+        ),
         r.emit_arm == ns.emit_arm,
         r.wanted ==> ns.wanted,
 {
@@ -664,6 +697,9 @@ fn on_cell(ns: NodeState, p: Params, shutdown: bool, rep: CellReport, now: u64) 
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.state == State::Quarantined(Reason::Cascade) ==> ns.state == State::Quarantined(
+            Reason::Cascade,
+        ),
         shutdown ==> r.emit_arm == ns.emit_arm,
         shutdown ==> (r.wanted ==> ns.wanted),
 {
@@ -716,6 +752,9 @@ fn on_deadline(ns: NodeState, p: Params, t: TimerKind, now: u64) -> (r: NodeStat
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.state == State::Quarantined(Reason::Cascade) ==> ns.state == State::Quarantined(
+            Reason::Cascade,
+        ),
         r.emit_arm == ns.emit_arm,
         r.wanted ==> ns.wanted,
 {
@@ -765,6 +804,9 @@ pub fn node_step(ns: NodeState, p: Params, shutdown: bool, input: NodeInput, now
     ensures
         inv_node(r, p),
         keeps_emits(r, ns),
+        r.state == State::Quarantined(Reason::Cascade) ==> ns.state == State::Quarantined(
+            Reason::Cascade,
+        ),
         shutdown ==> r.emit_arm == ns.emit_arm,
         input == NodeInput::Shutdown ==> !r.wanted,
         shutdown ==> (r.wanted ==> ns.wanted),

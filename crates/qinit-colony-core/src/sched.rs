@@ -515,8 +515,8 @@ fn mark_edges(db: &[u8], tbl: &mut [NodeState], i: usize) -> (changed: bool)
             if kind <= 1 && edge_word(db, x, E_TARGET_KIND) == 0 {
                 let t = edge_word(db, x, E_TARGET) as usize;
                 let old_t = tbl[t];
-                if !old_t.wanted {
-                    tbl[t] = NodeState { wanted: true, ..old_t };
+                if !old_t.pulled {
+                    tbl[t] = NodeState { wanted: true, pulled: true, ..old_t };
 
                     proof {
                         assert forall|k: int| 0 <= k < tbl@.len() implies inv_node(
@@ -538,12 +538,53 @@ fn mark_edges(db: &[u8], tbl: &mut [NodeState], i: usize) -> (changed: bool)
     changed
 }
 
-/// Marks the closure of `root` under `require_all` and `require_any` node targets wanted. Each
-/// sweep over the tbl marks the targets of every wanted node; `n` sweeps reach any chain.
-fn mark_closure(db: &[u8], tbl: &mut [NodeState])
+/// Clears the closure walk's scratch flags on every node.
+fn clear_scratch(tbl: &mut [NodeState])
+    requires
+        old(tbl)@.len() <= MAX_NODES,
+    ensures
+        final(tbl)@.len() == old(tbl)@.len(),
+        forall|k: int|
+            0 <= k < final(tbl)@.len() ==> (NodeState {
+                pulled: old(tbl)@[k].pulled,
+                expanded: old(tbl)@[k].expanded,
+                ..final(tbl)@[k]
+            } == old(tbl)@[k]),
+        forall|k: int|
+            0 <= k < final(tbl)@.len() ==> !final(tbl)@[k].pulled && !final(tbl)@[k].expanded,
+{
+    let n = tbl.len();
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            i <= n,
+            n == tbl@.len(),
+            tbl@.len() == old(tbl)@.len(),
+            forall|k: int|
+                0 <= k < tbl@.len() ==> (NodeState {
+                    pulled: old(tbl)@[k].pulled,
+                    expanded: old(tbl)@[k].expanded,
+                    ..tbl@[k]
+                } == old(tbl)@[k]),
+            forall|k: int| 0 <= k < i ==> !tbl@[k].pulled && !tbl@[k].expanded,
+        decreases n - i,
+    {
+        let t = tbl[i];
+        tbl[i] = NodeState { pulled: false, expanded: false, ..t };
+        i += 1;
+    }
+}
+
+/// Marks the closure of `root` under `require_all` and `require_any` node targets wanted (R11).
+/// Only the closure of `root` is walked: a waiting dependent that is still wanted does not pull
+/// its stopped dependencies back in. The walk marks nodes `pulled`, expands each once, and
+/// clears its flags at the end.
+#[allow(clippy::semicolon_if_nothing_returned)]  // a `proof` block ends the function
+fn mark_closure(db: &[u8], tbl: &mut [NodeState], root: usize)
     requires
         well_formed(db@),
         old(tbl)@.len() == nodes(db@),
+        root < old(tbl)@.len(),
         inv_all(db@, old(tbl)@),
     ensures
         final(tbl)@.len() == old(tbl)@.len(),
@@ -551,17 +592,46 @@ fn mark_closure(db: &[u8], tbl: &mut [NodeState])
         quiet_emits(final(tbl)@, old(tbl)@),
 {
     let n = tbl.len();
+    proof {
+        assert(table_ok(db@, T_NODES as int));
+    }
+    let ghost t0 = tbl@;
+    clear_scratch(tbl);
+    proof {
+        assert forall|k: int| 0 <= k < tbl@.len() implies inv_node(tbl@[k], params_of(db@, k)) by {
+            assert(inv_node(t0[k], params_of(db@, k)));
+        }
+        assert(quiet_emits(tbl@, t0)) by {
+            assert forall|k: int| 0 <= k < tbl@.len() implies tbl@[k].emit_start == t0[k].emit_start
+                && tbl@[k].emit_arm == t0[k].emit_arm by {
+                assert(NodeState { pulled: t0[k].pulled, expanded: t0[k].expanded, ..tbl@[k] }
+                    == t0[k]);
+            }
+        }
+    }
+    let r = tbl[root];
+    tbl[root] = NodeState { pulled: true, ..r };
+    let ghost t1 = tbl@;
+    proof {
+        assert forall|k: int| 0 <= k < tbl@.len() implies inv_node(tbl@[k], params_of(db@, k)) by {
+            if k == root as int {
+                assert(inv_node(t0[k], params_of(db@, k)));
+            }
+        }
+        assert(quiet_emits(tbl@, t0));
+    }
     let mut pass: usize = 0;
     let mut changed = true;
-    while pass < n && changed
+    while pass <= n && changed
         invariant
-            pass <= n,
+            pass <= n + 1,
+            n <= MAX_NODES,
             n == tbl@.len(),
             well_formed(db@),
             tbl@.len() == nodes(db@),
             inv_all(db@, tbl@),
-            quiet_emits(tbl@, old(tbl)@),
-        decreases n - pass,
+            quiet_emits(tbl@, t0),
+        decreases n + 1 - pass,
     {
         changed = false;
         let mut i: usize = 0;
@@ -572,24 +642,50 @@ fn mark_closure(db: &[u8], tbl: &mut [NodeState])
                 well_formed(db@),
                 tbl@.len() == nodes(db@),
                 inv_all(db@, tbl@),
-                quiet_emits(tbl@, old(tbl)@),
+                quiet_emits(tbl@, t0),
             decreases n - i,
         {
             let ghost before = tbl@;
-            if tbl[i].wanted && mark_edges(db, tbl, i) {
-                changed = true;
-            }
-            proof {
-                // mark_edges, when called, keeps the emits of `before`.
-                if !(before[i as int].wanted) {
-                    assert(tbl@ == before);
-                } else {
-                    lemma_quiet_trans(tbl@, before, old(tbl)@);
+            if tbl[i].pulled && !tbl[i].expanded {
+                let cur = tbl[i];
+                tbl[i] = NodeState { expanded: true, ..cur };
+                proof {
+                    assert forall|k: int| 0 <= k < tbl@.len() implies inv_node(
+                        tbl@[k],
+                        params_of(db@, k),
+                    ) by {
+                        if k == i as int {
+                            assert(inv_node(cur, params_of(db@, k)));
+                        }
+                    }
+                    assert(quiet_emits(tbl@, before));
+                    lemma_quiet_trans(tbl@, before, t0);
                 }
+                let ghost mid = tbl@;
+                mark_edges(db, tbl, i);
+                proof {
+                    lemma_quiet_trans(tbl@, mid, t0);
+                }
+                changed = true;
             }
             i += 1;
         }
         pass += 1;
+    }
+    let ghost t2 = tbl@;
+    clear_scratch(tbl);
+    proof {
+        assert forall|k: int| 0 <= k < tbl@.len() implies inv_node(tbl@[k], params_of(db@, k)) by {
+            assert(inv_node(t2[k], params_of(db@, k)));
+        }
+        assert(quiet_emits(tbl@, t2)) by {
+            assert forall|k: int| 0 <= k < tbl@.len() implies tbl@[k].emit_start == t2[k].emit_start
+                && tbl@[k].emit_arm == t2[k].emit_arm by {
+                assert(NodeState { pulled: t2[k].pulled, expanded: t2[k].expanded, ..tbl@[k] }
+                    == t2[k]);
+            }
+        }
+        lemma_quiet_trans(tbl@, t2, t0);
     }
 }
 
@@ -841,7 +937,9 @@ fn scan_running(db: &[u8], tbl: &[NodeState], paths: &[bool], late: &mut [bool],
                     if late[x] {
                         if ready {
                             late[x] = false;
-                            if on >= 2 {
+                            // Only an async edge restarts its dependent on a late arrival;
+                            // a sync edge was simply not needed (a require_any alternative).
+                            if on >= 2 && edge_word(db, x, E_MODE) == 1 {
                                 trig = true;
                             }
                         }
@@ -955,27 +1053,137 @@ fn reconcile_idle(
     }
 }
 
-/// A running node first looks at its edges (propagation, exclusion, late arrival, cascade);
-/// if it is to stop it stops once none of its hard dependents is still going away
-/// (obligation 2).
-#[allow(unused_variables)]  // `shutdown` appears only in the specification (and in `begin_stop`'s)
-fn reconcile_running(
+/// Marks node `i`, if it is running, as to stop when its edges say so (propagation, exclusion,
+/// late arrival, cascade). A forager is never run again: it is unwanted when stopped this way.
+/// This is its own phase, run to a fixpoint before any stop is issued, so that "the dependents
+/// that are to be stopped" is known when `reconcile_running` decides (obligation 2).
+#[allow(unused_variables)]  // `paths` appears only in the specification
+fn propagate_node(
     db: &[u8],
     tbl: &mut [NodeState],
     paths: &[bool],
     late: &mut [bool],
     i: usize,
-    shutdown: bool,
-    now: u64,
 ) -> (changed: bool)
     requires
         sized(db@, old(tbl)@.len() as int, paths@.len() as int, old(late)@.len() as int),
         i < old(tbl)@.len(),
         inv_all(db@, old(tbl)@),
-        old(tbl)@[i as int].state is Starting || old(tbl)@[i as int].state is Ready,
     ensures
         final(tbl)@.len() == old(tbl)@.len(),
         final(late)@.len() == old(late)@.len(),
+        inv_all(db@, final(tbl)@),
+        forall|j: int| 0 <= j < old(tbl)@.len() && j != i ==> final(tbl)@[j] == old(tbl)@[j],
+        final(tbl)@[i as int].state == old(tbl)@[i as int].state,
+        final(tbl)@[i as int].emit_start == old(tbl)@[i as int].emit_start,
+        final(tbl)@[i as int].emit_arm == old(tbl)@[i as int].emit_arm,
+        final(tbl)@[i as int].emit_stop == old(tbl)@[i as int].emit_stop,
+        final(tbl)@[i as int].wanted ==> old(tbl)@[i as int].wanted,
+{
+    let ns = tbl[i];
+    let p = params(db, i);
+    proof {
+        assert(inv_node(tbl@[i as int], params_of(db@, i as int)));
+    }
+    if matches!(ns.state, State::Starting | State::Ready) && !ns.to_stop && (scan_running(
+        db,
+        tbl,
+        paths,
+        late,
+        i,
+    ) || cascades(db, tbl, i)) {
+        if p.kind == 1 {
+            tbl[i] = mark_stop(NodeState { wanted: false, ..ns }, Left::Restart);
+        } else {
+            tbl[i] = mark_stop(NodeState { restart_after: true, ..ns }, Left::Restart);
+        }
+        true
+    } else {
+        false
+    }
+}
+
+/// Runs [`propagate_node`] over the table until nothing changes (a stop marked on one node can
+/// make its own dependents stop: at most `n` rounds along a chain).
+fn propagate(db: &[u8], tbl: &mut [NodeState], paths: &[bool], late: &mut [bool]) -> (changed: bool)
+    requires
+        sized(db@, old(tbl)@.len() as int, paths@.len() as int, old(late)@.len() as int),
+        inv_all(db@, old(tbl)@),
+    ensures
+        final(tbl)@.len() == old(tbl)@.len(),
+        final(late)@.len() == old(late)@.len(),
+        inv_all(db@, final(tbl)@),
+        quiet_emits(final(tbl)@, old(tbl)@),
+        forall|k: int| 0 <= k < old(tbl)@.len() ==> (final(tbl)@[k].wanted ==> old(tbl)@[k].wanted),
+{
+    let n = tbl.len();
+    proof {
+        assert(table_ok(db@, T_NODES as int));
+    }
+    let mut any = false;
+    let mut pass: usize = 0;
+    let mut again = true;
+    while pass <= n && again
+        invariant
+            pass <= n + 1,
+            n <= MAX_NODES,
+            n == tbl@.len(),
+            tbl@.len() == old(tbl)@.len(),
+            sized(db@, tbl@.len() as int, paths@.len() as int, late@.len() as int),
+            late@.len() == old(late)@.len(),
+            inv_all(db@, tbl@),
+            quiet_emits(tbl@, old(tbl)@),
+            forall|k: int| 0 <= k < tbl@.len() ==> (tbl@[k].wanted ==> old(tbl)@[k].wanted),
+        decreases n + 1 - pass,
+    {
+        again = false;
+        let mut i: usize = 0;
+        while i < n
+            invariant
+                i <= n,
+                n == tbl@.len(),
+                tbl@.len() == old(tbl)@.len(),
+                sized(db@, tbl@.len() as int, paths@.len() as int, late@.len() as int),
+                late@.len() == old(late)@.len(),
+                inv_all(db@, tbl@),
+                quiet_emits(tbl@, old(tbl)@),
+                forall|k: int| 0 <= k < tbl@.len() ==> (tbl@[k].wanted ==> old(tbl)@[k].wanted),
+            decreases n - i,
+        {
+            let ghost before = tbl@;
+            if propagate_node(db, tbl, paths, late, i) {
+                again = true;
+                any = true;
+            }
+            proof {
+                assert(quiet_emits(tbl@, before));
+                lemma_quiet_trans(tbl@, before, old(tbl)@);
+            }
+            i += 1;
+        }
+        pass += 1;
+    }
+    any
+}
+
+/// Stops a running node that is to stop, once none of its hard dependents is still going away
+/// (obligation 2). `propagate` has already marked every node that is to be stopped.
+#[allow(unused_variables)]  // `shutdown` appears only in the specification (and in `begin_stop`'s)
+fn reconcile_running(
+    db: &[u8],
+    tbl: &mut [NodeState],
+    i: usize,
+    shutdown: bool,
+    now: u64,
+) -> (changed: bool)
+    requires
+        well_formed(db@),
+        old(tbl)@.len() == nodes(db@),
+        i < old(tbl)@.len(),
+        inv_all(db@, old(tbl)@),
+        old(tbl)@[i as int].state is Starting || old(tbl)@[i as int].state is Ready,
+    ensures
+        final(tbl)@.len() == old(tbl)@.len(),
         inv_all(db@, final(tbl)@),
         forall|j: int| 0 <= j < old(tbl)@.len() && j != i ==> final(tbl)@[j] == old(tbl)@[j],
         final(tbl)@[i as int].emit_stop && !old(tbl)@[i as int].emit_stop ==> !hard_blocked(
@@ -993,16 +1201,11 @@ fn reconcile_running(
     proof {
         assert(inv_node(tbl@[i as int], params_of(db@, i as int)));
     }
-    let mut cur = ns;
-    if !cur.to_stop && (scan_running(db, tbl, paths, late, i) || cascades(db, tbl, i)) {
-        cur = mark_stop(NodeState { restart_after: true, ..cur }, Left::Restart);
-    }
-    if cur.to_stop && !is_blocked(db, tbl, i) {
-        tbl[i] = begin_stop(cur, p, shutdown, now);
+    if ns.to_stop && !is_blocked(db, tbl, i) {
+        tbl[i] = begin_stop(ns, p, shutdown, now);
         true
     } else {
-        tbl[i] = cur;
-        cur.to_stop && !ns.to_stop
+        false
     }
 }
 
@@ -1047,7 +1250,7 @@ fn reconcile_node(
 {
     let ns = tbl[i];
     if matches!(ns.state, State::Starting | State::Ready) {
-        reconcile_running(db, tbl, paths, late, i, shutdown, now)
+        reconcile_running(db, tbl, i, shutdown, now)
     } else {
         reconcile_idle(db, tbl, paths, late, i, shutdown, now)
     }
@@ -1093,7 +1296,19 @@ pub fn reconcile(
             shutdown ==> quiet_emits(tbl@, old(tbl)@),
         decreases n + 1 - pass,
     {
-        let mut changed = false;
+        // Phase A: every node that is to stop is marked before any stop is issued.
+        let ghost before_a = tbl@;
+        let mut changed = propagate(db, tbl, paths, late);
+        proof {
+            if shutdown {
+                lemma_quiet_trans(tbl@, before_a, old(tbl)@);
+            }
+            assert forall|k: int| 0 <= k < tbl@.len() && shutdown implies !(
+            #[trigger] tbl@[k]).wanted by {
+                assert(!before_a[k].wanted);
+            }
+        }
+        // Phase B: stops (in hard-dependency order), starts and waits.
         let mut i: usize = 0;
         while i < n
             invariant
@@ -1146,6 +1361,9 @@ fn apply_node(
         final(tbl)@.len() == old(tbl)@.len(),
         inv_all(db@, final(tbl)@),
         shutdown ==> (final(tbl)@[i as int].wanted ==> old(tbl)@[i as int].wanted),
+        final(tbl)@[i as int].state == State::Quarantined(Reason::Cascade) ==> old(
+            tbl,
+        )@[i as int].state == State::Quarantined(Reason::Cascade),
         shutdown ==> quiet_emits(final(tbl)@, old(tbl)@),
         forall|j: int| 0 <= j < old(tbl)@.len() && j != i ==> final(tbl)@[j] == old(tbl)@[j],
         input == NodeInput::Shutdown ==> !final(tbl)@[i as int].wanted,
@@ -1181,10 +1399,11 @@ pub fn step(
         final(late)@.len() == old(late)@.len(),
         inv_all(db@, final(tbl)@),
         shutdown_ok(final(meta).shutdown, final(tbl)@),
-        old(meta).shutdown ==> quiet_emits(final(tbl)@, old(tbl)@),
+        (old(meta).shutdown || input == Input::Shutdown) ==> quiet_emits(final(tbl)@, old(tbl)@),
 {
     let ghost t0 = tbl@;
     let ghost sd = meta.shutdown;
+    let ghost quiet = sd || input == Input::Shutdown;
     meta.cursor = 0;
     let n = tbl.len();
     match input {
@@ -1194,7 +1413,7 @@ pub fn step(
                 apply_node(db, tbl, i, meta.shutdown, NodeInput::Req(req), now);
                 let ghost t1 = tbl@;
                 if matches!(req, Request::Start) && tbl[i].wanted {
-                    mark_closure(db, tbl);
+                    mark_closure(db, tbl, i);
                     proof {
                         if sd {
                             lemma_quiet_trans(tbl@, t1, t0);
@@ -1215,9 +1434,14 @@ pub fn step(
                         tbl@.len() == nodes(db@),
                         inv_all(db@, tbl@),
                         forall|k: int| 0 <= k < i ==> !(#[trigger] tbl@[k]).wanted,
+                        quiet_emits(tbl@, t0),
                     decreases n - i,
                 {
+                    let ghost before = tbl@;
                     apply_node(db, tbl, i, true, NodeInput::Shutdown, now);
+                    proof {
+                        lemma_quiet_trans(tbl@, before, t0);
+                    }
                     i += 1;
                 }
             }
@@ -1243,7 +1467,7 @@ pub fn step(
     }
     let ghost t1 = tbl@;
     proof {
-        if sd {
+        if quiet {
             assert(meta.shutdown);
             assert(quiet_emits(t1, t0));
         }
@@ -1252,7 +1476,7 @@ pub fn step(
     let ghost t2 = tbl@;
     report_shutdown(db, tbl, meta);
     proof {
-        if sd {
+        if quiet {
             lemma_quiet_trans(t2, t1, t0);
             lemma_quiet_trans(tbl@, t2, t0);
         }
@@ -1554,6 +1778,8 @@ pub open spec fn off_spec() -> NodeState {
         burst_begin_ms: 0,
         burst_count: 0,
         backoff_exp: 0,
+        pulled: false,
+        expanded: false,
         emit_start: false,
         emit_stop: false,
         emit_watch: false,
@@ -1573,6 +1799,29 @@ proof fn lemma_off_inv(b: Seq<u8>, ns: Seq<NodeState>)
 {
     assert forall|i: int| 0 <= i < ns.len() implies inv_node(ns[i], params_of(b, i)) by {
         assert(ns[i] == off_spec());
+    }
+}
+
+/// Marks node `t` wanted. Only `wanted` changes, so the invariant and the pending actions stay.
+#[allow(unused_variables, clippy::semicolon_if_nothing_returned)]  // `db` appears only in the specification; a `proof` block ends the function
+fn want(db: &[u8], tbl: &mut [NodeState], t: usize)
+    requires
+        well_formed(db@),
+        old(tbl)@.len() == nodes(db@),
+        t < old(tbl)@.len(),
+        inv_all(db@, old(tbl)@),
+    ensures
+        final(tbl)@.len() == old(tbl)@.len(),
+        inv_all(db@, final(tbl)@),
+{
+    let old_t = tbl[t];
+    tbl[t] = NodeState { wanted: true, ..old_t };
+    proof {
+        assert forall|j: int| 0 <= j < tbl@.len() implies inv_node(tbl@[j], params_of(db@, j)) by {
+            if j == t as int {
+                assert(inv_node(old_t, params_of(db@, j)));
+            }
+        }
     }
 }
 
@@ -1602,18 +1851,7 @@ fn mark_enabled(db: &[u8], tbl: &mut [NodeState])
             assert(list_index_ok(db@, T_ENABLED, k as int));
         }
         let t = enabled(db, k) as usize;
-        let old_t = tbl[t];
-        tbl[t] = NodeState { wanted: true, ..old_t };
-        proof {
-            assert forall|j: int| 0 <= j < tbl@.len() implies inv_node(
-                tbl@[j],
-                params_of(db@, j),
-            ) by {
-                if j == t as int {
-                    assert(inv_node(old_t, params_of(db@, j)));
-                }
-            }
-        }
+        want(db, tbl, t);
         k += 1;
     }
 }

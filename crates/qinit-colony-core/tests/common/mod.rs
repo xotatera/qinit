@@ -258,3 +258,9 @@ pub fn cascade_edge(to: u32) -> Edge {
         ..edge(to)
     }
 }
+
+/// A node with one group of `kind`.
+pub fn group_with(mut n: Node, kind: GroupKind, edges: Vec<Edge>) -> Node {
+    n.groups.push(group(kind, edges));
+    n
+}

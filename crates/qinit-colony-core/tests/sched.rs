@@ -478,3 +478,222 @@ fn a_stop_that_fails_in_the_cell_quarantines() {
     h.cell("a", CellReport::CellFailed, 6);
     assert_eq!(h.state("a"), State::Quarantined(Reason::StopFailed));
 }
+
+// ---- found by the review after Task 7 ----
+
+/// `b` requires `a` (the dependency has the LOWER index), both ready.
+fn swapped_pair(on: RestartOn) -> Harness {
+    let b = requires(worker("b"), vec![with_restart_on(edge(0), on)]);
+    let (mut h, _) = Harness::load(model(vec![worker("a"), b], &[0, 1]));
+    h.cell("a", CellReport::Ready, 1);
+    h.cell("b", CellReport::Ready, 2);
+    assert_eq!((h.state("a"), h.state("b")), (State::Ready, State::Ready));
+    h
+}
+
+#[test]
+fn stop_order_holds_when_the_dependency_has_the_lower_index() {
+    let mut h = swapped_pair(RestartOn::Restart);
+    let actions = h.request("a", Request::Stop, 10);
+    assert_eq!(
+        stops(&h, &actions),
+        ["b"],
+        "the dependent first: {actions:?}"
+    );
+    assert_eq!(h.state("a"), State::Ready, "a waits for b to be empty");
+    let actions = h.cell("b", CellReport::Empty, 11);
+    assert_eq!(stops(&h, &actions), ["a"]);
+}
+
+#[test]
+fn stop_order_holds_on_a_failure_when_the_dependency_has_the_lower_index() {
+    let mut h = swapped_pair(RestartOn::Error);
+    let actions = h.cell("a", CellReport::MainExited(Some(1)), 10);
+    assert_eq!(stops(&h, &actions), ["b"], "{actions:?}");
+    let actions = h.cell("b", CellReport::Empty, 11);
+    assert_eq!(stops(&h, &actions), ["a"], "a's cell is cleaned up after b");
+}
+
+#[test]
+fn stop_order_holds_along_a_chain_in_the_worst_index_order() {
+    // c requires b requires a: the dependents have the higher indices.
+    let b = requires(
+        worker("b"),
+        vec![with_restart_on(edge(0), RestartOn::Restart)],
+    );
+    let c = requires(
+        worker("c"),
+        vec![with_restart_on(edge(1), RestartOn::Restart)],
+    );
+    let (mut h, _) = Harness::load(model(vec![worker("a"), b, c], &[0, 1, 2]));
+    h.cell("a", CellReport::Ready, 1);
+    h.cell("b", CellReport::Ready, 2);
+    h.cell("c", CellReport::Ready, 3);
+    let actions = h.request("a", Request::Stop, 10);
+    assert_eq!(stops(&h, &actions), ["c"], "{actions:?}");
+    let actions = h.cell("c", CellReport::Empty, 11);
+    assert_eq!(stops(&h, &actions), ["b"], "{actions:?}");
+    let actions = h.cell("b", CellReport::Empty, 12);
+    assert_eq!(stops(&h, &actions), ["a"], "{actions:?}");
+}
+
+#[test]
+fn start_does_not_undo_an_unrelated_stop() {
+    // a requires b (restart): stopping b leaves a waiting and wanted. Starting c must not
+    // pull b back in through a.
+    let a = requires(
+        worker("a"),
+        vec![with_restart_on(edge(1), RestartOn::Restart)],
+    );
+    let (mut h, _) = Harness::load(model(vec![a, worker("b"), worker("c")], &[0, 1]));
+    h.cell("b", CellReport::Ready, 1);
+    h.cell("a", CellReport::Ready, 2);
+    h.request("b", Request::Stop, 10);
+    h.cell("a", CellReport::Empty, 11);
+    h.cell("b", CellReport::Empty, 12);
+    assert_eq!(
+        (h.state("a"), h.state("b")),
+        (State::Waiting(Why::Deps), State::Off)
+    );
+    let actions = h.request("c", Request::Start, 20);
+    assert_eq!(starts(&h, &actions), ["c"], "{actions:?}");
+    assert_eq!(h.state("b"), State::Off);
+    assert!(!h.node("b").wanted);
+}
+
+#[test]
+fn a_forager_stopped_by_its_dependency_is_not_run_again() {
+    let f = requires(
+        forager("f"),
+        vec![with_restart_on(edge(1), RestartOn::Restart)],
+    );
+    let (mut h, _) = Harness::load(model(vec![f, worker("w")], &[1]));
+    h.cell("w", CellReport::Ready, 1);
+    let actions = h.request("f", Request::Run, 2);
+    assert_eq!(starts(&h, &actions), ["f"]);
+    let actions = h.request("w", Request::Restart, 3);
+    assert_eq!(stops(&h, &actions), ["f"], "{actions:?}");
+    h.cell("f", CellReport::Empty, 4);
+    assert_eq!(
+        h.state("f"),
+        State::Off,
+        "a forager does not wait to run again"
+    );
+    assert!(!h.node("f").wanted);
+    h.cell("w", CellReport::Empty, 5);
+    let actions = h.cell("w", CellReport::Ready, 6);
+    assert!(starts(&h, &actions).is_empty(), "{actions:?}");
+    assert_eq!(h.state("f"), State::Off);
+}
+
+#[test]
+fn a_late_sync_arrival_does_not_restart_a_require_any_dependent() {
+    let a = group_with(
+        worker("a"),
+        GroupKind::RequireAny,
+        vec![
+            with_restart_on(edge(1), RestartOn::Restart),
+            with_restart_on(edge(2), RestartOn::Restart),
+        ],
+    );
+    let (mut h, _) = Harness::load(model(vec![a, worker("b"), worker("c")], &[0, 1, 2]));
+    h.cell("b", CellReport::Ready, 1);
+    assert_eq!(h.state("a"), State::Starting, "b satisfies the group");
+    h.cell("a", CellReport::Ready, 2);
+    let actions = h.cell("c", CellReport::Ready, 3);
+    assert!(
+        stops(&h, &actions).is_empty(),
+        "c is only the alternative: {actions:?}"
+    );
+    assert_eq!(h.state("a"), State::Ready);
+}
+
+#[test]
+fn a_restart_request_stops_and_starts_again() {
+    let (mut h, _) = Harness::load(model(vec![worker("a")], &[0]));
+    h.cell("a", CellReport::Ready, 0);
+    let actions = h.request("a", Request::Restart, 5);
+    assert_eq!(stops(&h, &actions), ["a"]);
+    let actions = h.cell("a", CellReport::Empty, 6);
+    assert_eq!(starts(&h, &actions), ["a"], "{actions:?}");
+    assert_eq!(
+        h.node("a").burst_count,
+        0,
+        "an administrator's restart is not a failure"
+    );
+}
+
+#[test]
+fn stopping_a_starting_node_cancels_its_start_timeout() {
+    let (mut h, _) = Harness::load(model(vec![worker("a")], &[0]));
+    let actions = h.request("a", Request::Stop, 5);
+    assert!(
+        actions.contains(&Action::Cancel(0, TimerKind::StartTimeout)),
+        "{actions:?}"
+    );
+    assert_eq!(stops(&h, &actions), ["a"]);
+}
+
+#[test]
+fn a_ready_report_after_the_start_timeout_is_ignored() {
+    let (mut h, _) = Harness::load(model(vec![worker("a")], &[0]));
+    h.deadline("a", TimerKind::StartTimeout, 90_000);
+    assert_eq!(h.state("a"), State::Stopping);
+    h.cell("a", CellReport::Ready, 90_001);
+    assert_eq!(
+        h.state("a"),
+        State::Stopping,
+        "a timed-out node does not become ready"
+    );
+}
+
+#[test]
+fn clear_restarts_a_node_quarantined_by_its_start_timeout() {
+    let a = restarting(worker("a"), RestartPolicy::Never, 0, 0);
+    let (mut h, _) = Harness::load(model(vec![a], &[0]));
+    h.deadline("a", TimerKind::StartTimeout, 90_000);
+    h.cell("a", CellReport::Empty, 90_001);
+    assert_eq!(h.state("a"), State::Quarantined(Reason::StartTimeout));
+    let actions = h.request("a", Request::Clear, 100_000);
+    assert_eq!(
+        starts(&h, &actions),
+        ["a"],
+        "cleared means wanted again: {actions:?}"
+    );
+}
+
+#[test]
+fn the_earliest_of_two_async_deadlines_is_armed_then_the_next() {
+    let a = requires(worker("a"), vec![async_edge(1, 1000), async_edge(2, 5000)]);
+    let (mut h, actions) = Harness::load(model(vec![a, worker("b"), worker("c")], &[0, 1, 2]));
+    assert!(
+        actions.contains(&Action::Arm(0, TimerKind::Edge, 1000)),
+        "{actions:?}"
+    );
+    let actions = h.deadline("a", TimerKind::Edge, 1000);
+    assert!(
+        actions.contains(&Action::Arm(0, TimerKind::Edge, 4000)),
+        "{actions:?}"
+    );
+    let actions = h.deadline("a", TimerKind::Edge, 5000);
+    assert_eq!(starts(&h, &actions), ["a"]);
+}
+
+#[test]
+fn shutdown_while_starting_cancels_and_stops() {
+    let (mut h, _) = Harness::load(model(vec![worker("a")], &[0]));
+    let actions = h.input(Input::Shutdown, 5);
+    assert!(
+        actions.contains(&Action::Cancel(0, TimerKind::StartTimeout)),
+        "{actions:?}"
+    );
+    assert_eq!(stops(&h, &actions), ["a"]);
+}
+
+#[test]
+fn shutdown_of_a_quiet_graph_reports_at_once() {
+    let (mut h, _) = Harness::load(model(vec![worker("a")], &[]));
+    let actions = h.input(Input::Shutdown, 5);
+    let done = Report::ShutdownComplete { still_populated: 0 };
+    assert!(actions.contains(&Action::Report(0, done)), "{actions:?}");
+}

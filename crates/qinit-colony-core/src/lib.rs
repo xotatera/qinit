@@ -199,6 +199,9 @@ pub struct NodeState {
     pub burst_begin_ms: u64,
     pub burst_count: u32,
     pub backoff_exp: u32,
+    /// Scratch of `Start`'s closure walk: in the closure / its targets are marked.
+    pub pulled: bool,
+    pub expanded: bool,
     pub emit_start: bool,
     pub emit_stop: bool,
     pub emit_watch: bool,
@@ -256,6 +259,8 @@ pub fn off() -> (r: NodeState)
         burst_begin_ms: 0,
         burst_count: 0,
         backoff_exp: 0,
+        pulled: false,
+        expanded: false,
         emit_start: false,
         emit_stop: false,
         emit_watch: false,
