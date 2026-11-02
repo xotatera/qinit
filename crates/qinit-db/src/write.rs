@@ -248,7 +248,13 @@ fn list_words(list: &[u32], nodes: usize) -> Result<Vec<u32>, WriteError> {
 /// [`crate::open`] on the result.
 ///
 /// # Errors
-/// A limit overflow, unsorted node names, or an index out of range.
+/// A limit overflow, unsorted node names, or an index out of range. The checks run in a fixed
+/// order, so the reported error does not depend on which problem the input happens to hit first:
+/// 1. the table counts (nodes, creds, routes) against their limits (`Limit`);
+/// 2. node-name order (`Unsorted`);
+/// 3. per node, in order: the name and field limits, the group and edge counts (`Limit`), and
+///    node, route and cred indices (`Index`), then creds, routes, and the enabled and presyslog
+///    lists.
 pub fn write(model: &Model) -> Result<Vec<u8>, WriteError> {
     let nodes = model.nodes.len();
     count(nodes, MAX_NODES, "nodes")?;

@@ -44,7 +44,7 @@ pub struct Node {
     pub memory_max_kib: u32,
     /// Process limit.
     pub pids_max: u32,
-    /// The template this node instantiates ; `Some` must be non-empty.
+    /// The template this node instantiates; `Some` must be non-empty.
     pub instance_of: Option<String>,
 }
 
@@ -219,6 +219,7 @@ pub enum Route {
 pub fn ordering_edges(model: &Model) -> Vec<GEdge> {
     let mut out = Vec::new();
     for (from, node) in model.nodes.iter().enumerate() {
+        // Unreachable fallback: `write` limits nodes to 4096, so the index always fits.
         let from = u32::try_from(from).unwrap_or(u32::MAX);
         for group in &node.groups {
             let requires = matches!(group.kind, GroupKind::RequireAll | GroupKind::RequireAny);
