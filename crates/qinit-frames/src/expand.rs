@@ -14,6 +14,7 @@ use crate::schema::{self, Creds, DepEdge, DepGroup, Frame, Output, Ready, Sandbo
 use qinit_db::Kind;
 use qinit_db_core::MAX_NAME_LEN;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
 
 /// The flat frame set: templates applied, instances expanded, sorted by name.
 #[derive(Clone, Debug, Default)]
@@ -252,6 +253,12 @@ fn instances(
     errs: &mut Vec<Error>,
 ) {
     let key = format!("{}.{name}.instances", kind_name(kind));
+    if list.is_empty() {
+        // Ruling R11: an empty list would silently drop the frame, so it is refused.
+        let why = "an empty instance list defines nothing; use `disable = true` to mask a frame";
+        errs.push(Error::new(Code::Instance, key, why));
+        return;
+    }
     let mut seen = BTreeSet::new();
     for inst in list {
         let full = format!("{name}@{inst}");
@@ -279,11 +286,15 @@ fn instance_provenance(
         };
         let base = format!("{}.{name}", kind_name(*kind));
         let below = format!("{base}.");
-        for (k, layer) in prov {
-            if k == &base || k.starts_with(&below) {
-                let key = format!("{}.{full}{}", kind_name(*kind), &k[base.len()..]);
-                all.insert(key, layer.clone());
-            }
+        // The frame's own key, then the contiguous run of keys under `base.`. Siblings such as
+        // `base-x` sort between the two, so they need two lookups rather than one range.
+        let own = prov.get_key_value(&base);
+        let under = prov
+            .range::<str, _>((Bound::Included(below.as_str()), Bound::Unbounded))
+            .take_while(|(k, _)| k.starts_with(&below));
+        for (k, layer) in own.into_iter().chain(under) {
+            let key = format!("{}.{full}{}", kind_name(*kind), &k[base.len()..]);
+            all.insert(key, layer.clone());
         }
     }
     all

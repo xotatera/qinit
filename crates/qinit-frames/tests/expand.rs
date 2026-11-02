@@ -232,3 +232,35 @@ fn an_error_carries_the_layer_that_set_the_key() {
     let es = expand(&m).expect_err("refused");
     assert_eq!(es[0].layer.as_deref(), Some("etc"));
 }
+
+#[test]
+fn an_empty_instance_list_is_an_instance_error() {
+    let es = errs("[worker.g]\nexec = [\"/x\"]\ninstances = []\n");
+    assert_eq!(es.len(), 1, "{es:?}");
+    assert_eq!(es[0].code, Code::Instance);
+    assert_eq!(es[0].key, "worker.g.instances");
+    assert!(es[0].detail.contains("disable = true"), "{}", es[0].detail);
+    // An empty list inherited from a template is refused the same way.
+    let es = errs("[template.t]\ninstances = []\n[worker.g]\nexec = [\"/x\"]\ntemplate = \"t\"\n");
+    assert_eq!(
+        (es[0].code, es[0].key.as_str()),
+        (Code::Instance, "worker.g.instances")
+    );
+}
+
+#[test]
+fn name_length_is_exact_at_96_bytes() {
+    let name = |n: usize| "a".repeat(n);
+    let one = |n: usize| format!("[worker.{}]\nexec = [\"/x\"]\n", name(n));
+    assert_eq!(ok(&one(96)).frames[0].0.len(), 96);
+    assert_eq!(errs(&one(97))[0].code, Code::BadName);
+    // `<base>@<instance>` counts as a whole: 90 + 1 + 5 is 96, one more byte is 97.
+    let inst = |i: &str| {
+        format!(
+            "[worker.{}]\nexec = [\"/x\"]\ninstances = [\"{i}\"]\n",
+            name(90)
+        )
+    };
+    assert_eq!(ok(&inst("bbbbb")).frames[0].0.len(), 96);
+    assert_eq!(errs(&inst("bbbbbb"))[0].code, Code::BadName);
+}
