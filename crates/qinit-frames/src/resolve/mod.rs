@@ -29,11 +29,7 @@ use crate::expand::{Expanded, kind_name, with_layer};
 use crate::layers::Enable;
 use crate::schema::{Frame, Output, Ready as SReady};
 use crate::units::{duration_ms, size_kib};
-#[allow(
-    unused_imports,
-    reason = "the policy check maps capability names with it"
-)]
-pub(crate) use cred::cap_bit;
+pub(crate) use cred::{cap_bit, cap_name};
 use qinit_db::{Group, GroupKind, Kind, Model, Node, Ready, Restart, RestartPolicy, Route};
 use qinit_db_core::MAX_NODES;
 use std::collections::BTreeMap;

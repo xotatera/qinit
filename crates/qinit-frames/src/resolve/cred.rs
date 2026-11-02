@@ -159,3 +159,24 @@ pub(super) fn cred(
     }
     Some(out)
 }
+
+/// The name (no `cap_` prefix) of capability number `bit`.
+#[must_use]
+pub(crate) fn cap_name(bit: u8) -> Option<&'static str> {
+    CAPS.get(usize::from(bit)).copied()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CAPS, cap_bit, cap_name};
+
+    #[test]
+    fn cap_name_inverts_cap_bit_for_every_name() {
+        assert_eq!(CAPS.len(), 41);
+        for n in CAPS {
+            let b = cap_bit(n).expect("known");
+            assert_eq!(cap_name(b), Some(n));
+        }
+        assert_eq!(cap_name(41), None);
+    }
+}

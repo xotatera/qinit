@@ -1,0 +1,239 @@
+// SPDX-FileCopyrightText: 2026 Xota Tera
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! Credential policy: rules, ceilings, glob matching and file errors.
+mod common;
+
+use common::ok;
+use qinit_db::Model;
+use qinit_frames::error::{Code, Error};
+use qinit_frames::policy::{Policy, check, glob_match, load_policy};
+use std::path::PathBuf;
+
+fn policy(tag: &str, body: &str) -> Result<Policy, Vec<Error>> {
+    let dir = std::env::temp_dir().join(format!("qinit-policy-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path = dir.join("policy.toml");
+    std::fs::write(&path, body).expect("write");
+    let r = load_policy(&path);
+    let _ = std::fs::remove_dir_all(&dir);
+    r
+}
+
+fn pol(tag: &str, body: &str) -> Policy {
+    policy(tag, body).expect("policy loads")
+}
+
+fn model(src: &str) -> Model {
+    ok(src).model
+}
+
+const SSHD: &str = r#"
+    [worker.sshd]
+    exec = ["/sshd"]
+    credentials = { uid = "sshd", caps = ["net_bind_service"], nnp = true }
+"#;
+
+const RULE: &str = r#"
+    default = "deny"
+    [[rule]]
+    match = "sshd"
+    users = ["sshd"]
+    caps_max = ["net_bind_service"]
+    require_nnp = true
+"#;
+
+#[test]
+fn a_worker_within_its_rule_passes() {
+    assert_eq!(check(&pol("pass", RULE), &model(SSHD)), Ok(()));
+}
+
+#[test]
+fn a_user_outside_the_rule_is_a_policy_error() {
+    let m = model(&SSHD.replace("\"sshd\", caps", "\"root\", caps"));
+    let es = check(&pol("user", RULE), &m).expect_err("refused");
+    assert_eq!(es.len(), 1);
+    assert_eq!(es[0].code, Code::Policy);
+    assert_eq!(es[0].key, "worker.sshd.credentials");
+    assert_eq!(es[0].layer, None);
+    assert!(es[0].detail.contains("root"), "{}", es[0].detail);
+}
+
+#[test]
+fn a_capability_above_the_ceiling_is_a_policy_error() {
+    let m = model(&SSHD.replace(
+        "[\"net_bind_service\"]",
+        "[\"net_bind_service\", \"sys_admin\", \"chown\"]",
+    ));
+    let es = check(&pol("caps", RULE), &m).expect_err("refused");
+    assert_eq!(es.len(), 1);
+    assert_eq!(es[0].code, Code::Policy);
+    assert!(es[0].detail.contains("sys_admin"), "{}", es[0].detail);
+    assert!(es[0].detail.contains("chown"), "{}", es[0].detail);
+    assert!(
+        !es[0].detail.contains("net_bind_service"),
+        "{}",
+        es[0].detail
+    );
+}
+
+#[test]
+fn nnp_off_where_required_is_a_policy_error() {
+    let m = model(&SSHD.replace("nnp = true", "nnp = false"));
+    let es = check(&pol("nnp", RULE), &m).expect_err("refused");
+    assert_eq!(es.len(), 1);
+    assert!(es[0].detail.contains("nnp required"), "{}", es[0].detail);
+}
+
+#[test]
+fn the_first_matching_rule_wins() {
+    let p = pol(
+        "first",
+        r#"
+        default = "deny"
+        [[rule]]
+        match = "ss*"
+        users = ["nobody"]
+        [[rule]]
+        match = "sshd"
+        users = ["sshd"]
+        caps_max = ["net_bind_service"]
+        "#,
+    );
+    let es = check(&p, &model(SSHD)).expect_err("first rule refuses");
+    assert_eq!(es[0].code, Code::Policy);
+}
+
+#[test]
+fn glob_star_matches_a_run_and_nothing_else() {
+    assert!(glob_match("getty@*", "getty@tty1"));
+    assert!(!glob_match("getty@*", "agetty"));
+    assert!(!glob_match("getty@*", "agetty@tty1"));
+    assert!(glob_match("*", ""));
+    assert!(glob_match("*", "anything"));
+    assert!(glob_match("a*b*c", "aXXbYYc"));
+    assert!(glob_match("a*b*c", "abc"));
+    assert!(!glob_match("a*b*c", "aXXbYY"));
+    assert!(glob_match("sshd", "sshd"));
+    assert!(!glob_match("sshd", "sshd2"));
+    assert!(!glob_match("", "x"));
+    assert!(glob_match("", ""));
+    assert!(glob_match("a.b", "a.b"));
+    assert!(!glob_match("a.b", "aXb"));
+    assert!(glob_match("**a", "ba"));
+    let long = "a".repeat(20_000);
+    assert!(!glob_match("*a*a*a*a*b", &long));
+}
+
+#[test]
+fn no_matching_rule_follows_the_default() {
+    let deny = pol("dd", "default = \"deny\"\n");
+    let es = check(&deny, &model(SSHD)).expect_err("denied");
+    assert_eq!(es[0].code, Code::Policy);
+    assert_eq!(es[0].key, "worker.sshd.credentials");
+    let allow = pol("da", "default = \"allow\"\n");
+    assert_eq!(check(&allow, &model(SSHD)), Ok(()));
+}
+
+#[test]
+fn a_worker_without_credentials_needs_no_rule() {
+    let m = model("[worker.plain]\nexec = [\"/p\"]\n");
+    assert_eq!(check(&pol("nocred", "default = \"deny\"\n"), &m), Ok(()));
+}
+
+#[test]
+fn sandbox_only_workers_are_exempt_from_user_rules_but_not_caps_or_nnp() {
+    let src = r#"
+        [worker.box]
+        exec = ["/b"]
+        sandbox = { namespaces = ["mount"] }
+    "#;
+    let p = pol(
+        "sbx",
+        "default = \"deny\"\n[[rule]]\nmatch = \"box\"\nusers = [\"x\"]\n",
+    );
+    assert_eq!(check(&p, &model(src)), Ok(()));
+    let p = pol(
+        "sbx2",
+        "default = \"deny\"\n[[rule]]\nmatch = \"box\"\nrequire_nnp = true\n",
+    );
+    assert!(check(&p, &model(src)).is_err());
+}
+
+#[test]
+fn every_offending_worker_is_reported() {
+    let m = model(
+        r#"
+        [worker.a]
+        exec = ["/a"]
+        credentials = { uid = "x" }
+        [worker.b]
+        exec = ["/b"]
+        credentials = { uid = "y" }
+        "#,
+    );
+    let es = check(&pol("all", "default = \"deny\"\n"), &m).expect_err("denied");
+    let keys: Vec<_> = es.iter().map(|e| e.key.as_str()).collect();
+    assert_eq!(keys, ["worker.a.credentials", "worker.b.credentials"]);
+}
+
+#[test]
+fn instances_match_by_their_expanded_name() {
+    let m = model(
+        r#"
+        [worker.getty]
+        exec = ["/agetty", "%i"]
+        instances = ["tty1", "tty2"]
+        credentials = { uid = "root" }
+        "#,
+    );
+    let p = pol(
+        "inst",
+        "default = \"deny\"\n[[rule]]\nmatch = \"getty@*\"\nusers = [\"root\"]\n",
+    );
+    assert_eq!(check(&p, &m), Ok(()));
+    let p = pol(
+        "inst2",
+        "default = \"deny\"\n[[rule]]\nmatch = \"getty\"\nusers = [\"root\"]\n",
+    );
+    assert_eq!(check(&p, &m).expect_err("denied").len(), 2);
+}
+
+#[test]
+fn a_missing_default_is_a_bad_value() {
+    let es = policy("nodef", "[[rule]]\nmatch = \"x\"\n").expect_err("refused");
+    assert_eq!(es[0].code, Code::BadValue);
+    assert_eq!(es[0].key, "default");
+    assert!(es[0].file.is_some());
+    let es = policy("baddef", "default = \"maybe\"\n").expect_err("refused");
+    assert_eq!(es[0].code, Code::BadValue);
+    let es = policy(
+        "badcap",
+        "default = \"deny\"\n[[rule]]\nmatch = \"x\"\ncaps_max = [\"nope\"]\n",
+    )
+    .expect_err("refused");
+    assert_eq!(es[0].code, Code::BadValue);
+}
+
+#[test]
+fn an_unknown_policy_key_is_an_unknown_key() {
+    let es = policy("unk", "default = \"deny\"\nbogus = 1\n").expect_err("refused");
+    assert_eq!(es[0].code, Code::UnknownKey);
+    assert!(es[0].file.is_some());
+    let es = policy(
+        "unk2",
+        "default = \"deny\"\n[[rule]]\nmatch = \"x\"\nbogus = 1\n",
+    )
+    .expect_err("refused");
+    assert_eq!(es[0].code, Code::UnknownKey);
+    let es = policy("syn", "default = \n").expect_err("refused");
+    assert_eq!(es[0].code, Code::Parse);
+}
+
+#[test]
+fn a_missing_policy_file_is_an_io_error() {
+    let path = PathBuf::from("/nonexistent/qinit/policy.toml");
+    let es = load_policy(&path).expect_err("refused");
+    assert_eq!(es[0].code, Code::Io);
+    assert_eq!(es[0].file.as_deref(), Some(path.as_path()));
+}

@@ -6,6 +6,7 @@
 pub mod error;
 pub mod expand;
 pub mod layers;
+pub mod policy;
 pub mod resolve;
 pub mod schema;
 pub mod units;
