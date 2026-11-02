@@ -62,8 +62,8 @@ timeout = "45s"
 
 # Measured 2026-11-02: 14 verified; cold build directory (as in a container) 12.4-12.7 s
 # (18.5-18.9 s CPU), 0.95-1.0 GB peak; warm 0.6 s (0.5 s CPU), 221-289 MB peak.
-# Re-measured 2026-11-02 at host load ~23 on 32 threads: cold 19.7-20.7 s (29.7-31.3 s CPU over
-# all processes). 45s, like the other cores, covers about 2x the slowest quiet-host 18.9s CPU.
+# Re-measured 2026-11-02 (cold): 12.8-13.0 s (19.2-19.5 s CPU) at load ~6, 19.7-20.7 s (29.7-31.3 s
+# CPU, summed over processes) at load ~23 on 32 threads. 45s covers about 2x the quiet 19.5s CPU.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-graph-core"
 kind = "verus"
@@ -73,6 +73,7 @@ timeout = "45s"
 
 # Measured 2026-11-02 (layout, validator and NUL-list rule): 142 verified; cold build directory
 # 17.4-21.7 s run (25.2-29.6 s CPU), 0.9-1.0 GB peak; warm 3.4 s (3.1 s CPU), 370 MB peak.
+# After the spec split: 142 verified, cold 14.9-15.4 s (21.1-21.6 s CPU), 0.94-0.95 GB peak.
 # 60s covers 2x the slowest measured 29.6s CPU.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-db-core"

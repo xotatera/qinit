@@ -125,7 +125,7 @@ The validator is total and never panics. It accepts a database only if all of th
 9. **V9** Every reader accessor is in bounds for any accepted database.
 
 `qinit_db_core::validate` proves `Ok(())` implies `well_formed`, the conjunction of the spec
-functions `v1` to `v8` in `crates/qinit-db-core/src/validate/spec.rs`, and
+functions `v1` to `v8` in `crates/qinit-db-core/src/validate/spec/`, and
 `lemma_accessors_in_bounds` proves V9 from it. In detail:
 
 - Tables appear in header order, each starting at or after the end of the one before (the
