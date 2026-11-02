@@ -40,7 +40,8 @@ pub enum DbError {
     Overlap,
     /// Table `t` holds more records than its limit.
     Count(u8),
-    /// A string reference leaves the pool, or a name is empty or too long.
+    /// A string reference leaves the pool, a name is empty or too long, or a list has an empty
+    /// element.
     Pool,
     /// A string is not UTF-8.
     Utf8,

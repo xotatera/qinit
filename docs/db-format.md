@@ -115,7 +115,7 @@ One word per record, a node index. Both lists are ascending and free of duplicat
 The validator is total and never panics. It accepts a database only if all of the following hold:
 
 1. **V1** Header fields, offsets and counts are in bounds and within the limits, and tables do not overlap.
-2. **V2** Every pool reference is an in-bounds slice, valid UTF-8, and within `MAX_NAME_LEN` where it names something.
+2. **V2** Every pool reference is an in-bounds slice, valid UTF-8, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, Landlock entries) holds no empty element.
 3. **V3** Every cross-table index is `NONE` or in range of its table.
 4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline).
 5. **V5** The ordering-edge graph is acyclic.
@@ -133,6 +133,8 @@ functions `v1` to `v8` in `crates/qinit-db-core/src/validate/spec.rs`, and
 - Every pool reference (names, argv, readiness arguments, template names, path targets, users,
   Landlock entries, route paths) is in the pool and valid UTF-8, as `core::str::from_utf8`
   defines it. Node names are 1 to `MAX_NAME_LEN` bytes and strictly ascending, bytewise.
+- The argv and Landlock lists are either empty (length 0) or have no NUL as their first or last
+  byte and no two NULs in a row, so every element is non-empty (`DbError::Pool` otherwise).
 - Tiling: node `i`'s groups start where node `i - 1`'s end (node 0's at 0), and the last node's
   end at the group count; groups tile the edge table the same way. A node has at most
   `MAX_GROUPS_PER_NODE` groups, a group at most `MAX_EDGES_PER_GROUP` edges.

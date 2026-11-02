@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! V2: every pool reference is an in-bounds, UTF-8 slice; names are short and non-empty.
+//! V2: every pool reference is an in-bounds, UTF-8 slice; names are short and non-empty, and
+//! lists (argv, Landlock entries) hold no empty element.
 
 use super::DbError;
 use super::header::{field, header_word};
@@ -34,6 +35,55 @@ pub(crate) fn pool_ref_ok(b: &[u8], off: u32, len: u32) -> (r: Result<(), DbErro
     Ok(())
 }
 
+/// `b[start..end]` is a NUL-separated list of non-empty elements.
+fn nul_list_ok(b: &[u8], start: usize, end: usize) -> (ok: bool)
+    requires
+        start <= end <= b@.len(),
+    ensures
+        ok ==> nul_list(b@.subrange(start as int, end as int)),
+{
+    if start == end {
+        return true;
+    }
+    if b[start] == 0 || b[end - 1] == 0 {
+        return false;
+    }
+    let mut i = start;
+    while i + 1 < end
+        invariant
+            start <= i < end <= b@.len(),
+            forall|k: int| start <= k < i ==> #[trigger] b@[k] != 0 || b@[k + 1] != 0,
+        decreases end - i,
+    {
+        if b[i] == 0 && b[i + 1] == 0 {
+            return false;
+        }
+        i += 1;
+    }
+    let ghost s = b@.subrange(start as int, end as int);
+    assert forall|k: int| 0 <= k < s.len() - 1 implies #[trigger] s[k] != 0 || s[k + 1] != 0 by {
+        assert(s[k] == b@[start + k]);
+        assert(s[k + 1] == b@[start + k + 1]);
+    }
+    true
+}
+
+/// Checks a list: a pool reference whose bytes are NUL-separated non-empty elements.
+fn list_ok(b: &[u8], off: u32, len: u32) -> (r: Result<(), DbError>)
+    requires
+        v1(b@),
+    ensures
+        r is Ok ==> list_ref(b@, off as int, len as int),
+{
+    pool_ref_ok(b, off, len)?;
+    assert(table_ok(b@, T_POOL as int));
+    let a = header_word(b, 4 + 2 * T_POOL) as usize + off as usize;
+    if !nul_list_ok(b, a, a + len as usize) {
+        return Err(DbError::Pool);
+    }
+    Ok(())
+}
+
 /// Checks a name: a pool reference of 1 to `MAX_NAME_LEN` bytes.
 fn name_ok(b: &[u8], off: u32, len: u32) -> (r: Result<(), DbError>)
     requires
@@ -56,7 +106,7 @@ fn check_node_pool(b: &[u8], i: usize) -> (r: Result<(), DbError>)
 {
     let t = T_NODES;
     name_ok(b, field(b, t, i, N_NAME_OFF), field(b, t, i, N_NAME_LEN))?;
-    pool_ref_ok(b, field(b, t, i, N_EXEC_OFF), field(b, t, i, N_EXEC_LEN))?;
+    list_ok(b, field(b, t, i, N_EXEC_OFF), field(b, t, i, N_EXEC_LEN))?;
     pool_ref_ok(b, field(b, t, i, N_READY_OFF), field(b, t, i, N_READY_LEN))?;
     pool_ref_ok(b, field(b, t, i, N_INSTANCE_OF_OFF), field(b, t, i, N_INSTANCE_OF_LEN))
 }
@@ -85,7 +135,7 @@ fn check_cred_pool(b: &[u8], c: usize) -> (r: Result<(), DbError>)
 {
     let t = T_CREDS;
     pool_ref_ok(b, field(b, t, c, C_USER_OFF), field(b, t, c, C_USER_LEN))?;
-    pool_ref_ok(b, field(b, t, c, C_LANDLOCK_OFF), field(b, t, c, C_LANDLOCK_LEN))
+    list_ok(b, field(b, t, c, C_LANDLOCK_OFF), field(b, t, c, C_LANDLOCK_LEN))
 }
 
 fn check_route_pool(b: &[u8], r: usize) -> (res: Result<(), DbError>)

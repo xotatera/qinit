@@ -70,12 +70,12 @@ package = "qinit-graph-core"
 memory = "4G"
 timeout = "40s"
 
-# Measured 2026-11-02 (layout and validator): 139 verified; cold build directory 15.8-18.1 s
-# (22.4-23.9 s CPU), 0.95-1.0 GB peak; warm 3.0 s (2.7 s CPU), 373 MB peak.
-# 50s covers 2x the slowest measured 23.9s CPU.
+# Measured 2026-11-02 (layout, validator and NUL-list rule): 142 verified; cold build directory
+# 17.4-21.7 s run (25.2-29.6 s CPU), 0.9-1.0 GB peak; warm 3.4 s (3.1 s CPU), 370 MB peak.
+# 60s covers 2x the slowest measured 29.6s CPU.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-db-core"
 kind = "verus"
 package = "qinit-db-core"
 memory = "4G"
-timeout = "50s"
+timeout = "60s"
