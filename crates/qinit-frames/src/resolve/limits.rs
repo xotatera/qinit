@@ -81,6 +81,7 @@ pub(super) fn check(errs: &mut Vec<Error>, m: &Model) {
     over(errs, "", "routes", m.routes.len(), MAX_ROUTES);
     over(errs, "", "pool", pool_bytes(m), MAX_POOL);
 }
+
 #[cfg(test)]
 mod tests {
     use super::pool_bytes;
@@ -118,8 +119,8 @@ mod tests {
 
     #[test]
     fn the_estimate_equals_the_written_pool_with_shared_strings() {
-        // Shared strings: equal exec lists, one path
-        // used by a socket, a ready path and an edge, and a repeated landlock list.
+        // Shared strings: equal exec lists, one path used by a socket, a ready path and an
+        // edge, and a repeated landlock list.
         let src = r#"
             [worker.a]
             exec = ["/bin/a"]

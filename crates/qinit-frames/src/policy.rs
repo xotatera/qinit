@@ -4,20 +4,14 @@
 //!
 //! A policy file has a required `default = "allow" | "deny"` and ordered `[[rule]]` tables
 //! (`match`, `users`, `caps_max`, `require_nnp`). For each node that has a credential set, the
-//! first rule whose `match` glob fits the node name decides; later rules are never consulted. A
-//! node no rule matches follows `default`. A rule that matches but rejects a node is final: the
-//! node is never retried against a later rule.
-//!
-//! `users` is a list of allowed uids by name. Omitting `users` allows any user; `users = []`
-//! allows no user at all, so every node the rule matches with a user set is refused. A node without a credential set needs no rule.
+//! first rule whose `match` glob fits the node name decides, and a rule that rejects a node is
+//! final: later rules are never consulted. A node no rule matches follows `default`. A node
+//! without a credential set needs no rule.
 //!
 //! `users` lists the user names a rule allows. Omitting `users` allows any user; `users = []`
-//! allows no user at all, so every node with a user that the rule matches is refused. A rule
-//! that matches and rejects a node is final: the node is not retried against a later rule.
-//!
-//! A credential set whose user is empty (only a `sandbox` table was given, so no uid change)
-//! is not checked against `users`: there is no uid to compare. Its capability ceiling and
-//! `require_nnp` still apply.
+//! allows no user, so every matching node with a user set is refused. A credential set whose
+//! user is empty (only a `sandbox` table was given, so no uid change) is not checked against
+//! `users`, as there is no uid to compare; its capability ceiling and `require_nnp` still apply.
 use crate::error::{Code, Error};
 use crate::resolve::{cap_bit, cap_name};
 use qinit_db::{Cred, Model};
@@ -108,7 +102,8 @@ fn quoted<'a>(msg: &'a str, prefix: &str) -> Option<&'a str> {
 
 /// The index of the `[[rule]]` table that contains byte `at`: the last `[[rule]]` header line at
 /// or before it. This is a line scan, not a TOML parse, so a `[[rule]]` line inside a
-/// multi-line string, or rules written as an inline `rule = [...]` array, are not recognised.
+/// multi-line string, rules written as an inline `rule = [...]` array, and a header with inner
+/// spaces such as `[[ rule ]]` are not recognised (the error is then keyed by its bare field).
 fn rule_at(text: &str, at: usize) -> Option<usize> {
     let mut headers = 0usize;
     let mut offset = 0usize;
