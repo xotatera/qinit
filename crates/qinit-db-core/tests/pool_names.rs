@@ -75,8 +75,8 @@ fn an_instance_of_name_over_the_limit_is_refused() {
     let db = build(&spec);
     for (len, expected) in [
         (0, Ok(())),
-        (MAX_NAME_LEN as u32, Ok(())),
-        (MAX_NAME_LEN as u32 + 1, Err(DbError::Pool)),
+        (u32::try_from(MAX_NAME_LEN).unwrap(), Ok(())),
+        (u32::try_from(MAX_NAME_LEN + 1).unwrap(), Err(DbError::Pool)),
     ] {
         let patched = with(&db, |w| {
             let off = at(w, T_NODES, 1, N_INSTANCE_OF_OFF);
