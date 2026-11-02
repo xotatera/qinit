@@ -39,7 +39,7 @@ fn credentials_and_sandbox_merge_into_one_cred() {
 }
 
 #[test]
-fn declared_credentials_keep_nnp_off_when_omitted() {
+fn declared_credentials_default_nnp_on_when_omitted() {
     let r = ok(r#"
         [worker.a]
         exec = ["/a"]
@@ -48,7 +48,7 @@ fn declared_credentials_keep_nnp_off_when_omitted() {
     "#);
     let m = &r.model;
     let a = &m.creds[node(m, "a").cred.expect("cred") as usize];
-    assert_eq!((a.user.as_str(), a.caps, a.nnp), ("sshd", 0, false));
+    assert_eq!((a.user.as_str(), a.caps, a.nnp), ("sshd", 0, true));
 }
 
 #[test]

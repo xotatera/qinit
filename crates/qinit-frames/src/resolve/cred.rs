@@ -96,7 +96,7 @@ fn from_creds(cx: &mut Cx, base: &str, c: &Creds, out: &mut Cred) {
         &format!("{base}.credentials.caps"),
         c.caps.as_deref().unwrap_or_default(),
     );
-    out.nnp = c.nnp.unwrap_or(false);
+    out.nnp = c.nnp.unwrap_or(true);
     out.securebits = match c.securebits.as_deref() {
         None | Some("none") => Securebits::None,
         Some("noroot") => Securebits::Noroot,
@@ -137,7 +137,7 @@ fn from_sandbox(cx: &mut Cx, base: &str, s: &Sandbox, out: &mut Cred) {
 /// user is empty, which means the overseer's unprivileged default identity (not "keep the
 /// overseer's uid"), the capability sets are empty and no-new-privileges is on. Both are written
 /// out explicitly so no reader of the database can take the record for a privileged one. With
-/// `credentials`, `nnp` is what the frame says (off when omitted).
+/// `credentials`, `nnp` is what the frame says (on when omitted).
 pub(super) fn cred(
     cx: &mut Cx,
     base: &str,
