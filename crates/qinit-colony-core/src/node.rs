@@ -252,8 +252,11 @@ pub fn push_report(ns: NodeState, r: Report) -> (n: NodeState)
 {
     if ns.report_a.is_none() {
         NodeState { report_a: Some(r), ..ns }
-    } else {
+    } else if ns.report_b.is_none() {
         NodeState { report_b: Some(r), ..ns }
+    } else {
+        // Both slots are full: a report is dropped, loudly.
+        NodeState { report_b: Some(Report::Lost), ..ns }
     }
 }
 
@@ -431,6 +434,7 @@ pub fn begin_start(ns: NodeState, p: Params, now: u64) -> (r: NodeState)
         ns.state is Off || ns.state is Waiting,
         spec_paced(ns, p.delay_ms as int, now as int),
     ensures
+        r.emit_watch == ns.emit_watch,
         r.emit_stop == ns.emit_stop,
         inv_node(r, p),
         r.state == State::Starting,
@@ -832,6 +836,7 @@ pub fn enter_waiting(ns: NodeState, p: Params, now: u64, watch: bool) -> (r: Nod
         inv_node(ns, p),
         ns.state is Off,
     ensures
+        r.emit_watch == (watch || ns.emit_watch),
         r.emit_stop == ns.emit_stop,
         inv_node(r, p),
         r.state == State::Waiting(Why::Deps),
@@ -857,6 +862,7 @@ pub fn brood_ready(ns: NodeState, p: Params) -> (r: NodeState)
         inv_node(ns, p),
         ns.state is Waiting,
     ensures
+        r.emit_watch == ns.emit_watch,
         r.emit_stop == ns.emit_stop,
         inv_node(r, p),
         r.state == State::Ready,
@@ -875,6 +881,7 @@ pub fn to_backoff(ns: NodeState, p: Params, now: u64) -> (r: NodeState)
         ns.state == State::Waiting(Why::Deps),
         p.kind != 1,
     ensures
+        r.emit_watch == ns.emit_watch,
         r.emit_stop == ns.emit_stop,
         inv_node(r, p),
         r.state == State::Waiting(Why::Backoff),
@@ -900,6 +907,7 @@ pub fn arm_edge(ns: NodeState, p: Params, ms: u32) -> (r: NodeState)
         ns.state == State::Waiting(Why::Deps),
         ns.timer is None,
     ensures
+        r.emit_watch == ns.emit_watch,
         r.emit_stop == ns.emit_stop,
         inv_node(r, p),
         r.state == ns.state,
@@ -944,6 +952,7 @@ pub fn quarantine_cascade(ns: NodeState, p: Params) -> (r: NodeState)
         ns.state is Off || ns.state is Waiting,
         p.kind != 1,
     ensures
+        r.emit_watch == ns.emit_watch,
         inv_node(r, p),
         r.state == State::Quarantined(Reason::Cascade),
         r.wanted == ns.wanted,

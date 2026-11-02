@@ -121,6 +121,8 @@ pub enum Report {
     Quarantined(Reason),
     Refused,
     ShutdownComplete { still_populated: u32 },
+    /// Both report slots of the node were full: an earlier report was dropped.
+    Lost,
 }
 
 /// One input to the whole colony.

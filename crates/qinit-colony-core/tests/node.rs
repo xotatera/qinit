@@ -28,8 +28,24 @@ fn forager() -> Params {
     }
 }
 
+/// One input at `now`. The reports pending from earlier steps are drained first, as the runtime
+/// drains them after every step, so the reports on the result are this step's.
 fn step(ns: NodeState, p: Params, input: NodeInput, now: u64) -> NodeState {
-    node_step(ns, p, false, input, now)
+    let drained = NodeState {
+        report_a: None,
+        report_b: None,
+        ..ns
+    };
+    node_step(drained, p, false, input, now)
+}
+
+/// The node with no report pending.
+fn quiet(ns: NodeState) -> NodeState {
+    NodeState {
+        report_a: None,
+        report_b: None,
+        ..ns
+    }
 }
 
 fn cell(ns: NodeState, p: Params, r: CellReport, now: u64) -> NodeState {
@@ -194,7 +210,7 @@ fn exit_zero_under_on_failure_is_not_a_failure() {
     assert_eq!(s.state, State::Off);
     assert!(!s.wanted);
     assert_eq!(s.burst_count, 0);
-    assert_eq!(s.report_b, Some(Report::Stopped));
+    assert_eq!(s.report_a, Some(Report::Stopped));
 }
 
 #[test]
@@ -235,7 +251,7 @@ fn a_ready_exit_worker_that_exits_zero_is_done() {
     let s = cell(s, p, CellReport::Empty, 6);
     assert_eq!(s.state, State::Done);
     assert!(s.wanted, "a worker stays wanted");
-    assert_eq!(s.report_b, Some(Report::Done));
+    assert_eq!(s.report_a, Some(Report::Done));
 }
 
 #[test]
@@ -309,7 +325,7 @@ fn stale_cell_reports_are_ignored() {
         ..wanted
     };
     assert_eq!(cell(waiting, p, CellReport::Ready, 5), waiting);
-    let ready = ready_at(p, 0);
+    let ready = quiet(ready_at(p, 0));
     assert_eq!(cell(ready, p, CellReport::Spawned, 5), ready);
     assert_eq!(
         cell(ready, p, CellReport::Ready, 5),
@@ -421,4 +437,21 @@ fn shutdown_unwants_everything_and_cancels_waits() {
     assert_eq!(s.emit_cancel, Some(TimerKind::Backoff));
     let started = node_step(off(), p, true, NodeInput::Req(Request::Start), 6);
     assert_eq!(started.report_a, Some(Report::Refused));
+}
+
+#[test]
+fn a_report_that_does_not_fit_is_marked_lost() {
+    let s = push_report(off(), Report::Started);
+    let s = push_report(s, Report::Ready);
+    assert_eq!(
+        (s.report_a, s.report_b),
+        (Some(Report::Started), Some(Report::Ready))
+    );
+    let s = push_report(s, Report::Done);
+    assert_eq!(s.report_a, Some(Report::Started));
+    assert_eq!(
+        s.report_b,
+        Some(Report::Lost),
+        "the overflow is visible, not silent"
+    );
 }

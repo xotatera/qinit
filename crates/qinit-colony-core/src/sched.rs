@@ -284,46 +284,69 @@ fn node_satisfied(
 }
 
 // ---- scans of one node's edges ----
+/// Whether group `g` has an edge to a filesystem path.
+fn group_has_path(db: &[u8], g: usize) -> (r: bool)
+    requires
+        well_formed(db@),
+        g < tcnt(db@, T_GROUPS as int),
+    ensures
+        r == group_path_upto(db@, g as int, gf(db@, g as int, G_EDGE_COUNT) as nat),
+{
+    proof {
+        lemma_group_edges(db@, g as int);
+    }
+    let first = group_word(db, g, G_EDGE_FIRST) as usize;
+    let count = group_word(db, g, G_EDGE_COUNT) as usize;
+    let mut k: usize = 0;
+    let mut found = false;
+    while k < count
+        invariant
+            k <= count,
+            first + count <= tcnt(db@, T_EDGES as int),
+            well_formed(db@),
+            first == gf(db@, g as int, G_EDGE_FIRST),
+            count == gf(db@, g as int, G_EDGE_COUNT),
+            found == group_path_upto(db@, g as int, k as nat),
+        decreases count - k,
+    {
+        if edge_word(db, first + k, E_TARGET_KIND) == 1 {
+            found = true;
+        }
+        k += 1;
+    }
+    found
+}
+
 /// Whether node `i` has an edge to a filesystem path.
 fn has_path_edge(db: &[u8], i: usize) -> (r: bool)
     requires
         well_formed(db@),
         i < nodes(db@),
+    ensures
+        r == has_path(db@, i as int),
 {
     proof {
         lemma_node_groups(db@, i as int);
     }
-    let gfirst = node_word(db, i, N_GROUP_FIRST) as usize;
-    let gcount = node_word(db, i, N_GROUP_COUNT) as usize;
-    let mut a: usize = 0;
+    let first = node_word(db, i, N_GROUP_FIRST) as usize;
+    let count = node_word(db, i, N_GROUP_COUNT) as usize;
+    let mut k: usize = 0;
     let mut found = false;
-    while a < gcount
+    while k < count
         invariant
-            a <= gcount,
-            gfirst + gcount <= tcnt(db@, T_GROUPS as int),
+            k <= count,
+            first + count <= tcnt(db@, T_GROUPS as int),
             well_formed(db@),
-        decreases gcount - a,
+            i < nodes(db@),
+            first == nf(db@, i as int, N_GROUP_FIRST),
+            count == nf(db@, i as int, N_GROUP_COUNT),
+            found == node_path_upto(db@, i as int, k as nat),
+        decreases count - k,
     {
-        let g = gfirst + a;
-        proof {
-            lemma_group_edges(db@, g as int);
+        if group_has_path(db, first + k) {
+            found = true;
         }
-        let efirst = group_word(db, g, G_EDGE_FIRST) as usize;
-        let ecount = group_word(db, g, G_EDGE_COUNT) as usize;
-        let mut b: usize = 0;
-        while b < ecount
-            invariant
-                b <= ecount,
-                efirst + ecount <= tcnt(db@, T_EDGES as int),
-                well_formed(db@),
-            decreases ecount - b,
-        {
-            if edge_word(db, efirst + b, E_TARGET_KIND) == 1 {
-                found = true;
-            }
-            b += 1;
-        }
-        a += 1;
+        k += 1;
     }
     found
 }
@@ -992,6 +1015,10 @@ fn reconcile_idle(
         ),
         final(tbl)@[i as int].wanted == old(tbl)@[i as int].wanted,
         final(tbl)@[i as int].emit_stop == old(tbl)@[i as int].emit_stop,
+        final(tbl)@[i as int].emit_watch && !old(tbl)@[i as int].emit_watch ==> has_path(
+            db@,
+            i as int,
+        ),
         final(tbl)@[i as int].state == State::Quarantined(Reason::Cascade) && !(old(
             tbl,
         )@[i as int].state is Quarantined) ==> cascade_hit(db@, old(tbl)@, i as int),

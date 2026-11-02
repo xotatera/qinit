@@ -302,4 +302,39 @@ pub proof fn lemma_quiet_trans(a: Seq<NodeState>, b: Seq<NodeState>, c: Seq<Node
 {
 }
 
+/// Some of the first `k` edges of group `g` points at a filesystem path.
+pub open spec fn group_path_upto(b: Seq<u8>, g: int, k: nat) -> bool
+    decreases k,
+{
+    if k == 0 {
+        false
+    } else {
+        group_path_upto(b, g, (k - 1) as nat) || ef(
+            b,
+            gf(b, g, G_EDGE_FIRST) + k - 1,
+            E_TARGET_KIND,
+        ) == 1
+    }
+}
+
+/// Some of the first `k` groups of node `i` has an edge to a path.
+pub open spec fn node_path_upto(b: Seq<u8>, i: int, k: nat) -> bool
+    decreases k,
+{
+    if k == 0 {
+        false
+    } else {
+        node_path_upto(b, i, (k - 1) as nat) || group_path_upto(
+            b,
+            nf(b, i, N_GROUP_FIRST) + k - 1,
+            gf(b, nf(b, i, N_GROUP_FIRST) + k - 1, G_EDGE_COUNT) as nat,
+        )
+    }
+}
+
+/// Node `i` has an edge to a filesystem path: the only reason it asks for a watch.
+pub open spec fn has_path(b: Seq<u8>, i: int) -> bool {
+    node_path_upto(b, i, nf(b, i, N_GROUP_COUNT) as nat)
+}
+
 } // verus!
