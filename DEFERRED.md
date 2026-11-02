@@ -201,3 +201,29 @@ would only help someone debugging a corrupt file.
 The compiler reads the policy file and the layer directories as given, with
 no check of their owner or mode, although the design calls the policy
 root-owned. The `qctl` front end (D16) is the place to enforce it.
+
+### D27 — Real path watching · `OPEN`
+
+The colony core waits for a path edge through a `WatchPath` action and a `PathAppeared` input.
+Watching a real filesystem path (inotify, with the race between setting the watch and the first
+check) belongs to the colony daemon sub-project.
+
+### D28 — Refresh operation · `OPEN`
+
+`restart_on = "refresh"` behaves as `restart` in the colony core, because nothing can refresh a
+worker yet. The refresh operation belongs to the control protocol sub-project, which narrows it.
+
+### D29 — Real cells, event loop and re-adoption · `OPEN`
+
+`qinit-colony` runs against a simulated cell layer. Wiring the real `Cells`, the event loop and
+the timers behind its `Effects` trait, and building the list of nodes already running from the
+comb after a colony restart (the `initial` argument of `Colony::load`), belong to the colony
+daemon sub-project.
+
+### D30 — Reconcile worst case · `ACCEPTED`
+
+After each input the scheduler repeats a pass over all nodes and edges until nothing changes, at
+most `MAX_NODES` passes, so the worst case is `MAX_NODES` times a pass over `MAX_NODES` nodes and
+`MAX_EDGES` edges. A long chain of broods can need that many passes; ordinary graphs need a
+handful. A reverse-adjacency index would remove the edge scan; add it if a real graph makes this
+visible.

@@ -18,7 +18,7 @@ use crate::provenance::{FrameKey, Origin, Provenance, parse_path, set_by};
 use crate::resolve::{Resolved, cap_name, ns_name};
 use qinit_db::{
     Cred, Edge, GroupKind, Kind, Mode, Model, Node, Ready, RestartOn, RestartPolicy, Route,
-    Seccomp, Securebits, Target,
+    Seccomp, Securebits, StopMode, Target,
 };
 use std::fmt::Write as _;
 
@@ -117,6 +117,23 @@ impl Block<'_> {
                 "restart.window",
                 &quote(&format!("{}ms", n.restart.window_ms)),
             );
+            self.line(
+                "restart.delay",
+                &quote(&format!("{}ms", n.restart.delay_ms)),
+            );
+        }
+        if n.kind != Kind::Brood {
+            let mode = match n.stop.mode {
+                StopMode::Main => "main",
+                StopMode::Cell => "cell",
+            };
+            self.line("stop.mode", &quote(mode));
+            self.line("stop.grace", &quote(&format!("{}ms", n.stop.grace_ms)));
+            let timeout = match n.start_timeout_ms {
+                0 => "none".to_owned(),
+                ms => format!("{ms}ms"),
+            };
+            self.line("start_timeout", &quote(&timeout));
         }
         for (key, r) in [("output", n.output), ("errors", n.errors)] {
             if let Some(r) = r {
@@ -255,6 +272,9 @@ fn edge(model: &Model, e: &Edge) -> String {
     let _ = write!(s, ", restart_on = {}", quote(on));
     if e.stop_parallel {
         s.push_str(", stop = \"parallel\"");
+    }
+    if e.cascade {
+        s.push_str(", cascade = true");
     }
     s.push_str(" }");
     s

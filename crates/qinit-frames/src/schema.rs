@@ -15,6 +15,8 @@ pub struct Frame {
     pub instances: Option<Vec<String>>,
     pub ready: Option<Ready>,
     pub restart: Option<Restart>,
+    pub stop: Option<StopCfg>,
+    pub start_timeout: Option<String>,
     pub output: Option<Output>,
     pub errors: Option<Output>,
     pub cell: Option<CellCfg>,
@@ -38,6 +40,15 @@ pub struct Restart {
     pub policy: String,
     pub max: Option<u32>,
     pub window: Option<String>,
+    pub delay: Option<String>,
+}
+
+/// How a node is stopped: the polite mode and the grace period.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StopCfg {
+    pub mode: Option<String>,
+    pub grace: Option<String>,
 }
 
 /// Where a stream goes: a path, or the logger worker's pipe.
@@ -89,6 +100,7 @@ pub struct DepEdge {
     pub deadline: Option<String>,
     pub restart_on: Option<String>,
     pub stop: Option<String>,
+    pub cascade: Option<bool>,
 }
 
 const GROUPS: [&str; 4] = ["require_all", "require_any", "optional_all", "exclude_all"];
@@ -133,6 +145,8 @@ pub(crate) fn check_kind(kind: &str, f: &Frame, base: &str) -> Result<(), Error>
             ("instances", f.instances.is_some()),
             ("ready", f.ready.is_some()),
             ("restart", f.restart.is_some()),
+            ("stop", f.stop.is_some()),
+            ("start_timeout", f.start_timeout.is_some()),
             ("output", f.output.is_some()),
             ("errors", f.errors.is_some()),
             ("cell", f.cell.is_some()),
@@ -143,6 +157,25 @@ pub(crate) fn check_kind(kind: &str, f: &Frame, base: &str) -> Result<(), Error>
     match banned.into_iter().find(|(_, present)| *present) {
         Some((field, _)) => Err(bad(base, field, format!("not allowed on a {kind}"))),
         None => Ok(()),
+    }
+}
+
+/// The shortest delay or grace the format allows (`MIN_DELAY_MS`).
+const FLOOR_MS: u32 = 100;
+
+/// `value`, when set, is a duration of at least [`FLOOR_MS`].
+fn at_least_floor(base: &str, field: &str, value: Option<&str>) -> Result<(), Error> {
+    let Some(v) = value else {
+        return Ok(());
+    };
+    match duration_ms(v) {
+        None => Err(bad(base, field, format!("`{v}` is not a duration like 1s"))),
+        Some(ms) if ms < FLOOR_MS => Err(bad(
+            base,
+            field,
+            format!("`{v}` is under the {FLOOR_MS}ms floor"),
+        )),
+        Some(_) => Ok(()),
     }
 }
 
@@ -168,6 +201,24 @@ fn check_values(f: &Frame, base: &str) -> Result<(), Error> {
                 format!("`{w}` is not a duration like 60s"),
             ));
         }
+        at_least_floor(base, "restart.delay", r.delay.as_deref())?;
+    }
+    if let Some(s) = &f.stop {
+        if let Some(m) = s.mode.as_deref().filter(|m| *m != "main" && *m != "cell") {
+            return Err(bad(base, "stop.mode", format!("`{m}` is not main or cell")));
+        }
+        at_least_floor(base, "stop.grace", s.grace.as_deref())?;
+    }
+    if let Some(t) = f
+        .start_timeout
+        .as_deref()
+        .filter(|t| duration_ms(t).is_none())
+    {
+        return Err(bad(
+            base,
+            "start_timeout",
+            format!("`{t}` is not a duration like 90s"),
+        ));
     }
     let mem = f.cell.as_ref().and_then(|c| c.memory_max.as_deref());
     if let Some(m) = mem.filter(|m| size_kib(m).is_none()) {
@@ -190,13 +241,13 @@ fn check_values(f: &Frame, base: &str) -> Result<(), Error> {
             ));
         }
         for (ei, e) in g.edges.iter().enumerate() {
-            check_edge(e, &format!("deps[{gi}].edges[{ei}]"), base)?;
+            check_edge(e, &g.group, &format!("deps[{gi}].edges[{ei}]"), base)?;
         }
     }
     Ok(())
 }
 
-fn check_edge(e: &DepEdge, at: &str, base: &str) -> Result<(), Error> {
+fn check_edge(e: &DepEdge, group: &str, at: &str, base: &str) -> Result<(), Error> {
     if e.to.is_some() == e.path.is_some() {
         return Err(bad(
             base,
@@ -235,6 +286,13 @@ fn check_edge(e: &DepEdge, at: &str, base: &str) -> Result<(), Error> {
             format!("`{r}` is not none, error, restart or refresh"),
         ));
     }
+    if e.cascade == Some(true) && (group != "require_all" || e.to.is_none()) {
+        return Err(bad(
+            base,
+            &format!("{at}.cascade"),
+            "cascade needs a require_all edge to a frame",
+        ));
+    }
     if let Some(s) = e.stop.as_deref().filter(|s| *s != "parallel") {
         return Err(bad(
             base,
@@ -247,12 +305,14 @@ fn check_edge(e: &DepEdge, at: &str, base: &str) -> Result<(), Error> {
 
 /// The keys each table of a frame allows: the frame itself, then the named tables, then a
 /// `deps` group and an edge.
-const FRAME_KEYS: [&str; 11] = [
+const FRAME_KEYS: [&str; 13] = [
     "exec",
     "template",
     "instances",
     "ready",
     "restart",
+    "stop",
+    "start_timeout",
     "output",
     "errors",
     "cell",
@@ -260,14 +320,23 @@ const FRAME_KEYS: [&str; 11] = [
     "sandbox",
     "deps",
 ];
-const TABLE_KEYS: [(&str, &[&str]); 4] = [
-    ("restart", &["policy", "max", "window"]),
+const TABLE_KEYS: [(&str, &[&str]); 5] = [
+    ("restart", &["policy", "max", "window", "delay"]),
+    ("stop", &["mode", "grace"]),
     ("cell", &["memory_max", "pids_max"]),
     ("credentials", &["uid", "caps", "nnp", "securebits"]),
     ("sandbox", &["namespaces", "seccomp", "landlock"]),
 ];
 const GROUP_KEYS: [&str; 2] = ["group", "edges"];
-const EDGE_KEYS: [&str; 6] = ["to", "path", "mode", "deadline", "restart_on", "stop"];
+const EDGE_KEYS: [&str; 7] = [
+    "to",
+    "path",
+    "mode",
+    "deadline",
+    "restart_on",
+    "stop",
+    "cascade",
+];
 
 /// Every place in `frame` where `field` is a key its table does not allow, as a path below the
 /// frame (`restart.bogus`, `deps[0].edges[1].bogus`). `ready` and `output` are left out: an
