@@ -1,0 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+[brood.boot-complete]
+deps = [{ group = "require_all", edges = [{ to = "multi-user", mode = "async", deadline = "90s", stop = "parallel" }] }]

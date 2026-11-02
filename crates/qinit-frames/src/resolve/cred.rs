@@ -166,6 +166,12 @@ pub(crate) fn cap_name(bit: u8) -> Option<&'static str> {
     CAPS.get(usize::from(bit)).copied()
 }
 
+/// The name of namespace bit `bit` of `Cred::ns`.
+#[must_use]
+pub(crate) fn ns_name(bit: u8) -> Option<&'static str> {
+    NAMESPACES.get(usize::from(bit)).copied()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CAPS, cap_bit, cap_name};

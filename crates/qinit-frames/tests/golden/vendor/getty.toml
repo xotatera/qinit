@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+[worker.getty]
+template = "tty-login"
+instances = ["tty1", "tty2"]
+output = "/var/log/getty-%i.log"

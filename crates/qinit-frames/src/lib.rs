@@ -3,8 +3,11 @@
 //! `qinit-frames`: frames loading (frames and compiled database spec).
 #![forbid(unsafe_code)]
 
+pub mod compile;
+pub mod dump;
 pub mod error;
 pub mod expand;
+mod graph;
 pub mod layers;
 pub mod policy;
 pub mod resolve;

@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+[brood.multi-user]
+deps = [
+  { group = "require_all", edges = [{ to = "sshd" }, { to = "getty@tty1" }, { to = "getty@tty2" }] },
+  { group = "require_any", edges = [{ to = "logd" }, { to = "syslog-ng" }] },
+]

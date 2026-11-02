@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+[worker.logd]
+exec = ["/usr/lib/qinit/logd", "--dir", "/var/log/qinit"]
+restart = { policy = "on-failure", max = 3, window = "1m" }
+cell = { memory_max = "16M", pids_max = 4 }
+deps = [{ group = "require_all", edges = [{ to = "syslog-ng", restart_on = "restart" }] }]

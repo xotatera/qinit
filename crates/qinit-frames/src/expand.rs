@@ -58,16 +58,20 @@ fn valid_instance(s: &str) -> bool {
 
 /// Attach the layer that set `e.key`, or the nearest enclosing key that has one.
 pub(crate) fn with_layer(prov: &BTreeMap<String, String>, mut e: Error) -> Error {
-    let mut key = e.key.clone();
+    if let Some(layer) = layer_of(prov, &e.key) {
+        e.layer = Some(layer.to_owned());
+    }
+    e
+}
+
+/// The layer that set `key` or its nearest enclosing key path.
+pub(crate) fn layer_of<'a>(prov: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
+    let mut key = key;
     loop {
-        if let Some(layer) = prov.get(&key) {
-            e.layer = Some(layer.clone());
-            return e;
+        if let Some(layer) = prov.get(key) {
+            return Some(layer);
         }
-        match key.rfind(['.', '[']) {
-            Some(i) => key.truncate(i),
-            None => return e,
-        }
+        key = &key[..key.rfind(['.', '['])?];
     }
 }
 
