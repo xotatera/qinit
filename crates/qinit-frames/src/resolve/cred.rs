@@ -131,8 +131,13 @@ fn from_sandbox(cx: &mut Cx, base: &str, s: &Sandbox, out: &mut Cred) {
     };
 }
 
-/// The `Cred` of a frame, `None` when it has neither table. Without `credentials` the user is
-/// empty, meaning no uid change.
+/// The `Cred` of a frame, `None` when it has neither table.
+///
+/// Without `credentials` (only a `sandbox` table) the record is unprivileged by contract: the
+/// user is empty, which means the overseer's unprivileged default identity (not "keep the
+/// overseer's uid"), the capability sets are empty and no-new-privileges is on. Both are written
+/// out explicitly so no reader of the database can take the record for a privileged one. With
+/// `credentials`, `nnp` is what the frame says (off when omitted).
 pub(super) fn cred(
     cx: &mut Cx,
     base: &str,
@@ -153,6 +158,9 @@ pub(super) fn cred(
     };
     if let Some(c) = c {
         from_creds(cx, base, c, &mut out);
+    } else {
+        out.caps = 0;
+        out.nnp = true;
     }
     if let Some(s) = s {
         from_sandbox(cx, base, s, &mut out);

@@ -131,29 +131,86 @@ fn no_matching_rule_follows_the_default() {
     assert_eq!(check(&allow, &model(SSHD)), Ok(()));
 }
 
+/// A worker with no `credentials` is unprivileged by contract (not root, no capabilities,
+/// no-new-privileges on), so it needs no rule and passes even under `default = "deny"`.
 #[test]
 fn a_worker_without_credentials_needs_no_rule() {
     let m = model("[worker.plain]\nexec = [\"/p\"]\n");
     assert_eq!(check(&pol("nocred", "default = \"deny\"\n"), &m), Ok(()));
+    // Also when a rule matches it: there is nothing for the rule to bound.
+    let p = pol(
+        "nocred2",
+        "default = \"deny\"\n[[rule]]\nmatch = \"*\"\nusers = []\nrequire_nnp = true\n",
+    );
+    assert_eq!(check(&p, &m), Ok(()));
 }
 
 #[test]
-fn sandbox_only_workers_are_exempt_from_user_rules_but_not_caps_or_nnp() {
+fn sandbox_only_workers_are_unprivileged_and_satisfy_every_rule() {
     let src = r#"
         [worker.box]
         exec = ["/b"]
         sandbox = { namespaces = ["mount"] }
     "#;
+    for (tag, body) in [
+        ("sbx-deny", "default = \"deny\"\n"),
+        (
+            "sbx-users",
+            "default = \"deny\"\n[[rule]]\nmatch = \"box\"\nusers = [\"x\"]\n",
+        ),
+        (
+            "sbx-nnp",
+            "default = \"deny\"\n[[rule]]\nmatch = \"box\"\nrequire_nnp = true\n",
+        ),
+    ] {
+        assert_eq!(check(&pol(tag, body), &model(src)), Ok(()), "{tag}");
+    }
+}
+
+#[test]
+fn a_declared_root_worker_is_checked_against_the_ceiling() {
+    let m = model(
+        r#"
+        [worker.r]
+        exec = ["/r"]
+        credentials = { uid = "root", caps = ["sys_admin", "net_raw"], nnp = true }
+        "#,
+    );
     let p = pol(
-        "sbx",
+        "root-ceil",
+        "default = \"allow\"\n[[rule]]\nmatch = \"r\"\nusers = [\"root\"]\ncaps_max = [\"net_raw\"]\n",
+    );
+    let es = check(&p, &m).expect_err("refused");
+    assert_eq!(es.len(), 1, "{es:?}");
+    assert_eq!(es[0].key, "worker.r.credentials");
+    assert!(es[0].detail.contains("sys_admin"), "{}", es[0].detail);
+    assert!(!es[0].detail.contains("net_raw"), "{}", es[0].detail);
+    // Without a matching rule, `default = "deny"` refuses it, unlike an undeclared worker.
+    assert!(check(&pol("root-deny", "default = \"deny\"\n"), &m).is_err());
+}
+
+#[test]
+fn an_empty_user_that_still_grants_privilege_is_checked() {
+    // The compiler never emits this (a sandbox-only cred has no caps and nnp on), but a model
+    // built by hand can: it is not unprivileged, so the rule and the default apply.
+    let mut m = model("[worker.box]\nexec = [\"/b\"]\nsandbox = { namespaces = [\"mount\"] }\n");
+    m.creds[0].caps = 1 << 21;
+    let es = check(&pol("empty-caps", "default = \"deny\"\n"), &m).expect_err("refused");
+    assert_eq!(es[0].code, Code::Policy);
+    let p = pol(
+        "empty-ceil",
         "default = \"deny\"\n[[rule]]\nmatch = \"box\"\nusers = [\"x\"]\n",
     );
-    assert_eq!(check(&p, &model(src)), Ok(()));
+    let es = check(&p, &m).expect_err("refused");
+    assert_eq!(es.len(), 1, "{es:?}");
+    assert!(es[0].detail.contains("sys_admin"), "{}", es[0].detail);
+    m.creds[0].caps = 0;
+    m.creds[0].nnp = false;
     let p = pol(
-        "sbx2",
+        "empty-nnp",
         "default = \"deny\"\n[[rule]]\nmatch = \"box\"\nrequire_nnp = true\n",
     );
-    assert!(check(&p, &model(src)).is_err());
+    assert!(check(&p, &m).is_err());
 }
 
 #[test]

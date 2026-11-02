@@ -29,10 +29,26 @@ fn credentials_and_sandbox_merge_into_one_cred() {
     assert_eq!(a.ns, 0b1_0001);
     assert_eq!(a.seccomp, Seccomp::Default);
     assert_eq!(a.landlock, ["ro:/etc", "rw:/run/a"]);
-    // A sandbox alone makes a cred with no user change.
+    // A sandbox alone makes an unprivileged cred: the default identity (empty user), no caps
+    // and no-new-privileges on.
     let b = &m.creds[node(m, "b").cred.expect("cred") as usize];
     assert_eq!((b.user.as_str(), b.caps, b.ns), ("", 0, 0b10));
+    assert!(b.nnp);
+    assert_eq!(b.securebits, Securebits::None);
     assert_eq!(node(m, "c").cred, None);
+}
+
+#[test]
+fn declared_credentials_keep_nnp_off_when_omitted() {
+    let r = ok(r#"
+        [worker.a]
+        exec = ["/a"]
+        credentials = { uid = "sshd" }
+        sandbox = { namespaces = ["pid"] }
+    "#);
+    let m = &r.model;
+    let a = &m.creds[node(m, "a").cred.expect("cred") as usize];
+    assert_eq!((a.user.as_str(), a.caps, a.nnp), ("sshd", 0, false));
 }
 
 #[test]

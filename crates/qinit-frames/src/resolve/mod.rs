@@ -18,7 +18,9 @@
 //! - Every node piping to a logger gets one extra `require_all` group, appended after its own
 //!   groups, with one sync edge per distinct logger (output first).
 //! - A `Cred` record exists when a frame has `credentials` or `sandbox`. Without `credentials`
-//!   its user is empty (no uid change), with no caps, `nnp` false and securebits none.
+//!   it is unprivileged by contract: the user is empty (the overseer's unprivileged default
+//!   identity), no caps, `nnp` true and securebits none. A node with no `Cred` at all is
+//!   unprivileged by the same contract (see `docs/db-format.md`, "Privilege contract").
 mod closure;
 mod cred;
 mod deps;

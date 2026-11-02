@@ -3,15 +3,22 @@
 //! The privilege policy: ordered rules that bound the credentials a compiled model may grant.
 //!
 //! A policy file has a required `default = "allow" | "deny"` and ordered `[[rule]]` tables
-//! (`match`, `users`, `caps_max`, `require_nnp`). For each node that has a credential set, the
+//! (`match`, `users`, `caps_max`, `require_nnp`). For each node that may hold privilege, the
 //! first rule whose `match` glob fits the node name decides, and a rule that rejects a node is
-//! final: later rules are never consulted. A node no rule matches follows `default`. A node
-//! without a credential set needs no rule.
+//! final: later rules are never consulted. A node no rule matches follows `default`.
+//!
+//! Least privilege is the default. A node without a credential set, and a node whose
+//! credential set has an empty user, no capabilities and no-new-privileges on (what a frame with
+//! only a `sandbox` table resolves to), is unprivileged by contract: the overseer runs it under
+//! its unprivileged default identity (see `docs/db-format.md`, "Privilege contract"). Such a
+//! node needs no rule and passes even under `default = "deny"`; a rule would have nothing to
+//! bound.
 //!
 //! `users` lists the user names a rule allows. Omitting `users` allows any user; `users = []`
-//! allows no user, so every matching node with a user set is refused. A credential set whose
-//! user is empty (only a `sandbox` table was given, so no uid change) is not checked against
-//! `users`, as there is no uid to compare; its capability ceiling and `require_nnp` still apply.
+//! allows no user, so every matching node with a user set is refused. An empty user is the
+//! unprivileged default identity, so it is never checked against `users`; a credential set with
+//! an empty user that still grants capabilities or leaves no-new-privileges off is checked
+//! against the ceiling and `require_nnp` of its rule, or refused by `default = "deny"`.
 use crate::error::{Code, Error};
 use crate::expand::kind_name;
 use crate::resolve::{cap_bit, cap_name};
@@ -256,6 +263,11 @@ fn check_rule(rule: &Rule, node: &Node, cred: &Cred, errs: &mut Vec<(usize, Erro
     }
 }
 
+/// A credential set with the unprivileged default identity and nothing that adds privilege.
+fn unprivileged(c: &Cred) -> bool {
+    c.user.is_empty() && c.caps == 0 && c.nnp
+}
+
 /// Every violation of `policy` by `model`, with the index of the offending node.
 pub(crate) fn violations(policy: &Policy, model: &Model) -> Vec<(usize, Error)> {
     let mut errs = Vec::new();
@@ -266,6 +278,9 @@ pub(crate) fn violations(policy: &Policy, model: &Model) -> Vec<(usize, Error)> 
         else {
             continue;
         };
+        if unprivileged(cred) {
+            continue;
+        }
         match policy
             .rules
             .iter()
@@ -282,7 +297,8 @@ pub(crate) fn violations(policy: &Policy, model: &Model) -> Vec<(usize, Error)> 
     errs
 }
 
-/// Check every node that has credentials against the policy; all violations are returned.
+/// Check every node that may hold privilege against the policy; all violations are returned.
+/// Unprivileged nodes (see the module documentation) need no rule.
 ///
 /// # Errors
 /// One `Policy` error per violation, keyed `<kind>.<name>.credentials` with the node's kind
