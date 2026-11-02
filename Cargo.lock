@@ -138,6 +138,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "qinit-colony-core"
+version = "0.1.0"
+dependencies = [
+ "qinit-db",
+ "qinit-db-core",
+ "vstd",
+]
+
+[[package]]
 name = "qinit-db"
 version = "0.1.0"
 dependencies = [
