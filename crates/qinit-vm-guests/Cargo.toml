@@ -13,6 +13,7 @@ license.workspace = true
 libc = { workspace = true, features = ["std"] }
 qinit-cell = { path = "../qinit-cell", features = ["test-hooks"] }
 qinit-event = { path = "../qinit-event" }
+qinit-overseer = { path = "../qinit-overseer" }
 qinit-sys = { path = "../qinit-sys" }
 
 [lints]
@@ -20,4 +21,4 @@ workspace = true
 
 [package.metadata.disciplines]
 layer = "tooling"
-allow = ["libc", "qinit-cell", "qinit-event", "qinit-sys"]
+allow = ["libc", "qinit-cell", "qinit-event", "qinit-overseer", "qinit-sys"]

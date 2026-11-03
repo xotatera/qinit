@@ -44,6 +44,12 @@ pub fn mount_private_tmp() -> Result<()> {
     Ok(())
 }
 
+/// `ioctl`'s request argument: `unsigned long` in glibc, `int` in musl.
+#[cfg(target_env = "musl")]
+type Request = libc::c_int;
+#[cfg(not(target_env = "musl"))]
+type Request = libc::c_ulong;
+
 /// Brings `lo` up in this network namespace: `SIOCGIFFLAGS` then `SIOCSIFFLAGS` with `IFF_UP`
 /// on an `AF_INET` socket.
 pub fn loopback_up() -> Result<()> {
@@ -63,13 +69,25 @@ pub fn loopback_up() -> Result<()> {
         *dst = c;
     }
     // SAFETY: SIOCGIFFLAGS reads the name and writes the flags of a borrowed ifreq.
-    check(unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCGIFFLAGS, &raw mut req) })?;
+    check(unsafe {
+        libc::ioctl(
+            sock.as_raw_fd(),
+            libc::SIOCGIFFLAGS as Request,
+            &raw mut req,
+        )
+    })?;
     // SAFETY: ifr_flags is the active member after SIOCGIFFLAGS.
     let flags = unsafe { req.ifr_ifru.ifru_flags };
     #[allow(clippy::cast_possible_truncation)] // IFF_UP is a 16-bit flag
     let up = libc::IFF_UP as libc::c_short;
     req.ifr_ifru.ifru_flags = flags | up;
     // SAFETY: SIOCSIFFLAGS reads the name and flags of a borrowed ifreq.
-    check(unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCSIFFLAGS, &raw const req) })?;
+    check(unsafe {
+        libc::ioctl(
+            sock.as_raw_fd(),
+            libc::SIOCSIFFLAGS as Request,
+            &raw const req,
+        )
+    })?;
     Ok(())
 }

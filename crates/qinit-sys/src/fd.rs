@@ -158,3 +158,10 @@ pub fn is_nonblocking(fd: BorrowedFd<'_>) -> Result<bool> {
     let flags = check(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) })?;
     Ok(flags & libc::O_NONBLOCK != 0)
 }
+
+/// `chown(path, uid, gid)`.
+pub fn chown(path: &CStr, uid: u32, gid: u32) -> Result<()> {
+    // SAFETY: a NUL-terminated path that outlives the call and integer ids.
+    check(unsafe { libc::chown(path.as_ptr(), uid, gid) })?;
+    Ok(())
+}

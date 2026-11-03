@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The launch request as a value, its byte layout and the builder from the database model
 //! (spec §6, R15).
-use qinit_db::{Model, Node, Ready, Route, Seccomp, Securebits};
+use qinit_db::{Model, Node, Ready, Route};
+pub use qinit_db::{Seccomp, Securebits};
 use qinit_overseer_core::{
     FLAG_DIE_WITH_PARENT, HEADER_WORDS, LAUNCH_MAGIC, LAUNCH_VERSION, MAX_REQUEST, Q_ARGV_LEN,
     Q_ARGV_OFF, Q_CAPS_HI, Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_DEADLINE_MS, Q_ENV_LEN, Q_ENV_OFF,

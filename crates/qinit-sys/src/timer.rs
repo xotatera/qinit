@@ -24,7 +24,7 @@ pub fn arm_alarm(after_ms: u32) -> Result<()> {
             tv_nsec: 0,
         },
         it_value: libc::timespec {
-            tv_sec: libc::time_t::from(after_ms / 1000),
+            tv_sec: i64::from(after_ms / 1000),
             tv_nsec: libc::c_long::from(after_ms % 1000) * 1_000_000,
         },
     };
