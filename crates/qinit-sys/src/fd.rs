@@ -3,7 +3,9 @@
 
 //! Descriptors: creation and flags.
 use crate::{Result, check};
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::ffi::CStr;
+use std::mem::MaybeUninit;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
 /// Wraps a descriptor the kernel just returned (or the error it reported).
 pub(crate) fn owned(fd: libc::c_int) -> Result<OwnedFd> {
@@ -50,5 +52,45 @@ pub fn set_cloexec_raw(n: RawFd) -> Result<()> {
     let old = check(unsafe { libc::fcntl(n, libc::F_GETFD) })?;
     // SAFETY: F_SETFD with an integer argument.
     check(unsafe { libc::fcntl(n, libc::F_SETFD, old | libc::FD_CLOEXEC) })?;
+    Ok(())
+}
+
+/// `open(path, flags | O_CLOEXEC | O_NOCTTY, mode)`.
+pub fn open_cloexec(path: &CStr, flags: libc::c_int, mode: u32) -> Result<OwnedFd> {
+    // SAFETY: a NUL-terminated path that outlives the call and integer flags and mode.
+    owned(unsafe {
+        libc::open(
+            path.as_ptr(),
+            flags | libc::O_CLOEXEC | libc::O_NOCTTY,
+            mode,
+        )
+    })
+}
+
+/// `dup3(from, to, 0)`: `to` becomes a copy of `from` without close-on-exec, replacing what
+/// was there. Changing a numbered slot is safe: the caller owns the number it names.
+pub fn dup2(from: BorrowedFd<'_>, to: RawFd) -> Result<()> {
+    // SAFETY: dup3 with integer arguments.
+    check(unsafe { libc::dup3(from.as_raw_fd(), to, 0) })?;
+    Ok(())
+}
+
+/// The file type of `fd`: `st_mode & S_IFMT` (`S_IFREG`, `S_IFIFO`, `S_IFSOCK`, `S_IFCHR`, ...).
+pub fn file_type(fd: BorrowedFd<'_>) -> Result<u32> {
+    let mut st = MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: fstat writes a stat into the slot on success.
+    check(unsafe { libc::fstat(fd.as_raw_fd(), st.as_mut_ptr()) })?;
+    // SAFETY: fstat succeeded and filled the struct.
+    let st = unsafe { st.assume_init() };
+    Ok(st.st_mode & libc::S_IFMT)
+}
+
+/// Clears `O_NONBLOCK` (shared by every descriptor of the open file).
+pub fn clear_nonblocking(fd: BorrowedFd<'_>) -> Result<()> {
+    let raw = fd.as_raw_fd();
+    // SAFETY: F_GETFL on a descriptor borrowed for the call.
+    let old = check(unsafe { libc::fcntl(raw, libc::F_GETFL) })?;
+    // SAFETY: F_SETFL with an integer argument.
+    check(unsafe { libc::fcntl(raw, libc::F_SETFL, old & !libc::O_NONBLOCK) })?;
     Ok(())
 }

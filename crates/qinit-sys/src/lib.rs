@@ -12,12 +12,20 @@
 compile_error!("qinit-sys's raw child path and kernel structures are written for x86_64");
 
 pub mod cgroup;
+pub mod cred;
 pub mod event;
 pub mod fd;
+pub mod landlock;
+pub mod limits;
+pub mod memfd;
 pub mod mount;
+pub mod ns;
 pub mod proc;
+pub mod seccomp;
 pub mod signal;
+pub mod sock;
 pub mod spawn;
+pub mod timer;
 
 /// An OS error number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

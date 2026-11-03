@@ -230,6 +230,12 @@ pub fn wait_pidfd(pidfd: impl AsFd) -> Result<i32> {
 }
 
 /// `setsid(2)`: a new session and process group led by the caller.
+/// `pause(2)`: sleeps until a signal is delivered.
+pub fn pause() {
+    // SAFETY: pause takes no arguments; it returns only after a caught signal.
+    unsafe { libc::pause() };
+}
+
 pub fn setsid() -> Result<()> {
     // SAFETY: setsid takes no arguments.
     check(unsafe { libc::setsid() })?;
