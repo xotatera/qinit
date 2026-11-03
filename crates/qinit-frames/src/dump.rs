@@ -16,6 +16,7 @@
 use crate::expand::kind_name;
 use crate::provenance::{FrameKey, Origin, Provenance, parse_path, set_by};
 use crate::resolve::{Resolved, cap_name, ns_name};
+use crate::syscalls;
 use qinit_db::{
     Cred, Edge, GroupKind, Kind, Mode, Model, Node, Ready, RestartOn, RestartPolicy, Route,
     Seccomp, Securebits, StopMode, Target,
@@ -193,11 +194,12 @@ impl Block<'_> {
             Securebits::Noroot => "noroot",
             Securebits::NorootLocked => "noroot-locked",
         };
+        let names = |l: &[u32]| list(l.iter().map(|nr| quote(syscalls::name(*nr).unwrap_or("?"))));
         let seccomp = match &c.seccomp {
             Seccomp::None => quote("none"),
             Seccomp::Default => quote("default"),
-            Seccomp::Deny(l) => format!("{{ deny = {} }}", list(l.iter().map(u32::to_string))),
-            Seccomp::Allow(l) => format!("{{ allow = {} }}", list(l.iter().map(u32::to_string))),
+            Seccomp::Deny(l) => format!("{{ deny = {} }}", names(l)),
+            Seccomp::Allow(l) => format!("{{ allow = {} }}", names(l)),
         };
         self.line("credentials.uid", &quote(&c.user));
         self.line("credentials.caps", &list(caps));

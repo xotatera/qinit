@@ -3,7 +3,7 @@
 //! Named negative controls (spec §9): each refused tree gives the exact code and key.
 mod common;
 
-use common::Tree;
+use common::{Tree, ok};
 use qinit_frames::compile::compile;
 use qinit_frames::error::{Code, Error};
 
@@ -200,4 +200,48 @@ fn a_sandbox_only_worker_is_refused() {
 fn a_forager_without_credentials_is_refused() {
     let es = refuse("neg-nocred-f", "[forager.a]\nexec = [\"/a\"]\n");
     one(&es, Code::BadValue, "forager.a.credentials.uid");
+}
+
+#[test]
+fn an_unknown_syscall_name_is_refused() {
+    let es = refuse(
+        "neg-sys",
+        "[worker.a]\nexec = [\"/a\"]\ncredentials = { uid = \"svc\" }\nsandbox = { seccomp = { deny = [\"frobnicate\"] } }\n",
+    );
+    one(&es, Code::BadValue, "worker.a.sandbox.seccomp");
+    assert!(es[0].detail.contains("frobnicate"), "{}", es[0].detail);
+}
+
+#[test]
+fn an_empty_seccomp_list_is_refused() {
+    let es = refuse(
+        "neg-sys-empty",
+        "[worker.a]\nexec = [\"/a\"]\ncredentials = { uid = \"svc\" }\nsandbox = { seccomp = { deny = [] } }\n",
+    );
+    one(&es, Code::BadValue, "worker.a.sandbox.seccomp");
+}
+
+#[test]
+fn an_unknown_seccomp_word_is_refused() {
+    let es = refuse(
+        "neg-sys-word",
+        "[worker.a]\nexec = [\"/a\"]\ncredentials = { uid = \"svc\" }\nsandbox = { seccomp = \"strict\" }\n",
+    );
+    one(&es, Code::BadValue, "worker.a.sandbox.seccomp");
+}
+
+#[test]
+fn nnp_off_with_a_sandbox_needs_sys_admin() {
+    let body = |caps: &str, sandbox: &str| {
+        format!(
+            "[worker.a]\nexec = [\"/a\"]\ncredentials = {{ uid = \"root\", nnp = false{caps} }}\nsandbox = {{ {sandbox} }}\n"
+        )
+    };
+    for sandbox in ["landlock = [\"ro:/etc\"]", "seccomp = \"default\""] {
+        let es = refuse("neg-nnp", &body("", sandbox));
+        one(&es, Code::BadValue, "worker.a.credentials.nnp");
+        ok(&body(", caps = [\"sys_admin\"]", sandbox));
+    }
+    // Namespaces alone need nothing.
+    ok(&body("", "namespaces = [\"uts\"]"));
 }

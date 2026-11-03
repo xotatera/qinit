@@ -314,3 +314,44 @@ fn an_empty_users_list_allows_no_user_but_omitting_users_allows_any() {
     assert!(es[0].detail.contains("sshd"), "{}", es[0].detail);
     assert_eq!(check(&pol("users-any", &rule("")), &model(SSHD)), Ok(()));
 }
+
+#[test]
+fn require_seccomp_is_satisfied_by_default_deny_and_allow_lists() {
+    let p = pol(
+        "req-sec",
+        "default = \"deny\"\n[[rule]]\nmatch = \"a\"\nusers = [\"root\"]\nrequire_seccomp = true\n",
+    );
+    for seccomp in [
+        "\"default\"",
+        "{ deny = [\"ptrace\"] }",
+        "{ allow = [\"read\", \"write\", \"exit_group\"] }",
+    ] {
+        let m = model(&format!(
+            "[worker.a]\nexec = [\"/a\"]\ncredentials = {{ uid = \"root\" }}\nsandbox = {{ seccomp = {seccomp} }}\n"
+        ));
+        assert_eq!(check(&p, &m), Ok(()), "{seccomp}");
+    }
+}
+
+#[test]
+fn require_seccomp_refuses_none() {
+    let p = pol(
+        "req-sec-none",
+        "default = \"deny\"\n[[rule]]\nmatch = \"a\"\nusers = [\"root\"]\nrequire_seccomp = true\n",
+    );
+    let m = model("[worker.a]\nexec = [\"/a\"]\ncredentials = { uid = \"root\" }\n");
+    let es = check(&p, &m).expect_err("refused");
+    assert_eq!(es.len(), 1, "{es:?}");
+    assert_eq!(es[0].code, Code::Policy);
+    assert!(
+        es[0].detail.contains("seccomp required by rule `a`"),
+        "{}",
+        es[0].detail
+    );
+    let e = policy(
+        "req-sec-shape",
+        "default = \"deny\"\n[[rule]]\nmatch = \"a\"\nrequire_seccomp = 1\n",
+    )
+    .expect_err("refused");
+    assert_eq!(e[0].key, "rule[0].require_seccomp");
+}

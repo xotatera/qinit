@@ -57,7 +57,7 @@ fn instantiate(f: &Frame, inst: &str) -> Frame {
         }),
         sandbox: f.sandbox.as_ref().map(|x| Sandbox {
             namespaces: sl(&x.namespaces),
-            seccomp: s(&x.seccomp),
+            seccomp: x.seccomp.clone(),
             landlock: sl(&x.landlock),
         }),
         env: f

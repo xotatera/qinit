@@ -92,8 +92,17 @@ pub struct Creds {
 #[serde(deny_unknown_fields)]
 pub struct Sandbox {
     pub namespaces: Option<Vec<String>>,
-    pub seccomp: Option<String>,
+    pub seccomp: Option<SeccompCfg>,
     pub landlock: Option<Vec<String>>,
+}
+
+/// The seccomp filter: `"none"`, `"default"`, a denylist or an allowlist of syscall names.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum SeccompCfg {
+    Kind(String),
+    Deny { deny: Vec<String> },
+    Allow { allow: Vec<String> },
 }
 
 #[derive(Clone, Debug, Deserialize)]

@@ -14,4 +14,5 @@ pub mod policy;
 pub mod provenance;
 pub mod resolve;
 pub mod schema;
+pub mod syscalls;
 pub mod units;

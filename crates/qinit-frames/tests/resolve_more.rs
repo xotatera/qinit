@@ -285,3 +285,17 @@ fn a_template_env_merges_under_the_frame_env() {
     assert_eq!(n.env, ["A=f", "B=t"]);
     assert_eq!(n.cwd, "/t");
 }
+
+#[test]
+fn seccomp_lists_resolve_to_numbers() {
+    let r = ok(
+        "[worker.a]\nexec = [\"/a\"]\ncredentials = { uid = \"svc\" }\nsandbox = { seccomp = { deny = [\"ptrace\", \"getppid\"] } }\n",
+    );
+    let c = &r.model.creds[node(&r.model, "a").cred.unwrap() as usize];
+    assert_eq!(c.seccomp, Seccomp::Deny(vec![101, 110]));
+    let r = ok(
+        "[worker.a]\nexec = [\"/a\"]\ncredentials = { uid = \"svc\" }\nsandbox = { seccomp = { allow = [\"read\", \"write\", \"exit_group\"] } }\n",
+    );
+    let c = &r.model.creds[node(&r.model, "a").cred.unwrap() as usize];
+    assert_eq!(c.seccomp, Seccomp::Allow(vec![0, 1, 231]));
+}

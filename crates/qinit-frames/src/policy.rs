@@ -3,7 +3,7 @@
 //! The privilege policy: ordered rules that bound the credentials a compiled model may grant.
 //!
 //! A policy file has a required `default = "allow" | "deny"` and ordered `[[rule]]` tables
-//! (`match`, `users`, `caps_max`, `require_nnp`). For each node that may hold privilege, the
+//! (`match`, `users`, `caps_max`, `require_nnp`, `require_seccomp`). For each node that may hold privilege, the
 //! first rule whose `match` glob fits the node name decides, and a rule that rejects a node is
 //! final: later rules are never consulted. A node no rule matches follows `default`.
 //!
@@ -18,7 +18,7 @@
 use crate::error::{Code, Error};
 use crate::expand::kind_name;
 use crate::resolve::{cap_bit, cap_name};
-use qinit_db::{Cred, Model, Node};
+use qinit_db::{Cred, Model, Node, Seccomp};
 use serde::Deserialize;
 use std::path::Path;
 
@@ -38,6 +38,7 @@ struct RawRule {
     users: Option<Vec<String>>,
     caps_max: Option<Vec<String>>,
     require_nnp: Option<bool>,
+    require_seccomp: Option<bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +47,7 @@ struct Rule {
     users: Option<Vec<String>>,
     ceiling: u64,
     require_nnp: bool,
+    require_seccomp: bool,
 }
 
 /// A parsed policy.
@@ -174,6 +176,7 @@ fn build_rule(path: &Path, i: usize, r: RawRule, errs: &mut Vec<Error>) -> Rule 
         users: r.users,
         ceiling,
         require_nnp: r.require_nnp.unwrap_or(false),
+        require_seccomp: r.require_seccomp.unwrap_or(false),
     }
 }
 
@@ -254,6 +257,10 @@ fn check_rule(rule: &Rule, node: &Node, cred: &Cred, errs: &mut Vec<(usize, Erro
     }
     if rule.require_nnp && !cred.nnp {
         let why = format!("nnp required by rule `{}`", rule.pattern);
+        errs.push((i, violation(node, why)));
+    }
+    if rule.require_seccomp && cred.seccomp == Seccomp::None {
+        let why = format!("seccomp required by rule `{}`", rule.pattern);
         errs.push((i, violation(node, why)));
     }
 }
