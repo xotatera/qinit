@@ -67,6 +67,11 @@ fn deny_one(nr: u32) -> [Insn; 4] {
     ]
 }
 
+fn cloexec(n: i32) -> bool {
+    // SAFETY: F_GETFD only reads the descriptor's flags.
+    unsafe { libc::fcntl(n, libc::F_GETFD) & libc::FD_CLOEXEC != 0 }
+}
+
 fn role(name: &str) -> i32 {
     match name {
         "umask" => {
@@ -115,8 +120,34 @@ fn role(name: &str) -> i32 {
             fd::close_from(n).unwrap();
             i32::from(fd::is_open(n) || !fd::is_open(r.as_raw_fd()) || !fd::is_open(w.as_raw_fd()))
         }
+        "place-on-itself" => {
+            // The runtime reopens 0-2 on /dev/null when they are closed; close 0 so that the
+            // next open lands on it, then place that descriptor where it already is.
+            fd::close_from(0).unwrap();
+            let null = open_cloexec(c"/dev/null", libc::O_RDONLY, 0).unwrap();
+            let n = null.as_raw_fd();
+            fd::place(null, n).unwrap();
+            i32::from(n != 0 || !fd::is_open(0) || cloexec(0))
+        }
+        "place-elsewhere" => {
+            let null = open_cloexec(c"/dev/null", libc::O_RDONLY, 0).unwrap();
+            let to = 200;
+            fd::place(null, to).unwrap();
+            i32::from(!fd::is_open(to) || cloexec(to))
+        }
         _ => 99,
     }
+}
+
+#[test]
+fn placing_a_descriptor_on_its_own_number_keeps_it_open_without_cloexec() {
+    assert_eq!(in_child("place-on-itself"), 0);
+    assert_eq!(in_child("place-elsewhere"), 0);
+}
+
+#[test]
+fn the_last_capability_is_read_from_the_kernel() {
+    assert!(qinit_sys::cred::cap_last().unwrap() >= 40);
 }
 
 #[test]

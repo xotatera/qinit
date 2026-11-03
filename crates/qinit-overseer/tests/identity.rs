@@ -70,3 +70,19 @@ fn a_group_membership_is_matched_by_whole_name_and_listed_once() {
     let i = parse("svc", PASSWD, group).unwrap();
     assert_eq!(i.groups, [5, 6]);
 }
+
+#[test]
+fn a_non_root_user_in_group_zero_is_refused() {
+    let primary = PASSWD.replace("svc:x:1000:1000", "svc:x:1000:0");
+    assert_eq!(
+        parse("svc", &primary, GROUP).unwrap_err(),
+        IdentityError::RootGroup
+    );
+    let member = GROUP.replace("root:x:0:", "root:x:0:svc");
+    assert_eq!(
+        parse("svc", PASSWD, &member).unwrap_err(),
+        IdentityError::RootGroup
+    );
+    // root itself may be in group zero
+    assert!(parse("root", PASSWD, &member).is_ok());
+}

@@ -168,6 +168,14 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `overseer`: an output route never follows a symlink at its last component (a service-writable
+  directory could redirect the root-opened file to another one); a pid-namespace supervisor
+  cannot miss its child's exit between reaping and waiting, closes the descriptors it inherits,
+  and reports a failed privilege drop; an exit code that stands for a stopping signal is no
+  longer re-raised; a user in group 0 other than `root` is refused; capabilities of newer kernels
+  leave the bounding set; descriptors 0-2 that open onto themselves keep working; a seccomp
+  filter no longer meets an allocation in `exec`. A `deny` list may not name `clone`,
+  `unshare`, `clone3` or `setns`.
 - The fmt gate decides whether a file needs verusfmt from its parsed source:
   only a real `verus!` invocation counts (also one inside another macro's
   body), not a mention in a comment or a string, so trees without Verus code

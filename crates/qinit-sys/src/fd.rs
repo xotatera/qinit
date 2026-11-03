@@ -5,7 +5,7 @@
 use crate::{Result, check};
 use std::ffi::CStr;
 use std::mem::MaybeUninit;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
 /// Wraps a descriptor the kernel just returned (or the error it reported).
 pub(crate) fn owned(fd: libc::c_int) -> Result<OwnedFd> {
@@ -70,9 +70,19 @@ pub fn open_cloexec(path: &CStr, flags: libc::c_int, mode: u32) -> Result<OwnedF
 /// `dup3(from, to, 0)`: `to` becomes a copy of `from` without close-on-exec, replacing what
 /// was there. Changing a numbered slot is safe: the caller owns the number it names.
 pub fn dup2(from: BorrowedFd<'_>, to: RawFd) -> Result<()> {
-    // SAFETY: dup3 with integer arguments.
-    check(unsafe { libc::dup3(from.as_raw_fd(), to, 0) })?;
-    Ok(())
+    dup2_raw(from.as_raw_fd(), to)
+}
+
+/// Moves `fd` onto number `to` without close-on-exec and closes the original. When `fd`
+/// already is `to` (a program started with 0-2 closed gets them back from `open`), it stays
+/// open and only loses close-on-exec: `dup3` refuses equal numbers and dropping `fd` would
+/// close the slot just filled.
+pub fn place(fd: OwnedFd, to: RawFd) -> Result<()> {
+    if fd.as_raw_fd() == to {
+        // The number stays open: ownership passes to the slot.
+        return dup2_raw(fd.into_raw_fd(), to);
+    }
+    dup2(fd.as_fd(), to)
 }
 
 /// The file type of `fd`: `st_mode & S_IFMT` (`S_IFREG`, `S_IFIFO`, `S_IFSOCK`, `S_IFCHR`, ...).
@@ -140,6 +150,14 @@ pub fn write_all(fd: BorrowedFd<'_>, mut bytes: &[u8]) -> Result<()> {
 /// `dup3(from, to, 0)` between descriptor numbers: `to` becomes a copy of `from` without
 /// close-on-exec. Both numbers belong to the caller's own table.
 pub fn dup2_raw(from: RawFd, to: RawFd) -> Result<()> {
+    if from == to {
+        // `dup3` refuses equal numbers; the copy is the descriptor itself, minus close-on-exec.
+        // SAFETY: F_GETFD only reads the descriptor's flags.
+        let flags = check(unsafe { libc::fcntl(from, libc::F_GETFD) })?;
+        // SAFETY: F_SETFD with an integer argument on a number the caller owns.
+        check(unsafe { libc::fcntl(from, libc::F_SETFD, flags & !libc::FD_CLOEXEC) })?;
+        return Ok(());
+    }
     // SAFETY: dup3 with integer arguments.
     check(unsafe { libc::dup3(from, to, 0) })?;
     Ok(())

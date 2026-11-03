@@ -131,10 +131,25 @@ fn from_sandbox(cx: &mut Cx, base: &str, s: &Sandbox, out: &mut Cred) {
             cx.bad(key, why);
             Seccomp::None
         }
-        Some(SeccompCfg::Deny { deny }) => Seccomp::Deny(syscall_numbers(cx, &key, deny)),
+        Some(SeccompCfg::Deny { deny }) => {
+            // The program answers these four before it reads the list (clone and unshare by
+            // their flags, setns always, clone3 with ENOSYS), so naming one would change nothing.
+            for n in deny
+                .iter()
+                .filter(|n| ALWAYS_ANSWERED.contains(&n.as_str()))
+            {
+                let why =
+                    format!("`{n}` is already restricted by the sandbox and cannot be listed");
+                cx.bad(key.clone(), why);
+            }
+            Seccomp::Deny(syscall_numbers(cx, &key, deny))
+        }
         Some(SeccompCfg::Allow { allow }) => Seccomp::Allow(syscall_numbers(cx, &key, allow)),
     };
 }
+
+/// The calls the seccomp program answers by itself in every mode but `allow`.
+const ALWAYS_ANSWERED: [&str; 4] = ["clone", "unshare", "clone3", "setns"];
 
 /// The numbers of the syscall `names`; an unknown name or an empty list is a `BadValue`.
 fn syscall_numbers(cx: &mut Cx, key: &str, names: &[String]) -> Vec<u32> {

@@ -4,12 +4,13 @@
 //! its child goes on. It holds no capability, forwards the termination signals, reaps, and
 //! relays the child's status. A pid-namespace launch has two: one outside, one as the init.
 use crate::identity::Identity;
+use crate::status::Status;
 use qinit_sys::cred::{
-    CAP_LAST, capbset_drop, capset, set_dumpable, set_no_new_privs, setgroups, setresgid, setresuid,
+    cap_last, capbset_drop, capset, set_dumpable, set_no_new_privs, setgroups, setresgid, setresuid,
 };
 use qinit_sys::event::{epoll, epoll_add, epoll_wait, read_signal, signalfd_blocking};
-use qinit_sys::{Errno, Result, proc, signal};
-use std::os::fd::{AsRawFd, OwnedFd};
+use qinit_sys::{Errno, Result, fd, proc, signal};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 
 /// The signals forwarded to the child.
 const FORWARDED: [libc::c_int; 6] = [
@@ -25,7 +26,7 @@ const FORWARDED: [libc::c_int; 6] = [
 fn drop_privileges(id: &Identity) -> Result<()> {
     setgroups(&id.groups)?;
     setresgid(id.gid)?;
-    for cap in 0..=CAP_LAST {
+    for cap in 0..=cap_last()? {
         match capbset_drop(cap) {
             // A kernel that does not know the capability has nothing to drop.
             Ok(()) | Err(Errno(libc::EINVAL)) => {}
@@ -46,8 +47,8 @@ fn relay(wait_status: i32, decode: bool) -> ! {
     let mut sig = wait_status & 0x7f;
     if sig == 0 {
         let code = (wait_status >> 8) & 0xff;
-        match code - 128 {
-            n @ 1..=31 if decode => sig = n,
+        match death_signal(code) {
+            Some(n) if decode => sig = n,
             _ => proc::exit_now(code),
         }
     }
@@ -58,6 +59,19 @@ fn relay(wait_status: i32, decode: bool) -> ! {
     proc::exit_now(128 + sig)
 }
 
+/// The signal that an exit code of `128 + n` stands for, when `n` is one whose default action
+/// ends the process. The stopping signals (`SIGSTOP`, `SIGTSTP`, `SIGTTIN`, `SIGTTOU`) are
+/// left out: raising one on the supervisor would stop it instead of ending it, and colony
+/// would see a stopped process rather than the exit.
+#[must_use]
+pub fn death_signal(code: i32) -> Option<i32> {
+    match code - 128 {
+        libc::SIGSTOP | libc::SIGTSTP | libc::SIGTTIN | libc::SIGTTOU => None,
+        n @ 1..=31 => Some(n),
+        _ => None,
+    }
+}
+
 fn watch(child: libc::pid_t, decode: bool) -> Result<()> {
     let sigs: Vec<libc::c_int> = FORWARDED.iter().copied().chain([libc::SIGCHLD]).collect();
     let sfd = signalfd_blocking(&sigs)?;
@@ -65,12 +79,9 @@ fn watch(child: libc::pid_t, decode: bool) -> Result<()> {
     epoll_add(&ep, sfd.as_raw_fd(), libc::EPOLLIN as u32, 0)?;
     let mut events = [libc::epoll_event { events: 0, u64: 0 }; 1];
     loop {
-        // SIGCHLD is queued only once blocked, so look before every wait.
-        if let Some(status) = proc::reap_pid(child)? {
-            relay(status, decode);
-        }
-        // What the child orphaned (the init of a pid namespace inherits it) is reaped too.
-        while proc::reap_any()?.is_some() {}
+        // Drain the signals first and reap after: a child that ends once it has been looked
+        // at leaves its SIGCHLD pending, so the wait below returns. Reaping first would let
+        // the drain swallow the one SIGCHLD of an exit that came in between.
         while let Some(sig) = read_signal(&sfd) {
             match libc::c_int::try_from(sig) {
                 Ok(sig) if FORWARDED.contains(&sig) => {
@@ -79,19 +90,30 @@ fn watch(child: libc::pid_t, decode: bool) -> Result<()> {
                 _ => {}
             }
         }
+        if let Some(status) = proc::reap_pid(child)? {
+            relay(status, decode);
+        }
+        // What the child orphaned (the init of a pid namespace inherits it) is reaped too.
+        while proc::reap_any()?.is_some() {}
         epoll_wait(&ep, &mut events)?;
     }
 }
 
-/// Becomes the supervisor of `child`. `status` is this process's copy of the status pipe,
-/// closed at once so that EOF on it is the child's exec and nothing else. `decode`: see
+/// Becomes the supervisor of `child`. `status` is this process's copy of the status pipe: it
+/// carries the failure record of `step` (the plan's `Fork`) when the supervisor cannot drop
+/// its privileges, and is closed once they are dropped, so that EOF on it is the child's exec
+/// and nothing else. Every other inherited descriptor is closed at once: they are the
+/// parent's, and holding them would keep its pipes from ever reaching EOF. `decode`: see
 /// [`relay`].
-pub fn supervise(child: libc::pid_t, id: &Identity, status: OwnedFd, decode: bool) -> ! {
-    drop(status);
-    if drop_privileges(id).is_err() {
+pub fn supervise(child: libc::pid_t, id: &Identity, status: OwnedFd, step: u32, decode: bool) -> ! {
+    let _ = fd::close_from(5);
+    if let Err(e) = drop_privileges(id) {
         let _ = proc::kill(child, libc::SIGKILL);
+        Status { step, errno: e.0 }.write(status.as_fd());
         proc::exit_now(127);
     }
+    drop(status);
+    let _ = fd::close_from(3);
     let _ = watch(child, decode);
     let _ = proc::kill(child, libc::SIGKILL);
     proc::exit_now(127)

@@ -108,6 +108,11 @@ limits of `qinit-graph-core`.
 | 8, 9 | `C_LANDLOCK_OFF`, `C_LANDLOCK_LEN` | entries `ro:/path` or `rw:/path`, NUL-separated |
 | 10, 11 | `C_SECCOMP_OFF`, `C_SECCOMP_LEN` | syscall numbers of the deny- or allow-list, NUL-separated canonical decimals; length 0 exactly when `C_SECCOMP` is 0 or 1 |
 
+The default program answers `clone`, `unshare`, `clone3` and `setns` itself (`clone` and
+`unshare` by their namespace flags, `setns` always, `clone3` with `ENOSYS`), so a deny-list
+may not name them. An allow-list replaces the default program, including that check: an
+allow-list that names `clone` or `unshare` permits creating namespaces.
+
 A canonical decimal is 1 to 3 ASCII digits with no leading zero (the single digit `0` is the
 only entry starting with `0`), and its value is below `MAX_SYSCALL`. The compiler emits exactly
 this form and the validator accepts only it.

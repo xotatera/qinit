@@ -13,6 +13,18 @@ pub const SECBIT_KEEP_CAPS: u32 = 16;
 /// The highest capability number (`CAP_CHECKPOINT_RESTORE`).
 pub const CAP_LAST: u32 = 40;
 
+/// The highest capability the running kernel knows (`/proc/sys/kernel/cap_last_cap`), never
+/// below [`CAP_LAST`]: a newer kernel's extra capabilities are dropped from the bounding set
+/// as well. An unreadable file gives [`CAP_LAST`].
+pub fn cap_last() -> Result<u32> {
+    let text = std::fs::read_to_string("/proc/sys/kernel/cap_last_cap").unwrap_or_default();
+    Ok(text
+        .trim()
+        .parse::<u32>()
+        .unwrap_or(CAP_LAST)
+        .clamp(CAP_LAST, 63))
+}
+
 /// `prctl` option `PR_SET_PDEATHSIG` (`linux/prctl.h`).
 const PR_SET_PDEATHSIG: libc::c_int = 1;
 /// `PR_SET_DUMPABLE`.

@@ -84,6 +84,11 @@ struct Run<'a> {
     id: &'a Identity,
     user: &'a str,
     ruleset: Option<OwnedFd>,
+    /// The argument and environment vectors of the exec, built before the filter is installed
+    /// (a filter that allows no `brk` or `mmap` would end the allocation).
+    prepared: Option<(Vec<CString>, Vec<CString>)>,
+    /// Whether the capabilities above `CAP_LAST` of a newer kernel are out of the bounding set.
+    extra_dropped: bool,
 }
 
 impl<'a> Run<'a> {
@@ -108,14 +113,17 @@ impl<'a> Run<'a> {
                 let old = umask(req(self.b, Q_UMASK));
                 let opened = open_route(&cstring(self.text(a, b)?)?);
                 let _ = umask(old);
-                fd::dup2(opened?.as_fd(), target)
+                fd::place(opened?, target)
             }
             STREAM_FD => fd::dup2_raw(fd_number(req(self.b, a))?, target),
             _ => fd::dup2_raw(1, target),
         }
     }
 
-    fn seccomp(&self) -> Result<()> {
+    fn seccomp(&mut self) -> Result<()> {
+        if self.prepared.is_none() {
+            self.prepared = Some(self.exec_vectors()?);
+        }
         let mode = req(self.b, Q_SECCOMP);
         let mut numbers = Vec::new();
         if mode != 3 {
@@ -161,24 +169,47 @@ impl<'a> Run<'a> {
         add_path_rule(rs.as_fd(), &cstring(path)?, access)
     }
 
-    fn exec(&self) -> Errno {
-        let argv: Vec<&str> = match self.list(Q_ARGV_OFF, Q_ARGV_LEN) {
-            Ok(a) if !a.is_empty() => a,
-            _ => return Errno(libc::EINVAL),
-        };
-        let Ok(frame) = self.list(Q_ENV_OFF, Q_ENV_LEN) else {
-            return Errno(libc::EINVAL);
-        };
+    /// The argument and environment vectors of the exec.
+    fn exec_vectors(&self) -> Result<(Vec<CString>, Vec<CString>)> {
+        let argv = self.list(Q_ARGV_OFF, Q_ARGV_LEN)?;
+        if argv.is_empty() {
+            return Err(Errno(libc::EINVAL));
+        }
+        let frame = self.list(Q_ENV_OFF, Q_ENV_LEN)?;
         let ready =
             req(self.b, qinit_overseer_core::Q_READY_KIND) == qinit_overseer_core::READY_PIPE;
         let env = build_env(ready, &frame, self.user, self.id);
-        let converted: Result<Vec<CString>> = argv.iter().map(|a| cstring(a)).collect();
-        let Ok(words) = converted else {
-            return Errno(libc::EINVAL);
+        let words = argv
+            .iter()
+            .map(|a| cstring(a))
+            .collect::<Result<Vec<CString>>>()?;
+        Ok((words, env))
+    }
+
+    fn exec(&mut self) -> Errno {
+        let (words, env) = match self.prepared.take() {
+            Some(v) => v,
+            None => match self.exec_vectors() {
+                Ok(v) => v,
+                Err(e) => return e,
+            },
         };
         let argv_refs: Vec<&CStr> = words.iter().map(CString::as_c_str).collect();
         let env_refs: Vec<&CStr> = env.iter().map(CString::as_c_str).collect();
         spawn::exec_in_place(&words[0], &argv_refs, &env_refs)
+    }
+
+    /// Takes every capability a newer kernel has beyond `CAP_LAST` out of the bounding set,
+    /// before the first of the plan's drops (the last of which, `CAP_SETPCAP`, is needed here).
+    fn drop_newer_capabilities(&mut self) -> Result<()> {
+        if self.extra_dropped {
+            return Ok(());
+        }
+        self.extra_dropped = true;
+        for cap in cred::CAP_LAST + 1..=cred::cap_last()? {
+            cred::capbset_drop(cap)?;
+        }
+        Ok(())
     }
 
     fn perform(&mut self, step: Step) -> Result<()> {
@@ -194,7 +225,7 @@ impl<'a> Run<'a> {
             Step::ArmDeadline(ms) => timer::arm_alarm(ms),
             Step::OpenStdin => {
                 let null = fd::open_cloexec(c"/dev/null", libc::O_RDONLY, 0)?;
-                fd::dup2(null.as_fd(), 0)
+                fd::place(null, 0)
             }
             Step::OpenStdout => self.stream(Q_STDOUT_KIND, Q_STDOUT_A, Q_STDOUT_B, 1),
             Step::OpenStderr => self.stream(Q_STDERR_KIND, Q_STDERR_A, Q_STDERR_B, 2),
@@ -208,11 +239,14 @@ impl<'a> Run<'a> {
             Step::Setgroups => cred::setgroups(&self.id.groups),
             Step::Setgid => cred::setresgid(self.id.gid),
             Step::Securebits(bits) => cred::set_securebits(bits),
-            Step::DropBounding(cap) => match cred::capbset_drop(cap) {
-                // A kernel that does not know the capability has nothing to drop.
-                Err(Errno(libc::EINVAL)) => Ok(()),
-                r => r,
-            },
+            Step::DropBounding(cap) => {
+                self.drop_newer_capabilities()?;
+                match cred::capbset_drop(cap) {
+                    // A kernel that does not know the capability has nothing to drop.
+                    Err(Errno(libc::EINVAL)) => Ok(()),
+                    r => r,
+                }
+            }
             Step::Setuid => cred::setresuid(self.id.uid),
             Step::Capset => {
                 let caps = self.caps();
@@ -241,7 +275,7 @@ impl<'a> Run<'a> {
 fn identity_errno(e: IdentityError) -> i32 {
     match e {
         IdentityError::Unknown => libc::ENOENT,
-        IdentityError::RootAlias => libc::EPERM,
+        IdentityError::RootAlias | IdentityError::RootGroup => libc::EPERM,
         IdentityError::Io(Errno(n)) => n,
         IdentityError::BadName | IdentityError::Ambiguous | IdentityError::Malformed(_) => {
             libc::EINVAL
@@ -253,12 +287,12 @@ fn identity_errno(e: IdentityError) -> i32 {
 /// second its only child, which goes on to run the service. The original process and the init
 /// each become a supervisor of the child they forked, so a signal reaches the service from a
 /// process inside its namespace and the init reaps what the service orphans.
-fn fork_supervised(id: &Identity, status: &mut Option<OwnedFd>) -> Result<()> {
+fn fork_supervised(id: &Identity, status: &mut Option<OwnedFd>, step: u32) -> Result<()> {
     for outside in [true, false] {
         match proc::fork()? {
             0 => {}
             child => match status.take() {
-                Some(pipe) => supervise(child, id, pipe, outside),
+                Some(pipe) => supervise(child, id, pipe, step, outside),
                 None => proc::exit_now(127),
             },
         }
@@ -303,6 +337,8 @@ pub fn launch() -> ! {
         },
         user: "",
         ruleset: None,
+        prepared: None,
+        extra_dropped: false,
     };
     let user = match run.text(Q_USER_OFF, Q_USER_LEN) {
         Ok(u) => u,
@@ -320,7 +356,7 @@ pub fn launch() -> ! {
     for (i, step) in steps[..n].iter().enumerate() {
         let index = u32::try_from(i).unwrap_or(u32::MAX);
         let result = if *step == Step::Fork {
-            fork_supervised(&id, &mut status)
+            fork_supervised(&id, &mut status, index)
         } else {
             run.perform(*step)
         };

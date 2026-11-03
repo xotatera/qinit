@@ -165,6 +165,75 @@ fn pid_namespace() -> Result<(), String> {
     want(o.signal()?, libc::SIGUSR1, "the relayed signal")
 }
 
+/// Starts a ready-show service in a pid namespace, stops it politely and waits for the cell to
+/// empty. A supervisor that misses its child's exit leaves the stop to time out.
+fn start_and_stop(name: &str) -> Result<(), String> {
+    let mut cells = cells()?;
+    let (reader, writer) = capture();
+    let mut request = pid_request("ready-show");
+    request.stdout = Stream::Fd(6);
+    request.ready_fd = Some(5);
+    let l = launch(
+        &mut cells,
+        name,
+        &request,
+        vec![(writer, 6)],
+        ReadyMode::Pipe,
+    )?;
+    expect(&mut cells, l.id, Report::Ready)?;
+    e(cells.stop(l.id, Polite::Main, HANG_GUARD, HANG_GUARD))?;
+    expect(&mut cells, l.id, Report::Empty)?;
+    remove(&mut cells, l.id)?;
+    let _ = read_all(reader);
+    Ok(())
+}
+
+fn supervisor_sees_every_exit() -> Result<(), String> {
+    // The exit lands right after the forwarded TERM: the window between reaping and waiting.
+    let started = std::time::Instant::now();
+    for i in 0..30 {
+        start_and_stop(&format!("ps{i}"))?;
+    }
+    let took = started.elapsed();
+    if took < std::time::Duration::from_secs(20) {
+        Ok(())
+    } else {
+        Err(format!("30 starts and stops took {took:?}, a stop hung"))
+    }
+}
+
+fn supervisors_drop_the_parents_descriptors() -> Result<(), String> {
+    let mut cells = cells()?;
+    let (out_r, out_w) = capture();
+    // A pipe the request does not mention, routed anyway: only a holder that never closed it
+    // keeps its read end from reaching EOF.
+    let (held_r, held_w) = capture();
+    let mut request = pid_request("ready-show");
+    request.stdout = Stream::Fd(6);
+    request.ready_fd = Some(5);
+    let l = launch(
+        &mut cells,
+        "pd1",
+        &request,
+        vec![(out_w, 6), (held_w, 9)],
+        ReadyMode::Pipe,
+    )?;
+    expect(&mut cells, l.id, Report::Ready)?;
+    // Blocks until the last write end is closed; the harness's hang guard ends a holder that
+    // never lets go.
+    let mut file = std::fs::File::from(held_r);
+    let eof = matches!(std::io::Read::read(&mut file, &mut [0u8; 1]), Ok(0));
+    e(cells.stop(l.id, Polite::Main, HANG_GUARD, HANG_GUARD))?;
+    expect(&mut cells, l.id, Report::Empty)?;
+    remove(&mut cells, l.id)?;
+    let _ = read_all(out_r);
+    if eof {
+        Ok(())
+    } else {
+        Err("a supervisor still holds a descriptor of its parent".into())
+    }
+}
+
 fn hostname() -> Result<(), String> {
     let before = e(std::fs::read_to_string("/proc/sys/kernel/hostname"))?;
     let mut request = spec("svc", "hostname-set", &[]);
@@ -194,6 +263,14 @@ fn main() {
             (
                 "a_pid_namespace_has_a_supervisor_that_relays_signals_and_status",
                 pid_namespace,
+            ),
+            (
+                "a_supervisor_sees_every_exit_of_its_child",
+                supervisor_sees_every_exit,
+            ),
+            (
+                "supervisors_hold_no_descriptor_of_their_parent",
+                supervisors_drop_the_parents_descriptors,
             ),
             ("uts_isolation_hides_a_hostname_change", hostname),
             ("net_isolation_leaves_only_loopback_up", loopback),

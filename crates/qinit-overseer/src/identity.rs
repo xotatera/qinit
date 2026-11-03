@@ -26,6 +26,9 @@ pub enum IdentityError {
     Malformed(usize),
     /// uid 0 under a name other than `root`.
     RootAlias,
+    /// A user other than `root` whose primary or supplementary group is gid 0: the group of
+    /// root owns files that no service account should reach by name.
+    RootGroup,
     /// Reading `/etc/passwd` or `/etc/group` failed.
     Io(Errno),
 }
@@ -92,6 +95,9 @@ pub fn parse(user: &str, passwd: &str, group: &str) -> Result<Identity, Identity
     }
     groups.sort_unstable();
     groups.dedup();
+    if user != "root" && (gid == 0 || groups.first() == Some(&0)) {
+        return Err(IdentityError::RootGroup);
+    }
     Ok(Identity {
         uid,
         gid,

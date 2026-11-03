@@ -299,3 +299,35 @@ fn seccomp_lists_resolve_to_numbers() {
     let c = &r.model.creds[node(&r.model, "a").cred.unwrap() as usize];
     assert_eq!(c.seccomp, Seccomp::Allow(vec![0, 1, 231]));
 }
+
+#[test]
+fn a_deny_list_cannot_name_a_call_the_default_program_already_answers() {
+    for name in ["clone", "unshare", "clone3", "setns"] {
+        let es = errs(&format!(
+            r#"
+        [worker.a]
+        exec = ["/a"]
+        credentials = {{ uid = "svc" }}
+        sandbox = {{ seccomp = {{ deny = ["{name}", "fork"] }} }}
+    "#
+        ));
+        let keys: Vec<_> = es.iter().map(|e| (e.code, e.key.as_str())).collect();
+        assert_eq!(
+            keys,
+            [(Code::BadValue, "worker.a.sandbox.seccomp")],
+            "{name}"
+        );
+        assert!(es[0].detail.contains(name), "{}", es[0].detail);
+    }
+}
+
+#[test]
+fn an_allow_list_may_name_them() {
+    let r = ok(r#"
+        [worker.a]
+        exec = ["/a"]
+        credentials = { uid = "svc" }
+        sandbox = { seccomp = { allow = ["clone", "read"] } }
+    "#);
+    assert_eq!(r.model.creds.len(), 1);
+}

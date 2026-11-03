@@ -117,3 +117,51 @@ fn a_directory_is_enotsup() {
     assert_eq!(open_route(&c(&dir)).unwrap_err(), Errno(libc::ENOTSUP));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn open_route_refuses_a_symlink_to_a_regular_file() {
+    let dir = scratch("link-reg");
+    let target = dir.join("secret");
+    std::fs::write(&target, "keep\n").unwrap();
+    let link = dir.join("out.log");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert_eq!(open_route(&c(&link)).unwrap_err(), Errno(libc::ELOOP));
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn open_route_does_not_create_through_a_dangling_symlink() {
+    let dir = scratch("link-dangling");
+    let target = dir.join("planted");
+    let link = dir.join("out.log");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert_eq!(open_route(&c(&link)).unwrap_err(), Errno(libc::ELOOP));
+    assert!(!target.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn open_route_refuses_a_symlink_to_a_socket() {
+    let dir = scratch("link-sock");
+    let sock = dir.join("control");
+    let _listener = UnixListener::bind(&sock).unwrap();
+    let link = dir.join("out.sock");
+    std::os::unix::fs::symlink(&sock, &link).unwrap();
+    assert_eq!(open_route(&c(&link)).unwrap_err(), Errno(libc::ELOOP));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn open_route_follows_a_symlinked_directory_on_the_way() {
+    let dir = scratch("link-dir");
+    std::fs::create_dir(dir.join("real")).unwrap();
+    std::os::unix::fs::symlink(dir.join("real"), dir.join("alias")).unwrap();
+    let mut file = std::fs::File::from(open_route(&c(&dir.join("alias/out.log"))).unwrap());
+    file.write_all(b"ok\n").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("real/out.log")).unwrap(),
+        "ok\n"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
