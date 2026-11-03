@@ -27,3 +27,18 @@ fn the_guest_build_ignores_the_callers_cargo_settings() {
     }
     assert!(GUEST_RUSTFLAGS.contains("crt-static") && !GUEST_RUSTFLAGS.contains("native"));
 }
+
+#[test]
+fn the_guest_build_includes_the_executor_binary() {
+    let c = cargo_command(Path::new("/w"));
+    let args: Vec<_> = c
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let packages: Vec<&str> = args
+        .windows(2)
+        .filter(|w| w[0] == "-p")
+        .map(|w| w[1].as_str())
+        .collect();
+    assert_eq!(packages, ["qinit-vm-guests", "qinit-overseer"]);
+}

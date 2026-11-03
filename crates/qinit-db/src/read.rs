@@ -8,8 +8,9 @@ use crate::model::{
     RestartPolicy, Route, Seccomp, Securebits, Stop, StopMode, Target,
 };
 use qinit_db_core::{
-    DbError, H_CRC32, HEADER_WORDS, MAX_EDGES, MAX_NODES, NONE, T_CREDS, T_EDGES, T_ENABLED,
-    T_GROUPS, T_NODES, T_POOL, T_PRESYSLOG, T_ROUTES, WORDS, validate, word,
+    DbError, H_CRC32, HEADER_WORDS, MAX_EDGES, MAX_NODES, NONE, SECCOMP_DEFAULT, SECCOMP_DENY,
+    SECCOMP_NONE, T_CREDS, T_EDGES, T_ENABLED, T_GROUPS, T_NODES, T_POOL, T_PRESYSLOG, T_ROUTES,
+    WORDS, validate, word,
 };
 use qinit_graph_core::GEdge;
 
@@ -153,7 +154,20 @@ impl Reader<'_> {
             memory_max_kib: f(16),
             pids_max: f(17),
             instance_of: (!instance.is_empty()).then(|| instance.to_owned()),
+            env: self.list(f(24), f(25)),
+            cwd: self.string(f(26), f(27)).to_owned(),
+            umask: f(28),
+            rlimit_nofile: f(29),
         }
+    }
+
+    /// The syscall numbers of a seccomp list; V4 guarantees every element is a canonical
+    /// decimal below `MAX_SYSCALL`, so the parse cannot fail on an accepted database.
+    fn syscalls(&self, off: u32, len: u32) -> Vec<u32> {
+        self.list(off, len)
+            .iter()
+            .map(|n| n.parse().unwrap_or(0))
+            .collect()
     }
 
     fn group(&self, g: usize) -> Group {
@@ -204,10 +218,11 @@ impl Reader<'_> {
             },
             nnp: f(5) != 0,
             ns: f(6),
-            seccomp: if f(7) == 0 {
-                Seccomp::None
-            } else {
-                Seccomp::Default
+            seccomp: match f(7) {
+                SECCOMP_NONE => Seccomp::None,
+                SECCOMP_DEFAULT => Seccomp::Default,
+                SECCOMP_DENY => Seccomp::Deny(self.syscalls(f(10), f(11))),
+                _ => Seccomp::Allow(self.syscalls(f(10), f(11))),
             },
             landlock: self.list(f(8), f(9)),
         }

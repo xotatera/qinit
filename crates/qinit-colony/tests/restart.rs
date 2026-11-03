@@ -168,7 +168,7 @@ fn a_failed_forager_is_not_restarted() {
 
 #[test]
 fn an_adopted_node_waiting_for_a_path_is_watched_and_comes_back() {
-    let frames = "[worker.a]\nexec = [\"/bin/a\"]\nrestart = { policy = \"on-failure\" }\n\
+    let frames = "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/a\"]\nrestart = { policy = \"on-failure\" }\n\
                   deps = [{ group = \"require_all\", edges = [{ path = \"/run/x\" }] }]\n";
     let mut sim = Sim::new();
     sim.paths.insert("/run/x".to_owned());
@@ -192,7 +192,11 @@ fn a_failed_start_is_not_stopped_through_the_effects() {
     // There is no cell to stop: a layer that refuses `stop` for it must not strand the node.
     let mut sim = Sim::new();
     sim.fail_start.insert(0);
-    let (c, _) = boot("[worker.a]\nexec = [\"/bin/a\"]\n", &["a"], sim);
+    let (c, _) = boot(
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/a\"]\n",
+        &["a"],
+        sim,
+    );
     assert_eq!(c.state(0), Some(State::Off), "{}", c.status(0));
     assert!(
         !c.effects

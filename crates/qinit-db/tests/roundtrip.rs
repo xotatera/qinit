@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 mod common;
 
-use common::{node, sample};
-use qinit_db::{Kind, Model, ReadError, Stop, StopMode, Target, WriteError, crc32, open, write};
+use common::{node, sample, svc};
+use qinit_db::{
+    Kind, Model, ReadError, Seccomp, Stop, StopMode, Target, WriteError, crc32, open, write,
+};
 use qinit_db_core::{T_POOL, word};
 
 #[test]
@@ -27,11 +29,15 @@ fn the_writer_interns_equal_strings_once() {
         n.exec = vec!["/usr/bin/same".into(), "-x".into()];
         model.nodes.push(n);
     }
+    model.creds.push(svc());
     let bytes = write(&model).unwrap();
     let pool_len = word(&bytes, 5 + 2 * T_POOL) as usize;
     let sum: usize = "/usr/bin/same\0-x".len() * 3 + 3;
     assert!(pool_len < sum, "pool {pool_len} vs {sum}");
-    assert_eq!(pool_len, "/usr/bin/same\0-x".len() + 3);
+    assert_eq!(
+        pool_len,
+        "/usr/bin/same\0-x".len() + 3 + "/".len() + "svc".len()
+    );
     assert_eq!(open(&bytes).unwrap().decode(), model);
 }
 
@@ -78,6 +84,7 @@ fn with_node(f: impl FnOnce(&mut qinit_db::Node)) -> Model {
     f(&mut n);
     Model {
         nodes: vec![n],
+        creds: vec![svc()],
         ..Model::default()
     }
 }
@@ -152,4 +159,49 @@ fn the_new_fields_round_trip() {
     let bytes = write(&m).expect("writes");
     let back = open(&bytes).expect("opens").decode();
     assert_eq!(back, m);
+}
+
+#[test]
+fn launch_fields_and_seccomp_lists_round_trip() {
+    let m = sample();
+    let bytes = write(&m).expect("written");
+    let back = open(&bytes).expect("opened").decode();
+    assert_eq!(back, m);
+    let logd = back.nodes.iter().find(|n| n.name == "logd").unwrap();
+    assert_eq!(logd.env, ["LOGD_DIR=/var/log/qinit"]);
+    assert_eq!(
+        (logd.cwd.as_str(), logd.umask, logd.rlimit_nofile),
+        ("/var/log/qinit", 0o077, 1024)
+    );
+    assert_eq!(back.creds[0].seccomp, Seccomp::Deny(vec![101, 310]));
+}
+
+#[test]
+fn an_allow_list_round_trips_in_canonical_decimals() {
+    let mut m = sample();
+    m.creds[0].seccomp = Seccomp::Allow(vec![0, 7, 511]);
+    let bytes = write(&m).expect("written");
+    assert_eq!(open(&bytes).expect("opened").decode(), m);
+    let pool = word(&bytes, 4 + 2 * T_POOL) as usize;
+    let text = &bytes[pool..];
+    assert!(
+        text.windows(7).any(|w| w == b"0\x007\x00511"),
+        "list bytes not found"
+    );
+}
+
+#[test]
+fn a_syscall_number_at_or_above_the_limit_is_refused_by_the_writer() {
+    let mut m = sample();
+    m.creds[0].seccomp = Seccomp::Allow(vec![512]);
+    assert_eq!(write(&m).unwrap_err(), WriteError::Limit("syscall"));
+    m.creds[0].seccomp = Seccomp::Deny(Vec::new());
+    assert_eq!(write(&m).unwrap_err(), WriteError::Limit("seccomp list"));
+}
+
+#[test]
+fn an_env_entry_without_a_key_is_refused_by_the_reader_not_the_writer() {
+    let m = with_node(|n| n.env = vec!["=x".into()]);
+    let bytes = write(&m).expect("the writer checks ranges only");
+    assert!(matches!(open(&bytes), Err(ReadError::Db(_))));
 }

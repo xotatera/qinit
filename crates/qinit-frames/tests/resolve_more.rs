@@ -15,9 +15,11 @@ fn credentials_and_sandbox_merge_into_one_cred() {
         credentials = { uid = "sshd", caps = ["chown", "net_bind_service", "checkpoint_restore"], nnp = true, securebits = "noroot-locked" }
         sandbox = { namespaces = ["mount", "net"], landlock = ["ro:/etc", "rw:/run/a"], seccomp = "default" }
         [worker.b]
+credentials = { uid = "svc" }
         exec = ["/b"]
         sandbox = { namespaces = ["pid"] }
         [worker.c]
+credentials = { uid = "svc" }
         exec = ["/c"]
     "#);
     let m = &r.model;
@@ -29,13 +31,14 @@ fn credentials_and_sandbox_merge_into_one_cred() {
     assert_eq!(a.ns, 0b1_0001);
     assert_eq!(a.seccomp, Seccomp::Default);
     assert_eq!(a.landlock, ["ro:/etc", "rw:/run/a"]);
-    // A sandbox alone makes an unprivileged cred: the default identity (empty user), no caps
-    // and no-new-privileges on.
+    // A sandbox next to a bare user: the identity's defaults (no caps, no-new-privileges on)
+    // and the sandbox in one record.
     let b = &m.creds[node(m, "b").cred.expect("cred") as usize];
-    assert_eq!((b.user.as_str(), b.caps, b.ns), ("", 0, 0b10));
+    assert_eq!((b.user.as_str(), b.caps, b.ns), ("svc", 0, 0b10));
     assert!(b.nnp);
     assert_eq!(b.securebits, Securebits::None);
-    assert_eq!(node(m, "c").cred, None);
+    let bare = &m.creds[node(m, "c").cred.expect("cred") as usize];
+    assert_eq!((bare.user.as_str(), bare.caps, bare.ns), ("svc", 0, 0));
 }
 
 #[test]
@@ -62,6 +65,7 @@ fn bad_credential_strings_are_bad_values() {
         exec = ["/b"]
         credentials = { uid = "b", securebits = "high" }
         [worker.c]
+credentials = { uid = "svc" }
         exec = ["/c"]
         sandbox = { landlock = ["/etc"], seccomp = "strict" }
     "#,
@@ -83,11 +87,15 @@ fn exec_rules_are_bad_values() {
     let es = errs(
         r#"
         [worker.a]
+credentials = { uid = "svc" }
         [forager.b]
+credentials = { uid = "svc" }
         exec = []
         [worker.c]
+credentials = { uid = "svc" }
         exec = ["/c", ""]
         [worker.d]
+credentials = { uid = "svc" }
         exec = ["/d", "x\u0000y"]
     "#,
     );
@@ -102,14 +110,17 @@ fn exec_rules_are_bad_values() {
 fn node_fields_are_converted() {
     let r = ok(r#"
         [worker.a]
+credentials = { uid = "svc" }
         exec = ["/a"]
         ready = { socket = "/run/a.sock" }
         restart = { policy = "on-failure", max = 5, window = "60s" }
         cell = { memory_max = "512M", pids_max = 256 }
         [forager.f]
+credentials = { uid = "svc" }
         exec = ["/f"]
         [brood.g]
         [worker.p]
+credentials = { uid = "svc" }
         exec = ["/p"]
     "#);
     let m = &r.model;
@@ -150,13 +161,16 @@ fn a_resolved_tree_passes_the_proved_validator() {
         instances = ["tty1", "tty2"]
         restart = { policy = "always" }
         [worker.getty]
+credentials = { uid = "svc" }
         template = "tty"
         deps = [{ group = "require_all", edges = [{ to = "local-fs" }] }]
         [worker.logger]
+credentials = { uid = "svc" }
         exec = ["/usr/bin/logger-d"]
         output = "/dev/console"
         deps = [{ group = "require_all", edges = [{ to = "local-fs" }] }]
         [worker.syslog-ng]
+credentials = { uid = "svc" }
         exec = ["/usr/bin/syslog-ng", "-F"]
         template = "daemon"
         [worker.sshd]
@@ -165,7 +179,7 @@ fn a_resolved_tree_passes_the_proved_validator() {
         ready = "pipe"
         errors = "/dev/console"
         cell = { memory_max = "512M", pids_max = 256 }
-        credentials = { uid = "sshd", caps = ["net_bind_service"], nnp = false, securebits = "noroot-locked" }
+        credentials = { uid = "sshd", caps = ["net_bind_service"], securebits = "noroot-locked" }
         sandbox = { namespaces = ["mount", "pid"], landlock = ["ro:/etc/ssh"], seccomp = "default" }
         deps = [
           { group = "require_all", edges = [
@@ -176,10 +190,12 @@ fn a_resolved_tree_passes_the_proved_validator() {
           { group = "optional_all", edges = [ { to = "absent" }, { path = "/run/ready", stop = "parallel" } ] },
         ]
         [forager.firewall]
+credentials = { uid = "svc" }
         exec = ["/usr/bin/nft", "-f", "/etc/nftables.conf"]
         ready = "exit"
         deps = [{ group = "require_all", edges = [{ to = "local-fs" }] }]
         [forager.network]
+credentials = { uid = "svc" }
         exec = ["/usr/bin/net-up"]
         [brood.local-fs]
         [brood.rescue]
@@ -198,7 +214,9 @@ fn a_resolved_tree_passes_the_proved_validator() {
 
 #[test]
 fn a_worker_that_is_its_own_logger_through_output_is_a_cycle() {
-    let es = errs("[worker.a]\nexec = [\"/a\"]\noutput = { pipe = \"a\" }\n");
+    let es = errs(
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\noutput = { pipe = \"a\" }\n",
+    );
     assert_eq!(es[0].code, Code::Cycle);
     assert_eq!(es[0].key, "worker.a.output");
 }
@@ -207,11 +225,14 @@ fn a_worker_that_is_its_own_logger_through_output_is_a_cycle() {
 fn a_producer_piping_to_the_syslog_worker_is_not_presyslog() {
     let src = r#"
         [worker.syslog-ng]
+credentials = { uid = "svc" }
         exec = ["/s"]
         [worker.app]
+credentials = { uid = "svc" }
         exec = ["/app"]
         output = { pipe = "syslog-ng" }
         [worker.early]
+credentials = { uid = "svc" }
         exec = ["/e"]
         [brood.boot]
         deps = [{ group = "require_all", edges = [{ to = "app" }, { to = "early" }, { to = "syslog-ng" }] }]
@@ -227,7 +248,7 @@ fn stop_parallel_on_a_sync_require_path_edge_is_hard_parallel() {
     // edge has no node to stop in parallel); this is deliberate and documented.
     let src = |mode: &str, group: &str| {
         format!(
-            "[worker.b]\nexec = [\"/b\"]\ndeps = [{{ group = \"{group}\", edges = \
+            "[worker.b]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/b\"]\ndeps = [{{ group = \"{group}\", edges = \
              [{{ path = \"/run/x\", stop = \"parallel\"{mode} }}] }}]\n"
         )
     };
@@ -236,4 +257,77 @@ fn stop_parallel_on_a_sync_require_path_edge_is_hard_parallel() {
     assert_eq!(es[0].key, "worker.b.deps[0].edges[0].stop");
     ok(&src(", mode = \"async\"", "require_all"));
     ok(&src("", "optional_all"));
+}
+
+#[test]
+fn launch_fields_resolve_with_their_defaults() {
+    let r = ok("[worker.a]\nexec = [\"/a\"]\ncredentials = { uid = \"svc\" }\n");
+    let n = node(&r.model, "a");
+    assert_eq!((n.cwd.as_str(), n.umask, n.rlimit_nofile), ("/", 0o027, 0));
+    assert!(n.env.is_empty());
+    let r = ok(
+        "[worker.a]\nexec = [\"/a\"]\ncredentials = { uid = \"svc\" }\nenv = { B = \"2\", A = \"1\", C = \"\" }\ncwd = \"/srv\"\numask = 0o077\nrlimits = { nofile = 4096 }\n",
+    );
+    let n = node(&r.model, "a");
+    assert_eq!(n.env, ["A=1", "B=2", "C="]);
+    assert_eq!(
+        (n.cwd.as_str(), n.umask, n.rlimit_nofile),
+        ("/srv", 0o077, 4096)
+    );
+}
+
+#[test]
+fn a_template_env_merges_under_the_frame_env() {
+    let r = ok(
+        "[template.t]\nenv = { A = \"t\", B = \"t\" }\ncwd = \"/t\"\n[worker.a]\ntemplate = \"t\"\nexec = [\"/a\"]\ncredentials = { uid = \"svc\" }\nenv = { A = \"f\" }\n",
+    );
+    let n = node(&r.model, "a");
+    assert_eq!(n.env, ["A=f", "B=t"]);
+    assert_eq!(n.cwd, "/t");
+}
+
+#[test]
+fn seccomp_lists_resolve_to_numbers() {
+    let r = ok(
+        "[worker.a]\nexec = [\"/a\"]\ncredentials = { uid = \"svc\" }\nsandbox = { seccomp = { deny = [\"ptrace\", \"getppid\"] } }\n",
+    );
+    let c = &r.model.creds[node(&r.model, "a").cred.unwrap() as usize];
+    assert_eq!(c.seccomp, Seccomp::Deny(vec![101, 110]));
+    let r = ok(
+        "[worker.a]\nexec = [\"/a\"]\ncredentials = { uid = \"svc\" }\nsandbox = { seccomp = { allow = [\"read\", \"write\", \"exit_group\"] } }\n",
+    );
+    let c = &r.model.creds[node(&r.model, "a").cred.unwrap() as usize];
+    assert_eq!(c.seccomp, Seccomp::Allow(vec![0, 1, 231]));
+}
+
+#[test]
+fn a_deny_list_cannot_name_a_call_the_default_program_already_answers() {
+    for name in ["clone", "unshare", "clone3", "setns"] {
+        let es = errs(&format!(
+            r#"
+        [worker.a]
+        exec = ["/a"]
+        credentials = {{ uid = "svc" }}
+        sandbox = {{ seccomp = {{ deny = ["{name}", "fork"] }} }}
+    "#
+        ));
+        let keys: Vec<_> = es.iter().map(|e| (e.code, e.key.as_str())).collect();
+        assert_eq!(
+            keys,
+            [(Code::BadValue, "worker.a.sandbox.seccomp")],
+            "{name}"
+        );
+        assert!(es[0].detail.contains(name), "{}", es[0].detail);
+    }
+}
+
+#[test]
+fn an_allow_list_may_name_them() {
+    let r = ok(r#"
+        [worker.a]
+        exec = ["/a"]
+        credentials = { uid = "svc" }
+        sandbox = { seccomp = { allow = ["clone", "read"] } }
+    "#);
+    assert_eq!(r.model.creds.len(), 1);
 }

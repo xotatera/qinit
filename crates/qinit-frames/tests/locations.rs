@@ -38,11 +38,15 @@ fn one(es: &[Error]) -> &Error {
 #[test]
 fn a_resolve_error_carries_the_file_that_set_the_key() {
     let t = Tree::new("loc-resolve");
-    t.file("vendor", "a.toml", "[worker.a]\nexec = [\"/a\"]\n");
+    t.file(
+        "vendor",
+        "a.toml",
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\n",
+    );
     t.file(
         "etc",
         "a.toml",
-        "[worker.a]\noutput = { pipe = \"nope\" }\n",
+        "[worker.a]\ncredentials = { uid = \"svc\" }\noutput = { pipe = \"nope\" }\n",
     );
     let es = compile(&t.input(&["vendor", "etc"])).expect_err("refused");
     let e = one(&es);
@@ -99,12 +103,18 @@ fn a_cycle_error_carries_the_file_of_its_first_frame() {
     t.file(
         "vendor",
         "a.toml",
-        &format!("[worker.a]\nexec = [\"/a\"]\n{}", dep("b")),
+        &format!(
+            "[worker.a]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/a\"]\n{}",
+            dep("b")
+        ),
     );
     t.file(
         "vendor",
         "b.toml",
-        &format!("[worker.b]\nexec = [\"/b\"]\n{}", dep("a")),
+        &format!(
+            "[worker.b]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/b\"]\n{}",
+            dep("a")
+        ),
     );
     let es = compile(&t.input(&["vendor"])).expect_err("refused");
     let e = one(&es);
@@ -131,9 +141,13 @@ fn an_instance_error_carries_the_file_of_its_frame() {
     t.file(
         "vendor",
         "g.toml",
-        "[worker.g]\nexec = [\"/g\", \"%i\"]\ninstances = [\"x\"]\n",
+        "[worker.g]\ncredentials = { uid = \"svc\" }\nexec = [\"/g\", \"%i\"]\ninstances = [\"x\"]\n",
     );
-    t.file("etc", "g.toml", "[worker.g]\nready = { path = \"\" }\n");
+    t.file(
+        "etc",
+        "g.toml",
+        "[worker.g]\ncredentials = { uid = \"svc\" }\nready = { path = \"\" }\n",
+    );
     let es = compile(&t.input(&["vendor", "etc"])).expect_err("refused");
     let e = one(&es);
     assert_eq!(

@@ -41,9 +41,13 @@ fn disable_true_removes_the_frame_and_its_provenance() {
             (
                 "vendor",
                 "a.toml",
-                "[worker.x]\nexec=[\"/x\"]\n[worker.y]\nexec=[\"/y\"]",
+                "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/x\"]\n[worker.y]\ncredentials = { uid = \"svc\" }\nexec=[\"/y\"]",
             ),
-            ("etc", "b.toml", "[worker.x]\ndisable=true"),
+            (
+                "etc",
+                "b.toml",
+                "[worker.x]\ncredentials = { uid = \"svc\" }\ndisable=true",
+            ),
         ],
     );
     let m = load(&ls).expect("loads");
@@ -62,9 +66,21 @@ fn a_later_layer_can_redefine_a_disabled_frame() {
     let (_root, ls) = layers(
         "redefine",
         &[
-            ("vendor", "a.toml", "[worker.x]\nexec=[\"/x\"]"),
-            ("etc", "b.toml", "[worker.x]\ndisable=true"),
-            ("local", "c.toml", "[worker.x]\nexec=[\"/new\"]"),
+            (
+                "vendor",
+                "a.toml",
+                "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/x\"]",
+            ),
+            (
+                "etc",
+                "b.toml",
+                "[worker.x]\ncredentials = { uid = \"svc\" }\ndisable=true",
+            ),
+            (
+                "local",
+                "c.toml",
+                "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/new\"]",
+            ),
         ],
     );
     let m = load(&ls).expect("loads");
@@ -80,11 +96,15 @@ fn disable_true_discards_other_keys_in_the_same_table() {
     let (_root, ls) = layers(
         "dis-keys",
         &[
-            ("vendor", "a.toml", "[worker.x]\nexec=[\"/x\"]"),
+            (
+                "vendor",
+                "a.toml",
+                "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/x\"]",
+            ),
             (
                 "etc",
                 "b.toml",
-                "[worker.x]\ndisable=true\nready=\"exit\"\nexec={append=[\"-v\"]}",
+                "[worker.x]\ncredentials = { uid = \"svc\" }\ndisable=true\nready=\"exit\"\nexec={append=[\"-v\"]}",
             ),
         ],
     );
@@ -97,7 +117,11 @@ fn disable_true_discards_other_keys_in_the_same_table() {
 fn disable_of_an_absent_frame_is_accepted() {
     let (_root, ls) = layers(
         "dis-absent",
-        &[("vendor", "a.toml", "[worker.ghost]\ndisable=true")],
+        &[(
+            "vendor",
+            "a.toml",
+            "[worker.ghost]\ncredentials = { uid = \"svc\" }\ndisable=true",
+        )],
     );
     let m = load(&ls).expect("loads");
     assert!(
@@ -115,10 +139,18 @@ fn list_op_errors_from_different_layers_are_all_reported() {
             (
                 "vendor",
                 "a.toml",
-                "[worker.x]\nexec=[\"/x\"]\n[worker.y]\nexec=[\"/y\"]",
+                "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/x\"]\n[worker.y]\ncredentials = { uid = \"svc\" }\nexec=[\"/y\"]",
             ),
-            ("etc", "b.toml", "[worker.x]\nexec=[\"/z\"]"),
-            ("local", "c.toml", "[worker.y]\nexec={remove=[\"-q\"]}"),
+            (
+                "etc",
+                "b.toml",
+                "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/z\"]",
+            ),
+            (
+                "local",
+                "c.toml",
+                "[worker.y]\ncredentials = { uid = \"svc\" }\nexec={remove=[\"-q\"]}",
+            ),
         ],
     );
     let e = load(&ls).unwrap_err();
@@ -134,13 +166,23 @@ fn a_parse_error_stops_the_merge_but_not_the_reading() {
     // vendor list) that would be a ListOp error if etc were merged. local is still read.
     let root = tmp("stops");
     let ls = [
-        layer(&root, "vendor", &[("a.toml", "[worker.x]\nexec=[\"/x\"]")]),
+        layer(
+            &root,
+            "vendor",
+            &[(
+                "a.toml",
+                "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/x\"]",
+            )],
+        ),
         layer(
             &root,
             "etc",
             &[
                 ("a.toml", "[worker.x\n"),
-                ("b.toml", "[worker.x]\nexec=[\"/y\"]"),
+                (
+                    "b.toml",
+                    "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/y\"]",
+                ),
             ],
         ),
         layer(&root, "local", &[("c.toml", "[daemon.z]\n")]),
@@ -234,8 +276,16 @@ fn a_list_verb_given_a_non_array_is_a_list_op_error() {
         let (root, ls) = layers(
             tag,
             &[
-                ("vendor", "a.toml", "[worker.x]\nexec = [\"/x\"]"),
-                ("etc", "b.toml", &format!("[worker.x]\n{change}")),
+                (
+                    "vendor",
+                    "a.toml",
+                    "[worker.x]\ncredentials = { uid = \"svc\" }\nexec = [\"/x\"]",
+                ),
+                (
+                    "etc",
+                    "b.toml",
+                    &format!("[worker.x]\ncredentials = {{ uid = \"svc\" }}\n{change}"),
+                ),
             ],
         );
         let e = load(&ls).unwrap_err();

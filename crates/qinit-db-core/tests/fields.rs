@@ -38,7 +38,7 @@ fn a_dangling_route_or_credential_is_an_index_error() {
         })
     );
     let mut spec = minimal_spec();
-    spec.nodes[0].cred = 0;
+    spec.nodes[0].cred = 1;
     assert_eq!(
         check(&build(&spec)),
         Err(DbError::Index {
@@ -239,14 +239,14 @@ fn a_forager_or_brood_with_a_restart_policy_is_a_consistency_error() {
 fn a_bad_credential_field_is_refused() {
     let mut spec = minimal_spec();
     spec.creds.push(CredSpec {
-        user: "daemon",
         caps: 1 << 41,
+        ..cred("daemon")
     });
     assert_eq!(
         check(&build(&spec)),
         Err(DbError::Enum {
             table: tid(T_CREDS),
-            record: 0
+            record: 1
         })
     );
 }
@@ -272,12 +272,6 @@ fn a_pipe_into_a_non_worker_is_a_consistency_error() {
             record: 0
         })
     );
-}
-
-#[test]
-fn a_node_record_has_24_words() {
-    assert_eq!(WORDS[T_NODES], 24);
-    assert_eq!(N_START_TIMEOUT_MS + 1, WORDS[T_NODES]);
 }
 
 #[test]
@@ -358,4 +352,106 @@ fn the_cascade_flag_is_accepted_and_bit_2_is_not() {
             record: 0
         })
     );
+}
+
+#[test]
+fn a_node_record_has_30_words_and_a_credential_12() {
+    assert_eq!(WORDS[T_NODES], 30);
+    assert_eq!(N_RLIMIT_NOFILE + 1, WORDS[T_NODES]);
+    assert_eq!(WORDS[T_CREDS], 12);
+    assert_eq!(C_SECCOMP_LEN + 1, WORDS[T_CREDS]);
+}
+
+#[test]
+fn an_umask_above_0o777_is_an_enum_error() {
+    let db = with(&valid_minimal(), |w| {
+        let i = at(w, T_NODES, 0, N_UMASK);
+        w[i] = 0o777;
+    });
+    assert_eq!(check(&db), Ok(()));
+    let db = with(&valid_minimal(), |w| {
+        let i = at(w, T_NODES, 0, N_UMASK);
+        w[i] = 0o1000;
+    });
+    assert_eq!(
+        check(&db),
+        Err(DbError::Enum {
+            table: tid(T_NODES),
+            record: 0
+        })
+    );
+}
+
+#[test]
+fn a_worker_or_forager_without_a_credential_is_a_consistency_error() {
+    for kind in [0, 1] {
+        let mut spec = minimal_spec();
+        spec.nodes[1].kind = kind;
+        spec.nodes[1].cred = NONE;
+        assert_eq!(
+            check(&build(&spec)),
+            Err(DbError::Consistency {
+                table: tid(T_NODES),
+                record: 1
+            }),
+            "kind {kind}"
+        );
+    }
+}
+
+#[test]
+fn a_brood_with_a_credential_is_a_consistency_error() {
+    let mut spec = minimal_spec();
+    spec.nodes[1].kind = 2;
+    assert_eq!(
+        check(&build(&spec)),
+        Err(DbError::Consistency {
+            table: tid(T_NODES),
+            record: 1
+        })
+    );
+    spec.nodes[1].cred = NONE;
+    assert_eq!(check(&build(&spec)), Ok(()));
+}
+
+#[test]
+fn a_relative_or_empty_cwd_is_a_consistency_error() {
+    for bad in ["var/lib", ""] {
+        let mut spec = minimal_spec();
+        spec.nodes[0].cwd = bad;
+        assert_eq!(
+            check(&build(&spec)),
+            Err(DbError::Consistency {
+                table: tid(T_NODES),
+                record: 0
+            }),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn an_env_entry_without_a_key_or_without_an_equals_sign_is_a_consistency_error() {
+    for bad in ["=x", "NOEQ", "A=1\0=b", "A=1\0B"] {
+        let mut spec = minimal_spec();
+        spec.nodes[0].env = bad;
+        assert_eq!(
+            check(&build(&spec)),
+            Err(DbError::Consistency {
+                table: tid(T_NODES),
+                record: 0
+            }),
+            "{bad:?}"
+        );
+    }
+    let mut spec = minimal_spec();
+    spec.nodes[0].env = "A=1\0B=\0C=x=y";
+    assert_eq!(check(&build(&spec)), Ok(()));
+}
+
+#[test]
+fn an_env_list_with_an_empty_element_is_a_pool_error() {
+    let mut spec = minimal_spec();
+    spec.nodes[0].env = "A=1\0\0B=2";
+    assert_eq!(check(&build(&spec)), Err(DbError::Pool));
 }

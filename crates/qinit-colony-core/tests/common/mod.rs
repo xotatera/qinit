@@ -9,11 +9,24 @@ use qinit_colony_core::{
     off, step,
 };
 use qinit_db::{
-    Edge, Group, GroupKind, Kind, Mode, Model, Node, Ready, Restart, RestartOn, RestartPolicy,
-    Stop, StopMode, Target, open, write,
+    Cred, Edge, Group, GroupKind, Kind, Mode, Model, Node, Ready, Restart, RestartOn,
+    RestartPolicy, Seccomp, Securebits, Stop, StopMode, Target, open, write,
 };
 
-/// A worker, ready by pipe, no restart.
+/// The one credential every worker and forager runs under: user `svc`, nothing else.
+pub fn svc() -> Cred {
+    Cred {
+        user: "svc".into(),
+        caps: 0,
+        securebits: Securebits::None,
+        nnp: true,
+        ns: 0,
+        seccomp: Seccomp::None,
+        landlock: Vec::new(),
+    }
+}
+
+/// A worker, ready by pipe, no restart, under credential 0.
 pub fn worker(name: &str) -> Node {
     Node {
         kind: Kind::Worker,
@@ -33,11 +46,15 @@ pub fn worker(name: &str) -> Node {
         start_timeout_ms: 90_000,
         output: None,
         errors: None,
-        cred: None,
+        cred: Some(0),
         groups: Vec::new(),
         memory_max_kib: 0,
         pids_max: 0,
         instance_of: None,
+        env: Vec::new(),
+        cwd: "/".into(),
+        umask: 0o027,
+        rlimit_nofile: 0,
     }
 }
 
@@ -47,6 +64,7 @@ pub fn brood(name: &str) -> Node {
         exec: Vec::new(),
         ready: Ready::Exit,
         start_timeout_ms: 0,
+        cred: None,
         ..worker(name)
     }
 }
@@ -114,7 +132,7 @@ pub fn requires(mut n: Node, edges: Vec<Edge>) -> Node {
 pub fn model(nodes: Vec<Node>, enabled: &[u32]) -> Model {
     Model {
         nodes,
-        creds: Vec::new(),
+        creds: vec![svc()],
         routes: Vec::new(),
         enabled: enabled.to_vec(),
         presyslog: Vec::new(),

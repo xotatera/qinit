@@ -28,10 +28,10 @@ Table ids, in header order, with the words per record (`WORDS`):
 
 | Id | Table | Words |
 | --- | --- | --- |
-| 0 `T_NODES` | nodes | 20 |
+| 0 `T_NODES` | nodes | 30 |
 | 1 `T_GROUPS` | dependency groups | 3 |
 | 2 `T_EDGES` | edges | 7 |
-| 3 `T_CREDS` | credentials | 10 |
+| 3 `T_CREDS` | credentials | 12 |
 | 4 `T_ROUTES` | output routes | 3 |
 | 5 `T_ENABLED` | enabled closure | 1 |
 | 6 `T_PRESYSLOG` | pre-syslog list | 1 |
@@ -43,11 +43,12 @@ Strings (names, argv, paths) live in the pool and are referenced by (offset, len
 
 `MAX_NODES` 4096, `MAX_GROUPS` 16384, `MAX_EDGES` 32768, `MAX_EDGES_PER_GROUP` 64,
 `MAX_GROUPS_PER_NODE` 16, `MAX_CREDS` 4096, `MAX_ROUTES` 8192, `MAX_POOL` 1 MiB,
-`MAX_NAME_LEN` 96. `MAX_NODES` and `MAX_EDGES` equal the limits of `qinit-graph-core`.
+`MAX_NAME_LEN` 96, `MAX_UMASK` `0o777`, `MAX_SYSCALL` 512. `MAX_NODES` and `MAX_EDGES` equal the
+limits of `qinit-graph-core`.
 
 ## Records
 
-### Node (24 words)
+### Node (30 words)
 
 | Word | Name | Meaning |
 | --- | --- | --- |
@@ -61,7 +62,7 @@ Strings (names, argv, paths) live in the pool and are referenced by (offset, len
 | 10 | `N_RESTART_WINDOW_MS` | restart window, milliseconds |
 | 11 | `N_OUTPUT` | route index or `NONE` |
 | 12 | `N_ERRORS` | route index or `NONE` |
-| 13 | `N_CRED` | credential index or `NONE` (unprivileged, see the privilege contract) |
+| 13 | `N_CRED` | credential index for a worker or forager, `NONE` for a brood (see "Credentials are required") |
 | 14, 15 | `N_GROUP_FIRST`, `N_GROUP_COUNT` | the node's groups, a run in the group table |
 | 16 | `N_MEMORY_MAX_KIB` | memory limit |
 | 17 | `N_PIDS_MAX` | process limit |
@@ -70,6 +71,10 @@ Strings (names, argv, paths) live in the pool and are referenced by (offset, len
 | 21 | `N_STOP_MODE` | 0 main, 1 cell |
 | 22 | `N_STOP_GRACE_MS` | polite-stop grace period, milliseconds, at least 100 |
 | 23 | `N_START_TIMEOUT_MS` | start timeout, milliseconds; 0 for none |
+| 24, 25 | `N_ENV_OFF`, `N_ENV_LEN` | environment entries `KEY=VALUE` in the pool, NUL-separated, sorted by key; length 0 for none |
+| 26, 27 | `N_CWD_OFF`, `N_CWD_LEN` | working directory in the pool, a non-empty absolute path |
+| 28 | `N_UMASK` | file-mode creation mask, at most `MAX_UMASK` |
+| 29 | `N_RLIMIT_NOFILE` | `RLIMIT_NOFILE` soft and hard limit; 0 keeps the kernel default |
 
 ### Group (3 words)
 
@@ -90,17 +95,27 @@ Strings (names, argv, paths) live in the pool and are referenced by (offset, len
 | 5 | `E_RESTART_ON` | 0 none, 1 error, 2 restart, 3 refresh |
 | 6 | `E_FLAGS` | bit 0 = `stop = "parallel"`, bit 1 = cascade (a quarantined `require_all` target quarantines the dependent); all other bits zero |
 
-### Credential (10 words)
+### Credential (12 words)
 
 | Word | Name | Meaning |
 | --- | --- | --- |
-| 0, 1 | `C_USER_OFF`, `C_USER_LEN` | user name in the pool; length 0 is the unprivileged default identity |
+| 0, 1 | `C_USER_OFF`, `C_USER_LEN` | user name in the pool, non-empty |
 | 2, 3 | `C_CAPS_LO`, `C_CAPS_HI` | capability set as 64 bits; only bits 0..=40 may be set |
 | 4 | `C_SECUREBITS` | 0 none, 1 noroot, 2 noroot-locked |
 | 5 | `C_NNP` | no_new_privs, 0 or 1 |
 | 6 | `C_NS` | namespaces, bits 0..=4: mount, pid, ipc, uts, net |
-| 7 | `C_SECCOMP` | 0 none, 1 default |
+| 7 | `C_SECCOMP` | 0 none, 1 default, 2 deny-list, 3 allow-list |
 | 8, 9 | `C_LANDLOCK_OFF`, `C_LANDLOCK_LEN` | entries `ro:/path` or `rw:/path`, NUL-separated |
+| 10, 11 | `C_SECCOMP_OFF`, `C_SECCOMP_LEN` | syscall numbers of the deny- or allow-list, NUL-separated canonical decimals; length 0 exactly when `C_SECCOMP` is 0 or 1 |
+
+The default program answers `clone`, `unshare`, `clone3` and `setns` itself (`clone` and
+`unshare` by their namespace flags, `setns` always, `clone3` with `ENOSYS`), so a deny-list
+may not name them. An allow-list replaces the default program, including that check: an
+allow-list that names `clone` or `unshare` permits creating namespaces.
+
+A canonical decimal is 1 to 3 ASCII digits with no leading zero (the single digit `0` is the
+only entry starting with `0`), and its value is below `MAX_SYSCALL`. The compiler emits exactly
+this form and the validator accepts only it.
 
 ### Route (3 words)
 
@@ -114,27 +129,26 @@ Strings (names, argv, paths) live in the pool and are referenced by (offset, len
 
 One word per record, a node index. Both lists are ascending and free of duplicates.
 
-## Privilege contract
+## Credentials are required
 
-Least privilege is the default. A node with `N_CRED = NONE` (its frame declared neither
-`credentials` nor `sandbox`) is unprivileged by contract: it does not run as root, its
-capability sets are empty and no-new-privileges is on. The same holds for a credential record
-with an empty user (`C_USER_LEN` 0): an empty user means the unprivileged default identity, not
-"keep the overseer's uid". The compiler writes such a record, for a frame with only a `sandbox`
-table, with `C_CAPS` 0 and `C_NNP` 1, so no reader can take it for a privileged one. Which
-unprivileged identity runs these nodes is chosen by the overseer, not stored in the database. The overseer must refuse a hand-made
-database whose credential record has an empty user but non-zero `C_CAPS` or `C_NNP` 0: the
-compiler never emits one, the policy check treats it as privileged and this contract says an
-empty user is unprivileged, so the record contradicts itself.
+Every worker and forager references a credential record (`N_CRED` is an index, never `NONE`),
+and every credential record names a non-empty user; the overseer resolves that name through
+`/etc/passwd` and `/etc/group` of the booted system. A brood runs nothing and has `N_CRED`
+`NONE`. There is no default identity: a database whose worker has no credential, or whose
+credential has an empty user, is refused. The sandbox fields of a credential (`C_NS`,
+`C_SECCOMP`, the Landlock and seccomp lists) go with the identity in the same record. A
+credential with `C_NNP` 0 and a Landlock list or a seccomp filter needs `CAP_SYS_ADMIN` (bit
+`CAP_SYS_ADMIN_BIT` = 21 of `C_CAPS_LO`), because installing those without `no_new_privs`
+requires it.
 
 ## Validation rules
 
 The validator is total and never panics. It accepts a database only if all of the following hold:
 
 1. **V1** Header fields, offsets and counts are in bounds and within the limits, and tables do not overlap.
-2. **V2** Every pool reference is an in-bounds slice, valid UTF-8, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, Landlock entries) holds no empty element. `N_INSTANCE_OF` may be empty, but at most `MAX_NAME_LEN` bytes.
+2. **V2** Every pool reference is an in-bounds slice, valid UTF-8, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, environment entries, Landlock entries, seccomp lists) holds no empty element. `N_INSTANCE_OF` may be empty, but at most `MAX_NAME_LEN` bytes.
 3. **V3** Every cross-table index is `NONE` or in range of its table.
-4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline). A node's `stop_mode` is 0 or 1, its `restart_delay_ms` and `stop_grace_ms` are at least 100, and `restart_max > 0` implies `restart_window_ms > 0`.
+4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline). A node's `stop_mode` is 0 or 1, its `restart_delay_ms` and `stop_grace_ms` are at least 100, `restart_max > 0` implies `restart_window_ms > 0`, and its `umask` is at most `MAX_UMASK`. A worker or forager has a credential and a brood has none; the working directory is non-empty and starts with `/`; every environment entry has a non-empty key before its first `=`. A credential's user is non-empty, `seccomp` is at most 3 and its list is non-empty exactly when `seccomp` is 2 or 3; every list entry is a canonical decimal below `MAX_SYSCALL`; `nnp` 0 with a Landlock list or a seccomp filter requires `CAP_SYS_ADMIN` in `caps_lo`.
 5. **V5** The ordering-edge graph is acyclic.
 6. **V6** The stop order derived by `qinit-graph-core` places every hard dependent before its dependency, whatever the opt-outs.
 7. **V7** `stop = "parallel"` appears on no hard edge.
@@ -147,16 +161,21 @@ functions `v1` to `v8` in `crates/qinit-db-core/src/validate/spec/`, and
 
 - Tables appear in header order, each starting at or after the end of the one before (the
   first after the header). Every table but the pool starts on a 4-byte boundary.
-- Every pool reference (names, argv, readiness arguments, instanced-frame names, path
-  targets, users, Landlock entries, route paths) is in the pool and valid UTF-8, as
+- Every pool reference (names, argv, readiness arguments, instanced-frame names, environment
+  entries, working directories, path targets, users, Landlock entries, seccomp lists, route
+  paths) is in the pool and valid UTF-8, as
   `core::str::from_utf8` defines it. Node names are 1 to `MAX_NAME_LEN` bytes and strictly ascending, bytewise.
-- The argv and Landlock lists are either empty (length 0) or have no NUL as their first or last
-  byte and no two NULs in a row, so every element is non-empty (`DbError::Pool` otherwise).
+- The argv, environment, Landlock and seccomp lists are either empty (length 0) or have no NUL
+  as their first or last byte and no two NULs in a row, so every element is non-empty
+  (`DbError::Pool` otherwise). The content of environment and seccomp entries and of the working
+  directory is a V4 rule (`DbError::Consistency`), checked after V2 has placed the bytes in the
+  pool.
 - Tiling: node `i`'s groups start where node `i - 1`'s end (node 0's at 0), and the last node's
   end at the group count; groups tile the edge table the same way. A node has at most
   `MAX_GROUPS_PER_NODE` groups, a group at most `MAX_EDGES_PER_GROUP` edges.
-- A forager or brood has restart policy 0, and a brood has no argv. A node-target edge has
-  `target_len` 0. A pipe route names a worker and has `b` 0. `caps_hi` uses bits 0..=8 only.
+- A forager or brood has restart policy 0, and a brood has no argv and no credential; a worker
+  or forager has a credential. A node-target edge has `target_len` 0. A pipe route names a
+  worker and has `b` 0. `caps_hi` uses bits 0..=8 only.
 - Ordering edges are the node-target edges of `require_all`, `require_any` and `optional_all`
   groups; an ordering edge is hard when its group is `require_all` or `require_any` and its
   mode is sync. `exclude_all` edges and path targets do not order anything.

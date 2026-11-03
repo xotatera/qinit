@@ -10,6 +10,7 @@ use qinit_frames::error::Code;
 
 const SSHD: &str = r#"
 [worker.sshd]
+credentials = { uid = "svc" }
 exec = ["/usr/sbin/sshd", "-D"]
 restart = { policy = "on-failure", max = 3, window = "60s" }
 cell = { pids_max = 64 }
@@ -18,7 +19,11 @@ cell = { pids_max = 64 }
 #[test]
 fn a_minimal_tree_compiles_and_the_bytes_validate() {
     let t = Tree::new("pipe-min");
-    t.file("vendor", "a.toml", "[worker.a]\nexec = [\"/a\"]\n");
+    t.file(
+        "vendor",
+        "a.toml",
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\n",
+    );
     let c = compile(&t.input(&["vendor"])).expect("compiles");
     let r = qinit_db::open(&c.bytes).expect("validates");
     let m = r.decode();
@@ -31,10 +36,13 @@ fn a_minimal_tree_compiles_and_the_bytes_validate() {
 #[test]
 fn compile_is_deterministic_across_runs_and_file_creation_order() {
     let files = [
-        ("a.toml", "[worker.a]\nexec = [\"/a\"]\n"),
+        (
+            "a.toml",
+            "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\n",
+        ),
         (
             "b.toml",
-            "[worker.b]\nexec = [\"/b\"]\n\
+            "[worker.b]\ncredentials = { uid = \"svc\" }\nexec = [\"/b\"]\n\
              deps = [{ group = \"require_all\", edges = [{ to = \"a\" }] }]\n",
         ),
         ("c.toml", "[brood.c]\n"),
@@ -85,6 +93,15 @@ fn an_etc_amend_changes_only_the_amended_key() {
         "stop.mode",
         "stop.grace",
         "start_timeout",
+        "cwd",
+        "umask",
+        "rlimits.nofile",
+        "credentials.caps",
+        "credentials.nnp",
+        "credentials.securebits",
+        "sandbox.namespaces",
+        "sandbox.seccomp",
+        "sandbox.landlock",
     ];
     for l in lines
         .iter()
@@ -107,9 +124,13 @@ fn dump_and_errors_keep_frames_with_dots_in_their_names_apart() {
     t.file(
         "vendor",
         "ab.toml",
-        "[worker.\"a.b\"]\nexec = [\"/ab\"]\nrestart = { policy = \"always\" }\n",
+        "[worker.\"a.b\"]\ncredentials = { uid = \"svc\" }\nexec = [\"/ab\"]\nrestart = { policy = \"always\" }\n",
     );
-    t.file("etc", "a.toml", "[worker.a]\nexec = [\"/a\"]\n");
+    t.file(
+        "etc",
+        "a.toml",
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\n",
+    );
     let c = compile(&t.input(&["vendor", "etc"])).expect("compiles");
     let block = |name: &str| -> Vec<String> {
         c.dump
@@ -137,7 +158,7 @@ fn dump_and_errors_keep_frames_with_dots_in_their_names_apart() {
     t.file(
         "vendor",
         "ab.toml",
-        "[worker.\"a.b\"]\nexec = [\"/ab\"]\nrestart = { policy = \"always\", window = \"soon\" }\n",
+        "[worker.\"a.b\"]\ncredentials = { uid = \"svc\" }\nexec = [\"/ab\"]\nrestart = { policy = \"always\", window = \"soon\" }\n",
     );
     let es = compile(&t.input(&["vendor", "etc"])).expect_err("refused");
     assert_eq!(es.len(), 1, "{es:?}");
@@ -158,7 +179,7 @@ fn template_values_and_defaults_are_labelled_in_the_dump() {
     t.file(
         "etc",
         "w.toml",
-        "[worker.w]\ntemplate = \"base\"\nrestart = { policy = \"always\" }\n\
+        "[worker.w]\ncredentials = { uid = \"svc\" }\ntemplate = \"base\"\nrestart = { policy = \"always\" }\n\
          deps = [{ group = \"optional_all\", edges = [{ path = \"/w\" }] }]\n",
     );
     let c = compile(&t.input(&["vendor", "etc"])).expect("compiles");
@@ -176,7 +197,7 @@ fn dump_edge_keys_follow_the_frame_after_a_dropped_edge() {
     t.file(
         "vendor",
         "a.toml",
-        "[brood.b]\n[worker.a]\nexec = [\"/a\"]\n\
+        "[brood.b]\n[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\n\
          deps = [{ group = \"optional_all\", edges = [{ to = \"nope\" }, { to = \"b\" }] }]\n",
     );
     let c = compile(&t.input(&["vendor"])).expect("compiles");
@@ -202,7 +223,7 @@ fn warnings_report_dropped_optional_edges() {
     t.file(
         "vendor",
         "a.toml",
-        "[worker.a]\nexec = [\"/a\"]\n\
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\n\
          deps = [{ group = \"optional_all\", edges = [{ to = \"nope\" }] }]\n",
     );
     let c = compile(&t.input(&["vendor"])).expect("compiles");
@@ -216,12 +237,12 @@ fn every_error_from_a_failing_stage_is_returned_together() {
     t.file(
         "vendor",
         "a.toml",
-        "[worker.a]\nexec = [\"/a\"]\nrestart = { policy = \"sometimes\" }\n",
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\nrestart = { policy = \"sometimes\" }\n",
     );
     t.file(
         "vendor",
         "b.toml",
-        "[worker.b]\nexec = [\"/b\"]\ncell = { memory_max = \"lots\" }\n",
+        "[worker.b]\ncredentials = { uid = \"svc\" }\nexec = [\"/b\"]\ncell = { memory_max = \"lots\" }\n",
     );
     let es = compile(&t.input(&["vendor"])).expect_err("refused");
     assert_eq!(es.len(), 2, "{es:?}");

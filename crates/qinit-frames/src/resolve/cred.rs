@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! `credentials` and `sandbox` tables to one `Cred` record.
 use super::Cx;
-use crate::schema::{Creds, Sandbox};
+use crate::schema::{Creds, Sandbox, SeccompCfg};
+use crate::syscalls;
 use qinit_db::{Cred, Seccomp, Securebits};
+use qinit_db_core::CAP_SYS_ADMIN_BIT;
 
 /// Capability names without the `cap_` prefix; the index is the capability number.
 const CAPS: [&str; 41] = [
@@ -118,52 +120,82 @@ fn from_sandbox(cx: &mut Cx, base: &str, s: &Sandbox, out: &mut Cred) {
         cx.bad(format!("{base}.sandbox.landlock"), why);
     }
     out.landlock = landlock;
-    out.seccomp = match s.seccomp.as_deref() {
-        None | Some("none") => Seccomp::None,
-        Some("default") => Seccomp::Default,
-        Some(x) => {
-            cx.bad(
-                format!("{base}.sandbox.seccomp"),
-                format!("`{x}` is not none or default"),
-            );
+    let key = format!("{base}.sandbox.seccomp");
+    out.seccomp = match &s.seccomp {
+        None => Seccomp::None,
+        Some(SeccompCfg::Kind(k)) if k == "none" => Seccomp::None,
+        Some(SeccompCfg::Kind(k)) if k == "default" => Seccomp::Default,
+        Some(SeccompCfg::Kind(k)) => {
+            let why =
+                format!("`{k}` is not none, default, {{ deny = [...] }} or {{ allow = [...] }}");
+            cx.bad(key, why);
             Seccomp::None
         }
+        Some(SeccompCfg::Deny { deny }) => {
+            // The program answers these four before it reads the list (clone and unshare by
+            // their flags, setns always, clone3 with ENOSYS), so naming one would change nothing.
+            for n in deny
+                .iter()
+                .filter(|n| ALWAYS_ANSWERED.contains(&n.as_str()))
+            {
+                let why =
+                    format!("`{n}` is already restricted by the sandbox and cannot be listed");
+                cx.bad(key.clone(), why);
+            }
+            Seccomp::Deny(syscall_numbers(cx, &key, deny))
+        }
+        Some(SeccompCfg::Allow { allow }) => Seccomp::Allow(syscall_numbers(cx, &key, allow)),
     };
 }
 
-/// The `Cred` of a frame, `None` when it has neither table.
-///
-/// Without `credentials` (only a `sandbox` table) the record is unprivileged by contract: the
-/// user is empty, which means the overseer's unprivileged default identity (not "keep the
-/// overseer's uid"), the capability sets are empty and no-new-privileges is on. Both are written
-/// out explicitly so no reader of the database can take the record for a privileged one. With
-/// `credentials`, `nnp` is what the frame says (on when omitted).
+/// The calls the seccomp program answers by itself in every mode but `allow`.
+const ALWAYS_ANSWERED: [&str; 4] = ["clone", "unshare", "clone3", "setns"];
+
+/// The numbers of the syscall `names`; an unknown name or an empty list is a `BadValue`.
+fn syscall_numbers(cx: &mut Cx, key: &str, names: &[String]) -> Vec<u32> {
+    if names.is_empty() {
+        cx.bad(key, "a seccomp list needs at least one syscall");
+    }
+    let mut out = Vec::new();
+    for n in names {
+        match syscalls::number(n) {
+            Some(nr) => out.push(nr),
+            None => cx.bad(key, format!("unknown syscall `{n}`")),
+        }
+    }
+    out
+}
+
+/// The `Cred` of a frame: `None` without `credentials` (the caller has reported the missing
+/// user); otherwise the identity from `credentials` and the sandbox from `sandbox`, which
+/// has no effect on its own. Installing a Landlock ruleset or a seccomp filter without
+/// `no_new_privs` needs `CAP_SYS_ADMIN`, so `nnp = false` next to either is refused without it.
 pub(super) fn cred(
     cx: &mut Cx,
     base: &str,
     c: Option<&Creds>,
     s: Option<&Sandbox>,
 ) -> Option<Cred> {
-    if c.is_none() && s.is_none() {
-        return None;
-    }
+    let c = c?;
     let mut out = Cred {
         user: String::new(),
         caps: 0,
         securebits: Securebits::None,
-        nnp: false,
+        nnp: true,
         ns: 0,
         seccomp: Seccomp::None,
         landlock: Vec::new(),
     };
-    if let Some(c) = c {
-        from_creds(cx, base, c, &mut out);
-    } else {
-        out.caps = 0;
-        out.nnp = true;
-    }
+    from_creds(cx, base, c, &mut out);
     if let Some(s) = s {
         from_sandbox(cx, base, s, &mut out);
+    }
+    let restricts = !out.landlock.is_empty() || out.seccomp != Seccomp::None;
+    if !out.nnp && restricts && out.caps & (1 << CAP_SYS_ADMIN_BIT) == 0 {
+        cx.bad(
+            format!("{base}.credentials.nnp"),
+            "nnp = false with a Landlock list or seccomp needs sys_admin in caps",
+        );
     }
     Some(out)
 }

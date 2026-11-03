@@ -19,11 +19,30 @@ const SUITES: &[&str] = &[
     "reuse_guard",
     "adopt",
     "orphan",
+    "launch",
+    "sandbox",
+    "output",
+    "deadline",
+    "fail",
 ];
 
-fn suite_run(suite: &str, image: &Path, bin: &Path, out: &Path) -> Result<usize, String> {
+/// The guest's accounts (`/etc/passwd`): `toor` is uid 0 under another name (spec R6).
+const PASSWD: &str = "root:x:0:0:root:/root:/bin/sh\nsvc:x:1000:1000:svc:/home/svc:/bin/sh\nnobody:x:65534:65534::/:/bin/sh\ntoor:x:0:0::/:/bin/sh\n";
+
+/// The guest's groups (`/etc/group`): `svc` is a member of `wheel`.
+const GROUP: &str = "root:x:0:\nsvc:x:1000:\nwheel:x:10:svc\nnobody:x:65534:\n";
+
+fn suite_run(
+    suite: &str,
+    image: &Path,
+    bin: &Path,
+    overseer: &Path,
+    out: &Path,
+) -> Result<usize, String> {
     let data = std::fs::read(bin).map_err(|e| format!("read {}: {e}", bin.display()))?;
-    let mut entries: Vec<Entry> = ["dev", "proc", "sys", "tmp"]
+    let overseer =
+        std::fs::read(overseer).map_err(|e| format!("read {}: {e}", overseer.display()))?;
+    let mut entries: Vec<Entry> = ["dev", "proc", "sys", "tmp", "etc"]
         .iter()
         .map(|d| Entry {
             path: (*d).to_string(),
@@ -36,6 +55,18 @@ fn suite_run(suite: &str, image: &Path, bin: &Path, out: &Path) -> Result<usize,
         mode: 0o100_755,
         data,
     });
+    entries.push(Entry {
+        path: "overseer".to_string(),
+        mode: 0o100_755,
+        data: overseer,
+    });
+    for (path, text) in [("etc/passwd", PASSWD), ("etc/group", GROUP)] {
+        entries.push(Entry {
+            path: path.to_string(),
+            mode: 0o100_644,
+            data: text.as_bytes().to_vec(),
+        });
+    }
     let initrd = out.join(format!("{suite}.cpio"));
     std::fs::write(&initrd, newc(&entries)).map_err(|e| e.to_string())?;
     let serial = qemu::boot(image, &initrd, &out.join(format!("{suite}.log")))?;
@@ -60,12 +91,15 @@ fn run(selected: &[String]) -> Result<(), String> {
         kernel::cache_root(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))?
             .join("vm-logs");
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let overseer = bins
+        .get("overseer")
+        .ok_or("no guest binary for the executor")?;
     let mut failed = Vec::new();
     for s in suites {
         let bin = bins
             .get(s)
             .ok_or_else(|| format!("no guest binary for suite {s}"))?;
-        match suite_run(s, &image, bin, &out) {
+        match suite_run(s, &image, bin, overseer, &out) {
             Ok(n) => println!("PASS vm/{s} ({n} cases)"),
             Err(e) => {
                 println!("FAIL vm/{s}: {e}");

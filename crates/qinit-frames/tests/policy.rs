@@ -134,8 +134,8 @@ fn no_matching_rule_follows_the_default() {
 /// A worker with no `credentials` is unprivileged by contract (not root, no capabilities,
 /// no-new-privileges on), so it needs no rule and passes even under `default = "deny"`.
 #[test]
-fn a_worker_without_credentials_needs_no_rule() {
-    let m = model("[worker.plain]\nexec = [\"/p\"]\n");
+fn a_non_root_worker_without_capabilities_needs_no_rule() {
+    let m = model("[worker.plain]\ncredentials = { uid = \"svc\" }\nexec = [\"/p\"]\n");
     assert_eq!(check(&pol("nocred", "default = \"deny\"\n"), &m), Ok(()));
     // Also when a rule matches it: there is nothing for the rule to bound.
     let p = pol(
@@ -146,25 +146,16 @@ fn a_worker_without_credentials_needs_no_rule() {
 }
 
 #[test]
-fn sandbox_only_workers_are_unprivileged_and_satisfy_every_rule() {
-    let src = r#"
-        [worker.box]
-        exec = ["/b"]
-        sandbox = { namespaces = ["mount"] }
-    "#;
-    for (tag, body) in [
-        ("sbx-deny", "default = \"deny\"\n"),
-        (
-            "sbx-users",
-            "default = \"deny\"\n[[rule]]\nmatch = \"box\"\nusers = [\"x\"]\n",
-        ),
-        (
-            "sbx-nnp",
-            "default = \"deny\"\n[[rule]]\nmatch = \"box\"\nrequire_nnp = true\n",
-        ),
-    ] {
-        assert_eq!(check(&pol(tag, body), &model(src)), Ok(()), "{tag}");
-    }
+fn a_root_worker_without_capabilities_still_needs_a_rule() {
+    let m = model("[worker.su]\ncredentials = { uid = \"root\" }\nexec = [\"/s\"]\n");
+    let es = check(&pol("root-deny", "default = \"deny\"\n"), &m).expect_err("refused");
+    assert_eq!(es.len(), 1, "{es:?}");
+    assert_eq!(es[0].code, Code::Policy);
+    let p = pol(
+        "root-rule",
+        "default = \"deny\"\n[[rule]]\nmatch = \"su\"\nusers = [\"root\"]\n",
+    );
+    assert_eq!(check(&p, &m), Ok(()));
 }
 
 #[test]
@@ -190,39 +181,15 @@ fn a_declared_root_worker_is_checked_against_the_ceiling() {
 }
 
 #[test]
-fn an_empty_user_that_still_grants_privilege_is_checked() {
-    // The compiler never emits this (a sandbox-only cred has no caps and nnp on), but a model
-    // built by hand can: it is not unprivileged, so the rule and the default apply.
-    let mut m = model("[worker.box]\nexec = [\"/b\"]\nsandbox = { namespaces = [\"mount\"] }\n");
-    m.creds[0].caps = 1 << 21;
-    let es = check(&pol("empty-caps", "default = \"deny\"\n"), &m).expect_err("refused");
-    assert_eq!(es[0].code, Code::Policy);
-    let p = pol(
-        "empty-ceil",
-        "default = \"deny\"\n[[rule]]\nmatch = \"box\"\nusers = [\"x\"]\n",
-    );
-    let es = check(&p, &m).expect_err("refused");
-    assert_eq!(es.len(), 1, "{es:?}");
-    assert!(es[0].detail.contains("sys_admin"), "{}", es[0].detail);
-    m.creds[0].caps = 0;
-    m.creds[0].nnp = false;
-    let p = pol(
-        "empty-nnp",
-        "default = \"deny\"\n[[rule]]\nmatch = \"box\"\nrequire_nnp = true\n",
-    );
-    assert!(check(&p, &m).is_err());
-}
-
-#[test]
 fn every_offending_worker_is_reported() {
     let m = model(
         r#"
         [worker.a]
         exec = ["/a"]
-        credentials = { uid = "x" }
+        credentials = { uid = "root" }
         [worker.b]
         exec = ["/b"]
-        credentials = { uid = "y" }
+        credentials = { uid = "y", caps = ["net_raw"] }
         "#,
     );
     let es = check(&pol("all", "default = \"deny\"\n"), &m).expect_err("denied");
@@ -346,4 +313,45 @@ fn an_empty_users_list_allows_no_user_but_omitting_users_allows_any() {
     assert_eq!(es[0].code, Code::Policy);
     assert!(es[0].detail.contains("sshd"), "{}", es[0].detail);
     assert_eq!(check(&pol("users-any", &rule("")), &model(SSHD)), Ok(()));
+}
+
+#[test]
+fn require_seccomp_is_satisfied_by_default_deny_and_allow_lists() {
+    let p = pol(
+        "req-sec",
+        "default = \"deny\"\n[[rule]]\nmatch = \"a\"\nusers = [\"root\"]\nrequire_seccomp = true\n",
+    );
+    for seccomp in [
+        "\"default\"",
+        "{ deny = [\"ptrace\"] }",
+        "{ allow = [\"read\", \"write\", \"exit_group\"] }",
+    ] {
+        let m = model(&format!(
+            "[worker.a]\nexec = [\"/a\"]\ncredentials = {{ uid = \"root\" }}\nsandbox = {{ seccomp = {seccomp} }}\n"
+        ));
+        assert_eq!(check(&p, &m), Ok(()), "{seccomp}");
+    }
+}
+
+#[test]
+fn require_seccomp_refuses_none() {
+    let p = pol(
+        "req-sec-none",
+        "default = \"deny\"\n[[rule]]\nmatch = \"a\"\nusers = [\"root\"]\nrequire_seccomp = true\n",
+    );
+    let m = model("[worker.a]\nexec = [\"/a\"]\ncredentials = { uid = \"root\" }\n");
+    let es = check(&p, &m).expect_err("refused");
+    assert_eq!(es.len(), 1, "{es:?}");
+    assert_eq!(es[0].code, Code::Policy);
+    assert!(
+        es[0].detail.contains("seccomp required by rule `a`"),
+        "{}",
+        es[0].detail
+    );
+    let e = policy(
+        "req-sec-shape",
+        "default = \"deny\"\n[[rule]]\nmatch = \"a\"\nrequire_seccomp = 1\n",
+    )
+    .expect_err("refused");
+    assert_eq!(e[0].key, "rule[0].require_seccomp");
 }

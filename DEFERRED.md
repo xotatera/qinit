@@ -107,14 +107,16 @@ Adoption treats a cell that cannot be opened as an id mismatch
 ### D13 — x86_64 syscall shim · `ACCEPTED`
 
 `qinit-sys` is written for x86_64 (raw child path, kernel structure layouts);
-another architecture needs its own `KernelSigaction` and checked layouts.
+another architecture needs its own `KernelSigaction` and checked layouts. The seccomp syscall
+table and the default denylist of the overseer are `x86_64` only as well.
 
 ### D14 — clone3 signal mask and threaded credential changes · `ACCEPTED`
 
 Blocking all signals around clone3, including glibc's SIGSETXID and musl's
 synccall signal, lets a threaded caller create a child with credentials from
 before a concurrent setxid change. Sub-project 5 (privilege) must revisit
-this before using spawn from a threaded caller that changes credentials.
+this before using spawn from a threaded caller that changes credentials. The overseer is
+single-threaded and changes its own credentials (SP5), so it is not such a caller.
 
 ### D15 — Runtime group evaluation · `RESOLVED`
 
@@ -155,18 +157,10 @@ prove that each reference starts and ends on a character boundary.
 for `[[rule]]` header lines, not by parsing TOML. The limits of that scan are
 documented in `crates/qinit-frames/src/policy.rs`.
 
-### D21 — Overseer runs undeclared workers unprivileged · `OPEN`
+### D21 — Overseer runs undeclared workers unprivileged · `RESOLVED`
 
-The compiled database leaves privilege out for a node with `N_CRED = NONE`
-and for a credential record with an empty user. By contract both are
-unprivileged: not root, empty capability sets, no-new-privileges on (see
-`docs/db-format.md`, "Privilege contract"). The compiler and the policy check
-rely on it: such nodes need no policy rule, even under `default = "deny"`.
-Sub-project 5 (overseer) must enforce the contract, choosing the unprivileged
-default identity itself; until then nothing runs these nodes. The overseer must also refuse a
-hand-made database whose credential record has an empty user but non-zero caps or
-no-new-privileges off: the compiler never emits one, the policy check treats it as privileged,
-and the format contract says an empty user is unprivileged.
+Resolved by the overseer sub-project: every worker and forager declares its user, and the
+contract that left undeclared ones unprivileged is withdrawn (`docs/db-format.md`).
 
 ### D22 — no-new-privileges default for declared credentials · `RESOLVED`
 
@@ -228,3 +222,37 @@ the edges) and lets every running node that is to stop check its dependents (an 
 so the worst case is about `MAX_NODES`² times `MAX_EDGES` steps per input. A long chain of broods
 can need that many passes; ordinary graphs need a handful. A reverse-adjacency index would remove
 the edge scans; add it if a real graph makes this visible.
+
+### D31 — Cgroup limits at cell creation · `OPEN`
+
+`memory.max` and `pids.max` are attributes of the cgroup the colony owns, not of the launch. The
+node record carries them; writing them when the cell is created belongs to the colony daemon
+sub-project (SP7).
+
+### D32 — Bind-built empty-root mount view · `OPEN`
+
+A `mount` namespace is a private copy of the host tree with a private `/tmp`; Landlock is the
+restriction. A view built from bind mounts of only what a service needs is deferred.
+
+### D33 — User namespaces · `OPEN`
+
+The overseer starts services as the uid they declare and offers no `user` namespace. A service
+that wants to be root in a namespace only needs a sandbox design of its own.
+
+### D34 — Other rlimits · `OPEN`
+
+Only `RLIMIT_NOFILE` is configurable (and `RLIMIT_CORE` is always 0). Other limits are added on
+demand.
+
+### D35 — Dumpable after exec · `ACCEPTED`
+
+The kernel sets the dumpable flag at every exec of a plain binary, so a service is dumpable; its
+`RLIMIT_CORE` is 0 and the default seccomp denylist denies `ptrace` and `process_vm_*`. The
+supervisors of a pid-namespace launch never exec and are non-dumpable.
+
+### D36 — Pid-namespace status relay · `ACCEPTED`
+
+The init of a pid namespace cannot raise a default-action signal on itself, so it exits with
+`128 + n` and the supervisor outside turns an exit code of `128 + n` back into signal `n`. A
+service that itself exits with such a code in a pid namespace is reported as killed by that
+signal.

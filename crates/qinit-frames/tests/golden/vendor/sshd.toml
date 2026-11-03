@@ -7,7 +7,6 @@ restart = { policy = "on-failure", max = 3, window = "120s" }
 output = { pipe = "logd" }
 cell = { memory_max = "64M", pids_max = 64 }
 credentials = { uid = "root", caps = ["net_bind_service", "sys_chroot", "setuid", "setgid"], nnp = false, securebits = "noroot" }
-sandbox = { namespaces = ["ipc", "uts"], seccomp = "default", landlock = ["ro:/etc/ssh", "rw:/run/sshd"] }
 deps = [
   { group = "require_all", edges = [{ to = "mount-var", restart_on = "error" }, { path = "/etc/ssh/sshd_config" }] },
   { group = "optional_all", edges = [{ to = "syslog-ng", mode = "async", deadline = "5s", stop = "parallel" }] },

@@ -24,14 +24,11 @@ fn argv_db() -> (Vec<u8>, Range<usize>) {
     (db, r)
 }
 
-/// A database with one credential whose Landlock list is the bytes `ro:/etc/x` (shared with
-/// its user name, which is a plain string), and the pool bytes of that list.
+/// A database whose credential 0 has the Landlock list `ro:/etc/x` (shared with its user name,
+/// which is a plain string), and the pool bytes of that list.
 fn landlock_db() -> (Vec<u8>, Range<usize>) {
     let mut spec = minimal_spec();
-    spec.creds.push(CredSpec {
-        user: "ro:/etc/x",
-        caps: 0,
-    });
+    spec.creds[0].user = "ro:/etc/x";
     let db = with(&build(&spec), |w| {
         let (uo, ul) = (at(w, T_CREDS, 0, C_USER_OFF), at(w, T_CREDS, 0, C_USER_LEN));
         let (lo, ll) = (
@@ -108,9 +105,7 @@ fn one_and_two_element_lists_and_the_empty_list_are_valid() {
     // The empty list: a brood has no argv and a credential without Landlock has length 0.
     let mut spec = minimal_spec();
     spec.nodes[1].kind = 2;
-    spec.creds.push(CredSpec {
-        user: "daemon",
-        caps: 0,
-    });
+    spec.nodes[1].cred = NONE;
+    spec.creds.push(cred("daemon"));
     assert_eq!(check(&build(&spec)), Ok(()));
 }

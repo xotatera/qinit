@@ -6,6 +6,7 @@
 #![allow(clippy::many_single_char_names)] // `b`, `n`, `i`, `g`, `x`, `k` follow the spec names
 
 use super::header::{field, header_word};
+use super::pool::{cwd_ok_exec, env_list_ok_exec, seccomp_list_ok_exec};
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use super::spec::*;
 use super::{DbError, rid, tid};
@@ -25,11 +26,13 @@ fn index_or_none_ok(v: u32, n: u32) -> (r: bool)
 fn check_node(b: &[u8], i: usize) -> (r: Result<(), DbError>)
     requires
         v1(b@),
+        v2(b@),
         i < nodes(b@),
     ensures
         r is Ok ==> node_index_ok(b@, i as int) && node_enum_ok(b@, i as int),
 {
     let t = T_NODES;
+    assert(node_pool_ok(b@, i as int));
     let index = DbError::Index { table: tid(t), record: rid(i) };
     let routes = header_word(b, 5 + 2 * T_ROUTES);
     let creds = header_word(b, 5 + 2 * T_CREDS);
@@ -41,9 +44,20 @@ fn check_node(b: &[u8], i: usize) -> (r: Result<(), DbError>)
     }
     let kind = field(b, t, i, N_KIND);
     let policy = field(b, t, i, N_RESTART_POLICY);
-    if kind > 2 || field(b, t, i, N_READY_KIND) > 3 || policy > 2 || field(b, t, i, N_STOP_MODE)
-        > 1 {
+    if kind > 2 || field(b, t, i, N_READY_KIND) > 3 || policy > 2 || field(b, t, i, N_STOP_MODE) > 1
+        || field(b, t, i, N_UMASK) > MAX_UMASK {
         return Err(DbError::Enum { table: tid(t), record: rid(i) });
+    }
+    let cred = field(b, t, i, N_CRED);
+    if (kind <= 1 && cred == NONE) || (kind == 2 && cred != NONE) {
+        return Err(DbError::Consistency { table: tid(t), record: rid(i) });
+    }
+    if !cwd_ok_exec(b, field(b, t, i, N_CWD_OFF), field(b, t, i, N_CWD_LEN)) || !env_list_ok_exec(
+        b,
+        field(b, t, i, N_ENV_OFF),
+        field(b, t, i, N_ENV_LEN),
+    ) {
+        return Err(DbError::Consistency { table: tid(t), record: rid(i) });
     }
     if (kind != 0 && policy != 0) || (kind == 2 && field(b, t, i, N_EXEC_LEN) != 0) || field(
         b,
@@ -91,18 +105,33 @@ fn check_edge(b: &[u8], x: usize) -> (r: Result<(), DbError>)
 fn check_cred(b: &[u8], c: usize) -> (r: Result<(), DbError>)
     requires
         v1(b@),
+        v2(b@),
         c < tcnt(b@, T_CREDS as int),
     ensures
         r is Ok ==> cred_enum_ok(b@, c as int),
 {
     let t = T_CREDS;
-    if field(b, t, c, C_CAPS_HI) > 0x1ff || field(b, t, c, C_SECUREBITS) > 2 || field(
+    assert(cred_pool_ok(b@, c as int));
+    let nnp = field(b, t, c, C_NNP);
+    let seccomp = field(b, t, c, C_SECCOMP);
+    let seccomp_len = field(b, t, c, C_SECCOMP_LEN);
+    if field(b, t, c, C_USER_LEN) == 0 || field(b, t, c, C_CAPS_HI) > 0x1ff || field(
         b,
         t,
         c,
-        C_NNP,
-    ) > 1 || field(b, t, c, C_NS) > 0x1f || field(b, t, c, C_SECCOMP) > 1 {
+        C_SECUREBITS,
+    ) > 2 || nnp > 1 || field(b, t, c, C_NS) > 0x1f || seccomp > 3 || ((seccomp <= 1) != (
+    seccomp_len == 0)) {
         return Err(DbError::Enum { table: tid(t), record: rid(c) });
+    }
+    let caps_lo = field(b, t, c, C_CAPS_LO);
+    if nnp == 0 && (field(b, t, c, C_LANDLOCK_LEN) > 0 || seccomp != 0) && caps_lo
+        & CAP_SYS_ADMIN_MASK == 0 {
+        assert(!has_sys_admin(b@, c as int));
+        return Err(DbError::Consistency { table: tid(t), record: rid(c) });
+    }
+    if !seccomp_list_ok_exec(b, field(b, t, c, C_SECCOMP_OFF), seccomp_len) {
+        return Err(DbError::Consistency { table: tid(t), record: rid(c) });
     }
     Ok(())
 }
@@ -232,6 +261,7 @@ pub(crate) fn check_records(b: &[u8]) -> (r: Result<(), DbError>)
     while i < n
         invariant
             v1(b@),
+            v2(b@),
             n == nodes(b@),
             n <= MAX_NODES,
             i <= n,
@@ -300,6 +330,7 @@ pub(crate) fn check_records(b: &[u8]) -> (r: Result<(), DbError>)
     while c < creds
         invariant
             v1(b@),
+            v2(b@),
             creds == tcnt(b@, T_CREDS as int),
             c <= creds,
             forall|j: int| 0 <= j < c ==> #[trigger] cred_enum_ok(b@, j),

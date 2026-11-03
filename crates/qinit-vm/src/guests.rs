@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Building the guest programs (`qinit-vm-guests`, one binary per suite) as static musl
+//! Building the guest programs (`qinit-vm-guests`, one binary per suite, and the `overseer`
+//! executor) as static musl
 //! executables; their paths come from cargo's JSON messages, never from a guessed `target/`.
 use crate::supervise::run_logged_stdout_kept;
 use std::collections::BTreeMap;
@@ -91,6 +92,8 @@ pub fn cargo_command(root: &Path) -> Command {
             GUEST_TARGET,
             "-p",
             "qinit-vm-guests",
+            "-p",
+            "qinit-overseer",
             "--bins",
         ])
         .args(["--message-format", "json-render-diagnostics"]);

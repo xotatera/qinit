@@ -5,13 +5,14 @@
 //! pidfd back (`CLONE_PIDFD`). Between the clone and `execve` the child runs only raw system
 //! calls on memory prepared before the clone: it resets its signal mask and dispositions,
 //! routes the given descriptors to their target numbers, closes every other number up to the
-//! highest target, marks everything above close-on-exec, and execs. An exec failure writes the
-//! errno (four native-endian bytes) to the caller's close-on-exec error pipe; a successful exec
-//! closes it. No allocation and no libc locking happens in the child, so a caller
+//! highest target, marks everything above close-on-exec, and execs: `execve` of a path, or
+//! `execveat` of a descriptor the caller opened ([`Prepared::with_fd`]). An exec failure writes
+//! the errno (four native-endian bytes) to the caller's close-on-exec error pipe; a successful
+//! exec closes it. No allocation and no libc locking happens in the child, so a caller
 //! with threads is safe.
 use crate::fd::dup_above;
 use crate::{Errno, Result, check_long, cpath};
-use std::ffi::{CString, OsStr};
+use std::ffi::{CStr, CString, OsStr};
 use std::marker::PhantomData;
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
@@ -27,6 +28,8 @@ const CLOSE_RANGE_CLOEXEC: libc::c_uint = 1 << 2;
 pub const MAX_ROUTES: usize = 32;
 /// Highest target number a route may name.
 pub const MAX_TARGET: RawFd = 1023;
+/// `execveat` flag: the descriptor itself is the file (`linux/fcntl.h`).
+const AT_EMPTY_PATH: libc::c_int = 0x1000;
 
 /// `struct clone_args`, `CLONE_ARGS_SIZE_VER2` (88 bytes).
 #[repr(C)]
@@ -60,6 +63,8 @@ struct KernelSigaction {
 /// Borrows the route sources for `'a`: they stay open until `spawn` returns.
 pub struct Prepared<'a> {
     path: CString,
+    /// The program as an open descriptor, run with `execveat`; `path` is empty then.
+    exe: Option<RawFd>,
     _argv: Vec<CString>,
     argv_ptrs: Vec<*const libc::c_char>,
     _env: Vec<CString>,
@@ -91,6 +96,28 @@ impl<'a> Prepared<'a> {
         env: &[&OsStr],
         routes: &[(BorrowedFd<'a>, RawFd)],
     ) -> Result<Prepared<'a>> {
+        Self::build(cpath(path)?, None, argv, env, routes)
+    }
+
+    /// Like [`Prepared::new`], but the program is the open descriptor `exe`, run with
+    /// `execveat(exe, "", argv, envp, AT_EMPTY_PATH)`. The child parks its copy of `exe`
+    /// above the error pipe, so a route may name its number.
+    pub fn with_fd(
+        exe: BorrowedFd<'a>,
+        argv: &[&OsStr],
+        env: &[&OsStr],
+        routes: &[(BorrowedFd<'a>, RawFd)],
+    ) -> Result<Prepared<'a>> {
+        Self::build(CString::default(), Some(exe.as_raw_fd()), argv, env, routes)
+    }
+
+    fn build(
+        path: CString,
+        exe: Option<RawFd>,
+        argv: &[&OsStr],
+        env: &[&OsStr],
+        routes: &[(BorrowedFd<'a>, RawFd)],
+    ) -> Result<Prepared<'a>> {
         if routes.len() > MAX_ROUTES {
             return Err(Errno(libc::EINVAL));
         }
@@ -111,7 +138,8 @@ impl<'a> Prepared<'a> {
         let (argv_owned, argv_ptrs) = cstrings(argv)?;
         let (env_owned, env_ptrs) = cstrings(env)?;
         Ok(Prepared {
-            path: cpath(path)?,
+            path,
+            exe,
             _argv: argv_owned,
             argv_ptrs,
             _env: env_owned,
@@ -134,8 +162,16 @@ pub fn spawn(
     exec_err: BorrowedFd<'_>,
 ) -> Result<(libc::pid_t, OwnedFd)> {
     // The child keeps the error pipe above every target and parking floor (`park` is above
-    // every target), so routing cannot overwrite it.
+    // every target), so routing cannot overwrite it; the program descriptor sits above that.
     let err = dup_above(exec_err, p.park + 1)?;
+    let exe = match p.exe {
+        None => None,
+        // SAFETY: the caller's borrow of the descriptor outlives `p`, hence this call.
+        Some(raw) => Some(dup_above(
+            unsafe { BorrowedFd::borrow_raw(raw) },
+            p.park + 2,
+        )?),
+    };
     let mut pidfd: libc::c_int = -1;
     let mut args = CloneArgs {
         flags: CLONE_PIDFD,
@@ -163,7 +199,7 @@ pub fn spawn(
         )
     };
     if raw == 0 {
-        child(p, err.as_raw_fd());
+        child(p, err.as_raw_fd(), exe.as_ref().map(AsRawFd::as_raw_fd));
     }
     // Read clone3's errno before the mask restore can overwrite it.
     let r = check_long(raw);
@@ -171,13 +207,15 @@ pub fn spawn(
     sigprocmask(libc::SIG_SETMASK, &old, None);
     let r = r?;
     drop(err);
+    drop(exe);
     let pid = libc::pid_t::try_from(r).map_err(|_| Errno(libc::EOVERFLOW))?;
     // SAFETY: CLONE_PIDFD stored a descriptor the kernel just created for the child.
     Ok((pid, unsafe { OwnedFd::from_raw_fd(pidfd) }))
 }
 
-/// The child between clone and exec: raw system calls only.
-fn child(p: &Prepared<'_>, err: RawFd) -> ! {
+/// The child between clone and exec: raw system calls only. `exe` is the parked program
+/// descriptor of a [`Prepared::with_fd`] preparation.
+fn child(p: &Prepared<'_>, err: RawFd, exe: Option<RawFd>) -> ! {
     default_dispositions();
     // Unblocked only now that no handler is installed (an ignored signal survives exec).
     if sigprocmask(libc::SIG_SETMASK, &0, None) < 0 {
@@ -220,15 +258,30 @@ fn child(p: &Prepared<'_>, err: RawFd) -> ! {
     {
         fail(err);
     }
-    // SAFETY: path, argv and envp are NUL-terminated and outlive the call (prepared before the
-    // clone, copied with the address space).
-    unsafe {
-        libc::syscall(
-            libc::SYS_execve,
-            p.path.as_ptr(),
-            p.argv_ptrs.as_ptr(),
-            p.env_ptrs.as_ptr(),
-        )
+    match exe {
+        // SAFETY: the parked descriptor is open; the empty path with AT_EMPTY_PATH names it;
+        // argv and envp are NUL-terminated and outlive the call (prepared before the clone,
+        // copied with the address space).
+        Some(fd) => unsafe {
+            libc::syscall(
+                libc::SYS_execveat,
+                fd,
+                c"".as_ptr(),
+                p.argv_ptrs.as_ptr(),
+                p.env_ptrs.as_ptr(),
+                AT_EMPTY_PATH,
+            )
+        },
+        // SAFETY: path, argv and envp are NUL-terminated and outlive the call (prepared before
+        // the clone, copied with the address space).
+        None => unsafe {
+            libc::syscall(
+                libc::SYS_execve,
+                p.path.as_ptr(),
+                p.argv_ptrs.as_ptr(),
+                p.env_ptrs.as_ptr(),
+            )
+        },
     };
     fail(err)
 }
@@ -289,4 +342,16 @@ fn fail(err: RawFd) -> ! {
     loop {
         core::hint::spin_loop();
     }
+}
+
+/// `execve(path, argv, envp)` in this process. Returns only on failure, with the errno.
+#[must_use]
+pub fn exec_in_place(path: &CStr, argv: &[&CStr], envp: &[&CStr]) -> Errno {
+    let mut a: Vec<*const libc::c_char> = argv.iter().map(|s| s.as_ptr()).collect();
+    a.push(std::ptr::null());
+    let mut e: Vec<*const libc::c_char> = envp.iter().map(|s| s.as_ptr()).collect();
+    e.push(std::ptr::null());
+    // SAFETY: path, argv and envp are NUL-terminated and outlive the call.
+    unsafe { libc::execve(path.as_ptr(), a.as_ptr(), e.as_ptr()) };
+    Errno::last()
 }

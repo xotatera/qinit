@@ -70,7 +70,10 @@ fn frames(rng: &mut Rng) -> (String, String) {
     let n = 1 + rng.below(12);
     let mut src = String::new();
     for i in 0..n {
-        let _ = write!(src, "[worker.w{i}]\nexec = [\"/w{i}\"]\n");
+        let _ = write!(
+            src,
+            "[worker.w{i}]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/w{i}\"]\n"
+        );
         // w0 has no lower worker: it gets edges or a pipe only now and then, so cycles stay rare.
         let wild = i == 0 && rng.one_in(6);
         if (i > 0 || wild) && rng.one_in(4) {

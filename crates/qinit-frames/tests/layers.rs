@@ -51,8 +51,14 @@ fn one_layer_loads_every_toml_file_in_name_order() {
         &root,
         "vendor",
         &[
-            ("b.toml", "[worker.b]\nexec=[\"/b\"]"),
-            ("a.toml", "[worker.a]\nexec=[\"/a\"]"),
+            (
+                "b.toml",
+                "[worker.b]\ncredentials = { uid = \"svc\" }\nexec=[\"/b\"]",
+            ),
+            (
+                "a.toml",
+                "[worker.a]\ncredentials = { uid = \"svc\" }\nexec=[\"/a\"]",
+            ),
             ("n.txt", "junk"),
         ],
     )];
@@ -73,8 +79,14 @@ fn a_frame_defined_twice_in_one_layer_is_a_duplicate() {
         &root,
         "vendor",
         &[
-            ("a.toml", "[worker.a]\nexec=[\"/a\"]"),
-            ("b.toml", "[worker.a]\nexec=[\"/b\"]"),
+            (
+                "a.toml",
+                "[worker.a]\ncredentials = { uid = \"svc\" }\nexec=[\"/a\"]",
+            ),
+            (
+                "b.toml",
+                "[worker.a]\ncredentials = { uid = \"svc\" }\nexec=[\"/b\"]",
+            ),
         ],
     )];
     let e = load(&ls).unwrap_err();
@@ -87,8 +99,8 @@ fn a_frame_defined_twice_in_one_layer_is_a_duplicate() {
 fn a_later_layer_replaces_a_scalar_and_keeps_the_rest() {
     let t = two(
         "scalar",
-        "[worker.x]\nexec=[\"/x\"]\ntemplate=\"a\"\nready=\"pipe\"",
-        "[worker.x]\nready=\"exit\"",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/x\"]\ntemplate=\"a\"\nready=\"pipe\"",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nready=\"exit\"",
     )
     .unwrap();
     assert_eq!(t["worker"]["x"]["ready"].as_str(), Some("exit"));
@@ -99,8 +111,8 @@ fn a_later_layer_replaces_a_scalar_and_keeps_the_rest() {
 fn tables_merge_key_by_key() {
     let t = two(
         "tables",
-        "[worker.x]\nrestart={policy=\"always\", max=5}",
-        "[worker.x]\nrestart={max=9}",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nrestart={policy=\"always\", max=5}",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nrestart={max=9}",
     )
     .unwrap();
     assert_eq!(
@@ -114,8 +126,8 @@ fn tables_merge_key_by_key() {
 fn append_adds_to_a_list() {
     let t = two(
         "append",
-        "[worker.x]\nexec=[\"/x\"]",
-        "[worker.x]\nexec={append=[\"--x\"]}",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/x\"]",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec={append=[\"--x\"]}",
     )
     .unwrap();
     assert_eq!(exec_of(&t), ["/x", "--x"]);
@@ -125,8 +137,8 @@ fn append_adds_to_a_list() {
 fn remove_deletes_matching_items() {
     let t = two(
         "remove",
-        "[worker.x]\nexec=[\"/x\",\"-a\",\"-b\",\"-a\"]",
-        "[worker.x]\nexec={remove=[\"-a\"]}",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/x\",\"-a\",\"-b\",\"-a\"]",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec={remove=[\"-a\"]}",
     )
     .unwrap();
     assert_eq!(exec_of(&t), ["/x", "-b"]);
@@ -136,8 +148,8 @@ fn remove_deletes_matching_items() {
 fn remove_of_an_absent_item_is_a_list_op_error() {
     let e = two(
         "rmabs",
-        "[worker.x]\nexec=[\"/x\"]",
-        "[worker.x]\nexec={remove=[\"-z\"]}",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/x\"]",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec={remove=[\"-z\"]}",
     )
     .unwrap_err();
     assert_eq!(e[0].code, Code::ListOp);
@@ -151,8 +163,8 @@ fn remove_of_an_absent_item_is_a_list_op_error() {
 fn replace_swaps_a_list() {
     let t = two(
         "replace",
-        "[worker.x]\nexec=[\"/x\",\"-a\"]",
-        "[worker.x]\nexec={replace=[\"/y\"]}",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/x\",\"-a\"]",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec={replace=[\"/y\"]}",
     )
     .unwrap();
     assert_eq!(exec_of(&t), ["/y"]);
@@ -162,8 +174,8 @@ fn replace_swaps_a_list() {
 fn a_plain_array_over_an_existing_list_is_a_list_op_error() {
     let e = two(
         "plain",
-        "[worker.x]\nexec=[\"/x\"]",
-        "[worker.x]\nexec=[\"/y\"]",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/x\"]",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/y\"]",
     )
     .unwrap_err();
     assert_eq!(e[0].code, Code::ListOp);
@@ -173,15 +185,15 @@ fn a_plain_array_over_an_existing_list_is_a_list_op_error() {
 fn a_list_op_table_with_an_unknown_verb_is_a_list_op_error() {
     let e = two(
         "verb",
-        "[worker.x]\nexec=[\"/x\"]",
-        "[worker.x]\nexec={prepend=[\"/y\"]}",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/x\"]",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec={prepend=[\"/y\"]}",
     )
     .unwrap_err();
     assert_eq!(e[0].code, Code::ListOp);
     let e = two(
         "mix",
-        "[worker.x]\nexec=[\"/x\"]",
-        "[worker.x]\nexec={append=[\"/y\"], remove=[\"/x\"]}",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/x\"]",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec={append=[\"/y\"], remove=[\"/x\"]}",
     )
     .unwrap_err();
     assert_eq!(e[0].code, Code::ListOp);
@@ -191,15 +203,15 @@ fn a_list_op_table_with_an_unknown_verb_is_a_list_op_error() {
 fn a_list_op_over_a_non_list_is_a_list_op_error() {
     let e = two(
         "nonlist",
-        "[worker.x]\nready=\"pipe\"",
-        "[worker.x]\nready={append=[\"x\"]}",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nready=\"pipe\"",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nready={append=[\"x\"]}",
     )
     .unwrap_err();
     assert_eq!(e[0].code, Code::ListOp);
     let e = two(
         "fresh",
-        "[worker.x]\nready=\"pipe\"",
-        "[worker.x]\nexec={append=[\"x\"]}",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nready=\"pipe\"",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec={append=[\"x\"]}",
     )
     .unwrap_err();
     assert_eq!(e[0].code, Code::ListOp);
@@ -209,8 +221,8 @@ fn a_list_op_over_a_non_list_is_a_list_op_error() {
 fn disable_true_removes_the_frame() {
     let t = two(
         "disable",
-        "[worker.x]\nexec=[\"/x\"]\n[worker.y]\nexec=[\"/y\"]",
-        "[worker.x]\ndisable=true",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/x\"]\n[worker.y]\ncredentials = { uid = \"svc\" }\nexec=[\"/y\"]",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\ndisable=true",
     )
     .unwrap();
     assert!(t["worker"].as_table().expect("t").get("x").is_none());
@@ -221,8 +233,8 @@ fn disable_true_removes_the_frame() {
 fn disable_false_is_ignored() {
     let t = two(
         "disfalse",
-        "[worker.x]\nexec=[\"/x\"]",
-        "[worker.x]\ndisable=false",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/x\"]",
+        "[worker.x]\ncredentials = { uid = \"svc\" }\ndisable=false",
     )
     .unwrap();
     assert!(
@@ -244,7 +256,7 @@ fn provenance_names_the_layer_that_set_each_key() {
             "vendor",
             &[(
                 "a.toml",
-                "[worker.x]\nexec=[\"/x\"]\nrestart={policy=\"always\", max=5}",
+                "[worker.x]\ncredentials = { uid = \"svc\" }\nexec=[\"/x\"]\nrestart={policy=\"always\", max=5}",
             )],
         ),
         layer(
@@ -252,7 +264,7 @@ fn provenance_names_the_layer_that_set_each_key() {
             "etc",
             &[(
                 "b.toml",
-                "[worker.x]\nrestart={max=9}\nexec={append=[\"-v\"]}",
+                "[worker.x]\ncredentials = { uid = \"svc\" }\nrestart={max=9}\nexec={append=[\"-v\"]}",
             )],
         ),
     ];

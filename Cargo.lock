@@ -195,6 +195,7 @@ dependencies = [
  "qinit-db",
  "qinit-db-core",
  "qinit-graph-core",
+ "qinit-overseer-core",
  "serde",
  "toml",
 ]
@@ -203,6 +204,24 @@ dependencies = [
 name = "qinit-graph-core"
 version = "0.1.0"
 dependencies = [
+ "vstd",
+]
+
+[[package]]
+name = "qinit-overseer"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "qinit-db",
+ "qinit-overseer-core",
+ "qinit-sys",
+]
+
+[[package]]
+name = "qinit-overseer-core"
+version = "0.1.0"
+dependencies = [
+ "qinit-db-core",
  "vstd",
 ]
 
@@ -231,6 +250,8 @@ dependencies = [
  "libc",
  "qinit-cell",
  "qinit-event",
+ "qinit-frames",
+ "qinit-overseer",
  "qinit-sys",
 ]
 

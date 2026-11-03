@@ -50,6 +50,7 @@ fn frames(rng: &mut Rng, n: usize) -> (String, Vec<String>) {
         let _ = writeln!(out, "[{kind}.{}]", name(i));
         if kind != "brood" {
             let _ = writeln!(out, "exec = [\"/bin/{}\"]", name(i));
+            let _ = writeln!(out, "credentials = {{ uid = \"svc\" }}");
         }
         if kind == "worker" {
             match rng.below(5) {

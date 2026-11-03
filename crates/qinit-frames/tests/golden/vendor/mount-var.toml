@@ -2,4 +2,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 [forager.mount-var]
 exec = ["/usr/bin/mount", "/var"]
+credentials = { uid = "root" }
 deps = [{ group = "require_all", edges = [{ path = "/dev/disk/by-label/var" }] }]

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! V2: pool references, names and NUL-separated lists.
+//! V2: pool references, names and NUL-separated lists, and the content rules of the launch
+//! strings (environment entries, the working directory, seccomp lists) that V4 applies to them.
 
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only use: Verus erases it
 use super::tables::*;
@@ -42,12 +43,108 @@ pub open spec fn list_ref(b: Seq<u8>, off: int, len: int) -> bool {
     &&& nul_list(pool_slice(b, off, len))
 }
 
+/// `s[p..q]` is one element of the NUL-separated list `s`: bounded by NULs or the ends of `s`,
+/// with no NUL inside.
+pub open spec fn is_elem(s: Seq<u8>, p: int, q: int) -> bool {
+    &&& 0 <= p <= q <= s.len()
+    &&& (p == 0 || s[p - 1] == 0)
+    &&& (q == s.len() || s[q] == 0)
+    &&& forall|k: int| p <= k < q ==> #[trigger] s[k] != 0
+}
+
+/// An environment entry: `KEY=VALUE` with a non-empty key, so the first `=` is at index 1 or
+/// later (the value may be empty and may hold `=`).
+pub open spec fn env_entry_ok(e: Seq<u8>) -> bool {
+    &&& e.len() >= 2
+    &&& e[0] != 0x3d
+    &&& exists|k: int| 1 <= k < e.len() && #[trigger] e[k] == 0x3d
+}
+
+/// Every element of the NUL-separated list `s` is an [`env_entry_ok`] entry.
+pub open spec fn env_list_ok(s: Seq<u8>) -> bool {
+    s.len() == 0 || forall|p: int, q: int| #[trigger]
+        is_elem(s, p, q) ==> env_entry_ok(s.subrange(p, q))
+}
+
+/// The value of the ASCII digits `e`, most significant first.
+pub open spec fn decimal_value(e: Seq<u8>) -> int
+    decreases e.len(),
+{
+    if e.len() == 0 {
+        0
+    } else {
+        decimal_value(e.drop_last()) * 10 + (e.last() - 0x30)
+    }
+}
+
+/// A canonical decimal: 1 to 3 ASCII digits, no leading zero unless it is the single digit `0`,
+/// and a value below `MAX_SYSCALL`.
+pub open spec fn decimal_ok(e: Seq<u8>) -> bool {
+    &&& 1 <= e.len() <= 3
+    &&& forall|k: int| 0 <= k < e.len() ==> 0x30 <= #[trigger] e[k] <= 0x39
+    &&& (e.len() > 1 ==> e[0] != 0x30)
+    &&& decimal_value(e) < MAX_SYSCALL
+}
+
+/// Every element of the NUL-separated list `s` is a [`decimal_ok`] syscall number.
+pub open spec fn seccomp_list_ok(s: Seq<u8>) -> bool {
+    s.len() == 0 || forall|p: int, q: int| #[trigger]
+        is_elem(s, p, q) ==> decimal_ok(s.subrange(p, q))
+}
+
+/// A Landlock entry: `ro:/...` or `rw:/...`.
+pub open spec fn landlock_entry_ok(e: Seq<u8>) -> bool {
+    &&& e.len() >= 4
+    &&& e[0] == 0x72
+    &&& (e[1] == 0x6f || e[1] == 0x77)
+    &&& e[2] == 0x3a
+    &&& e[3] == 0x2f
+}
+
+/// Every element of the NUL-separated list `s` is a [`landlock_entry_ok`] entry.
+pub open spec fn landlock_list_ok(s: Seq<u8>) -> bool {
+    s.len() == 0 || forall|p: int, q: int| #[trigger]
+        is_elem(s, p, q) ==> landlock_entry_ok(s.subrange(p, q))
+}
+
+/// The NUL bytes in `s`.
+pub open spec fn nuls(s: Seq<u8>) -> int
+    decreases s.len(),
+{
+    if s.len() == 0 {
+        0
+    } else {
+        nuls(s.drop_last()) + if s.last() == 0 {
+            1int
+        } else {
+            0int
+        }
+    }
+}
+
+/// The elements of the NUL-separated list `s`: none when empty, one more than its NULs
+/// otherwise.
+pub open spec fn elems(s: Seq<u8>) -> int {
+    if s.len() == 0 {
+        0
+    } else {
+        nuls(s) + 1
+    }
+}
+
+/// A working directory: non-empty and absolute.
+pub open spec fn cwd_ok(b: Seq<u8>, off: int, len: int) -> bool {
+    len >= 1 && b[toff(b, T_POOL as int) + off] == 0x2f
+}
+
 pub open spec fn node_pool_ok(b: Seq<u8>, i: int) -> bool {
     &&& name_ref(b, nf(b, i, N_NAME_OFF), nf(b, i, N_NAME_LEN))
     &&& list_ref(b, nf(b, i, N_EXEC_OFF), nf(b, i, N_EXEC_LEN))
     &&& pool_ref(b, nf(b, i, N_READY_OFF), nf(b, i, N_READY_LEN))
     &&& nf(b, i, N_INSTANCE_OF_LEN) <= MAX_NAME_LEN
     &&& pool_ref(b, nf(b, i, N_INSTANCE_OF_OFF), nf(b, i, N_INSTANCE_OF_LEN))
+    &&& list_ref(b, nf(b, i, N_ENV_OFF), nf(b, i, N_ENV_LEN))
+    &&& pool_ref(b, nf(b, i, N_CWD_OFF), nf(b, i, N_CWD_LEN))
 }
 
 pub open spec fn edge_pool_ok(b: Seq<u8>, x: int) -> bool {
@@ -57,6 +154,7 @@ pub open spec fn edge_pool_ok(b: Seq<u8>, x: int) -> bool {
 pub open spec fn cred_pool_ok(b: Seq<u8>, c: int) -> bool {
     &&& pool_ref(b, cf(b, c, C_USER_OFF), cf(b, c, C_USER_LEN))
     &&& list_ref(b, cf(b, c, C_LANDLOCK_OFF), cf(b, c, C_LANDLOCK_LEN))
+    &&& list_ref(b, cf(b, c, C_SECCOMP_OFF), cf(b, c, C_SECCOMP_LEN))
 }
 
 pub open spec fn route_pool_ok(b: Seq<u8>, r: int) -> bool {

@@ -9,9 +9,13 @@ use qinit_frames::layers::Enable;
 use qinit_frames::resolve::resolve;
 use qinit_frames::schema::Frame;
 
-/// Resolves a worker `a` built from `body` (frame TOML, unchecked) next to a valid worker `b`.
+/// Resolves a worker `a` built from `body` (frame TOML, unchecked; its user is added) next to a
+/// valid worker `b`.
 fn refused(body: &str) -> Vec<Error> {
-    let frame = |s: &str| toml::from_str::<Frame>(s).expect("frame shape");
+    let frame = |s: &str| {
+        toml::from_str::<Frame>(&format!("{s}\ncredentials = {{ uid = \"svc\" }}\n"))
+            .expect("frame shape")
+    };
     let expanded = Expanded {
         frames: vec![
             ("a".to_owned(), Kind::Worker, frame(body)),

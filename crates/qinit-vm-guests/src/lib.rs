@@ -7,9 +7,12 @@
 //! the console and powers the guest off from a child. The same binary is the helper program
 //! the cases spawn: `/init --qinit-helper <role> <args…>`.
 #![allow(clippy::missing_errors_doc)] // every fallible function returns one string naming the step and its cause
-use qinit_cell::{CellId, Cells, Notice, Report};
+use qinit_cell::{CellId, Cells, Notice, ReadyMode, Report};
 use qinit_event::{Loop, Ready, Token};
+use qinit_overseer::request::RequestSpec;
+use qinit_overseer::status::Status;
 use std::ffi::{CString, OsStr, OsString};
+use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd, RawFd};
 use std::path::Path;
@@ -82,7 +85,11 @@ fn setup() -> Result<(), String> {
     m("sysfs", "/sys", "sysfs")?;
     m("cgroup2", "/sys/fs/cgroup", "cgroup2")?;
     m("tmpfs", "/tmp", "tmpfs")?;
-    mkdir(Path::new(COMB), 0o755).map_err(|e| format!("mkdir {COMB}: {e}"))
+    mkdir(Path::new(COMB), 0o755).map_err(|e| format!("mkdir {COMB}: {e}"))?;
+    // The home of the `svc` account of the initrd's /etc/passwd.
+    let _ = mkdir(Path::new("/home"), 0o755);
+    mkdir(Path::new("/home/svc"), 0o700).map_err(|e| format!("mkdir /home/svc: {e}"))?;
+    qinit_sys::fd::chown(c"/home/svc", 1000, 1000).map_err(|e| format!("chown /home/svc: {e}"))
 }
 
 fn sys<T>(r: qinit_sys::Result<T>, what: &str) -> Result<T, String> {
@@ -115,6 +122,225 @@ pub fn helper_cmd(role: &str, role_args: &[&str]) -> qinit_cell::Command {
         fds: Vec::new(),
         ready_fd: 3,
     }
+}
+
+/// The executor in the initrd.
+pub const OVERSEER: &str = "/overseer";
+
+/// A launch through the executor: its cell and the read end of its status pipe.
+pub struct Launched {
+    pub id: CellId,
+    pub status: OwnedFd,
+}
+
+/// Spawns the executor into a new cell `name` with `spec` (the request at fd 3 and the status
+/// pipe at fd 4 are added here); `extra` are routed descriptors the spec names (5 and up).
+/// `ready` chooses the cell's readiness mode: `Pipe` routes the pipe at fd 5, so the spec
+/// must say `ready_fd: Some(5)`.
+pub fn launch(
+    cells: &mut Cells,
+    name: &str,
+    spec: &RequestSpec,
+    extra: Vec<(OwnedFd, RawFd)>,
+    ready: ReadyMode,
+) -> Result<Launched, String> {
+    let bytes = e(spec.bytes().map_err(|x| format!("{x:?}")))?;
+    let request = sys(qinit_sys::memfd::sealed(c"req", &bytes), "seal the request")?;
+    let (status_r, status_w) = sys(qinit_sys::fd::pipe(libc::O_CLOEXEC), "status pipe")?;
+    let id = e(cells.create(name))?;
+    let mut fds = vec![(request, 3), (status_w, 4)];
+    fds.extend(extra);
+    let cmd = qinit_cell::Command {
+        path: OVERSEER.into(),
+        argv: vec![OsString::from("overseer")],
+        env: Vec::new(),
+        fds,
+        ready_fd: 5,
+    };
+    e(cells.spawn(id, cmd, ready))?;
+    Ok(Launched {
+        id,
+        status: status_r,
+    })
+}
+
+/// The failure record of a launch, once its executor exited or reported ready; `None` is EOF,
+/// the service's exec.
+#[must_use]
+pub fn status_of(l: &Launched) -> Option<Status> {
+    Status::read(l.status.as_fd())
+}
+
+/// The request for `/init --qinit-helper <role> <args…>` as `user`, a ten-second deadline;
+/// the caller sets the streams.
+#[must_use]
+pub fn spec(user: &str, role: &str, args: &[&str]) -> RequestSpec {
+    let mut command = vec![
+        "/init".to_string(),
+        HELPER_FLAG.to_string(),
+        role.to_string(),
+    ];
+    command.extend(args.iter().map(ToString::to_string));
+    RequestSpec {
+        argv: command,
+        user: user.to_string(),
+        deadline_ms: 10_000,
+        ..RequestSpec::default()
+    }
+}
+
+/// A pipe for a helper's standard output: (read end, write end), the write end to route at
+/// fd 6 with `Stream::Fd(6)`.
+///
+/// # Panics
+/// When the kernel refuses a pipe.
+#[must_use]
+pub fn capture() -> (OwnedFd, OwnedFd) {
+    qinit_sys::fd::pipe(libc::O_CLOEXEC).expect("pipe")
+}
+
+/// Everything written to a capture pipe, once every writer is gone.
+#[must_use]
+pub fn read_all(fd: OwnedFd) -> String {
+    let mut text = String::new();
+    let _ = std::fs::File::from(fd).read_to_string(&mut text);
+    text
+}
+
+/// The calls the static musl helper needs under an allowlist, with their `x86_64` numbers (a
+/// host test checks the pairs against the syscall table). `execve` and `close_range` are the
+/// executor's own last calls before the service starts.
+pub const ALLOW_MIN: &[(&str, u32)] = &[
+    ("read", 0),
+    ("write", 1),
+    ("writev", 20),
+    ("close", 3),
+    ("fstat", 5),
+    ("newfstatat", 262),
+    ("lseek", 8),
+    ("mmap", 9),
+    ("munmap", 11),
+    ("mprotect", 10),
+    ("brk", 12),
+    ("rt_sigaction", 13),
+    ("rt_sigprocmask", 14),
+    ("rt_sigreturn", 15),
+    ("ioctl", 16),
+    ("pread64", 17),
+    ("poll", 7),
+    ("madvise", 28),
+    ("exit", 60),
+    ("exit_group", 231),
+    ("futex", 202),
+    ("set_tid_address", 218),
+    ("set_robust_list", 273),
+    ("rseq", 334),
+    ("clock_gettime", 228),
+    ("getrandom", 318),
+    ("sigaltstack", 131),
+    ("prlimit64", 302),
+    ("arch_prctl", 158),
+    ("openat", 257),
+    ("readlinkat", 267),
+    ("statx", 332),
+    ("membarrier", 324),
+    ("sched_getaffinity", 204),
+    ("getpid", 39),
+    ("gettid", 186),
+    ("tgkill", 234),
+    ("kill", 62),
+    ("execve", 59),
+    ("close_range", 436),
+];
+
+/// A stream socket bound to `path` and listening with `backlog`.
+pub fn stream_listener(
+    path: &str,
+    backlog: i32,
+) -> Result<std::os::unix::net::UnixListener, String> {
+    let c = CString::new(path).map_err(|x| x.to_string())?;
+    let fd = sys(qinit_sys::sock::listen_unix(&c, backlog), "listen")?;
+    Ok(std::os::unix::net::UnixListener::from(fd))
+}
+
+/// `n` connected clients of the listener at `path`, none accepted: they fill its backlog.
+pub fn queue_connections(
+    path: &str,
+    n: usize,
+) -> Result<Vec<std::os::unix::net::UnixStream>, String> {
+    (0..n)
+        .map(|_| e(std::os::unix::net::UnixStream::connect(path)))
+        .collect()
+}
+
+/// What a launch left behind once its cell was empty.
+pub struct Outcome {
+    /// Everything the service wrote to its captured standard output.
+    pub out: String,
+    /// The wait status of the main process (the executor or, after its exec, the service).
+    pub exit: Option<i32>,
+    /// The executor's failure record, if it left one.
+    pub failure: Option<Status>,
+    /// The request as bytes, for naming the failing step.
+    pub request: Vec<u8>,
+}
+
+impl Outcome {
+    /// The exit code of the main process; an error when it was killed by a signal.
+    pub fn code(&self) -> Result<i32, String> {
+        match self.exit {
+            Some(st) if libc::WIFEXITED(st) => Ok(libc::WEXITSTATUS(st)),
+            other => Err(format!(
+                "main status {other:?}, want a normal exit; {:?}",
+                self.failure
+            )),
+        }
+    }
+
+    /// The signal that killed the main process; an error when it exited.
+    pub fn signal(&self) -> Result<i32, String> {
+        match self.exit {
+            Some(st) if libc::WIFSIGNALED(st) => Ok(libc::WTERMSIG(st)),
+            other => Err(format!("main status {other:?}, want a death by signal")),
+        }
+    }
+}
+
+/// Launches `request` in a new cell `name` (`ReadyMode::Exit`), waits for the cell to empty,
+/// and collects its captured standard output (when `capture_stdout`, which routes it at
+/// fd 6), the main's status and the executor's record.
+pub fn run_to_end(
+    name: &str,
+    mut request: RequestSpec,
+    capture_stdout: bool,
+) -> Result<Outcome, String> {
+    let mut cells = cells()?;
+    let (reader, writer) = capture();
+    let mut extra = Vec::new();
+    if capture_stdout {
+        request.stdout = qinit_overseer::request::Stream::Fd(6);
+        extra.push((writer, 6));
+    }
+    let l = launch(&mut cells, name, &request, extra, ReadyMode::Exit)?;
+    let seen = expect(&mut cells, l.id, Report::Empty)?;
+    // In exit mode a status 0 is the `Ready` report; any other status is `MainExited`.
+    let exit = reports_of(&seen, l.id).iter().find_map(|r| match r {
+        Report::MainExited(st) => *st,
+        Report::Ready => Some(0),
+        _ => None,
+    });
+    let failure = status_of(&l);
+    remove(&mut cells, l.id)?;
+    Ok(Outcome {
+        out: if capture_stdout {
+            read_all(reader)
+        } else {
+            String::new()
+        },
+        exit,
+        failure,
+        request: e(request.bytes().map_err(|x| format!("{x:?}")))?,
+    })
 }
 
 /// Reads notices until `id` reports `want`: every notice seen, in order, up to the end of the
@@ -350,13 +576,17 @@ fn wait_for(
     }
 }
 
-/// Writes one byte to descriptor 3 (a readiness pipe).
+/// Writes one byte to descriptor 3 (a readiness pipe), which stays open. Through the
+/// descriptor itself: `/proc/self/fd/3` of a pipe made by root is closed to another user.
 fn write_ready() -> bool {
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open("/proc/self/fd/3")
-        .and_then(|mut f| f.write_all(b"\n"))
-        .is_ok()
+    use std::os::fd::IntoRawFd;
+    let Ok(fd) = qinit_sys::fd::inherit(3) else {
+        return false;
+    };
+    let mut file = std::fs::File::from(fd);
+    let written = file.write_all(b"\n").is_ok();
+    let _ = OwnedFd::from(file).into_raw_fd();
+    written
 }
 
 /// Blocks until SIGTERM (blocked, read from a signalfd) arrives; with `ignore`, forever.
@@ -497,22 +727,158 @@ fn helper(role: &str, args: &[String]) -> i32 {
                 .map(|n| n.to_string())
                 .collect();
             let line = open.join(" ");
-            let written = std::fs::OpenOptions::new()
-                .write(true)
-                .open("/proc/self/fd/1")
-                .and_then(|mut f| writeln!(f, "{line}"));
-            if written.is_ok() { 0 } else { 2 }
+            // Through standard output itself: a pipe made by root is closed to another user
+            // by way of `/proc/self/fd/1`.
+            if writeln!(std::io::stdout(), "{line}").is_ok() {
+                0
+            } else {
+                2
+            }
         }
         "exit-0" => 0,
         "exit-3" => 3,
-        _ => 2,
+        _ => launch_helper(role, args).unwrap_or(2),
+    }
+}
+
+/// The helpers of the executor suites: they report what a launch gave them on standard output
+/// or by exit code. `None` for a role this function does not know.
+fn launch_helper(role: &str, args: &[String]) -> Option<i32> {
+    let a0 = args.first().map(String::as_str);
+    Some(match role {
+        // `show`: identity, directory, mask, environment, capability sets and flags of this
+        // process, one `key: value` line each, on standard output.
+        "show" => show(),
+        // `ready-show`: `show`, then the readiness byte, then waits for TERM.
+        "ready-show" => {
+            if show() != 0 {
+                return Some(2);
+            }
+            wait_for_term(false, true, None)
+        }
+        // `say <words…>`: the words and a newline on standard output.
+        "say" => {
+            if writeln!(std::io::stdout(), "{}", args.join(" ")).is_ok() {
+                0
+            } else {
+                2
+            }
+        }
+        // `probe-path <path> <r|w>`: exit 0 when the open works, the errno otherwise.
+        "probe-path" => match (a0, args.get(1).map(String::as_str)) {
+            (Some(p), Some(mode)) => {
+                let mut o = std::fs::OpenOptions::new();
+                if mode == "w" {
+                    o.write(true).create(true);
+                } else {
+                    o.read(true);
+                }
+                o.open(p)
+                    .map_or_else(|x| x.raw_os_error().unwrap_or(2), |_| 0)
+            }
+            _ => 2,
+        },
+        // `probe-syscall <getppid|ptrace|unshare-net|clone3>`: `ok` or the errno, on stdout.
+        "probe-syscall" => {
+            let r: qinit_sys::Result<()> = match a0 {
+                Some("getppid") => qinit_sys::proc::getppid_raw().map(|_| ()),
+                Some("ptrace") => qinit_sys::proc::ptrace_probe(),
+                Some("unshare-net") => qinit_sys::ns::unshare(libc::CLONE_NEWNET),
+                Some("clone3") => qinit_sys::proc::clone3_probe(),
+                _ => return Some(2),
+            };
+            let line = r.map_or_else(|x| x.0.to_string(), |()| "ok".to_string());
+            if writeln!(std::io::stdout(), "{line}").is_ok() {
+                0
+            } else {
+                2
+            }
+        }
+        "pid" => {
+            if writeln!(std::io::stdout(), "{}", qinit_sys::proc::pid()).is_ok() {
+                0
+            } else {
+                2
+            }
+        }
+        // `hostname-set`: sets the hostname to `inside` and prints what the kernel reports.
+        "hostname-set" => {
+            if qinit_sys::ns::sethostname("inside").is_err() {
+                return Some(2);
+            }
+            let name = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
+            if write!(std::io::stdout(), "{name}").is_ok() {
+                0
+            } else {
+                2
+            }
+        }
+        // `ifaces`: one `<name> up|down` line per interface of this network namespace.
+        "ifaces" => {
+            let dev = std::fs::read_to_string("/proc/net/dev").unwrap_or_default();
+            let mut out = String::new();
+            for line in dev.lines().skip(2) {
+                let name = line.split(':').next().unwrap_or_default().trim();
+                let up = qinit_sys::ns::interface_is_up(name).unwrap_or(false);
+                let _ = writeln!(out, "{name} {}", if up { "up" } else { "down" });
+            }
+            if write!(std::io::stdout(), "{out}").is_ok() {
+                0
+            } else {
+                2
+            }
+        }
+        "raise-usr1" => {
+            let _ = qinit_sys::proc::kill(qinit_sys::proc::pid(), libc::SIGUSR1);
+            2
+        }
+        _ => return None,
+    })
+}
+
+/// The `show` helper: what the launch gave this process.
+fn show() -> i32 {
+    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
+        return 2;
+    };
+    let mut out = String::new();
+    for key in [
+        "Uid",
+        "Gid",
+        "Groups",
+        "Umask",
+        "CapBnd",
+        "CapAmb",
+        "CapEff",
+        "CapPrm",
+        "NoNewPrivs",
+        "Seccomp",
+    ] {
+        let line = status.lines().find(|l| l.starts_with(&format!("{key}:")));
+        out.push_str(line.unwrap_or("missing"));
+        out.push('\n');
+    }
+    let cwd = std::env::current_dir().map(|p| p.display().to_string());
+    let _ = writeln!(out, "cwd: {}", cwd.unwrap_or_default());
+    let bits = qinit_sys::cred::get_securebits().unwrap_or(u32::MAX);
+    let _ = writeln!(out, "SecBits:\t{bits:#x}");
+    let mut env: Vec<String> = std::env::vars().map(|(k, v)| format!("{k}={v}")).collect();
+    env.sort();
+    for entry in env {
+        let _ = writeln!(out, "env: {entry}");
+    }
+    eprintln!("err");
+    if std::io::stdout().write_all(out.as_bytes()).is_ok() {
+        0
+    } else {
+        2
     }
 }
 
 /// Runs as a subreaper that is not PID 1: the grandchild a cell's main process orphans is
 /// reaped and reported as an orphan with its own status, and the main process is not.
 fn subreaper_host() -> Result<(), String> {
-    use qinit_cell::{Polite, ReadyMode};
+    use qinit_cell::Polite;
     let mut cells = cells()?;
     e(cells.subreaper())?;
     let id = e(cells.create("orph"))?;

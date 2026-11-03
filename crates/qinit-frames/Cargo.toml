@@ -16,6 +16,9 @@ qinit-graph-core = { path = "../qinit-graph-core" }
 serde.workspace = true
 toml.workspace = true
 
+[dev-dependencies]
+qinit-overseer-core = { path = "../qinit-overseer-core" }
+
 [lints]
 workspace = true
 

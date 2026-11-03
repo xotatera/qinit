@@ -10,8 +10,10 @@ mod records;
 mod spec;
 mod utf8;
 
+pub use pool::{count_elements, elements_ok, nul_list_ok};
 #[allow(unused_imports)] // the specs only; Verus erases them outside verification
 pub use spec::*;
+pub use utf8::utf8_ok;
 
 #[allow(clippy::wildcard_imports)] // the layout constants, used throughout
 use crate::layout::*;
@@ -132,6 +134,8 @@ pub open spec fn node_strings_readable(b: Seq<u8>, i: int) -> bool {
     &&& slice_readable(b, nf(b, i, N_EXEC_OFF), nf(b, i, N_EXEC_LEN))
     &&& slice_readable(b, nf(b, i, N_READY_OFF), nf(b, i, N_READY_LEN))
     &&& slice_readable(b, nf(b, i, N_INSTANCE_OF_OFF), nf(b, i, N_INSTANCE_OF_LEN))
+    &&& slice_readable(b, nf(b, i, N_ENV_OFF), nf(b, i, N_ENV_LEN))
+    &&& slice_readable(b, nf(b, i, N_CWD_OFF), nf(b, i, N_CWD_LEN))
 }
 
 /// Edge `x`'s path, if it has one, is readable.
@@ -143,6 +147,7 @@ pub open spec fn edge_string_readable(b: Seq<u8>, x: int) -> bool {
 pub open spec fn cred_strings_readable(b: Seq<u8>, c: int) -> bool {
     &&& slice_readable(b, cf(b, c, C_USER_OFF), cf(b, c, C_USER_LEN))
     &&& slice_readable(b, cf(b, c, C_LANDLOCK_OFF), cf(b, c, C_LANDLOCK_LEN))
+    &&& slice_readable(b, cf(b, c, C_SECCOMP_OFF), cf(b, c, C_SECCOMP_LEN))
 }
 
 /// Route `r`'s path, if it has one, is readable.

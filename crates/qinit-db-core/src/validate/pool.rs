@@ -35,7 +35,8 @@ pub(crate) fn pool_ref_ok(b: &[u8], off: u32, len: u32) -> (r: Result<(), DbErro
 }
 
 /// `b[start..end]` is a NUL-separated list of non-empty elements.
-fn nul_list_ok(b: &[u8], start: usize, end: usize) -> (ok: bool)
+#[must_use]
+pub fn nul_list_ok(b: &[u8], start: usize, end: usize) -> (ok: bool)
     requires
         start <= end <= b@.len(),
     ensures
@@ -111,7 +112,9 @@ fn check_node_pool(b: &[u8], i: usize) -> (r: Result<(), DbError>)
     if of_len as usize > MAX_NAME_LEN {
         return Err(DbError::Pool);
     }
-    pool_ref_ok(b, field(b, t, i, N_INSTANCE_OF_OFF), of_len)
+    pool_ref_ok(b, field(b, t, i, N_INSTANCE_OF_OFF), of_len)?;
+    list_ok(b, field(b, t, i, N_ENV_OFF), field(b, t, i, N_ENV_LEN))?;
+    pool_ref_ok(b, field(b, t, i, N_CWD_OFF), field(b, t, i, N_CWD_LEN))
 }
 
 fn check_edge_pool(b: &[u8], x: usize) -> (r: Result<(), DbError>)
@@ -138,7 +141,8 @@ fn check_cred_pool(b: &[u8], c: usize) -> (r: Result<(), DbError>)
 {
     let t = T_CREDS;
     pool_ref_ok(b, field(b, t, c, C_USER_OFF), field(b, t, c, C_USER_LEN))?;
-    list_ok(b, field(b, t, c, C_LANDLOCK_OFF), field(b, t, c, C_LANDLOCK_LEN))
+    list_ok(b, field(b, t, c, C_LANDLOCK_OFF), field(b, t, c, C_LANDLOCK_LEN))?;
+    list_ok(b, field(b, t, c, C_SECCOMP_OFF), field(b, t, c, C_SECCOMP_LEN))
 }
 
 fn check_route_pool(b: &[u8], r: usize) -> (res: Result<(), DbError>)
@@ -154,6 +158,283 @@ fn check_route_pool(b: &[u8], r: usize) -> (res: Result<(), DbError>)
     } else {
         Ok(())
     }
+}
+
+/// `s[p..q]` is an [`env_entry_ok`] entry: at least two bytes, not starting with `=`, and
+/// holding an `=` after the key.
+fn env_entry_ok_exec(s: &[u8], p: usize, q: usize) -> (ok: bool)
+    requires
+        p <= q <= s@.len(),
+    ensures
+        ok ==> env_entry_ok(s@.subrange(p as int, q as int)),
+{
+    if q - p < 2 || s[p] == 0x3d {
+        return false;
+    }
+    let ghost entry = s@.subrange(p as int, q as int);
+    assert(entry.len() >= 2 && entry[0] == s@[p as int]);
+    let mut at = p + 1;
+    while at < q
+        invariant
+            p + 1 <= at <= q <= s@.len(),
+            entry == s@.subrange(p as int, q as int),
+            entry.len() >= 2,
+            entry[0] != 0x3d,
+        decreases q - at,
+    {
+        if s[at] == 0x3d {
+            assert(1 <= at - p < entry.len() && entry[at - p] == 0x3d);
+            return true;
+        }
+        at += 1;
+    }
+    false
+}
+
+/// `s[p..q]` is a [`decimal_ok`] syscall number.
+#[allow(clippy::cast_lossless)]  // `u32::from` is not available inside `verus!`
+fn decimal_ok_exec(s: &[u8], p: usize, q: usize) -> (ok: bool)
+    requires
+        p <= q <= s@.len(),
+    ensures
+        ok ==> decimal_ok(s@.subrange(p as int, q as int)),
+{
+    if q - p < 1 || q - p > 3 {
+        return false;
+    }
+    if q - p > 1 && s[p] == 0x30 {
+        return false;
+    }
+    let ghost entry = s@.subrange(p as int, q as int);
+    let mut value: u32 = 0;
+    let mut at = p;
+    while at < q
+        invariant
+            p <= at <= q <= s@.len(),
+            q - p <= 3,
+            entry == s@.subrange(p as int, q as int),
+            forall|j: int| 0 <= j < at - p ==> 0x30 <= #[trigger] entry[j] <= 0x39,
+            value as int == decimal_value(s@.subrange(p as int, at as int)),
+            at - p == 0 ==> value == 0,
+            at - p == 1 ==> value < 10,
+            at - p == 2 ==> value < 100,
+            at - p == 3 ==> value < 1000,
+        decreases q - at,
+    {
+        let digit = s[at];
+        #[allow(clippy::manual_range_contains)]  // `RangeInclusive::contains` is not available inside `verus!`
+        if digit < 0x30 || digit > 0x39 {
+            return false;
+        }
+        assert(s@.subrange(p as int, at + 1).drop_last() =~= s@.subrange(p as int, at as int));
+        assert(s@.subrange(p as int, at + 1).last() == digit);
+        value = value * 10 + (digit - 0x30) as u32;
+        at += 1;
+    }
+    value < MAX_SYSCALL
+}
+
+/// Every element `[p, q)` of the NUL-separated list `s` with `q <= i` starts where the element
+/// before it ends: `es` is the start of the element at `i` when `s[es..i]` has no NUL.
+proof fn lemma_elem_start(s: Seq<u8>, es: int, i: int, p: int)
+    requires
+        0 <= es <= i <= s.len(),
+        es == 0 || s[es - 1] == 0,
+        forall|k: int| es <= k < i ==> #[trigger] s[k] != 0,
+        is_elem(s, p, i),
+    ensures
+        p == es,
+{
+    if p < es {
+        assert(s[es - 1] != 0);
+    }
+    if p > es {
+        assert(s[p - 1] != 0);
+    }
+}
+
+/// `s[p..q]` is a [`landlock_entry_ok`] entry: `ro:/` or `rw:/` and a path.
+fn landlock_entry_ok_exec(s: &[u8], p: usize, q: usize) -> (ok: bool)
+    requires
+        p <= q <= s@.len(),
+    ensures
+        ok ==> landlock_entry_ok(s@.subrange(p as int, q as int)),
+{
+    if q - p < 4 {
+        return false;
+    }
+    let ok = s[p] == 0x72 && (s[p + 1] == 0x6f || s[p + 1] == 0x77) && s[p + 2] == 0x3a && s[p + 3]
+        == 0x2f;
+    if ok {
+        let ghost entry = s@.subrange(p as int, q as int);
+        assert(entry[0] == s@[p as int] && entry[1] == s@[p + 1] && entry[2] == s@[p + 2]
+            && entry[3] == s@[p + 3]);
+    }
+    ok
+}
+
+/// The element rule of `kind`: [`env_entry_ok`] for 0, [`decimal_ok`] for 1,
+/// [`landlock_entry_ok`] for 2.
+pub open spec fn elem_ok(e: Seq<u8>, kind: u32) -> bool {
+    if kind == 0 {
+        env_entry_ok(e)
+    } else if kind == 1 {
+        decimal_ok(e)
+    } else {
+        landlock_entry_ok(e)
+    }
+}
+
+/// `s[p..q]` satisfies [`elem_ok`] for `kind`.
+fn elem_ok_exec(s: &[u8], p: usize, q: usize, kind: u32) -> (ok: bool)
+    requires
+        p <= q <= s@.len(),
+        kind <= 2,
+    ensures
+        ok ==> elem_ok(s@.subrange(p as int, q as int), kind),
+{
+    if kind == 0 {
+        env_entry_ok_exec(s, p, q)
+    } else if kind == 1 {
+        decimal_ok_exec(s, p, q)
+    } else {
+        landlock_entry_ok_exec(s, p, q)
+    }
+}
+
+/// Every element of the NUL-separated list `s` passes the check of `kind`: [`env_entry_ok`]
+/// for 0, [`decimal_ok`] for 1, [`landlock_entry_ok`] for 2.
+#[must_use]
+pub fn elements_ok(s: &[u8], kind: u32) -> (ok: bool)
+    requires
+        nul_list(s@),
+        kind <= 2,
+    ensures
+        ok && kind == 0 ==> env_list_ok(s@),
+        ok && kind == 1 ==> seccomp_list_ok(s@),
+        ok && kind == 2 ==> landlock_list_ok(s@),
+{
+    let n = s.len();
+    if n == 0 {
+        return true;
+    }
+    let mut es: usize = 0;
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            n == s@.len(),
+            0 < n,
+            nul_list(s@),
+            kind <= 2,
+            es <= i <= n,
+            es == 0 || s@[es - 1] == 0,
+            forall|k: int| es <= k < i ==> #[trigger] s@[k] != 0,
+            forall|p: int, q: int| #[trigger]
+                is_elem(s@, p, q) && q < i ==> elem_ok(s@.subrange(p, q), kind),
+        decreases n - i,
+    {
+        if s[i] == 0 {
+            if !elem_ok_exec(s, es, i, kind) {
+                return false;
+            }
+            assert forall|p: int, q: int| #[trigger] is_elem(s@, p, q) && q < i + 1 implies elem_ok(
+                s@.subrange(p, q),
+                kind,
+            ) by {
+                if q == i {
+                    lemma_elem_start(s@, es as int, i as int, p);
+                }
+            }
+            es = i + 1;
+        }
+        i += 1;
+    }
+    if !elem_ok_exec(s, es, n, kind) {
+        return false;
+    }
+    assert forall|p: int, q: int| #[trigger] is_elem(s@, p, q) implies elem_ok(
+        s@.subrange(p, q),
+        kind,
+    ) by {
+        if q == n {
+            lemma_elem_start(s@, es as int, n as int, p);
+        }
+    }
+    true
+}
+
+/// The elements of the NUL-separated list `s` ([`elems`]): a bounded count of its NULs.
+#[must_use]
+pub fn count_elements(s: &[u8]) -> (n: usize)
+    requires
+        s@.len() <= 0x1000_0000,
+    ensures
+        n as int == elems(s@),
+{
+    let len = s.len();
+    if len == 0 {
+        return 0;
+    }
+    let mut count: usize = 0;
+    let mut i: usize = 0;
+    while i < len
+        invariant
+            len == s@.len() <= 0x1000_0000,
+            i <= len,
+            count <= i,
+            count as int == nuls(s@.subrange(0, i as int)),
+        decreases len - i,
+    {
+        assert(s@.subrange(0, i + 1).drop_last() =~= s@.subrange(0, i as int));
+        assert(s@.subrange(0, i + 1).last() == s@[i as int]);
+        if s[i] == 0 {
+            count += 1;
+        }
+        i += 1;
+    }
+    assert(s@.subrange(0, len as int) =~= s@);
+    count + 1
+}
+
+/// Every element of the pool list `off..off + len` is an environment entry (V4).
+pub(crate) fn env_list_ok_exec(b: &[u8], off: u32, len: u32) -> (ok: bool)
+    requires
+        v1(b@),
+        list_ref(b@, off as int, len as int),
+    ensures
+        ok ==> env_list_ok(pool_slice(b@, off as int, len as int)),
+{
+    assert(table_ok(b@, T_POOL as int));
+    let a = header_word(b, 4 + 2 * T_POOL) as usize + off as usize;
+    let s = vstd::slice::slice_subrange(b, a, a + len as usize);
+    elements_ok(s, 0)
+}
+
+/// Every element of the pool list `off..off + len` is a canonical syscall number (V4).
+pub(crate) fn seccomp_list_ok_exec(b: &[u8], off: u32, len: u32) -> (ok: bool)
+    requires
+        v1(b@),
+        list_ref(b@, off as int, len as int),
+    ensures
+        ok ==> seccomp_list_ok(pool_slice(b@, off as int, len as int)),
+{
+    assert(table_ok(b@, T_POOL as int));
+    let a = header_word(b, 4 + 2 * T_POOL) as usize + off as usize;
+    let s = vstd::slice::slice_subrange(b, a, a + len as usize);
+    elements_ok(s, 1)
+}
+
+/// The pool string `off..off + len` is a non-empty absolute path (V4).
+pub(crate) fn cwd_ok_exec(b: &[u8], off: u32, len: u32) -> (ok: bool)
+    requires
+        v1(b@),
+        pool_ref(b@, off as int, len as int),
+    ensures
+        ok ==> cwd_ok(b@, off as int, len as int),
+{
+    assert(table_ok(b@, T_POOL as int));
+    let a = header_word(b, 4 + 2 * T_POOL) as usize + off as usize;
+    len >= 1 && b[a] == 0x2f
 }
 
 /// Checks every pool reference of every record (V2).

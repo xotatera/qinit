@@ -3,4 +3,5 @@
 [template.tty-login]
 exec = ["/sbin/agetty", "--noclear", "%i", "38400"]
 restart = { policy = "always" }
+credentials = { uid = "root" }
 deps = [{ group = "require_all", edges = [{ to = "mount-var" }] }]

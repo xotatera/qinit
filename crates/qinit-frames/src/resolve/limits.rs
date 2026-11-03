@@ -4,7 +4,7 @@
 use crate::error::{Code, Error};
 use crate::expand::kind_name;
 use crate::provenance::{Provenance, locate_all};
-use qinit_db::{Model, Ready, Target};
+use qinit_db::{Model, Ready, Seccomp, Target};
 use qinit_db_core::{
     MAX_CREDS, MAX_EDGES, MAX_EDGES_PER_GROUP, MAX_GROUPS, MAX_GROUPS_PER_NODE, MAX_NODES,
     MAX_POOL, MAX_ROUTES,
@@ -29,6 +29,8 @@ fn pool_bytes(m: &Model) -> usize {
             seen.insert(s.clone());
         }
         seen.extend(n.instance_of.clone());
+        seen.insert(n.env.join("\0"));
+        seen.insert(n.cwd.clone());
         for e in n.groups.iter().flat_map(|g| g.edges.iter()) {
             if let Target::Path(p) = &e.target {
                 seen.insert(p.clone());
@@ -38,6 +40,10 @@ fn pool_bytes(m: &Model) -> usize {
     for c in &m.creds {
         seen.insert(c.user.clone());
         seen.insert(c.landlock.join("\0"));
+        if let Seccomp::Deny(l) | Seccomp::Allow(l) = &c.seccomp {
+            let text: Vec<String> = l.iter().map(u32::to_string).collect();
+            seen.insert(text.join("\0"));
+        }
     }
     for r in &m.routes {
         if let qinit_db::Route::Path(p) = r {
@@ -143,6 +149,7 @@ mod tests {
             [worker.c]
             exec = ["/x"]
             instances = ["i", "j"]
+            credentials = { uid = "u" }
         "#;
         let merged = Merged {
             table: src.parse::<toml::Table>().expect("toml"),

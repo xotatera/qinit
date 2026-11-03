@@ -8,6 +8,20 @@ use qinit_db::{
     RestartPolicy, Route, Seccomp, Securebits, Stop, StopMode, Target,
 };
 
+/// The plain service credential: user `svc`, no caps, `no_new_privs`, no sandbox.
+pub fn svc() -> Cred {
+    Cred {
+        user: "svc".into(),
+        caps: 0,
+        securebits: Securebits::None,
+        nnp: true,
+        ns: 0,
+        seccomp: Seccomp::None,
+        landlock: Vec::new(),
+    }
+}
+
+/// A node of `kind`; a worker or forager runs under credential 0.
 pub fn node(name: &str, kind: Kind) -> Node {
     Node {
         kind,
@@ -27,11 +41,15 @@ pub fn node(name: &str, kind: Kind) -> Node {
         start_timeout_ms: 90_000,
         output: None,
         errors: None,
-        cred: None,
+        cred: (kind != Kind::Brood).then_some(0),
         groups: Vec::new(),
         memory_max_kib: 0,
         pids_max: 0,
         instance_of: None,
+        env: Vec::new(),
+        cwd: "/".into(),
+        umask: 0o027,
+        rlimit_nofile: 0,
     }
 }
 
@@ -46,12 +64,18 @@ pub fn edge(target: Target, mode: Mode, deadline_ms: u32) -> Edge {
     }
 }
 
-/// Nodes: 0 firewall (brood), 1 logd (worker), 2 net (forager), 3 sshd (worker).
+/// Nodes: 0 firewall (brood), 1 logd (worker), 2 net (forager), 3 sshd (worker). Credentials:
+/// 0 `sshd` (sandboxed, a seccomp denylist), 1 `svc` for the others.
 pub fn sample() -> Model {
     let firewall = node("firewall", Kind::Brood);
     let mut logd = node("logd", Kind::Worker);
     logd.exec = vec!["/bin/logd".into()];
     logd.ready = Ready::Pipe;
+    logd.cred = Some(1);
+    logd.env = vec!["LOGD_DIR=/var/log/qinit".into()];
+    logd.cwd = "/var/log/qinit".into();
+    logd.umask = 0o077;
+    logd.rlimit_nofile = 1024;
     logd.restart = Restart {
         policy: RestartPolicy::Always,
         max: 5,
@@ -59,7 +83,8 @@ pub fn sample() -> Model {
         delay_ms: 1000,
     };
     logd.output = Some(0);
-    let net = node("net", Kind::Forager);
+    let mut net = node("net", Kind::Forager);
+    net.cred = Some(1);
     let mut sshd = node("sshd", Kind::Worker);
     sshd.exec = vec!["/bin/sshd".into(), "-D".into()];
     sshd.ready = Ready::Socket("/run/sshd.sock".into());
@@ -97,15 +122,18 @@ pub fn sample() -> Model {
     ];
     Model {
         nodes: vec![firewall, logd, net, sshd],
-        creds: vec![Cred {
-            user: "sshd".into(),
-            caps: (1 << 40) | (1 << 10) | 1,
-            securebits: Securebits::NorootLocked,
-            nnp: true,
-            ns: 0b10101,
-            seccomp: Seccomp::Default,
-            landlock: vec!["ro:/etc".into(), "rw:/run/sshd".into()],
-        }],
+        creds: vec![
+            Cred {
+                user: "sshd".into(),
+                caps: (1 << 40) | (1 << 10) | 1,
+                securebits: Securebits::NorootLocked,
+                nnp: true,
+                ns: 0b10101,
+                seccomp: Seccomp::Deny(vec![101, 310]),
+                landlock: vec!["ro:/etc".into(), "rw:/run/sshd".into()],
+            },
+            svc(),
+        ],
         routes: vec![Route::Path("/var/log/sshd.log".into()), Route::Pipe(1)],
         enabled: vec![0, 1, 3],
         presyslog: vec![1],

@@ -539,6 +539,8 @@ fn mark_edges(db: &[u8], tbl: &mut [NodeState], i: usize) -> (changed: bool)
                 let t = edge_word(db, x, E_TARGET) as usize;
                 let old_t = tbl[t];
                 if !old_t.pulled {
+                    let ghost before = tbl@;
+                    assert(quiet_emits(before, old(tbl)@));
                     tbl[t] = NodeState { wanted: true, pulled: true, ..old_t };
 
                     proof {
@@ -550,6 +552,20 @@ fn mark_edges(db: &[u8], tbl: &mut [NodeState], i: usize) -> (changed: bool)
                                 assert(inv_node(old_t, params_of(db@, k)));
                             }
                         }
+                        // The pull changes `wanted` and `pulled` only: the emits stay quiet.
+                        assert(quiet_emits(tbl@, before)) by {
+                            assert forall|k: int|
+                                0 <= k < tbl@.len() implies #[trigger] tbl@[k].emit_start
+                                == before[k].emit_start && tbl@[k].emit_arm
+                                == before[k].emit_arm by {
+                                if k == t as int {
+                                    assert(old_t == before[k]);
+                                } else {
+                                    assert(tbl@[k] == before[k]);
+                                }
+                            }
+                        }
+                        lemma_quiet_trans(tbl@, before, old(tbl)@);
                     }
                     changed = true;
                 }

@@ -11,9 +11,9 @@ use qinit_colony::{Colony, Reason, Request, State};
 /// `a` requires `b` with the given `restart_on`; both enabled.
 fn pair(restart_on: &str) -> String {
     format!(
-        "[worker.a]\nexec = [\"/bin/a\"]\n\
+        "[worker.a]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/bin/a\"]\n\
          deps = [{{ group = \"require_all\", edges = [{{ to = \"b\", restart_on = \"{restart_on}\" }}] }}]\n\
-         [worker.b]\nexec = [\"/bin/b\"]\n"
+         [worker.b]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/bin/b\"]\n"
     )
 }
 
@@ -63,9 +63,9 @@ fn restart_on_values_behave() {
 
 #[test]
 fn cascade_and_per_node_clear() {
-    let frames = "[worker.a]\nexec = [\"/bin/a\"]\n\
+    let frames = "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/a\"]\n\
         deps = [{ group = \"require_all\", edges = [{ to = \"b\", restart_on = \"none\", cascade = true }] }]\n\
-        [worker.b]\nexec = [\"/bin/b\"]\nrestart = { policy = \"on-failure\", max = 1 }\n";
+        [worker.b]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/b\"]\nrestart = { policy = \"on-failure\", max = 1 }\n";
     let (probe, _) = boot(frames, &["a"], Sim::new());
     let mut sim = Sim::new();
     sim.scripts.insert(
@@ -96,9 +96,9 @@ fn cascade_and_per_node_clear() {
 
 #[test]
 fn async_deadline_then_late_arrival_restart() {
-    let frames = "[worker.a]\nexec = [\"/bin/a\"]\n\
+    let frames = "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/a\"]\n\
         deps = [{ group = \"require_all\", edges = [{ to = \"b\", mode = \"async\", deadline = \"1s\", restart_on = \"restart\" }] }]\n\
-        [worker.b]\nexec = [\"/bin/b\"]\n";
+        [worker.b]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/b\"]\n";
     let (probe, _) = boot(frames, &["a"], Sim::new());
     let mut sim = Sim::new();
     sim.scripts.insert(
@@ -132,9 +132,9 @@ fn async_deadline_then_late_arrival_restart() {
 
 #[test]
 fn exclude_conflict() {
-    let frames = "[worker.a]\nexec = [\"/bin/a\"]\n\
+    let frames = "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/a\"]\n\
         deps = [{ group = \"exclude_all\", edges = [{ to = \"b\" }] }]\n\
-        [worker.b]\nexec = [\"/bin/b\"]\n";
+        [worker.b]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/b\"]\n";
     let (mut c, _) = boot(frames, &["a", "b"], Sim::new());
     pass(&mut c, 10);
     let (a, b) = (idx(&c, "a"), idx(&c, "b"));

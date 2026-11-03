@@ -83,11 +83,14 @@ fn cascade_is_for_a_require_all_edge_to_a_frame() {
 fn restart_and_stop_defaults_resolve() {
     let r = ok(r#"
         [worker.a]
+credentials = { uid = "svc" }
         exec = ["/a"]
         [worker.oneshot]
+credentials = { uid = "svc" }
         exec = ["/o"]
         ready = "exit"
         [forager.f]
+credentials = { uid = "svc" }
         exec = ["/f"]
         [brood.b]
     "#);
@@ -115,9 +118,11 @@ fn explicit_stop_start_timeout_and_delay_resolve_and_inherit_from_a_template() {
         start_timeout = "5s"
         restart = { policy = "always", delay = "250ms" }
         [worker.a]
+credentials = { uid = "svc" }
         exec = ["/a"]
         template = "t"
         [worker.b]
+credentials = { uid = "svc" }
         exec = ["/b"]
         template = "t"
         start_timeout = "0s"
@@ -136,12 +141,15 @@ fn explicit_stop_start_timeout_and_delay_resolve_and_inherit_from_a_template() {
 fn an_omitted_window_is_derived_from_max_and_delay() {
     let r = ok(r#"
         [worker.a]
+credentials = { uid = "svc" }
         exec = ["/a"]
         restart = { policy = "on-failure", max = 5 }
         [worker.b]
+credentials = { uid = "svc" }
         exec = ["/b"]
         restart = { policy = "on-failure", max = 3, delay = "200ms" }
         [worker.c]
+credentials = { uid = "svc" }
         exec = ["/c"]
         restart = { policy = "always" }
     "#);
@@ -157,7 +165,7 @@ fn a_window_shorter_than_the_backoff_up_to_max_warns() {
     // 1 + 2 + 4 + 8 + 10 = 25 s of delays before the fifth restart.
     let src = |window: &str| {
         format!(
-            "[worker.a]\nexec = [\"/a\"]\nrestart = {{ policy = \"on-failure\", max = 5, window = \"{window}\" }}\n"
+            "[worker.a]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/a\"]\nrestart = {{ policy = \"on-failure\", max = 5, window = \"{window}\" }}\n"
         )
     };
     let r = ok(&src("10s"));
@@ -171,8 +179,10 @@ fn a_window_shorter_than_the_backoff_up_to_max_warns() {
 fn cascade_reaches_the_edge() {
     let r = ok(r#"
         [worker.b]
+credentials = { uid = "svc" }
         exec = ["/b"]
         [worker.a]
+credentials = { uid = "svc" }
         exec = ["/a"]
         deps = [{ group = "require_all", edges = [{ to = "b", cascade = true }, { to = "b" }] }]
     "#);
@@ -187,9 +197,13 @@ fn a_window_set_across_layers_is_derived_after_the_merge() {
     t.file(
         "vendor",
         "f.toml",
-        "[worker.a]\nexec = [\"/a\"]\nrestart = { policy = \"on-failure\" }\n",
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\nrestart = { policy = \"on-failure\" }\n",
     );
-    t.file("etc", "f.toml", "[worker.a]\nrestart = { max = 4 }\n");
+    t.file(
+        "etc",
+        "f.toml",
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nrestart = { max = 4 }\n",
+    );
     t.file("etc", "enable.toml", "enable = [\"a\"]\n");
     let c = compile(&t.input(&["vendor", "etc"])).expect("compiles");
     let m = qinit_db::open(&c.bytes).expect("validates").decode();
@@ -199,7 +213,7 @@ fn a_window_set_across_layers_is_derived_after_the_merge() {
     t.file(
         "etc",
         "f.toml",
-        "[worker.a]\nrestart = { max = 4, window = \"5s\" }\n",
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nrestart = { max = 4, window = \"5s\" }\n",
     );
     let c = compile(&t.input(&["vendor", "etc"])).expect("compiles");
     let m = qinit_db::open(&c.bytes).expect("validates").decode();

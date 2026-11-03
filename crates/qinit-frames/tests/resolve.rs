@@ -28,6 +28,7 @@ fn logger_edge(to: u32) -> Group {
 fn a_require_all_edge_resolves_to_a_node_index() {
     let r = ok(r#"
         [worker.b]
+credentials = { uid = "svc" }
         exec = ["/b"]
         deps = [{ group = "require_all", edges = [{ to = "a", restart_on = "error" }] }]
         [brood.a]
@@ -45,9 +46,11 @@ fn a_missing_require_target_is_missing_target() {
     let es = errs(
         r#"
         [worker.b]
+credentials = { uid = "svc" }
         exec = ["/b"]
         deps = [{ group = "require_any", edges = [{ to = "nope" }] }]
         [worker.c]
+credentials = { uid = "svc" }
         exec = ["/c"]
         deps = [{ group = "require_all", edges = [{ to = "gone" }] }]
     "#,
@@ -72,7 +75,7 @@ fn a_target_masked_by_disable_is_missing_target_for_require() {
     let ls = [
         mk(
             "vendor",
-            "[brood.a]\n[worker.b]\nexec = [\"/b\"]\n\
+            "[brood.a]\n[worker.b]\ncredentials = { uid = \"svc\" }\nexec = [\"/b\"]\n\
              deps = [{ group = \"require_all\", edges = [{ to = \"a\" }] }]\n",
         ),
         mk("etc", "[brood.a]\ndisable = true\n"),
@@ -87,6 +90,7 @@ fn a_target_masked_by_disable_is_missing_target_for_require() {
 fn a_missing_optional_or_exclude_target_is_dropped_with_a_warning() {
     let r = ok(r#"
         [worker.b]
+credentials = { uid = "svc" }
         exec = ["/b"]
         deps = [
           { group = "optional_all", edges = [{ to = "nope" }, { to = "a" }] },
@@ -105,9 +109,11 @@ fn a_missing_optional_or_exclude_target_is_dropped_with_a_warning() {
 fn a_logger_pipe_adds_an_implicit_sync_require_all_edge() {
     let r = ok(r#"
         [worker.app]
+credentials = { uid = "svc" }
         exec = ["/app"]
         output = { pipe = "log" }
         [worker.log]
+credentials = { uid = "svc" }
         exec = ["/log"]
     "#);
     let m = &r.model;
@@ -121,7 +127,9 @@ fn a_logger_pipe_adds_an_implicit_sync_require_all_edge() {
 
 #[test]
 fn a_worker_that_is_its_own_logger_is_a_cycle() {
-    let es = errs("[worker.a]\nexec = [\"/a\"]\nerrors = { pipe = \"a\" }\n");
+    let es = errs(
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\nerrors = { pipe = \"a\" }\n",
+    );
     assert_eq!(es[0].code, Code::Cycle);
     assert_eq!(es[0].key, "worker.a.errors");
 }
@@ -131,10 +139,12 @@ fn a_pipe_to_a_non_worker_is_bad_value() {
     let es = errs(
         r#"
         [worker.a]
+credentials = { uid = "svc" }
         exec = ["/a"]
         output = { pipe = "b" }
         [brood.b]
         [worker.c]
+credentials = { uid = "svc" }
         exec = ["/c"]
         output = { pipe = "nobody" }
     "#,
@@ -149,20 +159,25 @@ fn a_pipe_to_a_non_worker_is_bad_value() {
 fn a_pipe_route_is_shared_per_producer_and_path_routes_are_interned() {
     let r = ok(r#"
         [worker.a]
+credentials = { uid = "svc" }
         exec = ["/a"]
         output = { pipe = "log" }
         errors = { pipe = "log" }
         [worker.b]
+credentials = { uid = "svc" }
         exec = ["/b"]
         output = { pipe = "log" }
         [worker.c]
+credentials = { uid = "svc" }
         exec = ["/c"]
         output = "/dev/console"
         [worker.d]
+credentials = { uid = "svc" }
         exec = ["/d"]
         output = "/dev/console"
         errors = "/var/log/d"
         [worker.log]
+credentials = { uid = "svc" }
         exec = ["/log"]
     "#);
     let m = &r.model;
@@ -180,8 +195,9 @@ fn a_pipe_route_is_shared_per_producer_and_path_routes_are_interned() {
 
 #[test]
 fn errors_defaults_to_output() {
-    let r =
-        ok("[worker.a]\nexec = [\"/a\"]\noutput = \"/dev/console\"\n[worker.b]\nexec = [\"/b\"]\n");
+    let r = ok(
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\noutput = \"/dev/console\"\n[worker.b]\ncredentials = { uid = \"svc\" }\nexec = [\"/b\"]\n",
+    );
     let (a, b) = (node(&r.model, "a"), node(&r.model, "b"));
     assert!(a.output.is_some());
     assert_eq!(a.errors, a.output);
@@ -192,10 +208,13 @@ fn errors_defaults_to_output() {
 fn workers_before_any_syslog_worker_are_listed() {
     let src = r#"
         [worker.early]
+credentials = { uid = "svc" }
         exec = ["/e"]
         [worker.syslog-ng]
+credentials = { uid = "svc" }
         exec = ["/s"]
         [worker.late]
+credentials = { uid = "svc" }
         exec = ["/l"]
         deps = [{ group = "require_all", edges = [{ to = "mid" }] }]
         [brood.mid]
@@ -225,20 +244,27 @@ fn the_enable_closure_follows_require_edges_only() {
           { group = "exclude_all", edges = [{ to = "ex" }] },
         ]
         [worker.a]
+credentials = { uid = "svc" }
         exec = ["/a"]
         output = { pipe = "log" }
         [worker.b]
+credentials = { uid = "svc" }
         exec = ["/b"]
         deps = [{ group = "require_all", edges = [{ to = "c", mode = "async" }, { path = "/run/x" }] }]
         [worker.c]
+credentials = { uid = "svc" }
         exec = ["/c"]
         [worker.log]
+credentials = { uid = "svc" }
         exec = ["/log"]
         [worker.opt]
+credentials = { uid = "svc" }
         exec = ["/o"]
         [worker.ex]
+credentials = { uid = "svc" }
         exec = ["/x"]
         [worker.other]
+credentials = { uid = "svc" }
         exec = ["/y"]
     "#;
     let r = run(src, &enable(&["root"], &[])).expect("resolves");
@@ -266,6 +292,7 @@ fn a_sync_edge_with_a_deadline_is_bad_value() {
     let es = errs(
         r#"
         [worker.b]
+credentials = { uid = "svc" }
         exec = ["/b"]
         deps = [{ group = "require_all", edges = [{ to = "a", deadline = "1s" }] }]
         [brood.a]
@@ -278,6 +305,7 @@ fn a_sync_edge_with_a_deadline_is_bad_value() {
 fn a_zero_deadline_async_edge_is_optional() {
     let r = ok(r#"
         [worker.b]
+credentials = { uid = "svc" }
         exec = ["/b"]
         deps = [{ group = "require_all", edges = [
           { to = "a", mode = "async", deadline = "0s" },
@@ -300,6 +328,7 @@ fn unknown_caps_and_namespaces_are_bad_values() {
         exec = ["/a"]
         credentials = { uid = "a", caps = ["net_bind_service", "fly"] }
         [worker.b]
+credentials = { uid = "svc" }
         exec = ["/b"]
         sandbox = { namespaces = ["mount", "time"] }
     "#,
@@ -315,7 +344,10 @@ fn more_nodes_than_the_limit_is_a_limit_error() {
     use std::fmt::Write as _;
     let mut src = String::new();
     for i in 0..4097 {
-        let _ = write!(src, "[worker.w{i}]\nexec = [\"/w\"]\n");
+        let _ = write!(
+            src,
+            "[worker.w{i}]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/w\"]\n"
+        );
     }
     let es = errs(&src);
     assert_eq!(es.len(), 1, "{es:?}");
@@ -328,6 +360,7 @@ fn stop_parallel_on_a_hard_edge_is_refused_at_resolve() {
     let es = errs(
         r#"
         [worker.b]
+credentials = { uid = "svc" }
         exec = ["/b"]
         deps = [{ group = "require_all", edges = [{ to = "a", stop = "parallel" }] }]
         [brood.a]
@@ -337,6 +370,7 @@ fn stop_parallel_on_a_hard_edge_is_refused_at_resolve() {
     assert_eq!(es[0].key, "worker.b.deps[0].edges[0].stop");
     let r = ok(r#"
         [worker.b]
+credentials = { uid = "svc" }
         exec = ["/b"]
         deps = [
           { group = "require_all", edges = [{ to = "a", mode = "async", stop = "parallel" }] },
