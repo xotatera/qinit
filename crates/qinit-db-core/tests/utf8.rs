@@ -11,6 +11,7 @@ fn accepts(scratch: &mut Scratch, name: &[u8]) -> bool {
             name: name.to_vec(),
             ..node("x", vec![])
         }],
+        creds: vec![cred("svc")],
         ..DbSpec::default()
     };
     match scratch.check(&build(&spec)) {

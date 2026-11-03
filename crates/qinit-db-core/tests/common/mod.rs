@@ -52,6 +52,12 @@ pub struct NodeSpec {
     pub output: u32,
     /// Credential index or `NONE`.
     pub cred: u32,
+    /// The environment, raw NUL-joined `KEY=VALUE` entries.
+    pub env: &'static str,
+    /// The working directory.
+    pub cwd: &'static str,
+    /// The file-mode creation mask.
+    pub umask: u32,
 }
 
 /// One credential record.
@@ -61,6 +67,23 @@ pub struct CredSpec {
     pub user: &'static str,
     /// Capabilities, bits 0..=40.
     pub caps: u64,
+    /// `no_new_privs`, 0 or 1.
+    pub nnp: u32,
+    /// 0 none, 1 default, 2 deny-list, 3 allow-list.
+    pub seccomp: u32,
+    /// The seccomp list, raw NUL-joined decimals.
+    pub seccomp_list: &'static str,
+}
+
+/// A credential for `user`: no caps, `no_new_privs` on, no seccomp.
+pub fn cred(user: &'static str) -> CredSpec {
+    CredSpec {
+        user,
+        caps: 0,
+        nnp: 1,
+        seccomp: 0,
+        seccomp_list: "",
+    }
 }
 
 /// One route.
@@ -82,14 +105,17 @@ pub struct DbSpec {
     pub presyslog: Vec<u32>,
 }
 
-/// A worker named `name` with `groups`.
+/// A worker named `name` with `groups`, running under credential 0.
 pub fn node(name: &str, groups: Vec<GroupSpec>) -> NodeSpec {
     NodeSpec {
         name: name.as_bytes().to_vec(),
         kind: 0,
         groups,
         output: NONE,
-        cred: NONE,
+        cred: 0,
+        env: "",
+        cwd: "/",
+        umask: 0o027,
     }
 }
 
@@ -151,7 +177,14 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
         } else {
             intern(&mut pool, b"/bin/true")
         };
-        let mut rec = [0u32; 24];
+        let (env_off, env_len) = intern(&mut pool, n.env.as_bytes());
+        let (cwd_off, cwd_len) = intern(&mut pool, n.cwd.as_bytes());
+        let mut rec = [0u32; 30];
+        rec[N_ENV_OFF] = env_off;
+        rec[N_ENV_LEN] = env_len;
+        rec[N_CWD_OFF] = cwd_off;
+        rec[N_CWD_LEN] = cwd_len;
+        rec[N_UMASK] = n.umask;
         rec[N_RESTART_DELAY_MS] = 1000;
         rec[N_STOP_GRACE_MS] = 10_000;
         rec[N_KIND] = n.kind;
@@ -192,9 +225,14 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
     let mut creds: Vec<u32> = Vec::new();
     for c in &spec.creds {
         let (uo, ul) = intern(&mut pool, c.user.as_bytes());
-        let mut rec = [0u32; 10];
+        let (so, sl) = intern(&mut pool, c.seccomp_list.as_bytes());
+        let mut rec = [0u32; 12];
         rec[C_USER_OFF] = uo;
         rec[C_USER_LEN] = ul;
+        rec[C_NNP] = c.nnp;
+        rec[C_SECCOMP] = c.seccomp;
+        rec[C_SECCOMP_OFF] = so;
+        rec[C_SECCOMP_LEN] = sl;
         rec[C_CAPS_LO] = n32(usize::try_from(c.caps & 0xffff_ffff).unwrap());
         rec[C_CAPS_HI] = n32(usize::try_from(c.caps >> 32).unwrap());
         creds.extend_from_slice(&rec);
@@ -240,10 +278,12 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
     out
 }
 
-/// The minimal spec: two workers `a` and `b`, `a` requires `b` sync, both enabled.
+/// The minimal spec: two workers `a` and `b` under credential 0 (user `svc`), `a` requires `b`
+/// sync, both enabled.
 pub fn minimal_spec() -> DbSpec {
     DbSpec {
         nodes: vec![node("a", vec![group(0, vec![sync(1)])]), node("b", vec![])],
+        creds: vec![cred("svc")],
         enabled: vec![0, 1],
         ..DbSpec::default()
     }

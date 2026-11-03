@@ -100,6 +100,11 @@ pub open spec fn node_enum_ok(b: Seq<u8>, i: int) -> bool {
     &&& nf(b, i, N_RESTART_DELAY_MS) >= MIN_DELAY_MS
     &&& nf(b, i, N_STOP_GRACE_MS) >= MIN_DELAY_MS
     &&& (nf(b, i, N_RESTART_MAX) > 0 ==> nf(b, i, N_RESTART_WINDOW_MS) > 0)
+    &&& nf(b, i, N_UMASK) <= MAX_UMASK
+    &&& (nf(b, i, N_KIND) <= 1 ==> nf(b, i, N_CRED) != NONE)
+    &&& (nf(b, i, N_KIND) == 2 ==> nf(b, i, N_CRED) == NONE)
+    &&& cwd_ok(b, nf(b, i, N_CWD_OFF), nf(b, i, N_CWD_LEN))
+    &&& env_list_ok(pool_slice(b, nf(b, i, N_ENV_OFF), nf(b, i, N_ENV_LEN)))
 }
 
 pub open spec fn group_enum_ok(b: Seq<u8>, g: int) -> bool {
@@ -115,12 +120,22 @@ pub open spec fn edge_enum_ok(b: Seq<u8>, x: int) -> bool {
     &&& (ef(b, x, E_MODE) == 0 ==> ef(b, x, E_DEADLINE_MS) == 0)
 }
 
+/// The credential's capability word holds `CAP_SYS_ADMIN`.
+pub open spec fn has_sys_admin(b: Seq<u8>, c: int) -> bool {
+    (cf(b, c, C_CAPS_LO) as u32) & CAP_SYS_ADMIN_MASK != 0
+}
+
 pub open spec fn cred_enum_ok(b: Seq<u8>, c: int) -> bool {
+    &&& cf(b, c, C_USER_LEN) >= 1
     &&& cf(b, c, C_CAPS_HI) <= 0x1ff
     &&& cf(b, c, C_SECUREBITS) <= 2
     &&& cf(b, c, C_NNP) <= 1
     &&& cf(b, c, C_NS) <= 0x1f
-    &&& cf(b, c, C_SECCOMP) <= 1
+    &&& cf(b, c, C_SECCOMP) <= 3
+    &&& (cf(b, c, C_SECCOMP) <= 1) == (cf(b, c, C_SECCOMP_LEN) == 0)
+    &&& (cf(b, c, C_NNP) == 0 && (cf(b, c, C_LANDLOCK_LEN) > 0 || cf(b, c, C_SECCOMP) != 0)
+        ==> has_sys_admin(b, c))
+    &&& seccomp_list_ok(pool_slice(b, cf(b, c, C_SECCOMP_OFF), cf(b, c, C_SECCOMP_LEN)))
 }
 
 pub open spec fn route_enum_ok(b: Seq<u8>, r: int) -> bool {

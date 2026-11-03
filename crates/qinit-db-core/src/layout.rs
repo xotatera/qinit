@@ -71,7 +71,7 @@ pub const T_PRESYSLOG: usize = 6;
 pub const T_POOL: usize = 7;
 
 /// Words per record, tables 0..=6.
-pub const WORDS: [usize; 7] = [24, 3, 7, 10, 3, 1, 1];
+pub const WORDS: [usize; 7] = [30, 3, 7, 12, 3, 1, 1];
 
 /// Header word: magic.
 pub const H_MAGIC: usize = 0;
@@ -157,8 +157,50 @@ pub const N_STOP_GRACE_MS: usize = 22;
 /// Node record word 23: `start_timeout_ms`, 0 for none.
 pub const N_START_TIMEOUT_MS: usize = 23;
 
+/// Node record word 24: `env_off`, NUL-separated `KEY=VALUE` entries sorted by key.
+pub const N_ENV_OFF: usize = 24;
+
+/// Node record word 25: `env_len`.
+pub const N_ENV_LEN: usize = 25;
+
+/// Node record word 26: `cwd_off`, a non-empty absolute path.
+pub const N_CWD_OFF: usize = 26;
+
+/// Node record word 27: `cwd_len`.
+pub const N_CWD_LEN: usize = 27;
+
+/// Node record word 28: `umask`, at most `MAX_UMASK`.
+pub const N_UMASK: usize = 28;
+
+/// Node record word 29: `rlimit_nofile`, 0 for the kernel default.
+pub const N_RLIMIT_NOFILE: usize = 29;
+
 /// Floor of `restart_delay_ms` and `stop_grace_ms`, milliseconds.
 pub const MIN_DELAY_MS: u32 = 100;
+
+/// Ceiling of `umask`.
+pub const MAX_UMASK: u32 = 0o777;
+
+/// Every syscall number in a seccomp list is below this.
+pub const MAX_SYSCALL: u32 = 512;
+
+/// Bit of `CAP_SYS_ADMIN` in `caps_lo`.
+pub const CAP_SYS_ADMIN_BIT: u32 = 21;
+
+/// `caps_lo` mask of `CAP_SYS_ADMIN`: bit `CAP_SYS_ADMIN_BIT`.
+pub const CAP_SYS_ADMIN_MASK: u32 = 0x20_0000;
+
+/// `seccomp` 0: no filter.
+pub const SECCOMP_NONE: u32 = 0;
+
+/// `seccomp` 1: the default denylist.
+pub const SECCOMP_DEFAULT: u32 = 1;
+
+/// `seccomp` 2: deny the listed calls.
+pub const SECCOMP_DENY: u32 = 2;
+
+/// `seccomp` 3: allow only the listed calls.
+pub const SECCOMP_ALLOW: u32 = 3;
 
 /// Edge flags bit 0: `stop = "parallel"`.
 pub const E_FLAG_PARALLEL: u32 = 1;
@@ -225,6 +267,13 @@ pub const C_LANDLOCK_OFF: usize = 8;
 
 /// Credential record word 9: `landlock_len`.
 pub const C_LANDLOCK_LEN: usize = 9;
+
+/// Credential record word 10: `seccomp_off`, NUL-separated canonical decimals below
+/// `MAX_SYSCALL`.
+pub const C_SECCOMP_OFF: usize = 10;
+
+/// Credential record word 11: `seccomp_len`, 0 exactly when `seccomp` is 0 or 1.
+pub const C_SECCOMP_LEN: usize = 11;
 
 /// Route record word 0: `kind`.
 pub const R_KIND: usize = 0;

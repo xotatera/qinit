@@ -10,6 +10,7 @@ use qinit_db_core::*;
 fn two(a: Vec<GroupSpec>, b: Vec<GroupSpec>) -> DbSpec {
     DbSpec {
         nodes: vec![node("a", a), node("b", b)],
+        creds: vec![cred("svc")],
         enabled: vec![0, 1],
         ..DbSpec::default()
     }
@@ -83,6 +84,7 @@ fn a_longer_cycle_through_later_groups_is_refused() {
             node("b", vec![group(3, vec![sync(0)]), group(1, vec![sync(2)])]),
             node("c", vec![group(2, vec![path("/x"), sync(0)])]),
         ],
+        creds: vec![cred("svc")],
         enabled: vec![0, 1, 2],
         ..DbSpec::default()
     };

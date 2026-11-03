@@ -20,13 +20,13 @@ pub(crate) fn words_of(t: usize) -> (w: usize)
         w == WORDS[t as int],
 {
     if t == 0 {
-        24
+        30
     } else if t == 1 {
         3
     } else if t == 2 {
         7
     } else if t == 3 {
-        10
+        12
     } else if t == 4 {
         3
     } else {

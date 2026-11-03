@@ -39,10 +39,10 @@ fn the_limits_match_the_graph_core() {
 
 #[test]
 fn the_record_sizes_match_the_word_indices() {
-    assert_eq!(N_START_TIMEOUT_MS + 1, WORDS[T_NODES]);
+    assert_eq!(N_RLIMIT_NOFILE + 1, WORDS[T_NODES]);
     assert_eq!(G_EDGE_COUNT + 1, WORDS[T_GROUPS]);
     assert_eq!(E_FLAGS + 1, WORDS[T_EDGES]);
-    assert_eq!(C_LANDLOCK_LEN + 1, WORDS[T_CREDS]);
+    assert_eq!(C_SECCOMP_LEN + 1, WORDS[T_CREDS]);
     assert_eq!(R_B + 1, WORDS[T_ROUTES]);
     assert_eq!(WORDS[T_ENABLED], 1);
     assert_eq!(WORDS[T_PRESYSLOG], 1);

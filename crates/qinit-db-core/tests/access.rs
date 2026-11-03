@@ -31,3 +31,14 @@ fn the_edge_count_is_the_header_count() {
     assert_eq!(check(&db), Ok(()));
     assert_eq!(edge_count(&db), 1);
 }
+
+#[test]
+fn credential_words_are_read_in_place() {
+    let db = valid_minimal();
+    assert_eq!(check(&db), Ok(()));
+    assert_eq!(cred_count(&db), 1);
+    assert_eq!(cred_word(&db, 0, C_NNP), 1);
+    assert_eq!(cred_word(&db, 0, C_SECCOMP), SECCOMP_NONE);
+    assert_eq!(node_word(&db, 0, N_UMASK), 0o027);
+    assert_eq!(node_word(&db, 0, N_CRED), 0);
+}

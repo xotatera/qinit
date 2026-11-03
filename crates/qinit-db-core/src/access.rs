@@ -73,6 +73,30 @@ pub fn edge_word(b: &[u8], x: usize, w: usize) -> (v: u32)
     field(b, T_EDGES, x, w)
 }
 
+/// The number of credential records.
+#[must_use]
+pub fn cred_count(b: &[u8]) -> (n: usize)
+    requires
+        well_formed(b@),
+    ensures
+        n as int == tcnt(b@, T_CREDS as int),
+{
+    count(b, T_CREDS)
+}
+
+/// Word `w` of credential `c`.
+#[must_use]
+pub fn cred_word(b: &[u8], c: usize, w: usize) -> (v: u32)
+    requires
+        well_formed(b@),
+        c < tcnt(b@, T_CREDS as int),
+        w < spec_words(T_CREDS as int),
+    ensures
+        v as int == cf(b@, c as int, w),
+{
+    field(b, T_CREDS, c, w)
+}
+
 /// The number of edges.
 #[must_use]
 pub fn edge_count(b: &[u8]) -> (n: usize)

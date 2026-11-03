@@ -11,15 +11,9 @@ fn tid(t: usize) -> u8 {
     u8::try_from(t).unwrap()
 }
 
-/// [`minimal_spec`] with credential 0 (user `daemon`, no caps) on node 0, a path route 0 and a
-/// pipe route 1 into worker `b`.
+/// [`minimal_spec`] with a path route 0 and a pipe route 1 into worker `b`.
 fn spec() -> DbSpec {
     let mut spec = minimal_spec();
-    spec.creds.push(CredSpec {
-        user: "daemon",
-        caps: 0,
-    });
-    spec.nodes[0].cred = 0;
     spec.routes = vec![RouteSpec::Path("/var/log/a"), RouteSpec::Pipe(1)];
     spec
 }
@@ -34,6 +28,13 @@ fn patched(t: usize, r: usize, w: usize, value: u32) -> Vec<u8> {
 
 fn enum_error(t: usize) -> Result<(), DbError> {
     Err(DbError::Enum {
+        table: tid(t),
+        record: 0,
+    })
+}
+
+fn consistency_error(t: usize) -> Result<(), DbError> {
+    Err(DbError::Consistency {
         table: tid(t),
         record: 0,
     })
@@ -97,15 +98,6 @@ fn namespace_bits_above_0x1f_are_an_enum_error() {
 }
 
 #[test]
-fn seccomp_above_1_is_an_enum_error() {
-    assert_eq!(check(&patched(T_CREDS, 0, C_SECCOMP, 1)), Ok(()));
-    assert_eq!(
-        check(&patched(T_CREDS, 0, C_SECCOMP, 2)),
-        enum_error(T_CREDS)
-    );
-}
-
-#[test]
 fn capability_bits_above_40_are_an_enum_error() {
     // `caps_lo` holds bits 0..=31, all valid; `caps_hi` holds bits 32..=40 in its bits 0..=8.
     assert_eq!(check(&patched(T_CREDS, 0, C_CAPS_LO, u32::MAX)), Ok(()));
@@ -121,8 +113,50 @@ fn capability_bits_above_40_are_an_enum_error() {
 }
 
 #[test]
-fn a_sandbox_only_credential_with_no_user_is_valid() {
+fn an_empty_user_is_an_enum_error() {
     let mut spec = spec();
     spec.creds[0].user = "";
+    assert_eq!(check(&build(&spec)), enum_error(T_CREDS));
+}
+
+#[test]
+fn seccomp_mode_and_list_agree() {
+    let mut spec = spec();
+    spec.creds[0].seccomp = 4;
+    assert_eq!(check(&build(&spec)), enum_error(T_CREDS));
+    spec.creds[0].seccomp = 1;
+    spec.creds[0].seccomp_list = "101";
+    assert_eq!(check(&build(&spec)), enum_error(T_CREDS));
+    spec.creds[0].seccomp = 2;
+    spec.creds[0].seccomp_list = "";
+    assert_eq!(check(&build(&spec)), enum_error(T_CREDS));
+    spec.creds[0].seccomp_list = "0\x00101\x00511";
     assert_eq!(check(&build(&spec)), Ok(()));
+    spec.creds[0].seccomp = 3;
+    assert_eq!(check(&build(&spec)), Ok(()));
+    for bad in ["512", "01", "1a", "1000", "-1", ""] {
+        spec.creds[0].seccomp_list = bad;
+        assert_eq!(
+            check(&build(&spec)),
+            if bad.is_empty() {
+                enum_error(T_CREDS)
+            } else {
+                consistency_error(T_CREDS)
+            },
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn nnp_off_with_a_sandbox_needs_sys_admin() {
+    let mut spec = spec();
+    spec.creds[0].nnp = 0;
+    assert_eq!(check(&build(&spec)), Ok(()));
+    spec.creds[0].seccomp = 1;
+    assert_eq!(check(&build(&spec)), consistency_error(T_CREDS));
+    spec.creds[0].caps = 1 << CAP_SYS_ADMIN_BIT;
+    assert_eq!(check(&build(&spec)), Ok(()));
+    spec.creds[0].caps = 1 << 20;
+    assert_eq!(check(&build(&spec)), consistency_error(T_CREDS));
 }

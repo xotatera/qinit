@@ -28,6 +28,7 @@ fn a_richer_database_validates() {
     let mut spec = minimal_spec();
     spec.nodes.push(NodeSpec {
         kind: 2,
+        cred: NONE,
         ..node(
             "c",
             vec![group(3, vec![path("/run/x")]), group(2, vec![sync(0)])],
@@ -37,8 +38,8 @@ fn a_richer_database_validates() {
     spec.nodes[0].cred = 0;
     spec.nodes[1].output = 1;
     spec.creds.push(CredSpec {
-        user: "daemon",
         caps: 1 << 40,
+        ..cred("daemon")
     });
     spec.routes = vec![RouteSpec::Path("/var/log/a"), RouteSpec::Pipe(1)];
     spec.enabled = vec![0, 1, 2];
