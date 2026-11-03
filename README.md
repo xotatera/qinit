@@ -14,9 +14,11 @@ qinit is an init and service-supervision system for Linux. It is one design buil
 
 The compiled service database is described in [docs/db-format.md](docs/db-format.md). The
 scheduler that runs it is `qinit-colony-core` (proved) and `qinit-colony` (run against simulated
-cells on the host).
+cells on the host). `qinit-overseer` is the launch executor over the proved `qinit-overseer-core`
+plan; see the launch sequence in `crates/qinit-overseer/src/run.rs`.
 
-Status: cell substrate implemented; no init daemon or service manager is usable yet.
+Status: cell substrate, frames, colony core and the overseer implemented; no init daemon or
+service manager is usable yet.
 
 qinit is a standalone project. Alloy Linux consumes it as a package.
 
@@ -57,7 +59,7 @@ Every file carries an SPDX header, or is covered by `REUSE.toml`. The license te
 
 ## Development
 
-Status: the cell substrate is implemented and tested; qinit is not usable yet as an init system.
+Status: the cell substrate, frames, colony core and the overseer are implemented and tested; qinit is not usable yet as an init system.
 
 The first implementation sub-project was repository disciplines setup. The pinned
 [Rust toolchain](rust-toolchain.toml) is Rust 1.98.1 with `rustfmt` and `clippy`.

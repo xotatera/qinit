@@ -24,4 +24,4 @@ workspace = true
 
 [package.metadata.disciplines]
 layer = "runtime"
-allow = ["qinit-db", "qinit-db-core", "qinit-graph-core", "qinit-overseer-core", "serde", "toml"]
+allow = ["qinit-db", "qinit-db-core", "qinit-graph-core", "serde", "toml"]

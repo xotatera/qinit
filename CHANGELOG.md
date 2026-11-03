@@ -49,6 +49,21 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `qinit-colony`: the runtime around the core: an `Effects` trait, the engine that feeds the core
   one input at a time and turns failed effects into events, a scripted simulation with virtual
   time, status text, scenario tests and a property test over random graphs.
+- `qinit-overseer-core`: the launch request format with a total, Verus-proved decoder; the launch
+  plan (request to ordered steps), proved well ordered (credential steps in the one order that
+  works, bounding set before `setresuid`, sandbox last before exec) and complete and faithful
+  to the request; and the seccomp program generator, proved against a bounded interpreter
+  (wrong architecture killed, listed numbers answered `EPERM` or allowed, namespace flags of
+  `clone`/`unshare` and `setns`/`clone3` handled in the default and deny modes).
+- `qinit-overseer`: the `overseer` executor binary and its library: strict identity from
+  `/etc/passwd` and `/etc/group` (no NSS), output routes by file type, the step runner over the
+  proved plan with `(step, errno)` failure records, the pid-namespace supervisors and the request
+  builder from the database model.
+- `qinit-sys`: credential, namespace, Landlock, seccomp, rlimit, timer, sealed memfd, socket and
+  descriptor primitives, and exec by descriptor.
+- Guest kernel options for namespaces, seccomp and Landlock, the executor in the VM initrd, and
+  five suites: `launch`, `sandbox`, `output`, `deadline` and `fail`.
+
 - Workspace pins for `serde` and `toml`.
 - Guest suites for cells: spawn (placement, exec failure, only routed
   descriptors), ready (pipe, EOF, exit), stop_main, stop_cell (setsid
@@ -119,6 +134,15 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Format amendment (database `VERSION` stays 1): the node record has 30 words (`env`, `cwd`,
+  `umask`, `rlimits.nofile`) and the credential record 12 (seccomp mode and syscall list). Every
+  worker and forager must declare `credentials.uid`; a brood takes none. The validator checks
+  both, the env entries, `cwd`, the `umask` range, the seccomp list rule and that `nnp = false`
+  with a sandbox needs `sys_admin`. The privilege contract for undeclared workers is withdrawn.
+- Frame keys: `env`, `cwd`, `umask` (default `0o027`), `rlimits = { nofile }`,
+  `sandbox.seccomp = "none" | "default" | { deny } | { allow }` over a generated `x86_64`
+  syscall table, and the policy field `require_seccomp`. The policy predicate for an
+  unprivileged credential is now user other than `root`, no capabilities and `nnp`.
 - The compiled database carries each node's restart delay, stop mode and grace period and start
   timeout (node record 20 to 24 words) and an edge cascade flag (edge flags bit 1); frames take
   `restart.delay`, `stop = { mode, grace }`, `start_timeout` and `cascade = true` on a
