@@ -89,7 +89,8 @@ fn scalar_len(b: &[u8], i: usize, end: usize) -> (n: usize)
 }
 
 /// `b[start..end]` is valid UTF-8.
-pub(crate) fn utf8_ok(b: &[u8], start: usize, end: usize) -> (ok: bool)
+#[must_use]
+pub fn utf8_ok(b: &[u8], start: usize, end: usize) -> (ok: bool)
     requires
         start <= end <= b@.len(),
     ensures

@@ -3,7 +3,7 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/qinit-cell", "crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-colony", "crates/qinit-colony-core", "crates/qinit-db", "crates/qinit-db-core", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-frames", "crates/qinit-graph-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests"]
+members = ["crates/qinit-cell", "crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-colony", "crates/qinit-colony-core", "crates/qinit-db", "crates/qinit-db-core", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-frames", "crates/qinit-graph-core", "crates/qinit-overseer-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests"]
 
 [workspace.package]
 edition = "2024"
@@ -89,5 +89,13 @@ timeout = "60s"
 name = "qinit-colony-core"
 kind = "verus"
 package = "qinit-colony-core"
+memory = "4G"
+timeout = "90s"
+
+# Provisional until measured (sub-project 5, Task 11).
+[[workspace.metadata.disciplines.proof]]
+name = "qinit-overseer-core"
+kind = "verus"
+package = "qinit-overseer-core"
 memory = "4G"
 timeout = "90s"

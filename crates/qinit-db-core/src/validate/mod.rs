@@ -10,8 +10,10 @@ mod records;
 mod spec;
 mod utf8;
 
+pub use pool::{count_elements, elements_ok, nul_list_ok};
 #[allow(unused_imports)] // the specs only; Verus erases them outside verification
 pub use spec::*;
+pub use utf8::utf8_ok;
 
 #[allow(clippy::wildcard_imports)] // the layout constants, used throughout
 use crate::layout::*;

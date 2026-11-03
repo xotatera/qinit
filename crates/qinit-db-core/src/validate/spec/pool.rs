@@ -92,6 +92,46 @@ pub open spec fn seccomp_list_ok(s: Seq<u8>) -> bool {
         is_elem(s, p, q) ==> decimal_ok(s.subrange(p, q))
 }
 
+/// A Landlock entry: `ro:/...` or `rw:/...`.
+pub open spec fn landlock_entry_ok(e: Seq<u8>) -> bool {
+    &&& e.len() >= 4
+    &&& e[0] == 0x72
+    &&& (e[1] == 0x6f || e[1] == 0x77)
+    &&& e[2] == 0x3a
+    &&& e[3] == 0x2f
+}
+
+/// Every element of the NUL-separated list `s` is a [`landlock_entry_ok`] entry.
+pub open spec fn landlock_list_ok(s: Seq<u8>) -> bool {
+    s.len() == 0 || forall|p: int, q: int| #[trigger]
+        is_elem(s, p, q) ==> landlock_entry_ok(s.subrange(p, q))
+}
+
+/// The NUL bytes in `s`.
+pub open spec fn nuls(s: Seq<u8>) -> int
+    decreases s.len(),
+{
+    if s.len() == 0 {
+        0
+    } else {
+        nuls(s.drop_last()) + if s.last() == 0 {
+            1int
+        } else {
+            0int
+        }
+    }
+}
+
+/// The elements of the NUL-separated list `s`: none when empty, one more than its NULs
+/// otherwise.
+pub open spec fn elems(s: Seq<u8>) -> int {
+    if s.len() == 0 {
+        0
+    } else {
+        nuls(s) + 1
+    }
+}
+
 /// A working directory: non-empty and absolute.
 pub open spec fn cwd_ok(b: Seq<u8>, off: int, len: int) -> bool {
     len >= 1 && b[toff(b, T_POOL as int) + off] == 0x2f

@@ -35,7 +35,8 @@ pub(crate) fn pool_ref_ok(b: &[u8], off: u32, len: u32) -> (r: Result<(), DbErro
 }
 
 /// `b[start..end]` is a NUL-separated list of non-empty elements.
-fn nul_list_ok(b: &[u8], start: usize, end: usize) -> (ok: bool)
+#[must_use]
+pub fn nul_list_ok(b: &[u8], start: usize, end: usize) -> (ok: bool)
     requires
         start <= end <= b@.len(),
     ensures
@@ -252,15 +253,66 @@ proof fn lemma_elem_start(s: Seq<u8>, es: int, i: int, p: int)
     }
 }
 
-/// Every element of the NUL-separated list `s` passes `check`: [`env_entry_ok`] when `kind` is
-/// 0, [`decimal_ok`] when it is 1.
-fn elements_ok(s: &[u8], kind: u32) -> (ok: bool)
+/// `s[p..q]` is a [`landlock_entry_ok`] entry: `ro:/` or `rw:/` and a path.
+fn landlock_entry_ok_exec(s: &[u8], p: usize, q: usize) -> (ok: bool)
+    requires
+        p <= q <= s@.len(),
+    ensures
+        ok ==> landlock_entry_ok(s@.subrange(p as int, q as int)),
+{
+    if q - p < 4 {
+        return false;
+    }
+    let ok = s[p] == 0x72 && (s[p + 1] == 0x6f || s[p + 1] == 0x77) && s[p + 2] == 0x3a && s[p + 3]
+        == 0x2f;
+    if ok {
+        let ghost entry = s@.subrange(p as int, q as int);
+        assert(entry[0] == s@[p as int] && entry[1] == s@[p + 1] && entry[2] == s@[p + 2]
+            && entry[3] == s@[p + 3]);
+    }
+    ok
+}
+
+/// The element rule of `kind`: [`env_entry_ok`] for 0, [`decimal_ok`] for 1,
+/// [`landlock_entry_ok`] for 2.
+pub open spec fn elem_ok(e: Seq<u8>, kind: u32) -> bool {
+    if kind == 0 {
+        env_entry_ok(e)
+    } else if kind == 1 {
+        decimal_ok(e)
+    } else {
+        landlock_entry_ok(e)
+    }
+}
+
+/// `s[p..q]` satisfies [`elem_ok`] for `kind`.
+fn elem_ok_exec(s: &[u8], p: usize, q: usize, kind: u32) -> (ok: bool)
+    requires
+        p <= q <= s@.len(),
+        kind <= 2,
+    ensures
+        ok ==> elem_ok(s@.subrange(p as int, q as int), kind),
+{
+    if kind == 0 {
+        env_entry_ok_exec(s, p, q)
+    } else if kind == 1 {
+        decimal_ok_exec(s, p, q)
+    } else {
+        landlock_entry_ok_exec(s, p, q)
+    }
+}
+
+/// Every element of the NUL-separated list `s` passes the check of `kind`: [`env_entry_ok`]
+/// for 0, [`decimal_ok`] for 1, [`landlock_entry_ok`] for 2.
+#[must_use]
+pub fn elements_ok(s: &[u8], kind: u32) -> (ok: bool)
     requires
         nul_list(s@),
-        kind <= 1,
+        kind <= 2,
     ensures
         ok && kind == 0 ==> env_list_ok(s@),
         ok && kind == 1 ==> seccomp_list_ok(s@),
+        ok && kind == 2 ==> landlock_list_ok(s@),
 {
     let n = s.len();
     if n == 0 {
@@ -273,26 +325,22 @@ fn elements_ok(s: &[u8], kind: u32) -> (ok: bool)
             n == s@.len(),
             0 < n,
             nul_list(s@),
-            kind <= 1,
+            kind <= 2,
             es <= i <= n,
             es == 0 || s@[es - 1] == 0,
             forall|k: int| es <= k < i ==> #[trigger] s@[k] != 0,
             forall|p: int, q: int| #[trigger]
-                is_elem(s@, p, q) && q < i ==> (kind == 0 ==> env_entry_ok(s@.subrange(p, q))) && (
-                kind == 1 ==> decimal_ok(s@.subrange(p, q))),
+                is_elem(s@, p, q) && q < i ==> elem_ok(s@.subrange(p, q), kind),
         decreases n - i,
     {
         if s[i] == 0 {
-            if kind == 0 && !env_entry_ok_exec(s, es, i) {
+            if !elem_ok_exec(s, es, i, kind) {
                 return false;
             }
-            if kind == 1 && !decimal_ok_exec(s, es, i) {
-                return false;
-            }
-            assert forall|p: int, q: int| #[trigger] is_elem(s@, p, q) && q < i + 1 implies (kind
-                == 0 ==> env_entry_ok(s@.subrange(p, q))) && (kind == 1 ==> decimal_ok(
+            assert forall|p: int, q: int| #[trigger] is_elem(s@, p, q) && q < i + 1 implies elem_ok(
                 s@.subrange(p, q),
-            )) by {
+                kind,
+            ) by {
                 if q == i {
                     lemma_elem_start(s@, es as int, i as int, p);
                 }
@@ -301,20 +349,51 @@ fn elements_ok(s: &[u8], kind: u32) -> (ok: bool)
         }
         i += 1;
     }
-    if kind == 0 && !env_entry_ok_exec(s, es, n) {
+    if !elem_ok_exec(s, es, n, kind) {
         return false;
     }
-    if kind == 1 && !decimal_ok_exec(s, es, n) {
-        return false;
-    }
-    assert forall|p: int, q: int| #[trigger] is_elem(s@, p, q) implies (kind == 0 ==> env_entry_ok(
+    assert forall|p: int, q: int| #[trigger] is_elem(s@, p, q) implies elem_ok(
         s@.subrange(p, q),
-    )) && (kind == 1 ==> decimal_ok(s@.subrange(p, q))) by {
+        kind,
+    ) by {
         if q == n {
             lemma_elem_start(s@, es as int, n as int, p);
         }
     }
     true
+}
+
+/// The elements of the NUL-separated list `s` ([`elems`]): a bounded count of its NULs.
+#[must_use]
+pub fn count_elements(s: &[u8]) -> (n: usize)
+    requires
+        s@.len() <= 0x1000_0000,
+    ensures
+        n as int == elems(s@),
+{
+    let len = s.len();
+    if len == 0 {
+        return 0;
+    }
+    let mut count: usize = 0;
+    let mut i: usize = 0;
+    while i < len
+        invariant
+            len == s@.len() <= 0x1000_0000,
+            i <= len,
+            count <= i,
+            count as int == nuls(s@.subrange(0, i as int)),
+        decreases len - i,
+    {
+        assert(s@.subrange(0, i + 1).drop_last() =~= s@.subrange(0, i as int));
+        assert(s@.subrange(0, i + 1).last() == s@[i as int]);
+        if s[i] == 0 {
+            count += 1;
+        }
+        i += 1;
+    }
+    assert(s@.subrange(0, len as int) =~= s@);
+    count + 1
 }
 
 /// Every element of the pool list `off..off + len` is an environment entry (V4).
