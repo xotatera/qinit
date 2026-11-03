@@ -315,3 +315,28 @@ fn inherit_refuses_a_closed_number_and_dup2_raw_copies_between_numbers() {
 fn close_from_closes_every_descriptor_at_or_above_a_number() {
     assert_eq!(in_child("close-from"), 0);
 }
+
+#[test]
+fn a_landlock_rule_on_a_file_drops_the_directory_only_rights() {
+    use qinit_sys::landlock::{LANDLOCK_ACCESS_FS_ALL_V3, add_path_rule, ruleset};
+    if abi().is_err() {
+        eprintln!("no Landlock on this host; skipping");
+        return;
+    }
+    let rs = ruleset(LANDLOCK_ACCESS_FS_ALL_V3).unwrap();
+    add_path_rule(rs.as_fd(), c"/etc/passwd", LANDLOCK_ACCESS_FS_ALL_V3).unwrap();
+    add_path_rule(rs.as_fd(), c"/etc", LANDLOCK_ACCESS_FS_ALL_V3).unwrap();
+}
+
+#[test]
+fn listen_unix_queues_a_connection_that_connect_unix_reaches() {
+    let dir = std::env::temp_dir().join(format!("qinit-sys-listen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = CString::new(dir.join("s").to_str().unwrap()).unwrap();
+    let listener = qinit_sys::sock::listen_unix(&path, 1).unwrap();
+    let client = connect_unix(&path, libc::SOCK_STREAM).unwrap();
+    assert_eq!(file_type(client.as_fd()).unwrap(), libc::S_IFSOCK);
+    drop(listener);
+    let _ = std::fs::remove_dir_all(&dir);
+}

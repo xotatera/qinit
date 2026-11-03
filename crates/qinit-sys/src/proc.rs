@@ -235,6 +235,29 @@ pub fn pause() {
     unsafe { libc::pause() };
 }
 
+/// The raw `getppid` system call: the parent's pid, or the errno a seccomp filter returned
+/// (libc's wrapper reports no error).
+pub fn getppid_raw() -> Result<libc::c_long> {
+    // SAFETY: getppid takes no arguments.
+    check_long(unsafe { libc::syscall(libc::SYS_getppid) })
+}
+
+/// A `ptrace` call with an invalid request: the kernel answers `EIO`, a seccomp denial
+/// `EPERM`. For probing a filter.
+pub fn ptrace_probe() -> Result<()> {
+    // SAFETY: an invalid request number touches no memory and no process.
+    check_long(unsafe { libc::syscall(libc::SYS_ptrace, 0xffff_i64, 0_i64, 0_i64, 0_i64) })?;
+    Ok(())
+}
+
+/// A `clone3` call with a null argument block: the kernel answers `EINVAL`, a filter's
+/// `ENOSYS` verdict `ENOSYS`. For probing a filter.
+pub fn clone3_probe() -> Result<()> {
+    // SAFETY: a null argument block of size 0 is rejected before anything is created.
+    check_long(unsafe { libc::syscall(libc::SYS_clone3, 0_i64, 0_i64) })?;
+    Ok(())
+}
+
 /// `fork(2)`: `0` in the child, the child's pid in the parent. Only the calling thread
 /// survives in the child, so a multi-threaded caller may use only async-signal-safe calls
 /// there; the overseer is single-threaded.

@@ -250,6 +250,7 @@ dependencies = [
  "libc",
  "qinit-cell",
  "qinit-event",
+ "qinit-frames",
  "qinit-overseer",
  "qinit-sys",
 ]

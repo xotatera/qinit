@@ -16,9 +16,12 @@ qinit-event = { path = "../qinit-event" }
 qinit-overseer = { path = "../qinit-overseer" }
 qinit-sys = { path = "../qinit-sys" }
 
+[dev-dependencies]
+qinit-frames = { path = "../qinit-frames" }
+
 [lints]
 workspace = true
 
 [package.metadata.disciplines]
 layer = "tooling"
-allow = ["libc", "qinit-cell", "qinit-event", "qinit-overseer", "qinit-sys"]
+allow = ["libc", "qinit-cell", "qinit-event", "qinit-frames", "qinit-overseer", "qinit-sys"]

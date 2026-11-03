@@ -44,6 +44,13 @@ pub fn mount_private_tmp() -> Result<()> {
     Ok(())
 }
 
+/// `sethostname(name)`.
+pub fn sethostname(name: &str) -> Result<()> {
+    // SAFETY: the pointer and length describe `name`.
+    check(unsafe { libc::sethostname(name.as_ptr().cast(), name.len()) })?;
+    Ok(())
+}
+
 /// `ioctl`'s request argument: `unsigned long` in glibc, `int` in musl.
 #[cfg(target_env = "musl")]
 type Request = libc::c_int;
@@ -90,4 +97,33 @@ pub fn loopback_up() -> Result<()> {
         )
     })?;
     Ok(())
+}
+
+/// Whether interface `name` has `IFF_UP` set in this network namespace (`SIOCGIFFLAGS`).
+pub fn interface_is_up(name: &str) -> Result<bool> {
+    // SAFETY: integer arguments; the descriptor is owned below.
+    let sock = crate::fd::owned(unsafe {
+        libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0)
+    })?;
+    // SAFETY: ifreq is a plain C struct; zeroed is a valid value.
+    let mut req: libc::ifreq = unsafe { std::mem::zeroed() };
+    if name.len() >= req.ifr_name.len() {
+        return Err(Errno(libc::ENAMETOOLONG));
+    }
+    for (dst, src) in req.ifr_name.iter_mut().zip(name.bytes()) {
+        #[allow(clippy::cast_possible_wrap)] // the kernel's name field is `c_char`
+        let c = src as libc::c_char;
+        *dst = c;
+    }
+    // SAFETY: SIOCGIFFLAGS reads the name and writes the flags of a borrowed ifreq.
+    check(unsafe {
+        libc::ioctl(
+            sock.as_raw_fd(),
+            libc::SIOCGIFFLAGS as Request,
+            &raw mut req,
+        )
+    })?;
+    // SAFETY: ifr_flags is the active member after SIOCGIFFLAGS.
+    let flags = unsafe { req.ifr_ifru.ifru_flags };
+    Ok(i32::from(flags) & libc::IFF_UP != 0)
 }

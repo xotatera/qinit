@@ -20,6 +20,10 @@ const SUITES: &[&str] = &[
     "adopt",
     "orphan",
     "launch",
+    "sandbox",
+    "output",
+    "deadline",
+    "fail",
 ];
 
 /// The guest's accounts (`/etc/passwd`): `toor` is uid 0 under another name (spec R6).

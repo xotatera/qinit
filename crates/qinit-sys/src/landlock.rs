@@ -61,10 +61,20 @@ pub fn ruleset(handled: u64) -> Result<OwnedFd> {
     owned(r as libc::c_int)
 }
 
-/// Grants `access` beneath `path` in `ruleset`; the path is opened `O_PATH | O_CLOEXEC`.
+/// The rights that apply to a file: execute, write, read and truncate (`READ_DIR` and the
+/// directory-change rights make the kernel refuse a rule on anything but a directory).
+const FILE_RIGHTS: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 14);
+
+/// Grants `access` beneath `path` in `ruleset`; the path is opened `O_PATH | O_CLOEXEC`. For a
+/// path that is not a directory the grant is cut to the rights a file has.
 pub fn add_path_rule(ruleset: BorrowedFd<'_>, path: &CStr, access: u64) -> Result<()> {
     // SAFETY: a NUL-terminated path; O_PATH opens without reading.
     let parent = owned(unsafe { libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) })?;
+    let access = if crate::fd::file_type(std::os::fd::AsFd::as_fd(&parent))? == libc::S_IFDIR {
+        access
+    } else {
+        access & FILE_RIGHTS
+    };
     let attr = PathBeneathAttr {
         allowed_access: access,
         parent_fd: parent.as_raw_fd(),

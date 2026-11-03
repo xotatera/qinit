@@ -12,8 +12,8 @@ use qinit_overseer_core::{
     DEFAULT_DENY, Insn, MAX_BPF, MAX_REQUEST, MAX_STEPS, Q_ARGV_LEN, Q_ARGV_OFF, Q_CAPS_HI,
     Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_ENV_LEN, Q_ENV_OFF, Q_LANDLOCK_LEN, Q_LANDLOCK_OFF,
     Q_SECCOMP, Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_STDERR_A, Q_STDERR_B, Q_STDERR_KIND, Q_STDOUT_A,
-    Q_STDOUT_B, Q_STDOUT_KIND, Q_USER_LEN, Q_USER_OFF, STREAM_FD, STREAM_PATH, Step, decode, plan,
-    pool, program, req,
+    Q_STDOUT_B, Q_STDOUT_KIND, Q_UMASK, Q_USER_LEN, Q_USER_OFF, STREAM_FD, STREAM_PATH, Step,
+    decode, plan, pool, program, req,
 };
 use qinit_sys::landlock::{
     LANDLOCK_ACCESS_FS_ALL_V3, LANDLOCK_ACCESS_FS_READ, add_path_rule, restrict_self, ruleset,
@@ -104,8 +104,11 @@ impl<'a> Run<'a> {
     fn stream(&self, kind: usize, a: usize, b: usize, target: RawFd) -> Result<()> {
         match req(self.b, kind) {
             STREAM_PATH => {
-                let opened = open_route(&cstring(self.text(a, b)?)?)?;
-                fd::dup2(opened.as_fd(), target)
+                // The file is created under the request's umask, which the plan sets later.
+                let old = umask(req(self.b, Q_UMASK));
+                let opened = open_route(&cstring(self.text(a, b)?)?);
+                let _ = umask(old);
+                fd::dup2(opened?.as_fd(), target)
             }
             STREAM_FD => fd::dup2_raw(fd_number(req(self.b, a))?, target),
             _ => fd::dup2_raw(1, target),
@@ -246,6 +249,23 @@ fn identity_errno(e: IdentityError) -> i32 {
     }
 }
 
+/// The pid-namespace fork (spec §3, M2): the first child is the namespace's init and the
+/// second its only child, which goes on to run the service. The original process and the init
+/// each become a supervisor of the child they forked, so a signal reaches the service from a
+/// process inside its namespace and the init reaps what the service orphans.
+fn fork_supervised(id: &Identity, status: &mut Option<OwnedFd>) -> Result<()> {
+    for outside in [true, false] {
+        match proc::fork()? {
+            0 => {}
+            child => match status.take() {
+                Some(pipe) => supervise(child, id, pipe, outside),
+                None => proc::exit_now(127),
+            },
+        }
+    }
+    Ok(())
+}
+
 fn die(status: &OwnedFd, step: u32, errno: i32) -> ! {
     Status { step, errno }.write(status.as_fd());
     proc::exit_now(127)
@@ -299,23 +319,16 @@ pub fn launch() -> ! {
     let mut status = Some(status);
     for (i, step) in steps[..n].iter().enumerate() {
         let index = u32::try_from(i).unwrap_or(u32::MAX);
-        let Some(pipe) = status.as_ref() else {
-            proc::exit_now(127)
-        };
         let result = if *step == Step::Fork {
-            match proc::fork() {
-                Ok(0) => Ok(()),
-                Ok(child) => match status.take() {
-                    Some(pipe) => supervise(child, &id, pipe),
-                    None => proc::exit_now(127),
-                },
-                Err(e) => Err(e),
-            }
+            fork_supervised(&id, &mut status)
         } else {
             run.perform(*step)
         };
         if let Err(e) = result {
-            die(pipe, index, e.0);
+            match status.as_ref() {
+                Some(pipe) => die(pipe, index, e.0),
+                None => proc::exit_now(127),
+            }
         }
     }
     // `Exec` is the last step and does not return success.
