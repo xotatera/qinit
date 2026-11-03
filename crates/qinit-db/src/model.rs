@@ -50,6 +50,14 @@ pub struct Node {
     pub pids_max: u32,
     /// The template this node instantiates; `Some` must be non-empty.
     pub instance_of: Option<String>,
+    /// Environment entries `KEY=VALUE`, sorted by key; each has a non-empty key and no NUL.
+    pub env: Vec<String>,
+    /// The working directory: a non-empty absolute path.
+    pub cwd: String,
+    /// The file-mode creation mask, at most `0o777`.
+    pub umask: u32,
+    /// `RLIMIT_NOFILE`; 0 keeps the kernel default.
+    pub rlimit_nofile: u32,
 }
 
 /// Node kind.
@@ -218,13 +226,17 @@ pub enum Securebits {
     NorootLocked,
 }
 
-/// Seccomp preset.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Seccomp filter.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Seccomp {
     /// No filter.
     None,
-    /// The default filter.
+    /// The default denylist.
     Default,
+    /// Deny the listed syscall numbers; non-empty, each below `MAX_SYSCALL`.
+    Deny(Vec<u32>),
+    /// Allow only the listed syscall numbers; non-empty, each below `MAX_SYSCALL`.
+    Allow(Vec<u32>),
 }
 
 /// An output route.

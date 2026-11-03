@@ -9,8 +9,8 @@ use crate::model::{
 };
 use qinit_db_core::{
     HEADER_WORDS, MAGIC, MAX_CREDS, MAX_EDGES, MAX_EDGES_PER_GROUP, MAX_GROUPS,
-    MAX_GROUPS_PER_NODE, MAX_NAME_LEN, MAX_NODES, MAX_POOL, MAX_ROUTES, NONE, T_POOL, VERSION,
-    WORDS,
+    MAX_GROUPS_PER_NODE, MAX_NAME_LEN, MAX_NODES, MAX_POOL, MAX_ROUTES, MAX_SYSCALL, NONE,
+    SECCOMP_ALLOW, SECCOMP_DEFAULT, SECCOMP_DENY, SECCOMP_NONE, T_POOL, VERSION, WORDS,
 };
 use std::collections::BTreeMap;
 
@@ -129,7 +129,7 @@ fn node_words(
     pool: &mut Pool,
     group_first: u32,
     limits: (usize, usize),
-) -> Result<[u32; 24], WriteError> {
+) -> Result<[u32; 30], WriteError> {
     let (routes, creds) = limits;
     if n.name.is_empty() || n.name.len() > MAX_NAME_LEN {
         return Err(WriteError::Limit("name"));
@@ -148,6 +148,8 @@ fn node_words(
         None => (0, 0),
     };
     let group_count = count(n.groups.len(), MAX_GROUPS_PER_NODE, "groups per node")?;
+    let env = pool.intern_list(&n.env)?;
+    let cwd = pool.intern(&n.cwd)?;
     Ok([
         kind_word(n.kind),
         name.0,
@@ -173,7 +175,32 @@ fn node_words(
         u32::from(n.stop.mode == StopMode::Cell),
         n.stop.grace_ms,
         n.start_timeout_ms,
+        env.0,
+        env.1,
+        cwd.0,
+        cwd.1,
+        n.umask,
+        n.rlimit_nofile,
     ])
+}
+
+/// The seccomp mode word and the list as canonical decimals (`n.to_string()` for `n <
+/// MAX_SYSCALL`, which has no leading zero).
+fn seccomp_words(s: &Seccomp, pool: &mut Pool) -> Result<(u32, (u32, u32)), WriteError> {
+    let (mode, list) = match s {
+        Seccomp::None => return Ok((SECCOMP_NONE, (0, 0))),
+        Seccomp::Default => return Ok((SECCOMP_DEFAULT, (0, 0))),
+        Seccomp::Deny(list) => (SECCOMP_DENY, list),
+        Seccomp::Allow(list) => (SECCOMP_ALLOW, list),
+    };
+    if list.is_empty() {
+        return Err(WriteError::Limit("seccomp list"));
+    }
+    if list.iter().any(|n| *n >= MAX_SYSCALL) {
+        return Err(WriteError::Limit("syscall"));
+    }
+    let text: Vec<String> = list.iter().map(u32::to_string).collect();
+    Ok((mode, pool.intern_list(&text)?))
 }
 
 fn edge_words(e: &Edge, pool: &mut Pool, nodes: usize) -> Result<[u32; 7], WriteError> {
@@ -198,9 +225,10 @@ fn edge_words(e: &Edge, pool: &mut Pool, nodes: usize) -> Result<[u32; 7], Write
     ])
 }
 
-fn cred_words(c: &Cred, pool: &mut Pool) -> Result<[u32; 10], WriteError> {
+fn cred_words(c: &Cred, pool: &mut Pool) -> Result<[u32; 12], WriteError> {
     let user = pool.intern(&c.user)?;
     let landlock = pool.intern_list(&c.landlock)?;
+    let (seccomp, list) = seccomp_words(&c.seccomp, pool)?;
     Ok([
         user.0,
         user.1,
@@ -213,12 +241,11 @@ fn cred_words(c: &Cred, pool: &mut Pool) -> Result<[u32; 10], WriteError> {
         },
         u32::from(c.nnp),
         c.ns,
-        match c.seccomp {
-            Seccomp::None => 0,
-            Seccomp::Default => 1,
-        },
+        seccomp,
         landlock.0,
         landlock.1,
+        list.0,
+        list.1,
     ])
 }
 
@@ -248,8 +275,8 @@ fn list_words(list: &[u32], nodes: usize) -> Result<Vec<u32>, WriteError> {
 ///
 /// It checks only ranges, limits and sort order. It does NOT check the validator's semantic
 /// rules (forager/brood restart policy, brood exec, sync-edge deadline, pipe route target
-/// kind, caps/ns bit ranges, enabled/presyslog order and closure): callers must run
-/// [`crate::open`] on the result.
+/// kind, caps/ns bit ranges, required credentials, environment and cwd content, the `nnp`
+/// rule, enabled/presyslog order and closure): callers must run [`crate::open`] on the result.
 ///
 /// # Errors
 /// A limit overflow, unsorted node names, or an index out of range. The checks run in a fixed
