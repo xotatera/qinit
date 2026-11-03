@@ -195,6 +195,7 @@ dependencies = [
  "qinit-db",
  "qinit-db-core",
  "qinit-graph-core",
+ "qinit-overseer-core",
  "serde",
  "toml",
 ]

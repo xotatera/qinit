@@ -16,9 +16,12 @@ qinit-graph-core = { path = "../qinit-graph-core" }
 serde.workspace = true
 toml.workspace = true
 
+[dev-dependencies]
+qinit-overseer-core = { path = "../qinit-overseer-core" }
+
 [lints]
 workspace = true
 
 [package.metadata.disciplines]
 layer = "runtime"
-allow = ["qinit-db", "qinit-db-core", "qinit-graph-core", "serde", "toml"]
+allow = ["qinit-db", "qinit-db-core", "qinit-graph-core", "qinit-overseer-core", "serde", "toml"]

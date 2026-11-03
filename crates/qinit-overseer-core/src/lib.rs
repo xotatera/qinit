@@ -7,11 +7,15 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+mod bpf;
 mod decode;
 mod layout;
+mod plan;
 mod spec;
 
+pub use bpf::*;
 pub use decode::*;
 pub use layout::*;
+pub use plan::*;
 #[allow(unused_imports)] // the specification is erased outside verification
 pub use spec::*;
