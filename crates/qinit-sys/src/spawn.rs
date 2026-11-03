@@ -12,7 +12,7 @@
 //! with threads is safe.
 use crate::fd::dup_above;
 use crate::{Errno, Result, check_long, cpath};
-use std::ffi::{CString, OsStr};
+use std::ffi::{CStr, CString, OsStr};
 use std::marker::PhantomData;
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
@@ -342,4 +342,16 @@ fn fail(err: RawFd) -> ! {
     loop {
         core::hint::spin_loop();
     }
+}
+
+/// `execve(path, argv, envp)` in this process. Returns only on failure, with the errno.
+#[must_use]
+pub fn exec_in_place(path: &CStr, argv: &[&CStr], envp: &[&CStr]) -> Errno {
+    let mut a: Vec<*const libc::c_char> = argv.iter().map(|s| s.as_ptr()).collect();
+    a.push(std::ptr::null());
+    let mut e: Vec<*const libc::c_char> = envp.iter().map(|s| s.as_ptr()).collect();
+    e.push(std::ptr::null());
+    // SAFETY: path, argv and envp are NUL-terminated and outlive the call.
+    unsafe { libc::execve(path.as_ptr(), a.as_ptr(), e.as_ptr()) };
+    Errno::last()
 }

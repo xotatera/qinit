@@ -8,7 +8,7 @@ use qinit_sys::cred::{no_new_privs, set_no_new_privs};
 use qinit_sys::fd::{file_type, open_cloexec};
 use qinit_sys::landlock::abi;
 use qinit_sys::limits::{RLIMIT_NOFILE, set_rlimit, umask};
-use qinit_sys::memfd::{sealed, seals};
+use qinit_sys::memfd::{self, sealed, seals};
 use qinit_sys::seccomp::{Insn, install};
 use qinit_sys::sock::connect_unix;
 use qinit_sys::timer::arm_alarm;
@@ -106,6 +106,14 @@ fn role(name: &str) -> i32 {
             // SAFETY: getpid takes no arguments.
             let allowed = unsafe { libc::syscall(libc::SYS_getpid) } > 0;
             i32::from(!(denied && allowed))
+        }
+        "close-from" => {
+            let (r, w) = fd::pipe(0).unwrap();
+            let hi = fd::dup_above(r.as_fd(), 700).unwrap();
+            let n = hi.as_raw_fd();
+            std::mem::forget(hi);
+            fd::close_from(n).unwrap();
+            i32::from(fd::is_open(n) || !fd::is_open(r.as_raw_fd()) || !fd::is_open(w.as_raw_fd()))
         }
         _ => 99,
     }
@@ -267,4 +275,43 @@ fn exec_by_descriptor_of_a_non_executable_reports_eacces() {
     std::fs::File::from(err_r).read_to_end(&mut bytes).unwrap();
     assert_eq!(bytes, libc::EACCES.to_ne_bytes());
     assert_eq!(libc::WEXITSTATUS(proc::wait_pidfd(&pidfd).unwrap()), 127);
+}
+
+#[test]
+fn read_all_returns_the_content_from_offset_zero_and_refuses_more_than_max() {
+    let fd = sealed(c"req", b"hello world").unwrap();
+    assert_eq!(memfd::read_all(fd.as_fd(), 64).unwrap(), b"hello world");
+    assert_eq!(memfd::read_all(fd.as_fd(), 11).unwrap(), b"hello world");
+    assert_eq!(
+        memfd::read_all(fd.as_fd(), 10).unwrap_err(),
+        Errno(libc::EFBIG)
+    );
+}
+
+#[test]
+fn write_all_delivers_every_byte_through_a_pipe() {
+    let (r, w) = fd::pipe(libc::O_CLOEXEC).unwrap();
+    fd::write_all(w.as_fd(), b"0123456789").unwrap();
+    drop(w);
+    let mut got = Vec::new();
+    std::fs::File::from(r).read_to_end(&mut got).unwrap();
+    assert_eq!(got, b"0123456789");
+}
+
+#[test]
+fn inherit_refuses_a_closed_number_and_dup2_raw_copies_between_numbers() {
+    assert_eq!(fd::inherit(900).unwrap_err(), Errno(libc::EBADF));
+    let (r, _w) = fd::pipe(libc::O_CLOEXEC).unwrap();
+    let hole = fd::dup_above(r.as_fd(), 910).unwrap();
+    let n = hole.as_raw_fd();
+    drop(hole);
+    fd::dup2_raw(r.as_raw_fd(), n).unwrap();
+    assert!(fd::is_open(n));
+    drop(fd::inherit(n).unwrap());
+    assert!(!fd::is_open(n));
+}
+
+#[test]
+fn close_from_closes_every_descriptor_at_or_above_a_number() {
+    assert_eq!(in_child("close-from"), 0);
 }

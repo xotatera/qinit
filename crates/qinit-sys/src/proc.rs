@@ -229,13 +229,27 @@ pub fn wait_pidfd(pidfd: impl AsFd) -> Result<i32> {
     }
 }
 
-/// `setsid(2)`: a new session and process group led by the caller.
 /// `pause(2)`: sleeps until a signal is delivered.
 pub fn pause() {
     // SAFETY: pause takes no arguments; it returns only after a caught signal.
     unsafe { libc::pause() };
 }
 
+/// `fork(2)`: `0` in the child, the child's pid in the parent. Only the calling thread
+/// survives in the child, so a multi-threaded caller may use only async-signal-safe calls
+/// there; the overseer is single-threaded.
+pub fn fork() -> Result<libc::pid_t> {
+    // SAFETY: fork takes no arguments; the caller's contract is stated above.
+    check(unsafe { libc::fork() })
+}
+
+/// `_exit(code)`: ends the process at once, running no destructor and flushing nothing.
+pub fn exit_now(code: i32) -> ! {
+    // SAFETY: _exit never returns.
+    unsafe { libc::_exit(code) }
+}
+
+/// `setsid(2)`: a new session and process group led by the caller.
 pub fn setsid() -> Result<()> {
     // SAFETY: setsid takes no arguments.
     check(unsafe { libc::setsid() })?;

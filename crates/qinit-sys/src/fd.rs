@@ -94,3 +94,67 @@ pub fn clear_nonblocking(fd: BorrowedFd<'_>) -> Result<()> {
     check(unsafe { libc::fcntl(raw, libc::F_SETFL, old & !libc::O_NONBLOCK) })?;
     Ok(())
 }
+
+/// `close_range(first, ~0, 0)`: closes every descriptor numbered `first` or higher.
+pub fn close_from(first: RawFd) -> Result<()> {
+    let first = libc::c_uint::try_from(first).map_err(|_| crate::Errno(libc::EINVAL))?;
+    // SAFETY: close_range takes integers.
+    crate::check_long(unsafe {
+        libc::syscall(libc::SYS_close_range, first, libc::c_uint::MAX, 0)
+    })?;
+    Ok(())
+}
+
+/// Takes ownership of descriptor number `n`, which the program that started this one
+/// guarantees is open and used by nothing else (the overseer's request and status
+/// descriptors). `EBADF` when `n` is not open.
+pub fn inherit(n: RawFd) -> Result<OwnedFd> {
+    if !is_open(n) {
+        return Err(crate::Errno(libc::EBADF));
+    }
+    // SAFETY: `n` is open (checked above) and, by this function's contract, owned by no
+    // other value in the process.
+    Ok(unsafe { OwnedFd::from_raw_fd(n) })
+}
+
+/// Writes all of `bytes` to `fd`, retrying on `EINTR` and short writes.
+pub fn write_all(fd: BorrowedFd<'_>, mut bytes: &[u8]) -> Result<()> {
+    while !bytes.is_empty() {
+        // SAFETY: `bytes` has its length in readable bytes.
+        let n = unsafe { libc::write(fd.as_raw_fd(), bytes.as_ptr().cast(), bytes.len()) };
+        if n < 0 {
+            match crate::Errno::last() {
+                crate::Errno(libc::EINTR) => {}
+                e => return Err(e),
+            }
+        } else {
+            #[allow(clippy::cast_sign_loss)] // checked non-negative above
+            {
+                bytes = &bytes[n as usize..];
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `dup3(from, to, 0)` between descriptor numbers: `to` becomes a copy of `from` without
+/// close-on-exec. Both numbers belong to the caller's own table.
+pub fn dup2_raw(from: RawFd, to: RawFd) -> Result<()> {
+    // SAFETY: dup3 with integer arguments.
+    check(unsafe { libc::dup3(from, to, 0) })?;
+    Ok(())
+}
+
+/// `mkfifo(path, mode)`.
+pub fn mkfifo(path: &CStr, mode: u32) -> Result<()> {
+    // SAFETY: a NUL-terminated path that outlives the call and an integer mode.
+    check(unsafe { libc::mkfifo(path.as_ptr(), mode) })?;
+    Ok(())
+}
+
+/// Whether `O_NONBLOCK` is set on the open file behind `fd`.
+pub fn is_nonblocking(fd: BorrowedFd<'_>) -> Result<bool> {
+    // SAFETY: F_GETFL only reads the flags.
+    let flags = check(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) })?;
+    Ok(flags & libc::O_NONBLOCK != 0)
+}

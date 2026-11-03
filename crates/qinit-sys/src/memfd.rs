@@ -34,3 +34,39 @@ pub fn seals(fd: BorrowedFd<'_>) -> Result<i32> {
     // SAFETY: F_GET_SEALS only queries.
     check(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) })
 }
+
+/// The whole content of `fd` read from offset 0 with `pread`, at most `max` bytes: `EFBIG`
+/// when the file is longer.
+pub fn read_all(fd: BorrowedFd<'_>, max: usize) -> Result<Vec<u8>> {
+    let mut out = vec![0u8; max + 1];
+    let mut have = 0usize;
+    loop {
+        let off = libc::off_t::try_from(have).map_err(|_| Errno(libc::EFBIG))?;
+        // SAFETY: the tail of `out` is writable for its length.
+        let n = unsafe {
+            libc::pread(
+                fd.as_raw_fd(),
+                out[have..].as_mut_ptr().cast(),
+                out.len() - have,
+                off,
+            )
+        };
+        if n < 0 {
+            match Errno::last() {
+                Errno(libc::EINTR) => continue,
+                e => return Err(e),
+            }
+        }
+        if n == 0 {
+            out.truncate(have);
+            return Ok(out);
+        }
+        #[allow(clippy::cast_sign_loss)] // checked non-negative above
+        {
+            have += n as usize;
+        }
+        if have > max {
+            return Err(Errno(libc::EFBIG));
+        }
+    }
+}

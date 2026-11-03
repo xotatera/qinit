@@ -208,6 +208,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "qinit-overseer"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "qinit-db",
+ "qinit-overseer-core",
+ "qinit-sys",
+]
+
+[[package]]
 name = "qinit-overseer-core"
 version = "0.1.0"
 dependencies = [
