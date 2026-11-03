@@ -5,6 +5,7 @@
 use crate::error::{Code, Error};
 use crate::units::{duration_ms, size_kib};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 
 /// One frame (worker, forager, brood or template); every field is optional until resolved.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -22,7 +23,18 @@ pub struct Frame {
     pub cell: Option<CellCfg>,
     pub credentials: Option<Creds>,
     pub sandbox: Option<Sandbox>,
+    pub env: Option<BTreeMap<String, String>>,
+    pub cwd: Option<String>,
+    pub umask: Option<u32>,
+    pub rlimits: Option<Rlimits>,
     pub deps: Option<Vec<DepGroup>>,
+}
+
+/// Resource limits applied before exec.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rlimits {
+    pub nofile: Option<u32>,
 }
 
 /// How a worker signals readiness: `"pipe"`, `"exit"`, a socket or a path.
@@ -152,6 +164,10 @@ pub(crate) fn check_kind(kind: &str, f: &Frame, base: &str) -> Result<(), Error>
             ("cell", f.cell.is_some()),
             ("credentials", f.credentials.is_some()),
             ("sandbox", f.sandbox.is_some()),
+            ("env", f.env.is_some()),
+            ("cwd", f.cwd.is_some()),
+            ("umask", f.umask.is_some()),
+            ("rlimits", f.rlimits.is_some()),
         ]);
     }
     match banned.into_iter().find(|(_, present)| *present) {
@@ -179,7 +195,42 @@ fn at_least_floor(base: &str, field: &str, value: Option<&str>) -> Result<(), Er
     }
 }
 
+/// The largest `umask`.
+const MAX_UMASK: u32 = 0o777;
+
+/// An environment key: `^[A-Za-z_][A-Za-z0-9_]*$`.
+fn env_key_ok(k: &str) -> bool {
+    let mut bytes = k.bytes();
+    bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+fn check_launch(f: &Frame, base: &str) -> Result<(), Error> {
+    for (k, v) in f.env.iter().flatten() {
+        if !env_key_ok(k) {
+            let why = "key must match ^[A-Za-z_][A-Za-z0-9_]*$";
+            return Err(bad(base, &format!("env.{k}"), why));
+        }
+        if v.contains('\0') {
+            return Err(bad(base, &format!("env.{k}"), "value holds NUL"));
+        }
+    }
+    if let Some(c) = f.cwd.as_deref().filter(|c| !c.starts_with('/')) {
+        return Err(bad(base, "cwd", format!("`{c}` must be an absolute path")));
+    }
+    if let Some(u) = f.umask.filter(|u| *u > MAX_UMASK) {
+        return Err(bad(base, "umask", format!("0o{u:o} must be at most 0o777")));
+    }
+    if f.rlimits.as_ref().and_then(|r| r.nofile) == Some(0) {
+        return Err(bad(base, "rlimits.nofile", "must be at least 1"));
+    }
+    Ok(())
+}
+
 fn check_values(f: &Frame, base: &str) -> Result<(), Error> {
+    check_launch(f, base)?;
     if let Some(k) = f.ready.as_ref().and_then(|r| match r {
         Ready::Kind(k) if k != "pipe" && k != "exit" => Some(k),
         _ => None,
@@ -305,7 +356,7 @@ fn check_edge(e: &DepEdge, group: &str, at: &str, base: &str) -> Result<(), Erro
 
 /// The keys each table of a frame allows: the frame itself, then the named tables, then a
 /// `deps` group and an edge.
-const FRAME_KEYS: [&str; 13] = [
+const FRAME_KEYS: [&str; 17] = [
     "exec",
     "template",
     "instances",
@@ -318,14 +369,19 @@ const FRAME_KEYS: [&str; 13] = [
     "cell",
     "credentials",
     "sandbox",
+    "env",
+    "cwd",
+    "umask",
+    "rlimits",
     "deps",
 ];
-const TABLE_KEYS: [(&str, &[&str]); 5] = [
+const TABLE_KEYS: [(&str, &[&str]); 6] = [
     ("restart", &["policy", "max", "window", "delay"]),
     ("stop", &["mode", "grace"]),
     ("cell", &["memory_max", "pids_max"]),
     ("credentials", &["uid", "caps", "nnp", "securebits"]),
     ("sandbox", &["namespaces", "seccomp", "landlock"]),
+    ("rlimits", &["nofile"]),
 ];
 const GROUP_KEYS: [&str; 2] = ["group", "edges"];
 const EDGE_KEYS: [&str; 7] = [

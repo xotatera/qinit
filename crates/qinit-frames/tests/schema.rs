@@ -280,3 +280,55 @@ fn an_empty_require_group_is_a_bad_value() {
         assert!(parse("worker", &src).is_ok(), "{g}");
     }
 }
+
+#[test]
+fn launch_keys_parse_and_broods_refuse_them() {
+    let f = parse(
+        "worker",
+        "exec = [\"/a\"]\nenv = { A = \"1\" }\ncwd = \"/x\"\numask = 0o027\nrlimits = { nofile = 64 }\n",
+    )
+    .unwrap();
+    assert_eq!(f.env.as_ref().unwrap()["A"], "1");
+    assert_eq!(f.cwd.as_deref(), Some("/x"));
+    assert_eq!(f.umask, Some(0o027));
+    assert_eq!(f.rlimits.as_ref().and_then(|r| r.nofile), Some(64));
+    for key in [
+        "env = { A = \"1\" }",
+        "cwd = \"/x\"",
+        "umask = 0o022",
+        "rlimits = { nofile = 1 }",
+    ] {
+        let e = parse("brood", &format!("{key}\n")).unwrap_err();
+        assert_eq!(e.code, Code::BadValue, "{key}");
+        assert!(
+            e.detail.contains("not allowed on a brood"),
+            "{key}: {}",
+            e.detail
+        );
+    }
+}
+
+#[test]
+fn bad_launch_values_are_bad_values() {
+    for (body, key) in [
+        ("umask = 0o1000", "worker.t.umask"),
+        ("cwd = \"rel\"", "worker.t.cwd"),
+        ("cwd = \"\"", "worker.t.cwd"),
+        ("rlimits = { nofile = 0 }", "worker.t.rlimits.nofile"),
+        ("env = { \"1A\" = \"x\" }", "worker.t.env.1A"),
+        ("env = { \"A-B\" = \"x\" }", "worker.t.env.A-B"),
+        ("env = { A = \"x\\u0000y\" }", "worker.t.env.A"),
+    ] {
+        let e = parse("worker", &format!("exec = [\"/a\"]\n{body}\n")).unwrap_err();
+        assert_eq!((e.code, e.key.as_str()), (Code::BadValue, key), "{body}");
+    }
+}
+
+#[test]
+fn an_unknown_rlimit_is_an_unknown_key() {
+    let e = parse("worker", "exec = [\"/a\"]\nrlimits = { nproc = 1 }\n").unwrap_err();
+    assert_eq!(
+        (e.code, e.key.as_str()),
+        (Code::UnknownKey, "worker.t.rlimits.nproc")
+    );
+}

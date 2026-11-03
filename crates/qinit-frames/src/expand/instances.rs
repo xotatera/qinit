@@ -25,8 +25,8 @@ fn sub_output(o: &Output, inst: &str) -> Output {
     }
 }
 
-/// One instance of `f`: `%i` replaced in exec, ready, output, errors, credentials, sandbox and
-/// dependency targets.
+/// One instance of `f`: `%i` replaced in exec, ready, output, errors, credentials, sandbox,
+/// environment values, cwd and dependency targets.
 fn instantiate(f: &Frame, inst: &str) -> Frame {
     let s = |o: &Option<String>| o.as_deref().map(|x| sub(x, inst));
     let sl = |o: &Option<Vec<String>>| o.as_deref().map(|x| sub_all(x, inst));
@@ -60,6 +60,13 @@ fn instantiate(f: &Frame, inst: &str) -> Frame {
             seccomp: s(&x.seccomp),
             landlock: sl(&x.landlock),
         }),
+        env: f
+            .env
+            .as_ref()
+            .map(|e| e.iter().map(|(k, v)| (k.clone(), sub(v, inst))).collect()),
+        cwd: s(&f.cwd),
+        umask: f.umask,
+        rlimits: f.rlimits.clone(),
         deps: f.deps.as_ref().map(|gs| {
             gs.iter()
                 .map(|g| DepGroup {

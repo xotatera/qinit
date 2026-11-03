@@ -143,6 +143,17 @@ impl Block<'_> {
         if n.kind != Kind::Brood {
             self.line("cell.memory_max", &quote(&format!("{}K", n.memory_max_kib)));
             self.line("cell.pids_max", &n.pids_max.to_string());
+            for entry in &n.env {
+                let (k, v) = entry.split_once('=').unwrap_or((entry, ""));
+                self.line(&format!("env.{k}"), &quote(v));
+            }
+            self.line("cwd", &quote(&n.cwd));
+            self.line("umask", &format!("0o{:03o}", n.umask));
+            let nofile = match n.rlimit_nofile {
+                0 => quote("default"),
+                n => n.to_string(),
+            };
+            self.line("rlimits.nofile", &nofile);
         }
         if let Some(c) = n.cred.and_then(|c| model.creds.get(c as usize)) {
             self.cred(c);
@@ -182,16 +193,18 @@ impl Block<'_> {
             Securebits::Noroot => "noroot",
             Securebits::NorootLocked => "noroot-locked",
         };
-        let seccomp = match c.seccomp {
-            Seccomp::None => "none",
-            Seccomp::Default => "default",
+        let seccomp = match &c.seccomp {
+            Seccomp::None => quote("none"),
+            Seccomp::Default => quote("default"),
+            Seccomp::Deny(l) => format!("{{ deny = {} }}", list(l.iter().map(u32::to_string))),
+            Seccomp::Allow(l) => format!("{{ allow = {} }}", list(l.iter().map(u32::to_string))),
         };
         self.line("credentials.uid", &quote(&c.user));
         self.line("credentials.caps", &list(caps));
         self.line("credentials.nnp", &c.nnp.to_string());
         self.line("credentials.securebits", &quote(securebits));
         self.line("sandbox.namespaces", &list(ns));
-        self.line("sandbox.seccomp", &quote(seccomp));
+        self.line("sandbox.seccomp", &seccomp);
         self.line(
             "sandbox.landlock",
             &list(c.landlock.iter().map(|s| quote(s))),

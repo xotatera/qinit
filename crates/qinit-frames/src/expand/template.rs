@@ -41,8 +41,17 @@ pub(super) fn templates(
     out
 }
 
-/// Every field the frame sets replaces the template's; `deps` concatenate, template first.
+/// Every field the frame sets replaces the template's; `deps` concatenate, template first, and
+/// `env` merges key by key, the frame's entries winning.
 pub(super) fn inherit(f: Frame, t: &Frame) -> Frame {
+    let env = match (&t.env, f.env) {
+        (None, None) => None,
+        (te, fe) => {
+            let mut merged = te.clone().unwrap_or_default();
+            merged.extend(fe.into_iter().flatten());
+            Some(merged)
+        }
+    };
     let deps = match (&t.deps, f.deps) {
         (None, None) => None,
         (td, fd) => Some(
@@ -66,12 +75,16 @@ pub(super) fn inherit(f: Frame, t: &Frame) -> Frame {
         cell: f.cell.or_else(|| t.cell.clone()),
         credentials: f.credentials.or_else(|| t.credentials.clone()),
         sandbox: f.sandbox.or_else(|| t.sandbox.clone()),
+        env,
+        cwd: f.cwd.or_else(|| t.cwd.clone()),
+        umask: f.umask.or(t.umask),
+        rlimits: f.rlimits.or_else(|| t.rlimits.clone()),
         deps,
     }
 }
 
 /// Which of the fields a template can pass on `f` sets.
-fn fields_set(f: &Frame) -> [(&'static str, bool); 12] {
+fn fields_set(f: &Frame) -> [(&'static str, bool); 16] {
     [
         ("exec", f.exec.is_some()),
         ("instances", f.instances.is_some()),
@@ -84,6 +97,10 @@ fn fields_set(f: &Frame) -> [(&'static str, bool); 12] {
         ("cell", f.cell.is_some()),
         ("credentials", f.credentials.is_some()),
         ("sandbox", f.sandbox.is_some()),
+        ("env", f.env.is_some()),
+        ("cwd", f.cwd.is_some()),
+        ("umask", f.umask.is_some()),
+        ("rlimits", f.rlimits.is_some()),
         ("deps", f.deps.is_some()),
     ]
 }
@@ -106,8 +123,9 @@ fn template_keys(prov: &Provenance, tname: &str, path: &[Seg]) -> Vec<(Vec<Seg>,
 }
 
 /// Record in `prov` the keys frame `kind.name` (`f`, before inheriting) takes from template
-/// `tname` (`t`): each field the frame leaves unset and the template sets, and, when both have
-/// `deps`, each of the template's groups at the head of the concatenated list.
+/// `tname` (`t`): each field the frame leaves unset and the template sets; when both have
+/// `deps`, each of the template's groups at the head of the concatenated list; when both have
+/// `env`, each template entry whose key the frame does not set.
 pub(super) fn inherit_provenance(
     prov: &mut Provenance,
     kind: &str,
@@ -120,6 +138,16 @@ pub(super) fn inherit_provenance(
     for ((field, mine), (_, theirs)) in fields_set(f).into_iter().zip(fields_set(t)) {
         if theirs && !mine {
             add.extend(template_keys(prov, tname, &[Seg::Key(field.to_owned())]));
+        }
+    }
+    if let (Some(fe), Some(te)) = (&f.env, &t.env) {
+        let env = Seg::Key("env".to_owned());
+        for key in te.keys().filter(|k| !fe.contains_key(*k)) {
+            add.extend(template_keys(
+                prov,
+                tname,
+                &[env.clone(), Seg::Key(key.clone())],
+            ));
         }
     }
     if let (Some(_), Some(td)) = (&f.deps, &t.deps) {

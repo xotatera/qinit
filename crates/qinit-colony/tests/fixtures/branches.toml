@@ -2,16 +2,20 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Two independent chains under one brood.
 [worker.a1]
+credentials = { uid = "svc" }
 exec = ["/bin/a1"]
 
 [worker.a2]
+credentials = { uid = "svc" }
 exec = ["/bin/a2"]
 deps = [{ group = "require_all", edges = [{ to = "a1" }] }]
 
 [worker.b1]
+credentials = { uid = "svc" }
 exec = ["/bin/b1"]
 
 [worker.b2]
+credentials = { uid = "svc" }
 exec = ["/bin/b2"]
 deps = [{ group = "require_all", edges = [{ to = "b1" }] }]
 

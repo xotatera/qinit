@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # a needs b.
 [worker.b]
+credentials = { uid = "svc" }
 exec = ["/bin/b"]
 
 [worker.a]
+credentials = { uid = "svc" }
 exec = ["/bin/a"]
 deps = [{ group = "require_all", edges = [{ to = "b" }] }]

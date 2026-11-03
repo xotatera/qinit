@@ -2,5 +2,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # A worker that keeps failing: three failures are allowed, the fourth quarantines it.
 [worker.crashy]
+credentials = { uid = "svc" }
 exec = ["/bin/crashy"]
 restart = { policy = "on-failure", max = 3 }

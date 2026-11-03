@@ -7,18 +7,14 @@
 //! first rule whose `match` glob fits the node name decides, and a rule that rejects a node is
 //! final: later rules are never consulted. A node no rule matches follows `default`.
 //!
-//! Least privilege is the default. A node without a credential set, and a node whose
-//! credential set has an empty user, no capabilities and no-new-privileges on (what a frame with
-//! only a `sandbox` table resolves to), is unprivileged by contract: the overseer runs it under
-//! its unprivileged default identity (see `docs/db-format.md`, "Privilege contract"). Such a
-//! node needs no rule and passes even under `default = "deny"`; a rule would have nothing to
-//! bound.
+//! Least privilege is the default. A node whose credential set names a user other than `root`,
+//! grants no capabilities and keeps no-new-privileges on is unprivileged: it needs no rule and
+//! passes even under `default = "deny"`, since a rule would have nothing to bound. A brood has
+//! no credential set and is never checked. Every other node (root, a capability, or `nnp =
+//! false`) is checked against the first matching rule, or refused by `default = "deny"`.
 //!
 //! `users` lists the user names a rule allows. Omitting `users` allows any user; `users = []`
-//! allows no user, so every matching node with a user set is refused. An empty user is the
-//! unprivileged default identity, so it is never checked against `users`; a credential set with
-//! an empty user that still grants capabilities or leaves no-new-privileges off is checked
-//! against the ceiling and `require_nnp` of its rule, or refused by `default = "deny"`.
+//! allows no user, so every matching node is refused.
 use crate::error::{Code, Error};
 use crate::expand::kind_name;
 use crate::resolve::{cap_bit, cap_name};
@@ -239,7 +235,6 @@ fn cap_names(bits: u64) -> String {
 
 fn check_rule(rule: &Rule, node: &Node, cred: &Cred, errs: &mut Vec<(usize, Error)>, i: usize) {
     if let Some(users) = &rule.users
-        && !cred.user.is_empty()
         && !users.contains(&cred.user)
     {
         let why = format!(
@@ -263,9 +258,9 @@ fn check_rule(rule: &Rule, node: &Node, cred: &Cred, errs: &mut Vec<(usize, Erro
     }
 }
 
-/// A credential set with the unprivileged default identity and nothing that adds privilege.
+/// A credential set that holds no privilege: not root, no capabilities, no-new-privileges on.
 fn unprivileged(c: &Cred) -> bool {
-    c.user.is_empty() && c.caps == 0 && c.nnp
+    c.user != "root" && c.caps == 0 && c.nnp
 }
 
 /// Every violation of `policy` by `model`, with the index of the offending node.

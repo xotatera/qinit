@@ -17,6 +17,16 @@ worker getty@tty1
   errors = "/var/log/getty-tty1.log"  # default
   cell.memory_max = "0K"  # default
   cell.pids_max = 0  # default
+  cwd = "/"  # default
+  umask = 0o027  # default
+  rlimits.nofile = "default"  # default
+  credentials.uid = "root"  # template tty-login
+  credentials.caps = []  # default
+  credentials.nnp = true  # default
+  credentials.securebits = "none"  # default
+  sandbox.namespaces = []  # default
+  sandbox.seccomp = "none"  # default
+  sandbox.landlock = []  # default
   deps[0].group = "require_all"  # template tty-login
   deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "none" }  # template tty-login
 
@@ -35,6 +45,16 @@ worker getty@tty2
   errors = "/var/log/getty-tty2.log"  # default
   cell.memory_max = "0K"  # default
   cell.pids_max = 0  # default
+  cwd = "/"  # default
+  umask = 0o027  # default
+  rlimits.nofile = "default"  # default
+  credentials.uid = "root"  # template tty-login
+  credentials.caps = []  # default
+  credentials.nnp = true  # default
+  credentials.securebits = "none"  # default
+  sandbox.namespaces = []  # default
+  sandbox.seccomp = "none"  # default
+  sandbox.landlock = []  # default
   deps[0].group = "require_all"  # template tty-login
   deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "none" }  # template tty-login
 
@@ -50,6 +70,18 @@ worker logd
   start_timeout = "90000ms"  # default
   cell.memory_max = "16384K"  # vendor
   cell.pids_max = 4  # vendor
+  env.LOGD_DIR = "/var/log/qinit"  # vendor
+  env.LOGD_LEVEL = "debug"  # etc
+  cwd = "/var/log/qinit"  # vendor
+  umask = 0o077  # vendor
+  rlimits.nofile = 1024  # vendor
+  credentials.uid = "logd"  # vendor
+  credentials.caps = []  # default
+  credentials.nnp = true  # default
+  credentials.securebits = "none"  # default
+  sandbox.namespaces = ["ipc", "uts"]  # vendor
+  sandbox.seccomp = "default"  # vendor
+  sandbox.landlock = ["ro:/etc/logd", "rw:/var/log/qinit"]  # vendor
   deps[0].group = "require_all"  # vendor
   deps[0].edges[0] = { to = "syslog-ng", mode = "sync", restart_on = "restart" }  # vendor
 
@@ -61,6 +93,16 @@ forager mount-var
   start_timeout = "none"  # default
   cell.memory_max = "0K"  # default
   cell.pids_max = 0  # default
+  cwd = "/"  # default
+  umask = 0o027  # default
+  rlimits.nofile = "default"  # default
+  credentials.uid = "root"  # vendor
+  credentials.caps = []  # default
+  credentials.nnp = true  # default
+  credentials.securebits = "none"  # default
+  sandbox.namespaces = []  # default
+  sandbox.seccomp = "none"  # default
+  sandbox.landlock = []  # default
   deps[0].group = "require_all"  # vendor
   deps[0].edges[0] = { path = "/dev/disk/by-label/var", mode = "sync", restart_on = "none" }  # vendor
 
@@ -87,13 +129,16 @@ worker sshd
   errors = { pipe = "logd" }  # default
   cell.memory_max = "65536K"  # vendor
   cell.pids_max = 64  # vendor
+  cwd = "/"  # default
+  umask = 0o027  # default
+  rlimits.nofile = "default"  # default
   credentials.uid = "root"  # vendor
   credentials.caps = ["setgid", "setuid", "net_bind_service", "sys_chroot"]  # vendor
   credentials.nnp = false  # vendor
   credentials.securebits = "noroot"  # vendor
-  sandbox.namespaces = ["ipc", "uts"]  # vendor
-  sandbox.seccomp = "default"  # vendor
-  sandbox.landlock = ["ro:/etc/ssh", "rw:/run/sshd"]  # vendor
+  sandbox.namespaces = []  # default
+  sandbox.seccomp = "none"  # default
+  sandbox.landlock = []  # default
   deps[0].group = "require_all"  # vendor
   deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "error" }  # vendor
   deps[0].edges[1] = { path = "/etc/ssh/sshd_config", mode = "sync", restart_on = "none" }  # vendor
@@ -118,6 +163,16 @@ worker syslog-ng
   errors = "/var/log/syslog-ng.out"  # default
   cell.memory_max = "0K"  # default
   cell.pids_max = 0  # default
+  cwd = "/"  # default
+  umask = 0o027  # default
+  rlimits.nofile = "default"  # default
+  credentials.uid = "syslog"  # vendor
+  credentials.caps = []  # default
+  credentials.nnp = true  # default
+  credentials.securebits = "none"  # default
+  sandbox.namespaces = []  # default
+  sandbox.seccomp = "none"  # default
+  sandbox.landlock = []  # default
   deps[0].group = "require_all"  # vendor
   deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "none" }  # vendor
 

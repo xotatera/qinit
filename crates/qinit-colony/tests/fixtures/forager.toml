@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # A one-shot job that needs a worker.
 [worker.w]
+credentials = { uid = "svc" }
 exec = ["/bin/w"]
 
 [forager.job]
+credentials = { uid = "svc" }
 exec = ["/bin/job"]
 deps = [{ group = "require_all", edges = [{ to = "w" }] }]

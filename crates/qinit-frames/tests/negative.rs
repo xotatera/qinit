@@ -25,7 +25,7 @@ fn one(es: &[Error], code: Code, key: &str) {
 fn a_self_loop_is_a_cycle() {
     let es = refuse(
         "neg-self",
-        "[worker.a]\nexec = [\"/a\"]\n\
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\n\
          deps = [{ group = \"require_all\", edges = [{ to = \"a\" }] }]\n",
     );
     one(&es, Code::Cycle, "worker.a");
@@ -37,9 +37,9 @@ fn a_self_loop_is_a_cycle() {
 fn a_two_node_ordering_cycle_is_a_cycle() {
     let es = refuse(
         "neg-two",
-        "[worker.b]\nexec = [\"/b\"]\n\
+        "[worker.b]\ncredentials = { uid = \"svc\" }\nexec = [\"/b\"]\n\
          deps = [{ group = \"optional_all\", edges = [{ to = \"a\" }] }]\n\
-         [worker.a]\nexec = [\"/a\"]\n\
+         [worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\n\
          deps = [{ group = \"require_any\", edges = [{ to = \"b\" }] }]\n",
     );
     one(&es, Code::Cycle, "worker.a");
@@ -51,10 +51,10 @@ fn a_parallel_soft_edge_cannot_hide_a_start_cycle() {
     // a -> b may stop in parallel, but the start order still needs b before a and a before b.
     let es = refuse(
         "neg-par",
-        "[worker.a]\nexec = [\"/a\"]\n\
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\n\
          deps = [{ group = \"require_all\", edges = [\
            { to = \"b\", mode = \"async\", deadline = \"1s\", stop = \"parallel\" }] }]\n\
-         [worker.b]\nexec = [\"/b\"]\n\
+         [worker.b]\ncredentials = { uid = \"svc\" }\nexec = [\"/b\"]\n\
          deps = [{ group = \"require_all\", edges = [{ to = \"a\" }] }]\n",
     );
     one(&es, Code::Cycle, "worker.a");
@@ -65,7 +65,7 @@ fn a_parallel_soft_edge_cannot_hide_a_start_cycle() {
 fn a_missing_require_all_target_is_missing_target() {
     let es = refuse(
         "neg-miss",
-        "[worker.a]\nexec = [\"/a\"]\n\
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\n\
          deps = [{ group = \"require_all\", edges = [{ to = \"nope\" }] }]\n",
     );
     one(&es, Code::MissingTarget, "worker.a.deps[0].edges[0].to");
@@ -75,7 +75,7 @@ fn a_missing_require_all_target_is_missing_target() {
 fn stop_parallel_on_a_hard_edge_is_hard_parallel() {
     let es = refuse(
         "neg-hard",
-        "[brood.b]\n[worker.a]\nexec = [\"/a\"]\n\
+        "[brood.b]\n[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\n\
          deps = [{ group = \"require_all\", edges = [{ to = \"b\", stop = \"parallel\" }] }]\n",
     );
     one(&es, Code::HardParallel, "worker.a.deps[0].edges[0].stop");
@@ -86,7 +86,10 @@ fn more_than_the_node_limit_is_a_limit_error() {
     use std::fmt::Write as _;
     let mut src = String::new();
     for i in 0..=qinit_db_core::MAX_NODES {
-        let _ = write!(src, "[worker.w{i}]\nexec = [\"/w\"]\n");
+        let _ = write!(
+            src,
+            "[worker.w{i}]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/w\"]\n"
+        );
     }
     let es = refuse("neg-limit", &src);
     assert_eq!(es.len(), 1, "{es:?}");
@@ -121,11 +124,15 @@ fn a_policy_violation_is_a_policy_error_with_the_frame_key() {
 #[test]
 fn removing_an_absent_list_item_is_a_list_op_error() {
     let t = Tree::new("neg-listop");
-    t.file("vendor", "a.toml", "[worker.a]\nexec = [\"/a\", \"-v\"]\n");
+    t.file(
+        "vendor",
+        "a.toml",
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\", \"-v\"]\n",
+    );
     t.file(
         "etc",
         "a.toml",
-        "[worker.a]\nexec = { remove = [\"-q\"] }\n",
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = { remove = [\"-q\"] }\n",
     );
     let es = compile(&t.input(&["vendor", "etc"])).expect_err("refused");
     one(&es, Code::ListOp, "worker.a.exec");
@@ -136,7 +143,7 @@ fn removing_an_absent_list_item_is_a_list_op_error() {
 fn a_duplicate_instance_name_is_an_instance_error() {
     let es = refuse(
         "neg-inst",
-        "[worker.g]\nexec = [\"/g\", \"%i\"]\ninstances = [\"tty1\", \"tty1\"]\n",
+        "[worker.g]\ncredentials = { uid = \"svc\" }\nexec = [\"/g\", \"%i\"]\ninstances = [\"tty1\", \"tty1\"]\n",
     );
     assert_eq!(es.len(), 1, "{es:?}");
     assert_eq!(es[0].code, Code::Instance);
@@ -144,7 +151,10 @@ fn a_duplicate_instance_name_is_an_instance_error() {
 
 #[test]
 fn an_unknown_key_is_an_unknown_key_error() {
-    let es = refuse("neg-unk", "[worker.a]\nexec = [\"/a\"]\ncolour = \"red\"\n");
+    let es = refuse(
+        "neg-unk",
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\ncolour = \"red\"\n",
+    );
     one(&es, Code::UnknownKey, "worker.a.colour");
 }
 
@@ -153,7 +163,7 @@ fn a_worker_is_its_own_logger_is_a_cycle() {
     // The implicit logger edge would point at the producer itself.
     let es = refuse(
         "neg-ownlog",
-        "[worker.a]\nexec = [\"/a\"]\noutput = { pipe = \"a\" }\n",
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\noutput = { pipe = \"a\" }\n",
     );
     one(&es, Code::Cycle, "worker.a.output");
 }
@@ -163,10 +173,31 @@ fn a_logger_that_depends_on_its_producer_is_a_cycle() {
     // App pipes to log (implicit app -> log), and log requires app.
     let es = refuse(
         "neg-backlog",
-        "[worker.app]\nexec = [\"/app\"]\nerrors = { pipe = \"log\" }\n\
-         [worker.log]\nexec = [\"/log\"]\n\
+        "[worker.app]\ncredentials = { uid = \"svc\" }\nexec = [\"/app\"]\nerrors = { pipe = \"log\" }\n\
+         [worker.log]\ncredentials = { uid = \"svc\" }\nexec = [\"/log\"]\n\
          deps = [{ group = \"require_all\", edges = [{ to = \"app\", mode = \"async\" }] }]\n",
     );
     one(&es, Code::Cycle, "worker.app");
     assert_eq!(es[0].detail, "app -> log -> app");
+}
+
+#[test]
+fn a_worker_without_credentials_is_refused() {
+    let es = refuse("neg-nocred", "[worker.a]\nexec = [\"/a\"]\n");
+    one(&es, Code::BadValue, "worker.a.credentials.uid");
+}
+
+#[test]
+fn a_sandbox_only_worker_is_refused() {
+    let es = refuse(
+        "neg-sandbox",
+        "[worker.a]\nexec = [\"/a\"]\nsandbox = { namespaces = [\"mount\"] }\n",
+    );
+    one(&es, Code::BadValue, "worker.a.credentials.uid");
+}
+
+#[test]
+fn a_forager_without_credentials_is_refused() {
+    let es = refuse("neg-nocred-f", "[forager.a]\nexec = [\"/a\"]\n");
+    one(&es, Code::BadValue, "forager.a.credentials.uid");
 }

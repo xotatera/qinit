@@ -48,6 +48,7 @@ fn a_template_supplies_defaults_a_frame_overrides() {
         ready = "exit"
         restart = { policy = "always" }
         [worker.sshd]
+credentials = { uid = "svc" }
         template = "daemon"
         exec = ["/usr/bin/sshd", "-D"]
     "#);
@@ -70,6 +71,7 @@ fn template_deps_come_first_then_frame_deps() {
         [template.daemon]
         deps = [{ group = "require_all", edges = [{ to = "a" }] }]
         [worker.x]
+credentials = { uid = "svc" }
         template = "daemon"
         exec = ["/x"]
         deps = [{ group = "require_all", edges = [{ to = "b" }] }]
@@ -88,6 +90,7 @@ fn a_template_naming_a_template_is_refused() {
         [template.daemon]
         template = "base"
         [worker.x]
+credentials = { uid = "svc" }
         template = "daemon"
     "#,
     );
@@ -96,7 +99,8 @@ fn a_template_naming_a_template_is_refused() {
 
 #[test]
 fn a_missing_template_is_refused() {
-    let es = errs("[worker.x]\nexec = [\"/x\"]\ntemplate = \"nope\"\n");
+    let es =
+        errs("[worker.x]\ncredentials = { uid = \"svc\" }\nexec = [\"/x\"]\ntemplate = \"nope\"\n");
     assert_eq!(es.len(), 1, "{es:?}");
     assert_eq!(es[0].code, Code::Template);
     assert_eq!(es[0].key, "worker.x.template");
@@ -132,26 +136,32 @@ fn instances_expand_with_percent_i_substituted() {
 fn instance_names_that_break_the_name_rules_are_refused() {
     let long = "a".repeat(96);
     for bad in ["", "a/b", "a\\u0000b", "../x", "a@b", long.as_str()] {
-        let src = format!("[worker.g]\nexec = [\"/x\"]\ninstances = [\"{bad}\"]\n");
+        let src = format!(
+            "[worker.g]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/x\"]\ninstances = [\"{bad}\"]\n"
+        );
         let es = errs(&src);
         assert!(es.iter().all(|e| e.code == Code::BadName), "{bad}: {es:?}");
         assert!(!es.is_empty(), "{bad}");
     }
-    let es = errs("[worker.\"a@b\"]\nexec = [\"/x\"]\n");
+    let es = errs("[worker.\"a@b\"]\ncredentials = { uid = \"svc\" }\nexec = [\"/x\"]\n");
     assert_eq!(es[0].code, Code::BadName);
-    let es = errs("[worker.\".x\"]\nexec = [\"/x\"]\n[worker.\"-y\"]\nexec = [\"/x\"]\n");
+    let es = errs(
+        "[worker.\".x\"]\ncredentials = { uid = \"svc\" }\nexec = [\"/x\"]\n[worker.\"-y\"]\ncredentials = { uid = \"svc\" }\nexec = [\"/x\"]\n",
+    );
     assert_eq!(es.len(), 2, "both bad names are reported: {es:?}");
 }
 
 #[test]
 fn duplicate_instances_are_refused() {
-    let es = errs("[worker.g]\nexec = [\"/x\"]\ninstances = [\"a\", \"a\"]\n");
+    let es = errs(
+        "[worker.g]\ncredentials = { uid = \"svc\" }\nexec = [\"/x\"]\ninstances = [\"a\", \"a\"]\n",
+    );
     assert_eq!(es[0].code, Code::Instance);
 }
 
 #[test]
 fn the_same_name_in_two_kinds_is_a_duplicate_name() {
-    let es = errs("[worker.x]\nexec = [\"/x\"]\n[brood.x]\n");
+    let es = errs("[worker.x]\ncredentials = { uid = \"svc\" }\nexec = [\"/x\"]\n[brood.x]\n");
     assert_eq!(es.len(), 1, "{es:?}");
     assert_eq!(es[0].code, Code::DuplicateName);
 }
@@ -160,11 +170,14 @@ fn the_same_name_in_two_kinds_is_a_duplicate_name() {
 fn expansion_is_sorted_by_name() {
     let e = ok(r#"
         [worker.zeta]
+credentials = { uid = "svc" }
         exec = ["/z"]
         [brood.alpha]
         [forager.mid]
+credentials = { uid = "svc" }
         exec = ["/m"]
         [worker.b]
+credentials = { uid = "svc" }
         exec = ["/b"]
         instances = ["2", "1"]
     "#);
@@ -183,14 +196,16 @@ fn expansion_is_sorted_by_name() {
 
 #[test]
 fn an_instances_key_on_a_forager_or_brood_is_refused() {
-    let es =
-        errs("[forager.f]\nexec = [\"/x\"]\ninstances = [\"a\"]\n[brood.b]\ninstances = [\"a\"]\n");
+    let es = errs(
+        "[forager.f]\ncredentials = { uid = \"svc\" }\nexec = [\"/x\"]\ninstances = [\"a\"]\n[brood.b]\ninstances = [\"a\"]\n",
+    );
     assert_eq!(es.len(), 2, "{es:?}");
     assert!(es.iter().all(|e| e.code == Code::BadValue), "{es:?}");
     assert!(es.iter().any(|e| e.key == "forager.f.instances"), "{es:?}");
     // A template that brings `instances` to a forager is refused too.
-    let es =
-        errs("[template.t]\ninstances = [\"a\"]\n[forager.f]\nexec = [\"/x\"]\ntemplate = \"t\"\n");
+    let es = errs(
+        "[template.t]\ninstances = [\"a\"]\n[forager.f]\ncredentials = { uid = \"svc\" }\nexec = [\"/x\"]\ntemplate = \"t\"\n",
+    );
     assert_eq!(es[0].key, "forager.f.instances");
 }
 
@@ -203,6 +218,7 @@ fn instance_of_records_the_template_frame_name() {
         exec = ["/sbin/agetty", "%i"]
         instances = ["tty1"]
         [worker.getty]
+credentials = { uid = "svc" }
         template = "tty"
     "#);
     let names: Vec<_> = e.frames.iter().map(|(n, _, _)| n.as_str()).collect();
@@ -215,7 +231,9 @@ fn instance_of_records_the_template_frame_name() {
 
 #[test]
 fn errors_in_different_frames_are_all_reported() {
-    let es = errs("[worker.a]\nready = \"banana\"\n[worker.b]\ntemplate = \"none\"\n");
+    let es = errs(
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nready = \"banana\"\n[worker.b]\ncredentials = { uid = \"svc\" }\ntemplate = \"none\"\n",
+    );
     assert_eq!(es.len(), 2, "{es:?}");
 }
 
@@ -228,7 +246,7 @@ fn a_template_cannot_smuggle_forbidden_keys_into_a_brood() {
 
 #[test]
 fn an_error_carries_the_layer_that_set_the_key() {
-    let mut m = merged("[worker.a]\nready = \"banana\"\n");
+    let mut m = merged("[worker.a]\ncredentials = { uid = \"svc\" }\nready = \"banana\"\n");
     let origin = Origin {
         layer: "etc".into(),
         file: "/etc/qinit/a.toml".into(),
@@ -246,13 +264,15 @@ fn an_error_carries_the_layer_that_set_the_key() {
 
 #[test]
 fn an_empty_instance_list_is_an_instance_error() {
-    let es = errs("[worker.g]\nexec = [\"/x\"]\ninstances = []\n");
+    let es = errs("[worker.g]\ncredentials = { uid = \"svc\" }\nexec = [\"/x\"]\ninstances = []\n");
     assert_eq!(es.len(), 1, "{es:?}");
     assert_eq!(es[0].code, Code::Instance);
     assert_eq!(es[0].key, "worker.g.instances");
     assert!(es[0].detail.contains("disable = true"), "{}", es[0].detail);
     // An empty list inherited from a template is refused the same way.
-    let es = errs("[template.t]\ninstances = []\n[worker.g]\nexec = [\"/x\"]\ntemplate = \"t\"\n");
+    let es = errs(
+        "[template.t]\ninstances = []\n[worker.g]\ncredentials = { uid = \"svc\" }\nexec = [\"/x\"]\ntemplate = \"t\"\n",
+    );
     assert_eq!(
         (es[0].code, es[0].key.as_str()),
         (Code::Instance, "worker.g.instances")
@@ -262,13 +282,18 @@ fn an_empty_instance_list_is_an_instance_error() {
 #[test]
 fn name_length_is_exact_at_96_bytes() {
     let name = |n: usize| "a".repeat(n);
-    let one = |n: usize| format!("[worker.{}]\nexec = [\"/x\"]\n", name(n));
+    let one = |n: usize| {
+        format!(
+            "[worker.{}]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/x\"]\n",
+            name(n)
+        )
+    };
     assert_eq!(ok(&one(96)).frames[0].0.len(), 96);
     assert_eq!(errs(&one(97))[0].code, Code::BadName);
     // `<base>@<instance>` counts as a whole: 90 + 1 + 5 is 96, one more byte is 97.
     let inst = |i: &str| {
         format!(
-            "[worker.{}]\nexec = [\"/x\"]\ninstances = [\"{i}\"]\n",
+            "[worker.{}]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/x\"]\ninstances = [\"{i}\"]\n",
             name(90)
         )
     };

@@ -5,4 +5,5 @@ exec = ["/usr/sbin/syslog-ng", "-F", "--no-caps"]
 ready = { socket = "/dev/log" }
 restart = { policy = "always", max = 5, window = "30s" }
 output = "/var/log/syslog-ng.out"
+credentials = { uid = "syslog" }
 deps = [{ group = "require_all", edges = [{ to = "mount-var" }] }]

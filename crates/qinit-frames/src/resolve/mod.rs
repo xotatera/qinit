@@ -17,10 +17,11 @@
 //!   producers never do.
 //! - Every node piping to a logger gets one extra `require_all` group, appended after its own
 //!   groups, with one sync edge per distinct logger (output first).
-//! - A `Cred` record exists when a frame has `credentials` or `sandbox`. Without `credentials`
-//!   it is unprivileged by contract: the user is empty (the overseer's unprivileged default
-//!   identity), no caps, `nnp` true and securebits none. A node with no `Cred` at all is
-//!   unprivileged by the same contract (see `docs/db-format.md`, "Privilege contract").
+//! - Every worker and forager declares `credentials.uid`; its `Cred` record carries the
+//!   `sandbox` table too (see `docs/db-format.md`, "Credentials are required"). A brood has no
+//!   record.
+//! - `env` is stored as sorted `KEY=VALUE` entries; `cwd` defaults to `/`, `umask` to `0o027`
+//!   and `rlimits.nofile` to 0 (the kernel default).
 mod closure;
 mod cred;
 mod deps;
@@ -199,6 +200,9 @@ fn ready(cx: &mut Cx, base: &str, kind: Kind, f: &Frame) -> Ready {
 /// The restart delay used when a frame sets none, in milliseconds.
 const DEFAULT_DELAY_MS: u32 = 1000;
 
+/// The `umask` used when a frame sets none.
+const DEFAULT_UMASK: u32 = 0o027;
+
 /// The sum of the back-off delays before restart number `max`: the base delay doubling to ten
 /// times itself.
 fn backoff_sum_ms(delay: u32, max: u32) -> u64 {
@@ -337,10 +341,22 @@ fn node(
     origins.extend(logger.iter().map(|g| (0..g.edges.len()).collect()));
     groups.extend(logger);
     cx.edge_origins.push(origins);
+    if kind != Kind::Brood && f.credentials.is_none() {
+        cx.bad(
+            format!("{base}.credentials.uid"),
+            "a worker or forager must declare its user",
+        );
+    }
     let cred = cred::cred(cx, &base, f.credentials.as_ref(), f.sandbox.as_ref()).map(|c| {
         creds.push(c);
         u32::try_from(creds.len() - 1).unwrap_or(u32::MAX)
     });
+    let env: Vec<String> = f
+        .env
+        .iter()
+        .flatten()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
     let cell = f.cell.as_ref();
     let memory_max_kib = match cell.and_then(|c| c.memory_max.as_deref()) {
         None => 0,
@@ -367,6 +383,10 @@ fn node(
         memory_max_kib,
         pids_max: cell.and_then(|c| c.pids_max).unwrap_or(0),
         instance_of: name.split_once('@').map(|(t, _)| t.to_owned()),
+        env,
+        cwd: f.cwd.clone().unwrap_or_else(|| "/".to_owned()),
+        umask: f.umask.unwrap_or(DEFAULT_UMASK),
+        rlimit_nofile: f.rlimits.as_ref().and_then(|r| r.nofile).unwrap_or(0),
     }
 }
 
