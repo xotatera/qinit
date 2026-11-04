@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! What a guest `/init` needs: mounts, directories, sync and powering off from a child.
-use crate::{Errno, Result, check, cpath};
-use std::ffi::CString;
+use crate::{Errno, Result, check, check_long, cpath};
+use std::ffi::{CStr, CString};
 use std::path::Path;
 
 /// `mount(source, target, fstype, flags, NULL)`.
@@ -61,4 +61,99 @@ pub fn power_off_from_child() -> ! {
         // SAFETY: pause takes no arguments; it returns only after a caught signal.
         unsafe { libc::pause() };
     }
+}
+
+/// `mount(source, target, fstype, flags, data)` with a data string (`mode=1777`, `size=..`).
+pub fn mount_data(
+    source: &str,
+    target: &Path,
+    fstype: &str,
+    flags: libc::c_ulong,
+    data: Option<&CStr>,
+) -> Result<()> {
+    let s = CString::new(source).map_err(|_| Errno(libc::EINVAL))?;
+    let t = cpath(target)?;
+    let f = CString::new(fstype).map_err(|_| Errno(libc::EINVAL))?;
+    let d = data.map_or(std::ptr::null(), |d| d.as_ptr().cast());
+    // SAFETY: NUL-terminated strings that outlive the call; `d` is null or a NUL-terminated
+    // data string.
+    check(unsafe { libc::mount(s.as_ptr(), t.as_ptr(), f.as_ptr(), flags, d) })?;
+    Ok(())
+}
+
+/// `mount(source, target, NULL, MS_BIND | MS_REC, NULL)`: the whole tree below `source`
+/// appears at `target`.
+pub fn bind_rec(source: &Path, target: &Path) -> Result<()> {
+    let s = cpath(source)?;
+    let t = cpath(target)?;
+    // SAFETY: NUL-terminated paths that outlive the call, no type and no data.
+    check(unsafe {
+        libc::mount(
+            s.as_ptr(),
+            t.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND | libc::MS_REC,
+            std::ptr::null(),
+        )
+    })?;
+    Ok(())
+}
+
+/// `MOUNT_ATTR_RDONLY`.
+pub const MOUNT_ATTR_RDONLY: u64 = 0x1;
+/// `MOUNT_ATTR_NOSUID`.
+pub const MOUNT_ATTR_NOSUID: u64 = 0x2;
+/// `MOUNT_ATTR_NODEV`.
+pub const MOUNT_ATTR_NODEV: u64 = 0x4;
+/// `MOUNT_ATTR_NOEXEC`.
+pub const MOUNT_ATTR_NOEXEC: u64 = 0x8;
+
+/// `struct mount_attr` of `mount_setattr(2)`.
+#[repr(C)]
+struct MountAttr {
+    attr_set: u64,
+    attr_clr: u64,
+    propagation: u64,
+    userns_fd: u64,
+}
+
+/// `mount_setattr(AT_FDCWD, path, AT_RECURSIVE, {set, clear})`: changes the attributes of the
+/// mount at `path` and of every mount below it.
+pub fn setattr_rec(path: &Path, set: u64, clear: u64) -> Result<()> {
+    let p = cpath(path)?;
+    let attr = MountAttr {
+        attr_set: set,
+        attr_clr: clear,
+        propagation: 0,
+        userns_fd: 0,
+    };
+    // SAFETY: a NUL-terminated path and a readable `mount_attr` of the size passed.
+    check_long(unsafe {
+        libc::syscall(
+            libc::SYS_mount_setattr,
+            libc::AT_FDCWD,
+            p.as_ptr(),
+            libc::AT_RECURSIVE,
+            &raw const attr,
+            std::mem::size_of::<MountAttr>(),
+        )
+    })?;
+    Ok(())
+}
+
+/// `pivot_root(new_root, put_old)`.
+pub fn pivot_root(new_root: &Path, put_old: &Path) -> Result<()> {
+    let n = cpath(new_root)?;
+    let o = cpath(put_old)?;
+    // SAFETY: NUL-terminated paths that outlive the call.
+    check_long(unsafe { libc::syscall(libc::SYS_pivot_root, n.as_ptr(), o.as_ptr()) })?;
+    Ok(())
+}
+
+/// `umount2(path, MNT_DETACH)`.
+pub fn umount_detach(path: &Path) -> Result<()> {
+    let p = cpath(path)?;
+    // SAFETY: a NUL-terminated path that outlives the call.
+    check(unsafe { libc::umount2(p.as_ptr(), libc::MNT_DETACH) })?;
+    Ok(())
 }
