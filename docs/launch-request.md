@@ -136,11 +136,14 @@ Every mount of the view is private, so a mount the host makes later is not seen 
 ### User namespace
 
 With the `user` bit the service runs in its own user namespace, as `inside_uid` and `inside_gid`
-inside it (0 unless set). `user_map` 0
-maps inside id 0 onto the user's own user and group id and denies `setgroups`; 1 also maps
-inside ids 1 and up onto the user's subordinate ranges (`/etc/subuid`, `/etc/subgid`) and allows
-`setgroups`. Whether a request may ask for a user namespace, and for the range map, is the
-policy's decision (`allow_userns`, see `docs/db-format.md`).
+inside it (both 0 unless the request sets them). `user_map` 0 maps that one inside id onto the
+user's own user and group id (so `inside_uid` 1000 is still the outside user, whatever its number)
+and denies `setgroups`; 1 maps inside id 0 onto them and also maps inside ids 1 to `count` onto
+the user's subordinate ranges (`/etc/subuid`, `/etc/subgid`, `count` being the size of the range)
+and allows `setgroups`. An inside id of a range map above `count` fails the launch at the
+`identity` step with `ERANGE`; an own map accepts any id up to 4294967294. Whether a request may
+ask for a user namespace, for the range map and for a non-zero inside id is the policy's decision
+(`allow_userns`, `allow_inside_ids`; see `docs/db-format.md`).
 
 ## The failure record
 

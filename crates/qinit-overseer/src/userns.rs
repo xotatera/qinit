@@ -22,28 +22,40 @@ fn put(dir: BorrowedFd<'_>, name: &std::ffi::CStr, text: &str) -> Result<()> {
     fd::write_all(file.as_fd(), text.as_bytes())
 }
 
-/// The map writer's work: `setgroups`, `gid_map`, `uid_map`. An own map maps inside 0 onto the
-/// outside user and group and denies `setgroups`; a range map also maps inside 1.. onto the
-/// user's subordinate ranges and allows it.
-fn write_maps(dir: BorrowedFd<'_>, id: &Identity, range: bool) -> Result<()> {
-    let (mut gids, mut uids) = (format!("0 {} 1\n", id.gid), format!("0 {} 1\n", id.uid));
-    if range {
-        let (Some((gf, gc)), Some((uf, uc))) = (id.subgid, id.subuid) else {
-            return Err(Errno(libc::EINVAL));
-        };
-        let _ = writeln!(gids, "1 {gf} {gc}");
-        let _ = writeln!(uids, "1 {uf} {uc}");
+/// The bodies of `gid_map` and `uid_map`, in that order. An own map maps the one inside id the
+/// service runs as onto the outside user and group; a range map maps inside 0 onto them and
+/// inside `1..=count` onto the user's subordinate ranges, so any inside id up to `count` is
+/// mapped.
+pub fn map_text(id: &Identity, range: bool, inside: (u32, u32)) -> Result<(String, String)> {
+    if !range {
+        return Ok((
+            format!("{} {} 1\n", inside.1, id.gid),
+            format!("{} {} 1\n", inside.0, id.uid),
+        ));
     }
+    let (Some((gf, gc)), Some((uf, uc))) = (id.subgid, id.subuid) else {
+        return Err(Errno(libc::EINVAL));
+    };
+    let mut gids = format!("0 {} 1\n", id.gid);
+    let mut uids = format!("0 {} 1\n", id.uid);
+    let _ = writeln!(gids, "1 {gf} {gc}");
+    let _ = writeln!(uids, "1 {uf} {uc}");
+    Ok((gids, uids))
+}
+
+/// The map writer's work: `setgroups`, `gid_map`, `uid_map`. An own map denies `setgroups`, a
+/// range map allows it.
+fn write_maps(dir: BorrowedFd<'_>, maps: &(String, String), range: bool) -> Result<()> {
     put(dir, c"setgroups", if range { "allow" } else { "deny" })?;
-    put(dir, c"gid_map", &gids)?;
-    put(dir, c"uid_map", &uids)
+    put(dir, c"gid_map", &maps.0)?;
+    put(dir, c"uid_map", &maps.1)
 }
 
 /// The writer process: waits for the go byte, writes the maps and exits with 0, or with the
 /// errno of what failed.
-fn writer(dir: BorrowedFd<'_>, id: &Identity, range: bool, go: BorrowedFd<'_>) -> ! {
+fn writer(dir: BorrowedFd<'_>, maps: &(String, String), range: bool, go: BorrowedFd<'_>) -> ! {
     let code = match fd::read_byte(go) {
-        Ok(Some(_)) => match write_maps(dir, id, range) {
+        Ok(Some(_)) => match write_maps(dir, maps, range) {
             Ok(()) => 0,
             Err(Errno(e)) => e.clamp(1, 255),
         },
@@ -52,14 +64,16 @@ fn writer(dir: BorrowedFd<'_>, id: &Identity, range: bool, go: BorrowedFd<'_>) -
     proc::exit_now(code)
 }
 
-/// Unshares a user namespace with the maps of `id`: forks the writer, `unshare`s, lets the
-/// writer go, and fails unless it exited 0. `dir` is [`proc_self`].
-pub fn enter(dir: &OwnedFd, id: &Identity, range: bool) -> Result<()> {
+/// Unshares a user namespace with the maps of `id` for a service that runs as the `inside` user and
+/// group id (see [`map_text`]): forks the writer, `unshare`s, lets the writer go, and fails
+/// unless it exited 0. `dir` is [`proc_self`].
+pub fn enter(dir: &OwnedFd, id: &Identity, range: bool, inside: (u32, u32)) -> Result<()> {
+    let maps = map_text(id, range, inside)?;
     let (go_r, go_w) = fd::pipe(libc::O_CLOEXEC)?;
     let pid = proc::fork()?;
     if pid == 0 {
         drop(go_w);
-        writer(dir.as_fd(), id, range, go_r.as_fd());
+        writer(dir.as_fd(), &maps, range, go_r.as_fd());
     }
     drop(go_r);
     let unshared = ns::unshare(libc::CLONE_NEWUSER);

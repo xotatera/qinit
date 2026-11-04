@@ -44,6 +44,8 @@ pub enum IdentityError {
     SubidMalformed(usize),
     /// The range holds an id of `/etc/passwd` (`/etc/group`).
     SubidOverlap,
+    /// An inside id of a range map is above the number of subordinate ids.
+    InsideRange,
 }
 
 fn name_ok(name: &str) -> bool {
@@ -176,6 +178,25 @@ fn ids(text: &str, column: usize) -> Vec<u32> {
     lines(text)
         .filter_map(|(_, l)| l.split(':').nth(column)?.parse().ok())
         .collect()
+}
+
+/// Whether the inside ids `(uid, gid)` are mapped: a range map maps inside 0 and `1..=count`
+/// of the user's subordinate range; an own map maps the one id it is given.
+///
+/// # Errors
+/// [`IdentityError::InsideRange`] when a range map does not reach an id, and
+/// [`IdentityError::SubidMissing`] when a range map has no range to check against.
+pub fn check_inside(id: &Identity, range: bool, inside: (u32, u32)) -> Result<(), IdentityError> {
+    if !range {
+        return Ok(());
+    }
+    let (Some((_, uc)), Some((_, gc))) = (id.subuid, id.subgid) else {
+        return Err(IdentityError::SubidMissing);
+    };
+    if inside.0 > uc || inside.1 > gc {
+        return Err(IdentityError::InsideRange);
+    }
+    Ok(())
 }
 
 /// Resolves `user` from `/etc/passwd` and `/etc/group`, and with `range` also its subordinate

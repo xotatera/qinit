@@ -590,6 +590,86 @@ fn inside_uid_0_outside_the_declared_uid() -> Result<(), String> {
     want(lines.get(3).copied(), Some("setgroups deny"), "setgroups")
 }
 
+/// The owner on the host of a file `/tmp/<name>` that a service running with `ids` created.
+fn owner_of_a_service_file(name: &str, range: bool, ids: (u32, u32)) -> Result<u32, String> {
+    let path = format!("/tmp/{name}");
+    let _ = std::fs::remove_file(&path);
+    let mut request = userns_request("probe-path", &[&path, "w"], 0);
+    if range {
+        request.user_map = UserMap::Range;
+    }
+    (request.inside_uid, request.inside_gid) = ids;
+    want(
+        run_to_end(name, request, true)?.code()?,
+        0,
+        "creating the file",
+    )?;
+    let owner = std::os::unix::fs::MetadataExt::uid(&e(std::fs::metadata(&path))?);
+    let _ = std::fs::remove_file(&path);
+    Ok(owner)
+}
+
+fn inside_uid_1000_with_an_own_map() -> Result<(), String> {
+    let mut show = userns_request("userns-show", &[], 0);
+    show.inside_uid = 1000;
+    show.inside_gid = 1001;
+    let o = run_to_end("ui1", show, true)?;
+    want(o.code()?, 0, "the helper's exit")?;
+    let lines: Vec<&str> = o.out.lines().collect();
+    want(lines.first().copied(), Some("ids 1000 1001"), "inside ids")?;
+    want(
+        lines.get(1).copied(),
+        Some("uid_map 1000 1000 1"),
+        "uid_map",
+    )?;
+    want(
+        lines.get(2).copied(),
+        Some("gid_map 1001 1000 1"),
+        "gid_map",
+    )?;
+    // The inside id 1000 is the outside `svc` (1000): its files belong to it on the host.
+    want(
+        owner_of_a_service_file("ui1f", false, (1000, 1001))?,
+        1000,
+        "owner on the host",
+    )
+}
+
+fn inside_uid_1000_with_a_range_map() -> Result<(), String> {
+    let mut show = userns_request("userns-show", &[], 0);
+    show.user_map = UserMap::Range;
+    show.inside_uid = 1000;
+    show.inside_gid = 1000;
+    let o = run_to_end("ui2", show, true)?;
+    want(o.code()?, 0, "the helper's exit")?;
+    let lines: Vec<&str> = o.out.lines().collect();
+    want(lines.first().copied(), Some("ids 1000 1000"), "inside ids")?;
+    want(
+        lines.get(1).copied(),
+        Some("uid_map 0 1000 1 1 100000 65536"),
+        "range uid_map",
+    )?;
+    // Inside 1000 is the 1000th subordinate id: outside 100000 + 999.
+    want(
+        owner_of_a_service_file("ui2f", true, (1000, 1000))?,
+        100_999,
+        "owner on the host",
+    )
+}
+
+fn an_unmapped_inside_id_fails_the_launch() -> Result<(), String> {
+    let mut request = userns_request("userns-show", &[], 0);
+    request.user_map = UserMap::Range;
+    request.inside_uid = 65_537;
+    let o = run_to_end("ui3", request, true)?;
+    let failure = o.failure.ok_or("no failure record")?;
+    want(
+        (failure.step, failure.errno),
+        (qinit_overseer::status::STEP_IDENTITY, libc::ERANGE),
+        "failure step and errno",
+    )
+}
+
 fn a_range_map_lets_inside_root_setuid_1() -> Result<(), String> {
     let mut own = userns_request("setuid-1", &[], 0);
     own.caps = SETIDS;
@@ -736,6 +816,18 @@ fn main() {
                 an_unlisted_path_does_not_exist,
             ),
             ("the_root_is_read_only", the_root_is_read_only),
+            (
+                "inside_uid_1000_with_an_own_map",
+                inside_uid_1000_with_an_own_map,
+            ),
+            (
+                "inside_uid_1000_with_a_range_map",
+                inside_uid_1000_with_a_range_map,
+            ),
+            (
+                "an_unmapped_inside_id_fails_the_launch",
+                an_unmapped_inside_id_fails_the_launch,
+            ),
             (
                 "a_ro_bind_below_rw_is_read_only",
                 a_ro_bind_below_rw_is_read_only,
