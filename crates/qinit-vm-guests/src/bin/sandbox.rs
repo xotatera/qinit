@@ -310,20 +310,32 @@ fn a_planted_symlink_below_a_writable_entry_is_refused() -> Result<(), String> {
     }
 }
 
-fn a_symlinked_directory_outside_a_writable_entry_still_works() -> Result<(), String> {
+fn a_symlink_entry_beside_a_writable_one_still_works() -> Result<(), String> {
+    // The writable entry is not an ancestor of the symlink entry: nothing is opened beneath it.
     let _ = std::fs::remove_file("/tmp/ro_s");
+    e(std::fs::create_dir_all("/tmp/w2"))?;
     e(std::os::unix::fs::symlink("/etc", "/tmp/ro_s"))?;
     want(
-        viewed("vx", "probe-kind", &["/tmp/ro_s"], &["ro:/tmp/ro_s"], 0)?.0,
+        viewed(
+            "vx",
+            "probe-kind",
+            &["/tmp/ro_s"],
+            &["ro:/tmp/ro_s", "rw:/tmp/w2"],
+            0,
+        )?
+        .0,
         10,
-        "a listed symlink with no writable ancestor",
+        "a listed symlink beside a writable entry",
     )
 }
 
-/// Lists `entry` over a host directory `/tmp/fol` with an empty `m` below it, starts a service that
-/// looks for `/tmp/fol/m/marker` after a second, and mounts a `tmpfs` holding the marker on the
-/// host's `m` while the service runs. The service's exit: 0 when it saw the marker.
+/// Lists `entry` over a host directory `/tmp/fol` with an empty `m` below it and starts a service
+/// that says `started`, waits for a line, and then looks for `/tmp/fol/m/marker`. Once the view
+/// is built (the service said so) a `tmpfs` holding the marker is mounted on the host's `m`, and
+/// the service is told to look. The service's exit: 0 when it saw the marker.
 fn mount_after_the_service_started(name: &str, entry: &str) -> Result<i32, String> {
+    use qinit_cell::{ReadyMode, Report};
+    use std::io::{BufRead, Write};
     // A shared host tree, as a service manager's host has.
     e(qinit_sys::mount::mount(
         "none",
@@ -332,27 +344,51 @@ fn mount_after_the_service_started(name: &str, entry: &str) -> Result<i32, Strin
         libc::MS_SHARED | libc::MS_REC,
     )
     .map_err(|x| x.to_string()))?;
-    let _ = qinit_sys::mount::umount_detach(std::path::Path::new("/tmp/fol/m"));
-    e(std::fs::create_dir_all("/tmp/fol/m"))?;
-    let mounter = std::thread::spawn(|| -> Result<(), String> {
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let m = std::path::Path::new("/tmp/fol/m");
-        e(qinit_sys::mount::mount("tmpfs", m, "tmpfs", 0).map_err(|x| x.to_string()))?;
-        e(std::fs::write("/tmp/fol/m/marker", b"x"))
-    });
-    let r = viewed(
+    let m = std::path::Path::new("/tmp/fol/m");
+    let _ = qinit_sys::mount::umount_detach(m);
+    e(std::fs::create_dir_all(m))?;
+    let (out_r, out_w) = capture();
+    let (in_r, in_w) = e(qinit_sys::fd::pipe(libc::O_CLOEXEC).map_err(|x| x.to_string()))?;
+    let mut request = spec("svc", "probe-after-go", &["/tmp/fol/m/marker"]);
+    request.ns = NS_MOUNT;
+    request.stdin = Stream::Fd(5);
+    request.stdout = Stream::Fd(6);
+    request.paths = vec!["ro:/init".into(), entry.into()];
+    request.paths.sort_by(|a, b| a[3..].cmp(&b[3..]));
+    let mut cells = cells()?;
+    let l = launch(
+        &mut cells,
         name,
-        "probe-wait-file",
-        &["/tmp/fol/m/marker", "1500"],
-        &[entry],
-        0,
-    );
-    let done = mounter
-        .join()
-        .map_err(|_| "the mounting thread panicked".to_string())?;
-    let _ = qinit_sys::mount::umount_detach(std::path::Path::new("/tmp/fol/m"));
-    done?;
-    Ok(r?.0)
+        &request,
+        vec![(in_r, 5), (out_w, 6)],
+        ReadyMode::Exit,
+    )?;
+    let mut said = String::new();
+    let heard = std::io::BufReader::new(std::fs::File::from(out_r)).read_line(&mut said);
+    let prepared = match heard {
+        Ok(n) if n > 0 && said.trim() == "started" => {
+            e(qinit_sys::mount::mount("tmpfs", m, "tmpfs", 0).map_err(|x| x.to_string()))
+                .and_then(|()| e(std::fs::write("/tmp/fol/m/marker", b"x")))
+        }
+        other => Err(format!(
+            "the service did not start: {other:?} {said:?} {:?}",
+            status_of(&l)
+        )),
+    };
+    let told = e(std::fs::File::from(in_w).write_all(b"go\n"));
+    let seen = expect(&mut cells, l.id, Report::Empty);
+    let exit = seen.map(|seen| {
+        reports_of(&seen, l.id).iter().find_map(|r| match r {
+            Report::MainExited(Some(st)) if libc::WIFEXITED(*st) => Some(libc::WEXITSTATUS(*st)),
+            Report::Ready => Some(0),
+            _ => None,
+        })
+    });
+    let _ = qinit_sys::mount::umount_detach(m);
+    remove(&mut cells, l.id)?;
+    prepared?;
+    told?;
+    exit?.ok_or_else(|| "the service did not exit normally".to_string())
 }
 
 fn a_following_entry_sees_a_later_host_mount() -> Result<(), String> {
@@ -937,8 +973,8 @@ fn main() {
                 a_planted_symlink_below_a_writable_entry_is_refused,
             ),
             (
-                "a_symlinked_directory_outside_a_writable_entry_still_works",
-                a_symlinked_directory_outside_a_writable_entry_still_works,
+                "a_symlink_entry_beside_a_writable_one_still_works",
+                a_symlink_entry_beside_a_writable_one_still_works,
             ),
             (
                 "a_following_entry_sees_a_later_host_mount",

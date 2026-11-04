@@ -885,15 +885,19 @@ fn launch_helper(role: &str, args: &[String]) -> Option<i32> {
             }
             Err(x) => x.raw_os_error().unwrap_or(2),
         }),
-        // `probe-wait-file <path> <ms>`: sleeps, then exits 0 when the file can be opened for
-        // reading, the errno otherwise.
-        "probe-wait-file" => match (a0, args.get(1).and_then(|m| m.parse::<u64>().ok())) {
-            (Some(p), Some(ms)) => {
-                std::thread::sleep(std::time::Duration::from_millis(ms));
-                std::fs::File::open(p).map_or_else(|x| x.raw_os_error().unwrap_or(2), |_| 0)
+        // `probe-after-go <path>`: says `started` on standard output, waits for a line on
+        // standard input, then exits 0 when the file can be opened for reading, the errno
+        // otherwise.
+        "probe-after-go" => a0.map_or(2, |p| {
+            let mut line = String::new();
+            if writeln!(std::io::stdout(), "started").is_err()
+                || std::io::stdout().flush().is_err()
+                || std::io::stdin().read_line(&mut line).is_err()
+            {
+                return 2;
             }
-            _ => 2,
-        },
+            std::fs::File::open(p).map_or_else(|x| x.raw_os_error().unwrap_or(2), |_| 0)
+        }),
         // `probe-statvfs <path>`: 0 when the mount holding the path is read-only, 1 when not,
         // the errno when the path cannot be examined.
         "probe-statvfs" => a0.map_or(2, |p| match qinit_sys::fs::is_readonly(Path::new(p)) {

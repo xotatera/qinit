@@ -129,9 +129,28 @@ an entry, and the working directory must be `/` or at or below an entry.
 With a path list the service does not see the host's filesystem. The overseer builds an empty
 `tmpfs` root with a fixed `/dev` (`null`, `zero`, `full`, `random`, `urandom`) and a private
 `/tmp`, binds each listed path into it, pivots into it, and seals it read-only; Landlock then
-restricts the service to those paths. The view is built under `/.qinit-view` on the host's root filesystem, so
-a launch with a path list needs a writable root directory (`EROFS` at `view-root` otherwise).
-Every mount of the view is private, so a mount the host makes later is not seen inside.
+restricts the service to those paths. The view is built under `/run/qinit/view`, so `/run` must
+be a writable directory (a `tmpfs`, on every host this runs on); the host's root filesystem may
+be read-only. Each entry is a detached clone of the host's mount (with every mount below it),
+given `nosuid`, `nodev` (except below `/dev`) and, for the read-only modes, read-only before it is
+attached.
+
+The modes:
+
+| Mode | Meaning |
+| --- | --- |
+| `ro:` `rw:` | a recursive bind, read-only or writable; every mount of the entry is private, so a mount the host makes later is not seen inside |
+| `rs:` `ws:` | as `ro:` and `rw:`, but the entry stays a slave of the host's mount, so a mount the host makes later below the path **appears** in the view (without the entry's `nosuid`, `nodev` or read-only attributes). It only follows if the host's mounts are shared, which is not this document's business. |
+| `ri:` `wi:` | as `ro:` and `rw:`, **idmapped** through the service's id map. Needs the `user` bit of `ns`. The ids on disk are the service's inside ids: a file owned by disk id `i` is owned by inside id `i`, and what the service creates under inside id `i` is disk id `i`. Disk ids the map does not cover (an own map covers one) show as `nobody`, and an inode owned by one cannot be written. The launch fails at the entry (`EINVAL`) when a filesystem below cannot be idmapped; nothing falls back to a plain bind, so an idmapped entry should lie on one filesystem. |
+
+`ro:/proc` in a pid namespace is a fresh `proc` mount instead of a bind of the host's.
+
+**Symlinks.** An entry below a writable entry listed before it (`rw:/data` and `ro:/data/app`, by
+whole components) is opened without following any symlink, the last component included: a symlink
+there fails the launch at the entry with `ELOOP`, so a link the service planted below a directory
+it can write cannot redirect the bind. An entry that is not below a writable one follows symlinks
+as before (a listed symlink is recreated as a symlink). A symlink planted in a directory the
+launch does not list writable is not covered.
 
 ### User namespace
 

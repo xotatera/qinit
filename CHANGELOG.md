@@ -12,6 +12,22 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Group 2b, the view and the instance, hardened and finished (D43 to D49):
+  - The view is built on `/run/qinit/view` from detached mount clones (`open_tree`,
+    `mount_setattr`, `move_mount`), so a read-only host root works and nothing is left behind
+    (D49); an entry below a writable one is opened without symlinks (`ELOOP`, D48).
+  - Six path-entry modes: `ro:` `rw:` `ri:` `wi:` `rs:` `ws:`. `ri:`/`wi:` are idmapped through a
+    helper user namespace with the service's maps and need the `user` namespace (D43); `rs:`/`ws:`
+    follow the host's later mounts (D47). The proved path rules, the decoder and the plan change
+    by a mode set; the plan has one new step, `IdmapNamespace`.
+  - Inside ids (D44): `sandbox.inside_uid`/`inside_gid`, the credential record grows to 15 words,
+    the launch request to 69 and a policy rule to 44 (`allow_inside_ids`, denial code 9).
+  - `qinit_client::pidfd_exit` reads a launch's exit status from its pidfd on Linux 6.15 and later
+    (D45).
+  - `Run` flag bit 1 `wait_ready`: the second reply is `Settled` when the service writes its
+    readiness byte (D46); the client gets `RunArgs::wait_ready` and `LaunchOutcome::Ready`.
+  - `qinit-sys` gains `open_tree`, `mount_setattr` on a descriptor, `move_mount`, `open_path` and
+    `open_beneath`; `bind_rec` and `setattr_rec` are gone.
 - Group 2, sandbox and launch (D32, D33, D38, D39):
   - The path view: a credential or request with `sandbox.paths` runs in an empty `tmpfs` root with
     a fixed `/dev` and a private `/tmp`, a recursive bind of each listed path, a `pivot_root` and a
@@ -180,7 +196,7 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `sandbox.landlock` is renamed `sandbox.paths` (database `C_PATHS_*`, request `paths`). The list
   is sorted and canonical, refuses `/`, `/dev`, `/tmp` and a writable `/proc`, needs the `mount`
   namespace, and must cover the program and the working directory.
-- The credential record is 13 words (`C_USER_MAP`), the database header 24 words, and the launch
+- The credential record is 13 words (`C_USER_MAP`; 15 since group 2b), the database header 24 words, and the launch
   sequence is reordered (view, then user namespace, then identity, then Landlock): the plan
   has 25 phases and at most 320 steps, with a `RearmDeadline` step before the view.
 - The proof timeouts of `qinit-overseer-core` (90s) and `qinit-colony-core` (100s) are raised to
