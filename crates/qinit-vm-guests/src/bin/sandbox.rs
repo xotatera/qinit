@@ -289,6 +289,37 @@ fn the_view_builds_with_a_read_only_root() -> Result<(), String> {
     want(r?.0, 0, "open of a listed path with a read-only host root")
 }
 
+fn a_planted_symlink_below_a_writable_entry_is_refused() -> Result<(), String> {
+    // D48: with `rw:/tmp/w` listed, `ro:/tmp/w/s` is opened below it without following symlinks,
+    // so a link the service planted there cannot redirect the entry to a host path.
+    let _ = std::fs::remove_dir_all("/tmp/w");
+    e(std::fs::create_dir_all("/tmp/w"))?;
+    e(std::os::unix::fs::symlink("/etc", "/tmp/w/s"))?;
+    match viewed(
+        "vw",
+        "probe-path",
+        &["/tmp/w/s/passwd", "r"],
+        &["rw:/tmp/w", "ro:/tmp/w/s"],
+        0,
+    ) {
+        // Only the entry's open can fail with ELOOP in a launch that lists plain directories.
+        Err(m) if m.contains(&format!("errno: {}", libc::ELOOP)) => Ok(()),
+        other => Err(format!(
+            "a planted symlink: {other:?}, want a view-entry ELOOP"
+        )),
+    }
+}
+
+fn a_symlinked_directory_outside_a_writable_entry_still_works() -> Result<(), String> {
+    let _ = std::fs::remove_file("/tmp/ro_s");
+    e(std::os::unix::fs::symlink("/etc", "/tmp/ro_s"))?;
+    want(
+        viewed("vx", "probe-kind", &["/tmp/ro_s"], &["ro:/tmp/ro_s"], 0)?.0,
+        10,
+        "a listed symlink with no writable ancestor",
+    )
+}
+
 fn a_setuid_binary_outside_the_list_is_absent() -> Result<(), String> {
     e(std::fs::write("/tmp/su", b"x"))?;
     e(std::fs::set_permissions(
@@ -618,6 +649,7 @@ fn a_root_only_directory_is_listable() -> Result<(), String> {
     want(o.code()?, 0, "reading below a root-only parent")
 }
 
+#[allow(clippy::too_many_lines)] // the table of cases is the whole body
 fn main() {
     run(
         "sandbox",
@@ -692,6 +724,14 @@ fn main() {
             (
                 "the_view_builds_with_a_read_only_root",
                 the_view_builds_with_a_read_only_root,
+            ),
+            (
+                "a_planted_symlink_below_a_writable_entry_is_refused",
+                a_planted_symlink_below_a_writable_entry_is_refused,
+            ),
+            (
+                "a_symlinked_directory_outside_a_writable_entry_still_works",
+                a_symlinked_directory_outside_a_writable_entry_still_works,
             ),
             (
                 "a_setuid_binary_outside_the_list_is_absent",

@@ -4,7 +4,9 @@
 //! and a bind of each listed path, pivoted into before the credentials are changed. Every
 //! function performs one plan step.
 #![allow(clippy::missing_errors_doc)] // each step returns the errno of the call that failed
-use qinit_sys::fs::{Kind, create_file, lstat_kind, mkdir_all, open_path, readlink, symlink};
+use qinit_sys::fs::{
+    Kind, create_file, lstat_kind, mkdir_all, open_beneath, open_path, readlink, symlink,
+};
 use qinit_sys::landlock::{LANDLOCK_ACCESS_FS_ALL_V3, add_path_rule};
 use qinit_sys::mount::{
     MOUNT_ATTR_NODEV, MOUNT_ATTR_NOSUID, MOUNT_ATTR_RDONLY, mount_data, move_mount_to, open_tree,
@@ -86,12 +88,36 @@ fn below_dev(path: &str) -> bool {
     path == "/dev" || path.starts_with("/dev/")
 }
 
+/// The index of the nearest entry before `i` in `list` that is writable and whose path is a
+/// whole-component prefix of entry `i`'s path: the entry below which a service could have planted
+/// a symlink before this launch.
+#[must_use]
+pub fn writable_ancestor(list: &[&str], i: usize) -> Option<usize> {
+    let (_, path) = split(list.get(i)?).ok()?;
+    (0..i).rev().find(|&j| {
+        split(list[j]).is_ok_and(|(ro, p)| {
+            !ro && path
+                .strip_prefix(p)
+                .is_some_and(|rest| rest.starts_with('/'))
+        })
+    })
+}
+
 /// `ViewEntry`: one listed path. `pid`: the request has a pid namespace, so `ro:/proc` is a
-/// fresh `proc` instead of a bind of the host's.
-pub fn entry(entry: &str, pid: bool) -> Result<()> {
+/// fresh `proc` instead of a bind of the host's. `beneath`: the host path of the writable entry
+/// above this one; the path is then opened below it without following any symlink, the last
+/// component included (`ELOOP`), so nothing planted there redirects the bind.
+pub fn entry(entry: &str, pid: bool, beneath: Option<&Path>) -> Result<()> {
     let (ro, path) = split(entry)?;
     let host = Path::new(path);
     let target = at(path);
+    let source = match beneath {
+        Some(above) => {
+            let rest = host.strip_prefix(above).map_err(|_| Errno(libc::EINVAL))?;
+            Some(open_beneath(open_path(above)?.as_fd(), rest)?)
+        }
+        None => None,
+    };
     let kind = lstat_kind(host)?;
     if let Some(parent) = target.parent() {
         mkdir_all(parent, 0o755)?;
@@ -120,7 +146,10 @@ pub fn entry(entry: &str, pid: bool) -> Result<()> {
     if ro {
         set |= MOUNT_ATTR_RDONLY;
     }
-    attach(host, &target, set)
+    match source {
+        Some(fd) => attach_fd(fd.as_fd(), &target, set),
+        None => attach(host, &target, set),
+    }
 }
 
 /// Binds `host` (and every mount below it) at `target` as a detached clone that gets the
@@ -129,8 +158,12 @@ pub fn entry(entry: &str, pid: bool) -> Result<()> {
 /// so it is made private afterwards: a mount the host makes later below `host` must not
 /// appear in the view, writable and without `nosuid`.
 fn attach(host: &Path, target: &Path, set: u64) -> Result<()> {
-    let source = open_path(host)?;
-    let clone = open_tree(source.as_fd(), c"", true)?;
+    attach_fd(open_path(host)?.as_fd(), target, set)
+}
+
+/// `attach` for a source already opened.
+fn attach_fd(source: BorrowedFd<'_>, target: &Path, set: u64) -> Result<()> {
+    let clone = open_tree(source, c"", true)?;
     setattr_fd(clone.as_fd(), set, 0, 0, None, true)?;
     move_mount_to(clone.as_fd(), target)?;
     private_rec(target)

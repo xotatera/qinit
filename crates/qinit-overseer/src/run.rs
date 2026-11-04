@@ -259,7 +259,10 @@ impl<'a> Run<'a> {
             Step::ViewEntry(i) => {
                 let list = self.list(Q_PATHS_OFF, Q_PATHS_LEN)?;
                 let entry = list.get(i as usize).ok_or(Errno(libc::EINVAL))?;
-                Self::unmasked(|| view::entry(entry, req(self.b, Q_NS) & 2 != 0))
+                let above = view::writable_ancestor(&list, i as usize)
+                    .map(|j| view::split(list[j]).map(|(_, p)| Path::new(p)))
+                    .transpose()?;
+                Self::unmasked(|| view::entry(entry, req(self.b, Q_NS) & 2 != 0, above))
             }
             Step::ViewPivot => Self::unmasked(view::pivot),
             Step::ViewSeal => view::seal(),
