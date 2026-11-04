@@ -154,7 +154,7 @@ fn check_enums(b: &[u8]) -> (r: Result<(), LaunchError>)
 {
     let seccomp = rword(b, Q_SECCOMP);
     if rword(b, Q_UMASK) > MAX_UMASK || rword(b, Q_CAPS_HI) > 0x1ff || rword(b, Q_SECUREBITS) > 2
-        || rword(b, Q_NNP) > 1 || rword(b, Q_NS) > 0x1f || seccomp > 3 || ((seccomp <= 1) != (rword(
+        || rword(b, Q_NNP) > 1 || rword(b, Q_NS) > 0x3f || seccomp > 3 || ((seccomp <= 1) != (rword(
         b,
         Q_SECCOMP_LEN,
     ) == 0)) {
@@ -164,8 +164,10 @@ fn check_enums(b: &[u8]) -> (r: Result<(), LaunchError>)
         b,
         Q_STDERR_KIND,
     ) > STREAM_SAME || rword(b, Q_READY_KIND) > READY_PIPE || rword(b, Q_FLAGS)
-        > FLAG_DIE_WITH_PARENT || rword(b, Q_RESERVED_0) != 0 || rword(b, Q_RESERVED_1) != 0
-        || rword(b, Q_RLIMIT_MASK) & !RLIMIT_MASK_ALLOWED != 0 {
+        > FLAG_DIE_WITH_PARENT || rword(b, Q_USER_MAP) > 1 || rword(b, Q_RESERVED_1) != 0 || rword(
+        b,
+        Q_RLIMIT_MASK,
+    ) & !RLIMIT_MASK_ALLOWED != 0 {
         return Err(LaunchError::Enum);
     }
     Ok(())
@@ -314,6 +316,13 @@ fn check_content(b: &[u8]) -> (r: Result<(), LaunchError>)
         return Err(LaunchError::Consistency);
     }
     let ns = rword(b, Q_NS);
+    if rword(b, Q_USER_MAP) == 1 && ns & 32 == 0 {
+        return Err(LaunchError::Consistency);
+    }
+    let user = field(b, rword(b, Q_USER_OFF), rword(b, Q_USER_LEN));
+    if ns & 32 != 0 && is_root_exec(user) {
+        return Err(LaunchError::Consistency);
+    }
     if !paths_shape_exec(paths, ns) {
         return Err(LaunchError::Consistency);
     }

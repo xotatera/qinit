@@ -180,17 +180,27 @@ pub open spec fn cred_enum_ok(b: Seq<u8>, c: int) -> bool {
     &&& cf(b, c, C_CAPS_HI) <= 0x1ff
     &&& cf(b, c, C_SECUREBITS) <= 2
     &&& cf(b, c, C_NNP) <= 1
-    &&& cf(b, c, C_NS) <= 0x1f
+    &&& cf(b, c, C_NS) <= 0x3f
+    &&& cf(b, c, C_USER_MAP) <= 1
     &&& cf(b, c, C_SECCOMP) <= 3
     &&& (cf(b, c, C_SECCOMP) <= 1) == (cf(b, c, C_SECCOMP_LEN) == 0)
     &&& (cf(b, c, C_NNP) == 0 && (cf(b, c, C_PATHS_LEN) > 0 || cf(b, c, C_SECCOMP) != 0)
         ==> has_sys_admin(b, c))
     &&& seccomp_list_ok(pool_slice(b, cf(b, c, C_SECCOMP_OFF), cf(b, c, C_SECCOMP_LEN)))
+    &&& (cf(b, c, C_USER_MAP) == 1 ==> (cf(b, c, C_NS) as u32) & 32u32 != 0u32)
+    &&& ((cf(b, c, C_NS) as u32) & 32u32 != 0u32 ==> !is_root(
+        pool_slice(b, cf(b, c, C_USER_OFF), cf(b, c, C_USER_LEN)),
+    ))
     &&& paths_list_ok(pool_slice(b, cf(b, c, C_PATHS_OFF), cf(b, c, C_PATHS_LEN)))
     &&& paths_shape_ok(
         pool_slice(b, cf(b, c, C_PATHS_OFF), cf(b, c, C_PATHS_LEN)),
         cf(b, c, C_NS) as u32,
     )
+}
+
+/// `s` is the user name `root`.
+pub open spec fn is_root(s: Seq<u8>) -> bool {
+    s.len() == 4 && s[0] == 0x72 && s[1] == 0x6f && s[2] == 0x6f && s[3] == 0x74
 }
 
 /// `e` is the first element of the NUL-separated list `s`: its bytes up to the first NUL.

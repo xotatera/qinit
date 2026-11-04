@@ -59,6 +59,7 @@ fn instantiate(f: &Frame, inst: &str) -> Frame {
             namespaces: sl(&x.namespaces),
             seccomp: x.seccomp.clone(),
             paths: sl(&x.paths),
+            user_map: s(&x.user_map),
         }),
         env: f
             .env

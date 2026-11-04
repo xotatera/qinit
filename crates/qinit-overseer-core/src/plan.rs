@@ -39,6 +39,9 @@ pub const CLONE_NEWUTS: u32 = 0x0400_0000;
 /// `CLONE_NEWNET`, for namespace bit 4.
 pub const CLONE_NEWNET: u32 = 0x4000_0000;
 
+/// `CLONE_NEWUSER`, for namespace bit 5.
+pub const CLONE_NEWUSER: u32 = 0x1000_0000;
+
 /// `SECBIT_KEEP_CAPS`: always set, since the kernel clears it at exec.
 pub const SECBIT_KEEP_CAPS: u32 = 16;
 
@@ -550,7 +553,7 @@ fn emit(b: &[u8], out: &mut [Step; MAX_STEPS], n: usize, s: Step) -> (m: usize)
     n + 1
 }
 
-/// The `CLONE_NEW*` flags of namespace bits `ns`, summed (the five flags are distinct bits).
+/// The `CLONE_NEW*` flags of namespace bits `ns`, summed (the six flags are distinct bits).
 pub open spec fn ns_flags(ns: u32) -> int {
     (if ns & 1u32 != 0 {
         CLONE_NEWNS as int
@@ -570,6 +573,10 @@ pub open spec fn ns_flags(ns: u32) -> int {
         0int
     }) + (if ns & 16u32 != 0 {
         CLONE_NEWNET as int
+    } else {
+        0int
+    }) + (if ns & 32u32 != 0 {
+        CLONE_NEWUSER as int
     } else {
         0int
     })
@@ -601,7 +608,7 @@ fn cap_bit(b: &[u8], c: u32) -> (r: bool)
 #[allow(clippy::many_single_char_names)]  // one letter per namespace flag
 fn flags_of(ns: u32) -> (f: u32)
     requires
-        ns <= 0x1f,
+        ns <= 0x3f,
     ensures
         f as int == ns_flags(ns),
 {
@@ -630,7 +637,12 @@ fn flags_of(ns: u32) -> (f: u32)
     } else {
         0
     };
-    a + p + i + u + n
+    let r = if ns & 32 != 0 {
+        CLONE_NEWUSER
+    } else {
+        0
+    };
+    a + p + i + u + n + r
 }
 
 /// Phases 0 to 2: `setsid`, the deadline and the descriptors.
@@ -746,7 +758,7 @@ fn sec_ns(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
         present_ns(b@, final(out)@.take(m as int)),
 {
     let ns = req(b, Q_NS);
-    assert(ns <= 0x1f);
+    assert(ns <= 0x3f);
     let flags = flags_of(ns);
     let mut n = n0;
     if ns != 0 {

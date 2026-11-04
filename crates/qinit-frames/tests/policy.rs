@@ -573,3 +573,82 @@ fn a_limit_of_the_wrong_shape_is_not_reported_as_an_enum() {
     assert!(!es[0].detail.contains("untagged enum"), "{es:?}");
     assert!(es[0].detail.contains("limit"), "{es:?}");
 }
+
+const BOX: &str = r#"
+    [worker.box]
+    exec = ["/box"]
+    credentials = { uid = "svc" }
+    sandbox = { namespaces = ["user"] }
+"#;
+
+const BOX_RANGE: &str = r#"
+    [worker.box]
+    exec = ["/box"]
+    credentials = { uid = "svc" }
+    sandbox = { namespaces = ["user"], user_map = "range" }
+"#;
+
+fn box_rule(userns: &str) -> String {
+    format!("default = \"deny\"\n[[rule]]\nmatch = \"box\"\n{userns}\n")
+}
+
+#[test]
+fn a_user_namespace_needs_a_rule_under_deny() {
+    let es = check(&pol("un-none", "default = \"deny\"\n"), &model(BOX)).expect_err("refused");
+    assert_eq!(es.len(), 1);
+    assert_eq!(
+        (es[0].code, es[0].key.as_str()),
+        (Code::Policy, "worker.box.credentials")
+    );
+    // A matching rule that does not allow the map is a violation keyed by the rule.
+    let es = check(&pol("un-rule", &box_rule("")), &model(BOX)).expect_err("refused");
+    assert_eq!(es.len(), 1);
+    assert_eq!(es[0].key, "rule[0].allow_userns");
+    assert!(es[0].detail.contains("worker `box`"), "{}", es[0].detail);
+    assert!(es[0].detail.contains("user namespace"), "{}", es[0].detail);
+    assert!(es[0].file.is_some());
+    let es = check(
+        &pol("un-false", &box_rule("allow_userns = false")),
+        &model(BOX),
+    )
+    .expect_err("refused");
+    assert_eq!(es[0].key, "rule[0].allow_userns");
+}
+
+#[test]
+fn allow_userns_true_allows_own_not_range() {
+    let p = pol("un-true", &box_rule("allow_userns = true"));
+    assert_eq!(check(&p, &model(BOX)), Ok(()));
+    let es = check(&p, &model(BOX_RANGE)).expect_err("refused");
+    assert_eq!(es[0].key, "rule[0].allow_userns");
+}
+
+#[test]
+fn allow_userns_range_allows_both() {
+    let p = pol("un-range", &box_rule("allow_userns = \"range\""));
+    assert_eq!(check(&p, &model(BOX)), Ok(()));
+    assert_eq!(check(&p, &model(BOX_RANGE)), Ok(()));
+}
+
+#[test]
+fn an_unmatched_user_namespace_passes_under_allow() {
+    let p = pol("un-allow", "default = \"allow\"\n");
+    assert_eq!(check(&p, &model(BOX)), Ok(()));
+}
+
+#[test]
+fn a_bad_allow_userns_is_a_bad_value() {
+    for bad in [
+        "allow_userns = \"all\"",
+        "allow_userns = 1",
+        "allow_userns = [true]",
+    ] {
+        let es = policy("un-bad", &box_rule(bad)).expect_err("refused");
+        assert_eq!(es.len(), 1, "{bad}: {es:?}");
+        assert_eq!(
+            (es[0].code, es[0].key.as_str()),
+            (Code::BadValue, "rule[0].allow_userns"),
+            "{bad}"
+        );
+    }
+}

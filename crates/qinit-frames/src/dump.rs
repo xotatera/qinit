@@ -19,7 +19,7 @@ use crate::resolve::{Resolved, cap_name, ns_name};
 use crate::syscalls;
 use qinit_db::{
     Cred, Edge, GroupKind, Kind, Mode, Model, Node, RLIMIT_KEYS, Ready, Reload, RestartOn,
-    RestartPolicy, Route, Seccomp, Securebits, StopMode, Target,
+    RestartPolicy, Route, Seccomp, Securebits, StopMode, Target, UserMap,
 };
 use qinit_db_core::{FD_STDERR, FD_STDIN, FD_STDOUT};
 use std::fmt::Write as _;
@@ -225,6 +225,10 @@ impl Block<'_> {
             Securebits::Noroot => "noroot",
             Securebits::NorootLocked => "noroot-locked",
         };
+        let user_map = match c.user_map {
+            UserMap::Own => "own",
+            UserMap::Range => "range",
+        };
         let names = |l: &[u32]| list(l.iter().map(|nr| quote(syscalls::name(*nr).unwrap_or("?"))));
         let seccomp = match &c.seccomp {
             Seccomp::None => quote("none"),
@@ -239,6 +243,7 @@ impl Block<'_> {
         self.line("sandbox.namespaces", &list(ns));
         self.line("sandbox.seccomp", &seccomp);
         self.line("sandbox.paths", &list(c.paths.iter().map(|s| quote(s))));
+        self.line("sandbox.user_map", &quote(user_map));
     }
 }
 

@@ -4,8 +4,8 @@ mod common;
 
 use common::{node, sample, svc};
 use qinit_db::{
-    Kind, Launch, Model, ReadError, Reload, Seccomp, Stop, StopMode, Target, WriteError, crc32,
-    open, write,
+    Kind, Launch, Model, ReadError, Reload, Seccomp, Stop, StopMode, Target, UserMap, WriteError,
+    crc32, open, write,
 };
 use qinit_db_core::{N_RLIMIT_BASE, N_RLIMIT_MASK, RLIMIT_COUNT, T_NODES, T_POOL, WORDS, word};
 
@@ -293,4 +293,29 @@ fn a_limit_the_validator_refuses_is_not_written() {
             "{r}={v}"
         );
     }
+}
+
+#[test]
+fn user_map_round_trips() {
+    for (map, ns) in [
+        (UserMap::Own, 32 | 1),
+        (UserMap::Range, 32 | 1),
+        (UserMap::Own, 1),
+    ] {
+        let mut m = sample();
+        m.creds[0].ns = ns;
+        m.creds[0].user_map = map;
+        // The sample's first credential is `sshd`, not root.
+        let bytes = write(&m).expect("writes");
+        assert_eq!(open(&bytes).expect("opens").decode(), m);
+    }
+}
+
+#[test]
+fn a_range_map_without_the_user_namespace_does_not_open() {
+    let mut m = sample();
+    m.creds[0].ns = 1;
+    m.creds[0].user_map = UserMap::Range;
+    let bytes = write(&m).expect("writes");
+    assert!(open(&bytes).is_err());
 }

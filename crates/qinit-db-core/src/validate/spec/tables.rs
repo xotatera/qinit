@@ -31,7 +31,7 @@ pub open spec fn spec_words(t: int) -> int {
     } else if t == 2 {
         7
     } else if t == 3 {
-        12
+        13
     } else if t == 4 {
         3
     } else {

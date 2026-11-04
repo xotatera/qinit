@@ -28,6 +28,7 @@ pub struct ReqSpec {
     pub securebits: u32,
     pub nnp: u32,
     pub ns: u32,
+    pub user_map: u32,
     pub seccomp: u32,
     pub seccomp_list: &'static str,
     pub paths: &'static str,
@@ -53,6 +54,7 @@ pub fn minimal() -> ReqSpec {
         securebits: 0,
         nnp: 1,
         ns: 0,
+        user_map: 0,
         seccomp: 0,
         seccomp_list: "",
         paths: "",
@@ -122,6 +124,7 @@ pub fn build(spec: &ReqSpec) -> Vec<u8> {
     rec[Q_SECUREBITS] = spec.securebits;
     rec[Q_NNP] = spec.nnp;
     rec[Q_NS] = spec.ns;
+    rec[Q_USER_MAP] = spec.user_map;
     rec[Q_SECCOMP] = spec.seccomp;
     rec[Q_SECCOMP_OFF] = seccomp.0;
     rec[Q_SECCOMP_LEN] = seccomp.1;

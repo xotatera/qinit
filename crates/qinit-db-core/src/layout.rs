@@ -70,7 +70,7 @@ pub const T_PRESYSLOG: usize = 6;
 pub const T_POOL: usize = 7;
 
 /// Words per record, tables 0..=6.
-pub const WORDS: [usize; 7] = [68, 3, 7, 12, 3, 1, 1];
+pub const WORDS: [usize; 7] = [68, 3, 7, 13, 3, 1, 1];
 
 /// Header word: magic.
 pub const H_MAGIC: usize = 0;
@@ -325,7 +325,7 @@ pub const C_SECUREBITS: usize = 4;
 /// Credential record word 5: `nnp`.
 pub const C_NNP: usize = 5;
 
-/// Credential record word 6: `ns`.
+/// Credential record word 6: `ns`, namespace bits 0..=5: mount, pid, ipc, uts, net, user.
 pub const C_NS: usize = 6;
 
 /// Credential record word 7: `seccomp`.
@@ -343,6 +343,9 @@ pub const C_SECCOMP_OFF: usize = 10;
 
 /// Credential record word 11: `seccomp_len`, 0 exactly when `seccomp` is 0 or 1.
 pub const C_SECCOMP_LEN: usize = 11;
+
+/// Credential record word 12: `user_map`, 0 own, 1 range; 1 only with the `user` namespace.
+pub const C_USER_MAP: usize = 12;
 
 /// Route record word 0: `kind`.
 pub const R_KIND: usize = 0;

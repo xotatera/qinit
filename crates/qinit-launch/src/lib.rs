@@ -8,8 +8,8 @@ use qinit_proto_core::launch::{
     Q_FLAGS, Q_NNP, Q_NS, Q_PATHS_LEN, Q_PATHS_OFF, Q_READY_FD, Q_READY_KIND, Q_RLIMIT_BASE,
     Q_RLIMIT_MASK, Q_SECCOMP, Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_SECUREBITS, Q_STDERR_A, Q_STDERR_B,
     Q_STDERR_KIND, Q_STDIN_A, Q_STDIN_B, Q_STDIN_KIND, Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND,
-    Q_UMASK, Q_USER_LEN, Q_USER_OFF, READY_NONE, READY_PIPE, REQ_WORDS, STREAM_FD, STREAM_PATH,
-    STREAM_SAME,
+    Q_UMASK, Q_USER_LEN, Q_USER_MAP, Q_USER_OFF, READY_NONE, READY_PIPE, REQ_WORDS, STREAM_FD,
+    STREAM_PATH, STREAM_SAME,
 };
 
 /// The seccomp policy of a request.
@@ -19,6 +19,14 @@ pub enum Seccomp {
     Default,
     Deny(Vec<u32>),
     Allow(Vec<u32>),
+}
+
+/// What a user namespace maps: the service's own ids only, or its subordinate range too.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UserMap {
+    #[default]
+    Own,
+    Range,
 }
 
 /// The securebits of a request.
@@ -54,6 +62,8 @@ pub struct RequestSpec {
     pub securebits: Securebits,
     pub nnp: bool,
     pub ns: u32,
+    /// Only `Range` with the `user` bit (32) of `ns`.
+    pub user_map: UserMap,
     pub seccomp: Seccomp,
     pub paths: Vec<String>,
     pub stdin: Stream,
@@ -77,6 +87,7 @@ impl Default for RequestSpec {
             securebits: Securebits::None,
             nnp: true,
             ns: 0,
+            user_map: UserMap::Own,
             seccomp: Seccomp::None,
             paths: Vec::new(),
             stdin: Stream::Path("/dev/null".into()),
@@ -182,6 +193,7 @@ impl RequestSpec {
         };
         rec[Q_NNP] = u32::from(self.nnp);
         rec[Q_NS] = self.ns;
+        rec[Q_USER_MAP] = u32::from(self.user_map == UserMap::Range);
         match self.ready_fd {
             None => rec[Q_READY_KIND] = READY_NONE,
             Some(fd) => (rec[Q_READY_KIND], rec[Q_READY_FD]) = (READY_PIPE, fd),

@@ -86,7 +86,7 @@ pub open spec fn enums_ok(b: Seq<u8>) -> bool {
     &&& qw(b, Q_CAPS_HI) <= 0x1ff
     &&& qw(b, Q_SECUREBITS) <= 2
     &&& qw(b, Q_NNP) <= 1
-    &&& qw(b, Q_NS) <= 0x1f
+    &&& qw(b, Q_NS) <= 0x3f
     &&& qw(b, Q_SECCOMP) <= 3
     &&& (qw(b, Q_SECCOMP) <= 1) == (qw(b, Q_SECCOMP_LEN) == 0)
     &&& qw(b, Q_STDIN_KIND) <= STREAM_FD
@@ -94,7 +94,7 @@ pub open spec fn enums_ok(b: Seq<u8>) -> bool {
     &&& qw(b, Q_STDERR_KIND) <= STREAM_SAME
     &&& qw(b, Q_READY_KIND) <= READY_PIPE
     &&& qw(b, Q_FLAGS) <= FLAG_DIE_WITH_PARENT
-    &&& qw(b, Q_RESERVED_0) == 0
+    &&& qw(b, Q_USER_MAP) <= 1
     &&& qw(b, Q_RESERVED_1) == 0
     &&& (qw(b, Q_RLIMIT_MASK) as u32) & !RLIMIT_MASK_ALLOWED == 0
 }
@@ -185,6 +185,8 @@ pub open spec fn content_ok(b: Seq<u8>) -> bool {
     &&& elems(field_slice(b, Q_SECCOMP_OFF, Q_SECCOMP_LEN)) <= MAX_SECCOMP_LIST
     &&& paths_list_ok(field_slice(b, Q_PATHS_OFF, Q_PATHS_LEN))
     &&& elems(field_slice(b, Q_PATHS_OFF, Q_PATHS_LEN)) <= MAX_PATH_ENTRIES
+    &&& (qw(b, Q_USER_MAP) == 1 ==> (qw(b, Q_NS) as u32) & 32u32 != 0u32)
+    &&& ((qw(b, Q_NS) as u32) & 32u32 != 0u32 ==> !is_root(field_slice(b, Q_USER_OFF, Q_USER_LEN)))
     &&& paths_shape_ok(field_slice(b, Q_PATHS_OFF, Q_PATHS_LEN), qw(b, Q_NS) as u32)
     &&& forall|e: Seq<u8>|
         #![trigger is_first(field_slice(b, Q_ARGV_OFF, Q_ARGV_LEN), e)]

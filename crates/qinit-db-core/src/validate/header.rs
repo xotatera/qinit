@@ -25,7 +25,7 @@ pub(crate) fn words_of(t: usize) -> (w: usize)
     } else if t == 2 {
         7
     } else if t == 3 {
-        12
+        13
     } else if t == 4 {
         3
     } else {

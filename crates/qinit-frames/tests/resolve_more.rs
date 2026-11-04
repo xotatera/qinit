@@ -466,3 +466,59 @@ fn entries_are_stored_sorted() {
     let c = &r.model.creds[n.cred.unwrap() as usize];
     assert_eq!(c.paths, ["rw:/etc/a", "ro:/etc/z", "ro:/opt", "rw:/var/b"]);
 }
+
+fn userns(uid: &str, sandbox: &str) -> String {
+    format!(
+        "[worker.a]\nexec = [\"/a\"]\ncredentials = {{ uid = \"{uid}\" }}\nsandbox = {{ {sandbox} }}\n"
+    )
+}
+
+#[test]
+fn user_map_without_user_is_refused() {
+    for sb in [
+        "user_map = \"own\"",
+        "namespaces = [\"net\"], user_map = \"range\"",
+    ] {
+        assert_eq!(
+            one_error(&userns("svc", sb)),
+            (Code::BadValue, "worker.a.sandbox.user_map".to_owned()),
+            "{sb}"
+        );
+    }
+    // An unknown map word is a bad value too.
+    assert_eq!(
+        one_error(&userns(
+            "svc",
+            "namespaces = [\"user\"], user_map = \"all\""
+        )),
+        (Code::BadValue, "worker.a.sandbox.user_map".to_owned())
+    );
+}
+
+#[test]
+fn root_with_a_user_namespace_is_refused() {
+    assert_eq!(
+        one_error(&userns("root", "namespaces = [\"user\"]")),
+        (Code::BadValue, "worker.a.credentials.uid".to_owned())
+    );
+}
+
+#[test]
+fn user_sets_bit_5_and_range_sets_the_map() {
+    use qinit_db::UserMap;
+    let r = ok(&userns("svc", "namespaces = [\"user\", \"net\"]"));
+    let c = &r.model.creds[node(&r.model, "a").cred.unwrap() as usize];
+    assert_eq!((c.ns, c.user_map), (32 | 16, UserMap::Own));
+    let r = ok(&userns(
+        "svc",
+        "namespaces = [\"user\"], user_map = \"range\"",
+    ));
+    let c = &r.model.creds[node(&r.model, "a").cred.unwrap() as usize];
+    assert_eq!((c.ns, c.user_map), (32, UserMap::Range));
+    let r = ok(&userns(
+        "svc",
+        "namespaces = [\"user\"], user_map = \"own\"",
+    ));
+    let c = &r.model.creds[node(&r.model, "a").cred.unwrap() as usize];
+    assert_eq!(c.user_map, UserMap::Own);
+}

@@ -11,7 +11,7 @@ use qinit_colony::Colony;
 use qinit_colony::sim::{Sim, advance_outcome};
 use qinit_db::{
     Cred, Kind, Model, Node, Ready, Restart, RestartPolicy, Seccomp, Securebits, Stop, StopMode,
-    write,
+    UserMap, write,
 };
 use qinit_ipc::listen_seqpacket;
 use qinit_proto::Limits;
@@ -67,6 +67,7 @@ fn world() -> Result<Colony<Sim>, String> {
             ns: 0,
             seccomp: Seccomp::None,
             paths: Vec::new(),
+            user_map: UserMap::Own,
         }],
         routes: Vec::new(),
         enabled: vec![0],

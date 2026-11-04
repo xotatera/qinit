@@ -5,7 +5,7 @@
 use crate::crc::file_crc;
 use crate::model::{
     Cred, Edge, GroupKind, Kind, Launch, Mode, Model, Node, Ready, Reload, RestartOn,
-    RestartPolicy, Route, Seccomp, Securebits, StopMode, Target,
+    RestartPolicy, Route, Seccomp, Securebits, StopMode, Target, UserMap,
 };
 use qinit_db_core::{
     HEADER_WORDS, MAGIC, MAX_CREDS, MAX_EDGES, MAX_EDGES_PER_GROUP, MAX_GROUPS,
@@ -285,7 +285,7 @@ fn edge_words(e: &Edge, pool: &mut Pool, nodes: usize) -> Result<[u32; 7], Write
     ])
 }
 
-fn cred_words(c: &Cred, pool: &mut Pool) -> Result<[u32; 12], WriteError> {
+fn cred_words(c: &Cred, pool: &mut Pool) -> Result<[u32; 13], WriteError> {
     let user = pool.intern(&c.user)?;
     let paths = pool.intern_list(&c.paths)?;
     let (seccomp, list) = seccomp_words(&c.seccomp, pool)?;
@@ -306,6 +306,7 @@ fn cred_words(c: &Cred, pool: &mut Pool) -> Result<[u32; 12], WriteError> {
         paths.1,
         list.0,
         list.1,
+        u32::from(c.user_map == UserMap::Range),
     ])
 }
 

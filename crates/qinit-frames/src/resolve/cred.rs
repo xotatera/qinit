@@ -4,7 +4,7 @@
 use super::Cx;
 use crate::schema::{Creds, Sandbox, SeccompCfg};
 use crate::syscalls;
-use qinit_db::{Cred, Seccomp, Securebits};
+use qinit_db::{Cred, Seccomp, Securebits, UserMap};
 use qinit_db_core::CAP_SYS_ADMIN_BIT;
 
 /// Capability names without the `cap_` prefix; the index is the capability number.
@@ -53,7 +53,7 @@ const CAPS: [&str; 41] = [
 ];
 
 /// Namespace names; the index is the bit in `Cred::ns`.
-const NAMESPACES: [&str; 5] = ["mount", "pid", "ipc", "uts", "net"];
+const NAMESPACES: [&str; 6] = ["mount", "pid", "ipc", "uts", "net", "user"];
 
 /// The capability number of `name` (no `cap_` prefix), 0 to 40.
 #[must_use]
@@ -100,6 +100,27 @@ fn path_entry(s: &str) -> bool {
     s.strip_prefix("ro:")
         .or_else(|| s.strip_prefix("rw:"))
         .is_some_and(canonical)
+}
+
+/// The `user` bit of `Cred::ns`.
+const USER_BIT: u32 = 1 << 5;
+
+/// The id map of a user namespace: `own` (the default) or `range`; either word needs the
+/// `user` namespace.
+fn user_map(cx: &mut Cx, base: &str, word: Option<&str>, ns: u32) -> UserMap {
+    let key = format!("{base}.sandbox.user_map");
+    let map = match word {
+        None | Some("own") => UserMap::Own,
+        Some("range") => UserMap::Range,
+        Some(w) => {
+            cx.bad(&key, format!("`{w}` is not own or range"));
+            UserMap::Own
+        }
+    };
+    if word.is_some() && ns & USER_BIT == 0 {
+        cx.bad(&key, "user_map needs \"user\" in namespaces");
+    }
+    map
 }
 
 /// `e` is an entry a list may not hold: `/`, `/dev`, `/tmp`, or `/proc` writable.
@@ -194,6 +215,7 @@ fn from_sandbox(cx: &mut Cx, base: &str, s: &Sandbox, out: &mut Cred) {
         let why = format!("path entry {bad:?} must be ro: or rw: and a canonical absolute path");
         cx.bad(format!("{base}.sandbox.paths"), why);
     }
+    out.user_map = user_map(cx, base, s.user_map.as_deref(), out.ns);
     out.paths = sorted_paths(cx, base, paths);
     if !out.paths.is_empty() {
         // A path list is a view: it needs its own mount namespace.
@@ -264,10 +286,17 @@ pub(super) fn cred(
         ns: 0,
         seccomp: Seccomp::None,
         paths: Vec::new(),
+        user_map: UserMap::Own,
     };
     from_creds(cx, base, c, &mut out);
     if let Some(s) = s {
         from_sandbox(cx, base, s, &mut out);
+    }
+    if out.ns & USER_BIT != 0 && out.user == "root" {
+        cx.bad(
+            format!("{base}.credentials.uid"),
+            "a user namespace maps the service to inside root: its uid names the outside user, which cannot be root",
+        );
     }
     let restricts = !out.paths.is_empty() || out.seccomp != Seccomp::None;
     if !out.nnp && restricts && out.caps & (1 << CAP_SYS_ADMIN_BIT) == 0 {

@@ -113,7 +113,7 @@ later step, not at the limit's own.
 | 5 | `E_RESTART_ON` | 0 none, 1 error, 2 restart, 3 refresh |
 | 6 | `E_FLAGS` | bit 0 = `stop = "parallel"`, bit 1 = cascade (a quarantined `require_all` target quarantines the dependent); all other bits zero |
 
-### Credential (12 words)
+### Credential (13 words)
 
 | Word | Name | Meaning |
 | --- | --- | --- |
@@ -121,10 +121,11 @@ later step, not at the limit's own.
 | 2, 3 | `C_CAPS_LO`, `C_CAPS_HI` | capability set as 64 bits; only bits 0..=40 may be set |
 | 4 | `C_SECUREBITS` | 0 none, 1 noroot, 2 noroot-locked |
 | 5 | `C_NNP` | no_new_privs, 0 or 1 |
-| 6 | `C_NS` | namespaces, bits 0..=4: mount, pid, ipc, uts, net |
+| 6 | `C_NS` | namespaces, bits 0..=5: mount, pid, ipc, uts, net, user |
 | 7 | `C_SECCOMP` | 0 none, 1 default, 2 deny-list, 3 allow-list |
 | 8, 9 | `C_PATHS_OFF`, `C_PATHS_LEN` | the sandbox path list: entries `ro:<path>` or `rw:<path>` with a canonical absolute path (starts `/`, no empty, `.` or `..` component, no trailing `/`), NUL-separated |
 | 10, 11 | `C_SECCOMP_OFF`, `C_SECCOMP_LEN` | syscall numbers of the deny- or allow-list, NUL-separated canonical decimals; length 0 exactly when `C_SECCOMP` is 0 or 1 |
+| 12 | `C_USER_MAP` | the user namespace's id map: 0 own, 1 range; 1 only with the `user` bit of `C_NS` |
 
 The default program answers `clone`, `unshare`, `clone3` and `setns` itself (`clone` and
 `unshare` by their namespace flags, `setns` always, `clone3` with `ENOSYS`), so a deny-list
@@ -166,7 +167,7 @@ The validator is total and never panics. It accepts a database only if all of th
 1. **V1** Header fields, offsets and counts are in bounds and within the limits, and tables do not overlap.
 2. **V2** The pool is valid UTF-8, and every pool reference is an in-bounds slice between two character boundaries, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, environment entries, path entries, seccomp lists) holds no empty element. `N_INSTANCE_OF` may be empty, but at most `MAX_NAME_LEN` bytes.
 3. **V3** Every cross-table index is `NONE` or in range of its table.
-4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline). A node's `stop_mode` is 0 or 1, its `restart_delay_ms` and `stop_grace_ms` are at least 100, `restart_max > 0` implies `restart_window_ms > 0`, and its `umask` is at most `MAX_UMASK`. A worker or forager has a credential and a brood has none; the working directory is a canonical absolute path; every path entry is `ro:` or `rw:` and a canonical absolute path; every environment entry has a non-empty key before its first `=`. A credential's user is non-empty, `seccomp` is at most 3 and its list is non-empty exactly when `seccomp` is 2 or 3; every list entry is a canonical decimal below `MAX_SYSCALL`; `nnp` 0 with a path list or a seccomp filter requires `CAP_SYS_ADMIN` in `caps_lo`.
+4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline). A node's `stop_mode` is 0 or 1, its `restart_delay_ms` and `stop_grace_ms` are at least 100, `restart_max > 0` implies `restart_window_ms > 0`, and its `umask` is at most `MAX_UMASK`. A worker or forager has a credential and a brood has none; the working directory is a canonical absolute path; every path entry is `ro:` or `rw:` and a canonical absolute path; every environment entry has a non-empty key before its first `=`. A credential's user is non-empty, `seccomp` is at most 3 and its list is non-empty exactly when `seccomp` is 2 or 3; every list entry is a canonical decimal below `MAX_SYSCALL`; `nnp` 0 with a path list or a seccomp filter requires `CAP_SYS_ADMIN` in `caps_lo`. A credential's path list is strictly ascending by path (so no path repeats), holds no `/`, `/dev` or `/tmp` and no writable `/proc`, and needs the `mount` bit of `C_NS`; a node with a non-empty list has an absolute program (the first element of its `exec`) at or below an entry, and a working directory that is `/` or at or below an entry. `C_NS` is at most `0x3f`, `C_USER_MAP` at most 1, `C_USER_MAP` 1 needs the `user` bit, and a credential with the `user` bit does not name `root`.
 5. **V5** The ordering-edge graph is acyclic.
 6. **V6** The stop order derived by `qinit-graph-core` places every hard dependent before its dependency, whatever the opt-outs.
 7. **V7** `stop = "parallel"` appears on no hard edge.

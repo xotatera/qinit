@@ -98,7 +98,7 @@ pub const Q_SECUREBITS: usize = 12;
 /// Record word 13: `nnp`, 0 or 1.
 pub const Q_NNP: usize = 13;
 
-/// Record word 14: `ns`, namespace bits 0..=4: mount, pid, ipc, uts, net.
+/// Record word 14: `ns`, namespace bits 0..=5: mount, pid, ipc, uts, net, user.
 pub const Q_NS: usize = 14;
 
 /// Record word 15: `seccomp`, 0 none, 1 default, 2 deny-list, 3 allow-list.
@@ -146,8 +146,8 @@ pub const Q_FLAGS: usize = 28;
 /// Record word 29: `deadline_ms`, at least 1.
 pub const Q_DEADLINE_MS: usize = 29;
 
-/// Record word 30: reserved, 0.
-pub const Q_RESERVED_0: usize = 30;
+/// Record word 30: `user_map`, 0 own, 1 range; 1 only with the `user` namespace bit.
+pub const Q_USER_MAP: usize = 30;
 
 /// Record word 31: reserved, 0.
 pub const Q_RESERVED_1: usize = 31;

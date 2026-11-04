@@ -96,6 +96,8 @@ pub struct CredSpec {
     pub paths: &'static str,
     /// Namespace bits.
     pub ns: u32,
+    /// 0 own map, 1 range map.
+    pub user_map: u32,
 }
 
 /// A credential for `user`: no caps, `no_new_privs` on, no seccomp.
@@ -108,6 +110,7 @@ pub fn cred(user: &'static str) -> CredSpec {
         seccomp_list: "",
         paths: "",
         ns: 0,
+        user_map: 0,
     }
 }
 
@@ -262,7 +265,7 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
         let (uo, ul) = intern(&mut pool, c.user.as_bytes());
         let (so, sl) = intern(&mut pool, c.seccomp_list.as_bytes());
         let (po, pl) = intern(&mut pool, c.paths.as_bytes());
-        let mut rec = [0u32; 12];
+        let mut rec = [0u32; 13];
         rec[C_USER_OFF] = uo;
         rec[C_USER_LEN] = ul;
         rec[C_NNP] = c.nnp;
@@ -270,6 +273,7 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
         rec[C_SECCOMP_OFF] = so;
         rec[C_SECCOMP_LEN] = sl;
         rec[C_NS] = c.ns;
+        rec[C_USER_MAP] = c.user_map;
         rec[C_PATHS_OFF] = po;
         rec[C_PATHS_LEN] = pl;
         rec[C_CAPS_LO] = n32(usize::try_from(c.caps & 0xffff_ffff).unwrap());

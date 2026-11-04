@@ -5,7 +5,7 @@
 use crate::crc::file_crc;
 use crate::model::{
     Cred, Edge, Group, GroupKind, Kind, Launch, Mode, Model, Node, Ready, Reload, Restart,
-    RestartOn, RestartPolicy, Route, Seccomp, Securebits, Stop, StopMode, Target,
+    RestartOn, RestartPolicy, Route, Seccomp, Securebits, Stop, StopMode, Target, UserMap,
 };
 use qinit_db_core::{
     DbError, H_CRC32, HEADER_WORDS, MAX_EDGES, MAX_NODES, N_RLIMIT_BASE, NONE, SECCOMP_DEFAULT,
@@ -242,6 +242,11 @@ impl Reader<'_> {
                 _ => Seccomp::Allow(self.syscalls(f(10), f(11))),
             },
             paths: self.list(f(8), f(9)),
+            user_map: if f(12) == 1 {
+                UserMap::Range
+            } else {
+                UserMap::Own
+            },
         }
     }
 

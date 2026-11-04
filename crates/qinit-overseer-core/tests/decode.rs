@@ -72,7 +72,7 @@ fn enums_are_bounded() {
     for (w, v) in [
         (Q_SECUREBITS, 3),
         (Q_NNP, 2),
-        (Q_NS, 0x20),
+        (Q_NS, 0x40),
         (Q_SECCOMP, 4),
         (Q_STDOUT_KIND, 2),
         (Q_STDERR_KIND, 3),
@@ -80,7 +80,7 @@ fn enums_are_bounded() {
         (Q_FLAGS, 2),
         (Q_UMASK, 0o1000),
         (Q_CAPS_HI, 0x200),
-        (Q_RESERVED_0, 1),
+        (Q_USER_MAP, 2),
         (Q_RESERVED_1, 1),
     ] {
         let db = with(&valid(), |x| x[at(w)] = v);
@@ -203,6 +203,54 @@ fn with_paths(paths: &'static str, ns: u32) -> ReqSpec {
         argv: "/etc/x",
         ..minimal()
     }
+}
+
+#[test]
+fn user_map_2_is_enum() {
+    let mut spec = minimal();
+    spec.ns = 32;
+    spec.user_map = 2;
+    assert_eq!(decode(&build(&spec)), Err(LaunchError::Enum));
+    spec.user_map = 1;
+    assert_eq!(decode(&build(&spec)), Ok(()));
+    spec.user_map = 0;
+    assert_eq!(decode(&build(&spec)), Ok(()));
+}
+
+#[test]
+fn user_map_1_without_the_bit_is_consistency() {
+    let mut spec = minimal();
+    spec.user_map = 1;
+    for ns in [0, 0b11111] {
+        spec.ns = ns;
+        assert_eq!(
+            decode(&build(&spec)),
+            Err(LaunchError::Consistency),
+            "ns {ns:#b}"
+        );
+    }
+}
+
+#[test]
+fn root_with_the_user_bit_is_consistency() {
+    let mut spec = minimal();
+    spec.user = "root";
+    spec.ns = 32;
+    assert_eq!(decode(&build(&spec)), Err(LaunchError::Consistency));
+    spec.ns = 0;
+    assert_eq!(decode(&build(&spec)), Ok(()));
+    spec.user = "roots";
+    spec.ns = 32;
+    assert_eq!(decode(&build(&spec)), Ok(()));
+}
+
+#[test]
+fn ns_bit_6_is_enum() {
+    let mut spec = minimal();
+    spec.ns = 64;
+    assert_eq!(decode(&build(&spec)), Err(LaunchError::Enum));
+    spec.ns = 63;
+    assert_eq!(decode(&build(&spec)), Ok(()));
 }
 
 #[test]

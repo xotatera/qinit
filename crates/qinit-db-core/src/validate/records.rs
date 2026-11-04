@@ -167,6 +167,15 @@ fn check_edge(b: &[u8], x: usize) -> (r: Result<(), DbError>)
     Ok(())
 }
 
+/// `s` is the user name `root`.
+#[must_use]
+pub fn is_root_exec(s: &[u8]) -> (r: bool)
+    ensures
+        r == is_root(s@),
+{
+    s.len() == 4 && s[0] == 0x72 && s[1] == 0x6f && s[2] == 0x6f && s[3] == 0x74
+}
+
 fn check_cred(b: &[u8], c: usize) -> (r: Result<(), DbError>)
     requires
         v1(b@),
@@ -185,9 +194,17 @@ fn check_cred(b: &[u8], c: usize) -> (r: Result<(), DbError>)
         t,
         c,
         C_SECUREBITS,
-    ) > 2 || nnp > 1 || field(b, t, c, C_NS) > 0x1f || seccomp > 3 || ((seccomp <= 1) != (
-    seccomp_len == 0)) {
+    ) > 2 || nnp > 1 || field(b, t, c, C_NS) > 0x3f || field(b, t, c, C_USER_MAP) > 1 || seccomp > 3
+        || ((seccomp <= 1) != (seccomp_len == 0)) {
         return Err(DbError::Enum { table: tid(t), record: rid(c) });
+    }
+    let ns = field(b, t, c, C_NS);
+    if field(b, t, c, C_USER_MAP) == 1 && ns & 32 == 0 {
+        return Err(DbError::Consistency { table: tid(t), record: rid(c) });
+    }
+    let user = pool_bytes(b, field(b, t, c, C_USER_OFF), field(b, t, c, C_USER_LEN));
+    if ns & 32 != 0 && is_root_exec(user) {
+        return Err(DbError::Consistency { table: tid(t), record: rid(c) });
     }
     let caps_lo = field(b, t, c, C_CAPS_LO);
     if nnp == 0 && (field(b, t, c, C_PATHS_LEN) > 0 || seccomp != 0) && caps_lo & CAP_SYS_ADMIN_MASK

@@ -259,12 +259,36 @@ pub struct Cred {
     pub securebits: Securebits,
     /// `no_new_privs`.
     pub nnp: bool,
-    /// Namespace bits 0..=4: mount, pid, ipc, uts, net.
+    /// Namespace bits 0..=5: mount, pid, ipc, uts, net, user.
     pub ns: u32,
+    /// The user namespace's id map; `Range` only with the `user` bit.
+    pub user_map: UserMap,
     /// Seccomp filter.
     pub seccomp: Seccomp,
     /// Landlock entries, `ro:/path` or `rw:/path`; non-empty, no NUL.
     pub paths: Vec<String>,
+}
+
+/// What a user namespace maps: the service's own ids only, or its subordinate range too.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UserMap {
+    /// Inside 0 is the outside user and group; nothing else.
+    #[default]
+    Own,
+    /// Also inside ids 1.. onto the user's `/etc/subuid` and `/etc/subgid` ranges.
+    Range,
+}
+
+/// Whether a policy rule allows a user namespace, and which map.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Userns {
+    /// None.
+    #[default]
+    No,
+    /// The own map.
+    Own,
+    /// The own map and the range map.
+    Range,
 }
 
 /// Securebits preset.

@@ -42,7 +42,7 @@ fn the_record_sizes_match_the_word_indices() {
     assert_eq!(N_RLIMIT_BASE + 2 * RLIMIT_COUNT, WORDS[T_NODES]);
     assert_eq!(G_EDGE_COUNT + 1, WORDS[T_GROUPS]);
     assert_eq!(E_FLAGS + 1, WORDS[T_EDGES]);
-    assert_eq!(C_SECCOMP_LEN + 1, WORDS[T_CREDS]);
+    assert_eq!(C_USER_MAP + 1, WORDS[T_CREDS]);
     assert_eq!(R_B + 1, WORDS[T_ROUTES]);
     assert_eq!(WORDS[T_ENABLED], 1);
     assert_eq!(WORDS[T_PRESYSLOG], 1);

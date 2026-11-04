@@ -28,6 +28,7 @@ use lists::check_lists;
 use pool::check_pool_refs;
 use qinit_graph_core::GEdge;
 use records::check_records;
+pub use records::is_root_exec;
 use vstd::prelude::*;
 
 verus! {

@@ -4,8 +4,8 @@
 use qinit_db::Model;
 use qinit_overseer::identity::Identity;
 use qinit_overseer::request::{
-    BuildError, EncodeError, RequestSpec, Routed, Seccomp, Securebits, Stream, from_instance,
-    from_model,
+    BuildError, EncodeError, RequestSpec, Routed, Seccomp, Securebits, Stream, UserMap,
+    from_instance, from_model,
 };
 use qinit_overseer::run::envp;
 use qinit_overseer::status::{STEP_DECODE, Status, step_name};
@@ -30,6 +30,7 @@ fn full() -> RequestSpec {
         securebits: Securebits::NorootLocked,
         nnp: true,
         ns: 0b10011,
+        user_map: UserMap::Own,
         seccomp: Seccomp::Deny(vec![101, 110]),
         paths: vec!["ro:/srv".into(), "ro:/usr/bin".into(), "rw:/var/log".into()],
         stdin: Stream::Fd(8),

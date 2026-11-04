@@ -3,12 +3,12 @@
 //! The privilege policy: ordered rules that bound the credentials a compiled model may grant.
 //!
 //! A policy file has a required `default = "allow" | "deny"` and ordered `[[rule]]` tables
-//! (`match`, `users`, `caps_max`, `require_nnp`, `require_seccomp`). For each node that may hold privilege, the
+//! (`match`, `users`, `caps_max`, `require_nnp`, `require_seccomp`, `allow_userns`). For each node that may hold privilege, the
 //! first rule whose `match` glob fits the node name decides, and a rule that rejects a node is
 //! final: later rules are never consulted. A node no rule matches follows `default`.
 //!
 //! Least privilege is the default. A node whose credential set names a user other than `root`,
-//! grants no capabilities and keeps no-new-privileges on is unprivileged: it needs no rule and
+//! grants no capabilities, keeps no-new-privileges on and has no user namespace is unprivileged: it needs no rule and
 //! passes even under `default = "deny"`, since a rule would have nothing to bound. A brood has
 //! no credential set and is never checked. Every other node (root, a capability, or `nnp =
 //! false`) is checked against the first matching rule, or refused by `default = "deny"`.
@@ -30,7 +30,7 @@ use crate::error::{Code, Error};
 use crate::expand::kind_name;
 use crate::resolve::{cap_bit, cap_name};
 use crate::schema::{Rlimits, rlimit_value};
-use qinit_db::{Cred, Model, Node, RLIMIT_COUNT, RLIMIT_KEYS, Seccomp};
+use qinit_db::{Cred, Model, Node, RLIMIT_COUNT, RLIMIT_KEYS, Seccomp, UserMap, Userns};
 use serde::Deserialize;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -54,6 +54,7 @@ struct RawRule {
     require_nnp: Option<bool>,
     require_seccomp: Option<bool>,
     rlimits_max: Option<Rlimits>,
+    allow_userns: Option<toml::Value>,
 }
 
 /// The kernel's boot hard limits by resource number (`include/asm-generic/resource.h`,
@@ -85,6 +86,7 @@ struct Rule {
     ceiling: u64,
     require_nnp: bool,
     require_seccomp: bool,
+    allow_userns: Userns,
 }
 
 /// A parsed policy.
@@ -254,7 +256,29 @@ fn build_rule(path: &Path, i: usize, r: RawRule, errs: &mut Vec<Error>) -> Rule 
             ),
         }
     }
+    let allow_userns = match r.allow_userns.as_ref() {
+        None | Some(toml::Value::Boolean(false)) => Userns::No,
+        Some(toml::Value::Boolean(true)) => Userns::Own,
+        Some(toml::Value::String(w)) if w == "range" => Userns::Range,
+        Some(v) => {
+            errs.push(
+                Error::new(
+                    Code::BadValue,
+                    format!("rule[{i}].allow_userns"),
+                    match v {
+                        toml::Value::String(w) => {
+                            format!("`{w}` is not false, true or \"range\"")
+                        }
+                        other => format!("a {} is not false, true or \"range\"", other.type_str()),
+                    },
+                )
+                .in_file(path),
+            );
+            Userns::No
+        }
+    };
     Rule {
+        allow_userns,
         rlimits: ceilings(
             path,
             &format!("rule[{i}].rlimits_max"),
@@ -364,6 +388,22 @@ fn check_rule(
         let why = format!("seccomp required by rule `{}`", rule.pattern);
         errs.push((i, violation(node, why)));
     }
+    if cred.ns & USER_NS != 0 {
+        let allowed = match (rule.allow_userns, cred.user_map) {
+            (Userns::No, _) | (Userns::Own, UserMap::Range) => false,
+            (Userns::Own | Userns::Range, UserMap::Own) | (Userns::Range, UserMap::Range) => true,
+        };
+        if !allowed {
+            let why = format!(
+                "{} `{}` uses a user namespace not allowed by rule `{}`",
+                kind_name(node.kind),
+                node.name,
+                rule.pattern
+            );
+            let key = format!("rule[{ri}].allow_userns");
+            errs.push((i, Error::new(Code::Policy, key, why).in_file(&policy.path)));
+        }
+    }
     let over = raised(node, &policy.ceiling, Some(&rule.rlimits));
     if !over.is_empty() {
         let why = format!(
@@ -378,9 +418,13 @@ fn check_rule(
     }
 }
 
-/// A credential set that holds no privilege: not root, no capabilities, no-new-privileges on.
+/// The `user` bit of `Cred::ns`.
+const USER_NS: u32 = 1 << 5;
+
+/// A credential set that holds no privilege: not root, no capabilities, no-new-privileges on,
+/// no user namespace.
 fn unprivileged(c: &Cred) -> bool {
-    c.user != "root" && c.caps == 0 && c.nnp
+    c.user != "root" && c.caps == 0 && c.nnp && c.ns & USER_NS == 0
 }
 
 /// The names of the limits `node` sets above `ceiling` (`None` there: any value is above it),

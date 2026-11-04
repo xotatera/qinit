@@ -355,13 +355,14 @@ fn the_cascade_flag_is_accepted_and_bit_2_is_not() {
 }
 
 #[test]
-fn a_node_record_has_68_words_and_a_credential_12() {
+fn a_node_record_has_68_words_and_a_credential_13() {
     assert_eq!(WORDS[T_NODES], 68);
     assert_eq!(N_RLIMIT_BASE, N_LAUNCH_FDS + 1);
     assert_eq!(N_RLIMIT_BASE + 2 * RLIMIT_COUNT, WORDS[T_NODES]);
     assert_eq!(N_RELOAD, N_RLIMIT_MASK + 1);
-    assert_eq!(WORDS[T_CREDS], 12);
-    assert_eq!(C_SECCOMP_LEN + 1, WORDS[T_CREDS]);
+    assert_eq!(WORDS[T_CREDS], 13);
+    assert_eq!(C_USER_MAP, 12);
+    assert_eq!(C_USER_MAP + 1, WORDS[T_CREDS]);
 }
 
 #[test]
@@ -430,6 +431,50 @@ fn a_relative_or_empty_cwd_is_a_consistency_error() {
             "{bad:?}"
         );
     }
+}
+
+fn user_ns(user_map: u32, ns: u32, user: &'static str) -> DbSpec {
+    let mut spec = minimal_spec();
+    spec.creds[0].user = user;
+    spec.creds[0].ns = ns;
+    spec.creds[0].user_map = user_map;
+    spec
+}
+
+fn cred_enum() -> Result<(), DbError> {
+    Err(DbError::Enum {
+        table: tid(T_CREDS),
+        record: 0,
+    })
+}
+
+#[test]
+fn user_map_2_is_enum() {
+    assert_eq!(check(&build(&user_ns(2, 32, "svc"))), cred_enum());
+    assert_eq!(check(&build(&user_ns(1, 32, "svc"))), Ok(()));
+    assert_eq!(check(&build(&user_ns(0, 32, "svc"))), Ok(()));
+}
+
+#[test]
+fn user_map_1_without_the_bit_is_consistency() {
+    assert_eq!(check(&build(&user_ns(1, 0, "svc"))), cred_consistency());
+    assert_eq!(
+        check(&build(&user_ns(1, 0b11111, "svc"))),
+        cred_consistency()
+    );
+}
+
+#[test]
+fn root_with_the_user_bit_is_consistency() {
+    assert_eq!(check(&build(&user_ns(0, 32, "root"))), cred_consistency());
+    assert_eq!(check(&build(&user_ns(0, 0, "root"))), Ok(()));
+    assert_eq!(check(&build(&user_ns(0, 32, "roots"))), Ok(()));
+}
+
+#[test]
+fn ns_bit_6_is_enum() {
+    assert_eq!(check(&build(&user_ns(0, 64, "svc"))), cred_enum());
+    assert_eq!(check(&build(&user_ns(0, 63, "svc"))), Ok(()));
 }
 
 #[test]

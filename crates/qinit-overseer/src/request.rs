@@ -3,7 +3,7 @@
 //! The launch request as a value, built from the database model (spec §6, R15). The value and
 //! its byte layout are `qinit-launch`.
 use qinit_db::{Model, Node, Ready, Route};
-pub use qinit_launch::{EncodeError, RequestSpec, Seccomp, Securebits, Stream};
+pub use qinit_launch::{EncodeError, RequestSpec, Seccomp, Securebits, Stream, UserMap};
 
 /// Why a request could not be built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +95,10 @@ fn build(
         },
         nnp: cred.nnp,
         ns: cred.ns,
+        user_map: match cred.user_map {
+            qinit_db::UserMap::Own => UserMap::Own,
+            qinit_db::UserMap::Range => UserMap::Range,
+        },
         seccomp: match &cred.seccomp {
             qinit_db::Seccomp::None => Seccomp::None,
             qinit_db::Seccomp::Default => Seccomp::Default,
