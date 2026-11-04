@@ -208,29 +208,39 @@ fn stream(route: &Route, fd: Option<u32>) -> Result<Stream, BuildError> {
     }
 }
 
-/// The request for `node` of `model`. A pipe route needs its descriptor in `routed`; an
-/// `errors` route equal to the `output` route is standard error following standard output.
-///
-/// # Errors
-/// [`BuildError::NoCredentials`] for a brood, [`BuildError::MissingFd`] for a pipe route or
-/// pipe readiness without its descriptor.
-pub fn from_model(
+/// The standard output and error of `node`: its routes, or the descriptors in `routed`. With
+/// `replace`, a descriptor in `routed` takes the place of the node's route (a caller's stream
+/// for an instance); without it, a descriptor only serves a pipe route.
+fn streams(
+    node: &Node,
+    model: &Model,
+    routed: &Routed,
+    replace: bool,
+) -> Result<(Stream, Stream), BuildError> {
+    let route = |i: u32| &model.routes[i as usize];
+    let stdout = match (replace, routed.stdout, node.output) {
+        (true, Some(fd), _) => Stream::Fd(fd),
+        (_, _, None) => Stream::Path("/dev/null".into()),
+        (_, fd, Some(r)) => stream(route(r), fd)?,
+    };
+    let stderr = match (replace, routed.stderr, node.errors) {
+        (true, Some(fd), _) => Stream::Fd(fd),
+        (_, _, None) => Stream::Same,
+        (_, _, Some(r)) if node.output.is_some_and(|o| route(o) == route(r)) => Stream::Same,
+        (_, fd, Some(r)) => stream(route(r), fd)?,
+    };
+    Ok((stdout, stderr))
+}
+
+fn build(
     node: &Node,
     model: &Model,
     routed: &Routed,
     deadline_ms: u32,
+    replace: bool,
 ) -> Result<RequestSpec, BuildError> {
     let cred = &model.creds[node.cred.ok_or(BuildError::NoCredentials)? as usize];
-    let route = |i: u32| &model.routes[i as usize];
-    let stdout = match node.output {
-        None => Stream::Path("/dev/null".into()),
-        Some(r) => stream(route(r), routed.stdout)?,
-    };
-    let stderr = match node.errors {
-        None => Stream::Same,
-        Some(r) if node.output.is_some_and(|o| route(o) == route(r)) => Stream::Same,
-        Some(r) => stream(route(r), routed.stderr)?,
-    };
+    let (stdout, stderr) = streams(node, model, routed, replace)?;
     let ready_fd = match node.ready {
         Ready::Pipe => Some(routed.ready.ok_or(BuildError::MissingFd)?),
         _ => None,
@@ -257,4 +267,49 @@ pub fn from_model(
         die_with_parent: false,
         deadline_ms,
     })
+}
+
+/// The request for `node` of `model`. A pipe route needs its descriptor in `routed`; an
+/// `errors` route equal to the `output` route is standard error following standard output.
+///
+/// # Errors
+/// [`BuildError::NoCredentials`] for a brood, [`BuildError::MissingFd`] for a pipe route or
+/// pipe readiness without its descriptor.
+pub fn from_model(
+    node: &Node,
+    model: &Model,
+    routed: &Routed,
+    deadline_ms: u32,
+) -> Result<RequestSpec, BuildError> {
+    build(node, model, routed, deadline_ms, false)
+}
+
+/// The request for an instance of the launchable forager `node`: [`from_model`] with the
+/// caller's additions. `argv_tail` follows the frame's argv, and `env_add` overrides the
+/// frame's entries of the same key (the result stays sorted by key). A descriptor in `routed`
+/// replaces the frame's route for that stream: stdin from the caller instead of `/dev/null`,
+/// stdout or stderr to the caller instead of a path or the logger.
+///
+/// # Errors
+/// As [`from_model`].
+pub fn from_instance(
+    node: &Node,
+    model: &Model,
+    routed: &Routed,
+    argv_tail: &[String],
+    env_add: &[(String, String)],
+    deadline_ms: u32,
+) -> Result<RequestSpec, BuildError> {
+    let mut spec = build(node, model, routed, deadline_ms, true)?;
+    spec.argv.extend(argv_tail.iter().cloned());
+    let key = |e: &str| {
+        e.split_once('=')
+            .map_or(e.to_owned(), |(k, _)| k.to_owned())
+    };
+    for (k, v) in env_add {
+        spec.env.retain(|e| key(e) != *k);
+        spec.env.push(format!("{k}={v}"));
+    }
+    spec.env.sort_by_key(|e| key(e));
+    Ok(spec)
 }

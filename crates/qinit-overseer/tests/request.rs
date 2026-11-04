@@ -3,7 +3,7 @@
 //! The request builder, the environment of the service and the status record.
 use qinit_db::{Model, Seccomp, Securebits};
 use qinit_overseer::identity::Identity;
-use qinit_overseer::request::{BuildError, RequestSpec, Routed, Stream, from_model};
+use qinit_overseer::request::{BuildError, RequestSpec, Routed, Stream, from_instance, from_model};
 use qinit_overseer::run::envp;
 use qinit_overseer::status::{STEP_DECODE, Status, step_name};
 use qinit_overseer_core::*;
@@ -316,4 +316,80 @@ fn from_model_routes_a_supplied_stdin() {
     };
     let spec = from_model(logd, &m, &routed, 1000).unwrap();
     assert_eq!(spec.stdin, Stream::Path("/dev/null".into()));
+}
+
+#[test]
+fn from_instance_appends_the_tail_and_env_and_routes_the_fds() {
+    let m = golden();
+    let job = m.nodes.iter().find(|n| n.name == "mount-var").unwrap();
+    let routed = Routed {
+        stdin: Some(8),
+        stdout: Some(9),
+        stderr: None,
+        ready: None,
+    };
+    let tail = ["--ro".to_owned()];
+    let env = [("TARGET".to_owned(), "/data".to_owned())];
+    let spec = from_instance(job, &m, &routed, &tail, &env, 5000).unwrap();
+    assert_eq!(decode(&spec.bytes().unwrap()), Ok(()));
+    assert_eq!(spec.argv, ["/usr/bin/mount", "/var", "--ro"]);
+    assert_eq!(spec.env, ["TARGET=/data"]);
+    assert_eq!(
+        (&spec.stdin, &spec.stdout, &spec.stderr),
+        (&Stream::Fd(8), &Stream::Fd(9), &Stream::Same)
+    );
+    assert_eq!(spec.deadline_ms, 5000);
+}
+
+#[test]
+fn from_instance_env_overrides_the_frames_key_and_stays_sorted() {
+    let m = golden();
+    let logd = m.nodes.iter().find(|n| n.name == "logd").unwrap();
+    let routed = Routed {
+        stdin: None,
+        stdout: None,
+        stderr: None,
+        ready: Some(6),
+    };
+    let env = [
+        ("LOGD_LEVEL".to_owned(), "trace".to_owned()),
+        ("AAA".to_owned(), "1".to_owned()),
+    ];
+    let spec = from_instance(logd, &m, &routed, &[], &env, 1000).unwrap();
+    assert_eq!(
+        spec.env,
+        ["AAA=1", "LOGD_DIR=/var/log/qinit", "LOGD_LEVEL=trace"]
+    );
+    assert_eq!(spec.stdin, Stream::Path("/dev/null".into()));
+}
+
+#[test]
+fn a_caller_stdout_replaces_the_frames_pipe_route() {
+    let m = golden();
+    let piped = m
+        .nodes
+        .iter()
+        .find(|n| {
+            matches!(
+                n.output.map(|r| &m.routes[r as usize]),
+                Some(qinit_db::Route::Pipe(_))
+            )
+        })
+        .unwrap();
+    let routed = Routed {
+        stdin: None,
+        stdout: Some(11),
+        stderr: None,
+        ready: Some(6),
+    };
+    let spec = from_instance(piped, &m, &routed, &[], &[], 1000).unwrap();
+    assert_eq!(spec.stdout, Stream::Fd(11));
+    let missing = Routed {
+        stdout: None,
+        ..routed
+    };
+    assert_eq!(
+        from_instance(piped, &m, &missing, &[], &[], 1000).unwrap_err(),
+        BuildError::MissingFd
+    );
 }

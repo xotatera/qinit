@@ -284,6 +284,19 @@ fn node_satisfied(
     all
 }
 
+/// Whether every dependency group of node `i` is satisfied right now (what a launch of its
+/// instances needs): the groups judged at `now`, with async deadlines counted from `now`.
+#[must_use]
+pub fn deps_satisfied(db: &[u8], ns: &[NodeState], paths: &[bool], i: usize, now: u64) -> (r: bool)
+    requires
+        sized(db@, ns@.len() as int, paths@.len() as int, paths@.len() as int),
+        i < nodes(db@),
+    ensures
+        r == node_ok(db@, ns@, paths@, i as int, now as int, now as int),
+{
+    node_satisfied(db, ns, paths, i, now, now)
+}
+
 // ---- scans of one node's edges ----
 /// Whether group `g` has an edge to a filesystem path.
 fn group_has_path(db: &[u8], g: usize) -> (r: bool)

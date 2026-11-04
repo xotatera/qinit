@@ -10,10 +10,12 @@
 
 mod node;
 mod sched;
+mod slots;
 mod spec;
 
 pub use node::*;
 pub use sched::*;
+pub use slots::*;
 #[allow(unused_imports)] // the specification is erased outside verification
 pub use spec::*;
 

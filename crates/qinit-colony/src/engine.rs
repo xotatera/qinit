@@ -7,8 +7,8 @@ use crate::effects::{Effects, Errno, NodeSpec};
 use crate::text;
 use qinit_cell_core::{Failure, Report as CellPhase};
 use qinit_colony_core::{
-    Action, CellReport, Input, Meta, NodeState, Params, Report, Request, State, StopMode,
-    TimerKind, next_action, off, params, step,
+    Action, CellReport, Input, MAX_SLOTS, Meta, NodeState, Params, Report, Request, Slot,
+    SlotState, State, StopMode, TimerKind, free_slot, next_action, off, params, step,
 };
 use qinit_db::{Model, ReadError, Target, open};
 use std::collections::VecDeque;
@@ -17,6 +17,8 @@ use std::collections::VecDeque;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Notice {
     Node(u32, Report),
+    /// An instance (by id) reached this state; `Exited` carries its wait status, -1 if unknown.
+    Instance(u32, SlotState),
 }
 
 /// What went wrong, other than a node failing (that is a [`Notice`]).
@@ -43,17 +45,26 @@ pub struct Outcome {
 pub struct Colony<E: Effects> {
     /// The effects, public so tests can drive a simulation.
     pub effects: E,
-    db: Vec<u8>,
-    model: Model,
-    nodes: Vec<NodeState>,
-    paths: Vec<bool>,
+    pub(crate) db: Vec<u8>,
+    pub(crate) model: Model,
+    pub(crate) nodes: Vec<NodeState>,
+    pub(crate) paths: Vec<bool>,
     late: Vec<bool>,
-    meta: Meta,
+    pub(crate) meta: Meta,
     /// Per node, its path edges as `(path, global edge index)`.
     path_edges: Vec<Vec<(String, u32)>>,
     /// Per node, whether a cell exists for it: set by a start that succeeded (or an adoption),
     /// cleared when the cell is released.
     live: Vec<bool>,
+    /// Per node, the pid of its main process, as the effects layer reported it at the start.
+    pids: Vec<Option<i32>>,
+    /// The instance slot pool (proved in the core) and what the runtime keeps per slot.
+    pub(crate) slots: Vec<Slot>,
+    pub(crate) insts: Vec<Option<crate::instance::Inst>>,
+    /// The id the next launch gets.
+    pub(crate) next_id: u32,
+    /// The last `RING` instance exits, oldest first.
+    pub(crate) ring: std::collections::VecDeque<crate::instance::Exit>,
 }
 
 /// The state of a worker colony found already running when it started.
@@ -143,7 +154,12 @@ impl<E: Effects> Colony<E> {
             db: bytes,
             model,
             path_edges,
+            pids: vec![None; n],
             live,
+            slots: vec![free_slot(); MAX_SLOTS],
+            insts: (0..MAX_SLOTS).map(|_| None).collect(),
+            next_id: 1,
+            ring: std::collections::VecDeque::new(),
         };
         let mut out = Outcome::default();
         let converged = qinit_colony_core::load_from(
@@ -195,6 +211,7 @@ impl<E: Effects> Colony<E> {
         );
         if gone && self.known(node) && self.live[node as usize] {
             self.live[node as usize] = false;
+            self.pids[node as usize] = None;
             self.effects.release(node);
         }
         self.input(node, Input::Cell { node, report: r }, now_ms)
@@ -230,6 +247,12 @@ impl<E: Effects> Colony<E> {
     pub fn node_index(&self, name: &str) -> Option<u32> {
         let i = self.model.nodes.iter().position(|n| n.name == name)?;
         u32::try_from(i).ok()
+    }
+
+    /// The pid of the node's main process, as the effects layer reported it at the start.
+    #[must_use]
+    pub fn pid(&self, node: u32) -> Option<i32> {
+        self.pids.get(node as usize).copied().flatten()
     }
 
     /// The decoded database, for callers that want names.
@@ -285,7 +308,7 @@ impl<E: Effects> Colony<E> {
         }
     }
 
-    fn spec(&self, node: u32) -> NodeSpec {
+    pub(crate) fn spec(&self, node: u32) -> NodeSpec {
         let n = &self.model.nodes[node as usize];
         NodeSpec {
             name: n.name.clone(),
@@ -305,8 +328,9 @@ impl<E: Effects> Colony<E> {
         match action {
             Action::Start(node) => {
                 let spec = self.spec(node);
-                if self.effects.start(node, &spec).is_ok() {
+                if let Ok(pid) = self.effects.start(node, &spec) {
                     self.live[node as usize] = true;
+                    self.pids[node as usize] = Some(pid);
                 } else {
                     queue.push_back(Input::Cell {
                         node,

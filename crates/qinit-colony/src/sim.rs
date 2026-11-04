@@ -4,7 +4,7 @@
 //! scripts, and runs on virtual time that only [`advance`] moves. No cgroup, process or clock is
 //! touched, and nothing sleeps.
 
-use crate::effects::{Effects, Errno, NodeSpec};
+use crate::effects::{Effects, Errno, InstanceSpec, NodeSpec};
 use crate::engine::{Colony, Notice, Outcome};
 use qinit_cell_core::{Failure, Report as CellPhase};
 use qinit_colony_core::{StopMode, TimerKind};
@@ -51,6 +51,9 @@ pub enum Call {
     Arm(u32, TimerKind, u32),
     Cancel(u32, TimerKind),
     Signal(u32, i32),
+    StartInstance(u32, String),
+    StopInstance(u32, StopMode, u32),
+    ReleaseInstance(u32),
 }
 
 /// A timer kind as a map key.
@@ -65,6 +68,7 @@ fn timer_id(t: TimerKind) -> u8 {
 enum Due {
     Timer(u32, TimerKind),
     Cell(u32, CellPhase),
+    Instance(u32, CellPhase),
 }
 
 /// The simulation.
@@ -79,6 +83,12 @@ pub struct Sim {
     pub paths: HashSet<String>,
     /// Starts of these nodes fail with ENOENT before spawning.
     pub fail_start: HashSet<u32>,
+    /// What every instance does once started; a test sets it before it launches.
+    pub instance_script: Script,
+    /// Instance slots that have a cell.
+    pub instance_cells: HashSet<u32>,
+    /// The descriptors each started instance was given, by slot.
+    pub instance_fds: HashMap<u32, usize>,
     /// Nodes that have a cell. A start that succeeds adds the node, `release` removes it; a
     /// test that adopts a node adds it by hand. `stop` of a node without one does nothing, as
     /// the cell layer refuses it.
@@ -88,6 +98,7 @@ pub struct Sim {
     due: BTreeMap<(u64, u64), Due>,
     /// Pending cell events of a node, so a stop can drop the stale ones.
     cell_events: HashMap<u32, Vec<(u64, u64)>>,
+    instance_events: HashMap<u32, Vec<(u64, u64)>>,
     timers: HashMap<(u32, u8), (u64, u64)>,
 }
 
@@ -121,6 +132,17 @@ impl Sim {
         self.cell_events.entry(node).or_default().push(key);
     }
 
+    fn instance_event(&mut self, slot: u32, at: u64, report: CellPhase) {
+        let key = self.schedule(at, Due::Instance(slot, report));
+        self.instance_events.entry(slot).or_default().push(key);
+    }
+
+    fn drop_instance_events(&mut self, slot: u32) {
+        for key in self.instance_events.remove(&slot).unwrap_or_default() {
+            self.due.remove(&key);
+        }
+    }
+
     fn drop_cell_events(&mut self, node: u32) {
         for key in self.cell_events.remove(&node).unwrap_or_default() {
             self.due.remove(&key);
@@ -139,7 +161,10 @@ impl Sim {
                 | Call::Arm(n, _, _)
                 | Call::Cancel(n, _)
                 | Call::Signal(n, _) => *n == node,
-                Call::Watch(_) => false,
+                Call::Watch(_)
+                | Call::StartInstance(..)
+                | Call::StopInstance(..)
+                | Call::ReleaseInstance(_) => false,
             })
             .cloned()
             .collect()
@@ -147,7 +172,7 @@ impl Sim {
 }
 
 impl Effects for Sim {
-    fn start(&mut self, node: u32, _spec: &NodeSpec) -> Result<(), Errno> {
+    fn start(&mut self, node: u32, _spec: &NodeSpec) -> Result<i32, Errno> {
         self.calls.push(Call::Start(node));
         self.starts.push((node, self.now));
         self.drop_cell_events(node);
@@ -167,7 +192,48 @@ impl Effects for Sim {
         if let Some((ms, status)) = script.exit_after {
             self.cell_event(node, t + ms, CellPhase::MainExited(status));
         }
+        Ok(1000 + i32::try_from(node).unwrap_or(0))
+    }
+
+    fn start_instance(&mut self, slot: u32, spec: InstanceSpec) -> Result<i32, Errno> {
+        self.calls
+            .push(Call::StartInstance(slot, spec.name.clone()));
+        self.drop_instance_events(slot);
+        let script = self.instance_script.clone();
+        if script.spawn_fails {
+            return Err(Errno(2));
+        }
+        self.instance_cells.insert(slot);
+        self.instance_fds
+            .insert(slot, spec.fds.iter().flatten().count());
+        let t = self.now;
+        self.instance_event(slot, t, CellPhase::Running);
+        if let Some((ms, status)) = script.exit_after {
+            self.instance_event(slot, t + ms, CellPhase::MainExited(status));
+        }
+        Ok(5000 + i32::try_from(slot).unwrap_or(0))
+    }
+
+    fn stop_instance(&mut self, slot: u32, mode: StopMode, grace_ms: u32) -> Result<(), Errno> {
+        self.calls.push(Call::StopInstance(slot, mode, grace_ms));
+        if !self.instance_cells.contains(&slot) {
+            return Ok(());
+        }
+        self.drop_instance_events(slot);
+        let t = self.now;
+        let after = if self.instance_script.ignore_term {
+            u64::from(grace_ms)
+        } else {
+            0
+        };
+        self.instance_event(slot, t + after, CellPhase::Empty);
         Ok(())
+    }
+
+    fn release_instance(&mut self, slot: u32) {
+        self.calls.push(Call::ReleaseInstance(slot));
+        self.instance_cells.remove(&slot);
+        self.drop_instance_events(slot);
     }
 
     fn stop(&mut self, node: u32, mode: StopMode, grace_ms: u32) -> Result<(), Errno> {
@@ -243,6 +309,7 @@ pub fn deliver_next(colony: &mut Colony<Sim>, target: u64) -> Option<Outcome> {
             colony.on_deadline(node, timer, key.0)
         }
         Due::Cell(node, report) => colony.on_cell(node, report, key.0),
+        Due::Instance(slot, report) => colony.on_instance(slot, report, key.0),
     })
 }
 

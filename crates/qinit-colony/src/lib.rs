@@ -9,9 +9,11 @@
 
 mod effects;
 mod engine;
+mod instance;
 pub mod sim;
 pub mod text;
 
-pub use effects::{Effects, Errno, NodeSpec};
+pub use effects::{Effects, Errno, InstanceSpec, NodeSpec};
 pub use engine::{Colony, Error, Notice, Outcome};
-pub use qinit_colony_core::{Reason, Report, Request, State, StopMode, TimerKind, Why};
+pub use instance::{Exit, InstanceView, LaunchArgs, LaunchError, RING};
+pub use qinit_colony_core::{Reason, Report, Request, SlotState, State, StopMode, TimerKind, Why};

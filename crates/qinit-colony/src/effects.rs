@@ -5,6 +5,7 @@
 
 use qinit_colony_core::{StopMode, TimerKind};
 use qinit_db::{Kind, Ready};
+use std::os::fd::OwnedFd;
 
 /// An errno, as the effect layer reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,13 +25,37 @@ pub struct NodeSpec {
     pub start_timeout_ms: u32,
 }
 
+/// What an instance's cell is started with: the launchable frame's node, plus what the caller
+/// of the launch added.
+#[derive(Debug)]
+pub struct InstanceSpec {
+    /// The cell's name, `<frame>#<id>`.
+    pub name: String,
+    /// The frame's node index in the database.
+    pub frame: u32,
+    /// The frame's spec: its argv is the frame's own, without the tail.
+    pub node: NodeSpec,
+    /// Extra argv elements, appended to the frame's.
+    pub argv_tail: Vec<String>,
+    /// Environment additions `(key, value)`, applied after the frame's own.
+    pub env_add: Vec<(String, String)>,
+    /// The descriptors the caller supplied: stdin, stdout, stderr.
+    pub fds: [Option<OwnedFd>; 3],
+}
+
 /// Effects per node. Every error is an errno; colony turns a failed `start` into a spawn
 /// failure of that node and a failed `stop` into a failed cell, and returns the other failures
 /// to its caller after the batch.
 #[allow(clippy::missing_errors_doc)] // each method's error is the errno of the operation its doc names
 pub trait Effects {
-    /// Creates the node's cell and starts its main process in it.
-    fn start(&mut self, node: u32, spec: &NodeSpec) -> Result<(), Errno>;
+    /// Creates the node's cell and starts its main process in it; returns that process's pid.
+    fn start(&mut self, node: u32, spec: &NodeSpec) -> Result<i32, Errno>;
+    /// Creates the cell of instance slot `slot` and starts its main process; returns the pid.
+    fn start_instance(&mut self, slot: u32, spec: InstanceSpec) -> Result<i32, Errno>;
+    /// Begins the stop of the instance in `slot`, as `stop` does for a node.
+    fn stop_instance(&mut self, slot: u32, mode: StopMode, grace_ms: u32) -> Result<(), Errno>;
+    /// The instance's cell is empty, or its creation failed: remove it. Called once per cell.
+    fn release_instance(&mut self, slot: u32);
     /// Begins the polite stop of the node: `mode`, then the kill after `grace_ms`. Only called
     /// for a node with a cell: one whose `start` succeeded and that has not been released.
     fn stop(&mut self, node: u32, mode: StopMode, grace_ms: u32) -> Result<(), Errno>;
