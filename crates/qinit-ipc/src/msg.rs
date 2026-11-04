@@ -74,9 +74,21 @@ fn check_long(r: libc::ssize_t) -> Result<usize> {
 }
 
 /// Sends `bytes` as one message with `fds` attached (`EINVAL` for more than [`MAX_FDS`]).
-#[allow(clippy::unnecessary_cast, clippy::cast_possible_truncation)] // the field types differ between glibc and musl; the values are small
+///
+/// # Errors
+/// `EINVAL` for too many descriptors, else the errno of `sendmsg`.
 pub fn send(fd: BorrowedFd<'_>, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> Result<()> {
     if fds.len() > MAX_FDS {
+        return Err(Errno(libc::EINVAL));
+    }
+    send_unchecked(fd, bytes, fds)
+}
+
+/// As [`send`], without the limit of [`MAX_FDS`] (up to eight descriptors fit): for tests of
+/// a receiver that must refuse a sender that ignores the limit.
+#[allow(clippy::unnecessary_cast, clippy::cast_possible_truncation)] // the field types differ between glibc and musl; the values are small
+pub fn send_unchecked(fd: BorrowedFd<'_>, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> Result<()> {
+    if fds.len() > 8 {
         return Err(Errno(libc::EINVAL));
     }
     let mut vec = iov(bytes);

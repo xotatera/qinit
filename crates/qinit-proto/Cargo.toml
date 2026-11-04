@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[package]
+name = "qinit-proto"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[features]
+# The event-loop driver the tests and the VM suite use; the daemon (SP7) has its own loop.
+testing = ["dep:qinit-event"]
+
+[dependencies]
+qinit-colony = { path = "../qinit-colony" }
+qinit-event = { path = "../qinit-event", optional = true }
+qinit-ipc = { path = "../qinit-ipc" }
+qinit-proto-core = { path = "../qinit-proto-core" }
+qinit-wire = { path = "../qinit-wire" }
+
+[dev-dependencies]
+qinit-frames = { path = "../qinit-frames" }
+qinit-sys = { path = "../qinit-sys" }
+
+[lints]
+workspace = true
+
+[package.metadata.disciplines]
+layer = "runtime"
+allow = ["qinit-colony", "qinit-event", "qinit-ipc", "qinit-proto-core", "qinit-wire"]

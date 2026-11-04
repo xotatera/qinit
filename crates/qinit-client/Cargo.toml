@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: MPL-2.0
+
+[package]
+name = "qinit-client"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license = "MPL-2.0"
+
+[dependencies]
+qinit-ipc = { path = "../qinit-ipc" }
+qinit-proto-core = { path = "../qinit-proto-core" }
+qinit-wire = { path = "../qinit-wire" }
+
+[dev-dependencies]
+qinit-colony = { path = "../qinit-colony" }
+qinit-frames = { path = "../qinit-frames" }
+qinit-proto = { path = "../qinit-proto", features = ["testing"] }
+qinit-sys = { path = "../qinit-sys" }
+
+[lints]
+workspace = true
+
+# Layer and allowed direct dependencies, checked by the `layers` gate. The MPL client depends
+# on MPL crates only (the dev-dependencies are the GPL server it is tested against).
+[package.metadata.disciplines]
+layer = "runtime"
+allow = ["qinit-ipc", "qinit-proto-core", "qinit-wire"]

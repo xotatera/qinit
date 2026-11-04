@@ -92,7 +92,7 @@ pub struct Sim {
     /// Instance slots that have a cell.
     pub instance_cells: HashSet<u32>,
     /// The descriptors each started instance was given, by slot.
-    pub instance_fds: HashMap<u32, usize>,
+    pub instance_fds: HashMap<u32, Vec<std::os::fd::OwnedFd>>,
     /// Nodes that have a cell. A start that succeeds adds the node, `release` removes it; a
     /// test that adopts a node adds it by hand. `stop` of a node without one does nothing, as
     /// the cell layer refuses it.
@@ -212,7 +212,7 @@ impl Effects for Sim {
         }
         self.instance_cells.insert(slot);
         self.instance_fds
-            .insert(slot, spec.fds.iter().flatten().count());
+            .insert(slot, spec.fds.into_iter().flatten().collect());
         let t = self.now;
         self.instance_event(slot, t, CellPhase::Running);
         if let Some((ms, status)) = script.exit_after {
