@@ -380,3 +380,128 @@ fn require_seccomp_refuses_none() {
     .expect_err("refused");
     assert_eq!(e[0].key, "rule[0].require_seccomp");
 }
+
+/// A model with one unprivileged worker `name` holding `limits`.
+fn limited(name: &str, limits: &str) -> Model {
+    model(&format!(
+        "[worker.{name}]\nexec = [\"/x\"]\ncredentials = {{ uid = \"svc\" }}\nrlimits = {{ {limits} }}\n"
+    ))
+}
+
+const DENY: &str = "default = \"deny\"\n";
+
+#[test]
+fn limits_within_the_boot_ceiling_need_no_rule() {
+    let m = limited(
+        "a",
+        "nofile = 4096, memlock = \"8M\", msgqueue = 819200, stack = \"infinity\", fsize = 0, \
+         nice = 0, rtprio = 0, cpu = \"infinity\", as = \"infinity\"",
+    );
+    assert_eq!(check(&pol("rl-within", DENY), &m), Ok(()));
+}
+
+#[test]
+fn one_above_each_ceiling_needs_a_rule() {
+    for limit in [
+        "nofile = 4097",
+        "memlock = 8388609",
+        "msgqueue = 819201",
+        "nice = 1",
+        "rtprio = 1",
+        "nproc = 1",
+        "sigpending = 1",
+    ] {
+        let es = check(&pol("rl-above", DENY), &limited("a", limit)).expect_err(limit);
+        assert_eq!(es.len(), 1, "{limit}: {es:?}");
+        assert_eq!(es[0].code, Code::Policy, "{limit}");
+        assert_eq!(es[0].key, "worker.a.credentials", "{limit}");
+        let name = limit.split(' ').next().unwrap();
+        assert!(es[0].detail.contains(name), "{limit}: {}", es[0].detail);
+    }
+}
+
+#[test]
+fn a_rule_raises_only_the_keys_it_lists() {
+    let p = pol(
+        "rl-rule",
+        "default = \"deny\"\n[[rule]]\nmatch = \"audio\"\nrlimits_max = { rtprio = 95, memlock = \"infinity\" }\n",
+    );
+    let ok = limited(
+        "audio",
+        "rtprio = 95, memlock = \"infinity\", nofile = 4096",
+    );
+    assert_eq!(check(&p, &ok), Ok(()));
+    let es = check(&p, &limited("audio", "rtprio = 95, nofile = 4097")).expect_err("nofile");
+    assert_eq!(es.len(), 1, "{es:?}");
+    assert_eq!(
+        (es[0].code, es[0].key.as_str()),
+        (Code::Policy, "rule[0].rlimits_max")
+    );
+    assert!(es[0].detail.contains("nofile"), "{}", es[0].detail);
+    let es = check(&p, &limited("audio", "rtprio = 96")).expect_err("rtprio");
+    assert_eq!(es[0].key, "rule[0].rlimits_max");
+}
+
+#[test]
+fn a_rule_without_rlimits_max_applies_the_ceiling() {
+    let p = pol("rl-sshd", RULE);
+    let sshd = |l: &str| {
+        model(&format!(
+            "[worker.sshd]\nexec = [\"/sshd\"]\ncredentials = {{ uid = \"sshd\", caps = [\"net_bind_service\"], nnp = true }}\nrlimits = {{ {l} }}\n"
+        ))
+    };
+    assert_eq!(check(&p, &sshd("nofile = 4096")), Ok(()));
+    let es = check(&p, &sshd("nofile = 8192")).expect_err("above");
+    assert_eq!((es.len(), es[0].key.as_str()), (1, "rule[0].rlimits_max"));
+}
+
+#[test]
+fn a_top_level_rlimits_max_replaces_the_built_in_ceiling() {
+    let p = pol(
+        "rl-top",
+        "default = \"deny\"\nrlimits_max = { nofile = 65536 }\n",
+    );
+    assert_eq!(check(&p, &limited("web", "nofile = 65536")), Ok(()));
+    assert!(check(&p, &limited("web", "nofile = 65537")).is_err());
+    // Unlisted keys keep the built-in ceiling.
+    assert!(check(&p, &limited("web", "rtprio = 1")).is_err());
+}
+
+#[test]
+fn allow_default_still_bounds_matched_rules() {
+    let p = pol(
+        "rl-allow",
+        "default = \"allow\"\n[[rule]]\nmatch = \"capped\"\nrlimits_max = { nproc = 100 }\n",
+    );
+    assert_eq!(check(&p, &limited("free", "nproc = \"infinity\"")), Ok(()));
+    assert_eq!(check(&p, &limited("capped", "nproc = 100")), Ok(()));
+    let es = check(&p, &limited("capped", "nproc = 101")).expect_err("above");
+    assert_eq!(es[0].key, "rule[0].rlimits_max");
+    let brood = model("[brood.capped]\n");
+    assert_eq!(check(&p, &brood), Ok(()));
+}
+
+#[test]
+fn a_bad_rlimits_max_value_is_a_bad_value() {
+    let es = policy(
+        "rl-bad",
+        "default = \"deny\"\nrlimits_max = { nofile = \"infinity\" }\n",
+    )
+    .expect_err("refused");
+    assert_eq!(
+        (es[0].code, es[0].key.as_str()),
+        (Code::BadValue, "rlimits_max.nofile")
+    );
+    let es = policy(
+        "rl-bad2",
+        "default = \"deny\"\n[[rule]]\nmatch = \"a\"\nrlimits_max = { nice = 41 }\n",
+    )
+    .expect_err("refused");
+    assert_eq!(es[0].key, "rule[0].rlimits_max.nice");
+    let es = policy(
+        "rl-core",
+        "default = \"deny\"\nrlimits_max = { core = 0 }\n",
+    )
+    .expect_err("core");
+    assert_eq!(es[0].code, Code::UnknownKey);
+}

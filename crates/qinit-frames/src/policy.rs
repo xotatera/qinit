@@ -13,12 +13,24 @@
 //! no credential set and is never checked. Every other node (root, a capability, or `nnp =
 //! false`) is checked against the first matching rule, or refused by `default = "deny"`.
 //!
+//! Resource limits are bounded too. A limit above its ceiling counts as privilege (the overseer
+//! applies limits as root, so a frame could otherwise grant itself the effect of `CAP_SYS_NICE`,
+//! `CAP_IPC_LOCK` or `CAP_SYS_RESOURCE`). The built-in ceiling is the kernel's boot hard limits:
+//! `as cpu data fsize locks rss rttime stack` infinity, `nofile` 4096, `memlock` 8388608,
+//! `msgqueue` 819200, `nice` 0, `rtprio` 0, and `nproc` and `sigpending` none (any value needs
+//! a rule). A node with a limit above it is checked like a privileged one. A rule's
+//! `rlimits_max = { <key> = <value> }` (the frame syntax) replaces the ceiling of the keys it
+//! lists for the nodes it matches; a top-level `rlimits_max` replaces the built-in ceiling the
+//! same way. `infinity` compares above every number. A limit above the ceiling of the matching
+//! rule is refused with the key `rule[i].rlimits_max`.
+//!
 //! `users` lists the user names a rule allows. Omitting `users` allows any user; `users = []`
 //! allows no user, so every matching node is refused.
 use crate::error::{Code, Error};
 use crate::expand::kind_name;
 use crate::resolve::{cap_bit, cap_name};
-use qinit_db::{Cred, Model, Node, Seccomp};
+use crate::schema::{Rlimits, rlimit_value};
+use qinit_db::{Cred, Model, Node, RLIMIT_COUNT, RLIMIT_KEYS, Seccomp};
 use serde::Deserialize;
 use std::path::Path;
 
@@ -26,6 +38,7 @@ use std::path::Path;
 #[serde(deny_unknown_fields)]
 struct RawPolicy {
     default: Option<String>,
+    rlimits_max: Option<Rlimits>,
     #[serde(default)]
     rule: Vec<RawRule>,
 }
@@ -39,10 +52,33 @@ struct RawRule {
     caps_max: Option<Vec<String>>,
     require_nnp: Option<bool>,
     require_seccomp: Option<bool>,
+    rlimits_max: Option<Rlimits>,
 }
+
+/// The kernel's boot hard limits by resource number (`include/asm-generic/resource.h`,
+/// `INIT_RLIMITS`): `None` is no ceiling, so any set value is above it.
+const BOOT_CEILING: [Option<u64>; RLIMIT_COUNT] = [
+    Some(u64::MAX),  // cpu
+    Some(u64::MAX),  // fsize
+    Some(u64::MAX),  // data
+    Some(u64::MAX),  // stack
+    None,            // core: never set
+    Some(u64::MAX),  // rss
+    None,            // nproc
+    Some(4096),      // nofile
+    Some(8_388_608), // memlock
+    Some(u64::MAX),  // as
+    Some(u64::MAX),  // locks
+    None,            // sigpending
+    Some(819_200),   // msgqueue
+    Some(0),         // nice
+    Some(0),         // rtprio
+    Some(u64::MAX),  // rttime
+];
 
 #[derive(Clone, Debug)]
 struct Rule {
+    rlimits: [Option<u64>; RLIMIT_COUNT],
     pattern: String,
     users: Option<Vec<String>>,
     ceiling: u64,
@@ -53,6 +89,7 @@ struct Rule {
 /// A parsed policy.
 #[derive(Clone, Debug)]
 pub struct Policy {
+    ceiling: [Option<u64>; RLIMIT_COUNT],
     allow_by_default: bool,
     rules: Vec<Rule>,
 }
@@ -160,6 +197,26 @@ fn serde_error(path: &Path, text: &str, e: &toml::de::Error) -> Error {
     Error::new(code, key, msg).in_file(path)
 }
 
+/// The limits listed in an `rlimits_max` table, by resource number; `scope` is its key prefix.
+fn ceilings(
+    path: &Path,
+    scope: &str,
+    set: Option<&Rlimits>,
+    errs: &mut Vec<Error>,
+) -> [Option<u64>; RLIMIT_COUNT] {
+    std::array::from_fn(|r| {
+        let v = set?.get(r)?;
+        let key = RLIMIT_KEYS[r];
+        match rlimit_value(key, v) {
+            Ok(n) => Some(n),
+            Err(why) => {
+                errs.push(Error::new(Code::BadValue, format!("{scope}.{key}"), why).in_file(path));
+                None
+            }
+        }
+    })
+}
+
 fn build_rule(path: &Path, i: usize, r: RawRule, errs: &mut Vec<Error>) -> Rule {
     let mut ceiling = 0u64;
     for name in r.caps_max.as_deref().unwrap_or_default() {
@@ -176,6 +233,12 @@ fn build_rule(path: &Path, i: usize, r: RawRule, errs: &mut Vec<Error>) -> Rule 
         }
     }
     Rule {
+        rlimits: ceilings(
+            path,
+            &format!("rule[{i}].rlimits_max"),
+            r.rlimits_max.as_ref(),
+            errs,
+        ),
         pattern: r.pattern,
         users: r.users,
         ceiling,
@@ -217,8 +280,11 @@ pub fn load_policy(path: &Path) -> Result<Policy, Vec<Error>> {
         .enumerate()
         .map(|(i, r)| build_rule(path, i, r, &mut errs))
         .collect();
+    let listed = ceilings(path, "rlimits_max", raw.rlimits_max.as_ref(), &mut errs);
+    let ceiling = std::array::from_fn(|r| listed[r].or(BOOT_CEILING[r]));
     if errs.is_empty() {
         Ok(Policy {
+            ceiling,
             allow_by_default,
             rules,
         })
@@ -240,7 +306,15 @@ fn cap_names(bits: u64) -> String {
         .join(", ")
 }
 
-fn check_rule(rule: &Rule, node: &Node, cred: &Cred, errs: &mut Vec<(usize, Error)>, i: usize) {
+fn check_rule(
+    policy: &Policy,
+    ri: usize,
+    node: &Node,
+    cred: &Cred,
+    errs: &mut Vec<(usize, Error)>,
+    i: usize,
+) {
+    let rule = &policy.rules[ri];
     if let Some(users) = &rule.users
         && !users.contains(&cred.user)
     {
@@ -267,11 +341,37 @@ fn check_rule(rule: &Rule, node: &Node, cred: &Cred, errs: &mut Vec<(usize, Erro
         let why = format!("seccomp required by rule `{}`", rule.pattern);
         errs.push((i, violation(node, why)));
     }
+    let over = raised(node, &policy.ceiling, Some(&rule.rlimits));
+    if !over.is_empty() {
+        let why = format!(
+            "limits above the ceiling of rule `{}`: {}",
+            rule.pattern,
+            over.join(", ")
+        );
+        let key = format!("rule[{ri}].rlimits_max");
+        errs.push((i, Error::new(Code::Policy, key, why)));
+    }
 }
 
 /// A credential set that holds no privilege: not root, no capabilities, no-new-privileges on.
 fn unprivileged(c: &Cred) -> bool {
     c.user != "root" && c.caps == 0 && c.nnp
+}
+
+/// The names of the limits `node` sets above `ceiling` (`None` there: any value is above it),
+/// where `listed` replaces the ceiling of the keys it holds.
+fn raised(
+    node: &Node,
+    ceiling: &[Option<u64>; RLIMIT_COUNT],
+    listed: Option<&[Option<u64>; RLIMIT_COUNT]>,
+) -> Vec<&'static str> {
+    (0..RLIMIT_COUNT)
+        .filter(|&r| {
+            let max = listed.and_then(|l| l[r]).or(ceiling[r]);
+            node.rlimits[r].is_some_and(|v| max.is_none_or(|m| v > m))
+        })
+        .map(|r| RLIMIT_KEYS[r])
+        .collect()
 }
 
 /// Every violation of `policy` by `model`, with the index of the offending node.
@@ -284,20 +384,24 @@ pub(crate) fn violations(policy: &Policy, model: &Model) -> Vec<(usize, Error)> 
         else {
             continue;
         };
-        if unprivileged(cred) {
+        let over = raised(node, &policy.ceiling, None);
+        if unprivileged(cred) && over.is_empty() {
             continue;
         }
         match policy
             .rules
             .iter()
-            .find(|r| glob_match(&r.pattern, &node.name))
+            .position(|r| glob_match(&r.pattern, &node.name))
         {
-            Some(rule) => check_rule(rule, node, cred, &mut errs, i),
+            Some(ri) => check_rule(policy, ri, node, cred, &mut errs, i),
             None if policy.allow_by_default => {}
-            None => errs.push((
-                i,
-                violation(node, "no rule matches and the default is deny".to_string()),
-            )),
+            None => {
+                let mut why = "no rule matches and the default is deny".to_string();
+                if !over.is_empty() {
+                    why = format!("{why}; limits above the ceiling: {}", over.join(", "));
+                }
+                errs.push((i, violation(node, why)));
+            }
         }
     }
     errs
