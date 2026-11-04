@@ -291,7 +291,10 @@ fn launch_keys_parse_and_broods_refuse_them() {
     assert_eq!(f.env.as_ref().unwrap()["A"], "1");
     assert_eq!(f.cwd.as_deref(), Some("/x"));
     assert_eq!(f.umask, Some(0o027));
-    assert_eq!(f.rlimits.as_ref().and_then(|r| r.nofile), Some(64));
+    assert!(matches!(
+        f.rlimits.as_ref().and_then(|r| r.nofile.as_ref()),
+        Some(qinit_frames::schema::RlimitValue::Number(64))
+    ));
     for key in [
         "env = { A = \"1\" }",
         "cwd = \"/x\"",
@@ -325,10 +328,10 @@ fn bad_launch_values_are_bad_values() {
 }
 
 #[test]
-fn an_unknown_rlimit_is_an_unknown_key() {
-    let e = parse("worker", "exec = [\"/a\"]\nrlimits = { nproc = 1 }\n").unwrap_err();
+fn core_is_an_unknown_rlimit_key() {
+    let e = parse("worker", "exec = [\"/a\"]\nrlimits = { core = 1 }\n").unwrap_err();
     assert_eq!(
         (e.code, e.key.as_str()),
-        (Code::UnknownKey, "worker.t.rlimits.nproc")
+        (Code::UnknownKey, "worker.t.rlimits.core")
     );
 }

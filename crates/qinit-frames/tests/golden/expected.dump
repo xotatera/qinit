@@ -19,7 +19,6 @@ worker getty@tty1
   cell.pids_max = 0  # default
   cwd = "/"  # default
   umask = 0o027  # default
-  rlimits.nofile = "default"  # default
   credentials.uid = "root"  # template tty-login
   credentials.caps = []  # default
   credentials.nnp = true  # default
@@ -47,7 +46,6 @@ worker getty@tty2
   cell.pids_max = 0  # default
   cwd = "/"  # default
   umask = 0o027  # default
-  rlimits.nofile = "default"  # default
   credentials.uid = "root"  # template tty-login
   credentials.caps = []  # default
   credentials.nnp = true  # default
@@ -95,7 +93,6 @@ forager mount-var
   cell.pids_max = 0  # default
   cwd = "/"  # default
   umask = 0o027  # default
-  rlimits.nofile = "default"  # default
   launch.concurrency = 2  # vendor
   launch.argv_tail = 1  # vendor
   launch.env = ["TARGET"]  # vendor
@@ -135,7 +132,6 @@ worker sshd
   cell.pids_max = 64  # vendor
   cwd = "/"  # default
   umask = 0o027  # default
-  rlimits.nofile = "default"  # default
   reload = "SIGHUP"  # vendor
   credentials.uid = "root"  # vendor
   credentials.caps = ["setgid", "setuid", "net_bind_service", "sys_chroot"]  # vendor
@@ -170,7 +166,6 @@ worker syslog-ng
   cell.pids_max = 0  # default
   cwd = "/"  # default
   umask = 0o027  # default
-  rlimits.nofile = "default"  # default
   credentials.uid = "syslog"  # vendor
   credentials.caps = []  # default
   credentials.nnp = true  # default

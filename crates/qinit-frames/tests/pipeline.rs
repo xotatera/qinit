@@ -95,7 +95,6 @@ fn an_etc_amend_changes_only_the_amended_key() {
         "start_timeout",
         "cwd",
         "umask",
-        "rlimits.nofile",
         "credentials.caps",
         "credentials.nnp",
         "credentials.securebits",

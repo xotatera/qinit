@@ -18,8 +18,8 @@ use crate::provenance::{FrameKey, Origin, Provenance, parse_path, set_by};
 use crate::resolve::{Resolved, cap_name, ns_name};
 use crate::syscalls;
 use qinit_db::{
-    Cred, Edge, GroupKind, Kind, Mode, Model, Node, Ready, Reload, RestartOn, RestartPolicy, Route,
-    Seccomp, Securebits, StopMode, Target,
+    Cred, Edge, GroupKind, Kind, Mode, Model, Node, RLIMIT_KEYS, Ready, Reload, RestartOn,
+    RestartPolicy, Route, Seccomp, Securebits, StopMode, Target,
 };
 use qinit_db_core::{FD_STDERR, FD_STDIN, FD_STDOUT};
 use std::fmt::Write as _;
@@ -178,11 +178,13 @@ impl Block<'_> {
             }
             self.line("cwd", &quote(&n.cwd));
             self.line("umask", &format!("0o{:03o}", n.umask));
-            let nofile = match n.rlimits[7] {
-                None => quote("default"),
-                Some(n) => n.to_string(),
-            };
-            self.line("rlimits.nofile", &nofile);
+            for (key, limit) in RLIMIT_KEYS.iter().zip(n.rlimits) {
+                match limit {
+                    Some(u64::MAX) => self.line(&format!("rlimits.{key}"), "infinity"),
+                    Some(v) => self.line(&format!("rlimits.{key}"), &v.to_string()),
+                    None => {}
+                }
+            }
             self.reload_and_launch(n);
         }
         if let Some(c) = n.cred.and_then(|c| model.creds.get(c as usize)) {
