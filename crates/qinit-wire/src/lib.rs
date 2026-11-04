@@ -327,7 +327,7 @@ pub enum Req<'a> {
         /// The launch name, 1 to 95 bytes; the instance is `~<name>#<id>`.
         name: &'a str,
         fd_roles: u32,
-        /// `FLAG_PIDFD`.
+        /// `FLAG_PIDFD`, `FLAG_WAIT_READY`.
         flags: u32,
         memory_max_kib: u32,
         pids_max: u32,

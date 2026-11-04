@@ -147,7 +147,7 @@ pub open spec fn enums_ok(b: Seq<u8>) -> bool {
         &&& rw(b, SH_SETTLED as int) <= 1
     } else if t == T_RUN {
         &&& rw(b, RU_FD_ROLES as int) <= 7
-        &&& rw(b, RU_FLAGS as int) <= FLAG_PIDFD as int
+        &&& rw(b, RU_FLAGS as int) <= RUN_FLAGS_MASK as int
         &&& rw(b, RU_STOP_MODE as int) <= 1
     } else if t == T_ERROR {
         1 <= rw(b, ER_CODE as int) <= 12

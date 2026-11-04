@@ -13,8 +13,8 @@ use qinit_colony_core::{
 };
 use qinit_db::{Kind, Ready};
 use qinit_overseer_core::{
-    LaunchError as RequestError, Q_READY_KIND, Q_STDERR_A, Q_STDERR_KIND, Q_STDIN_A, Q_STDIN_KIND,
-    Q_STDOUT_A, Q_STDOUT_KIND, READY_PIPE, STREAM_FD, check_policy, decode, req,
+    LaunchError as RequestError, Q_READY_FD, Q_READY_KIND, Q_STDERR_A, Q_STDERR_KIND, Q_STDIN_A,
+    Q_STDIN_KIND, Q_STDOUT_A, Q_STDOUT_KIND, READY_PIPE, STREAM_FD, check_policy, decode, req,
 };
 
 /// The frame index of an instance that has no frame (a `Run`): above any node index (4096 at
@@ -81,6 +81,9 @@ pub struct RunArgs {
     pub pids_max: u32,
     pub stop: StopMode,
     pub grace_ms: u32,
+    /// The caller asked to be told when the service is ready: the request must carry a readiness
+    /// pipe, and the instance starts with `Ready::Pipe`.
+    pub wait_ready: bool,
 }
 
 /// Why a `Run` was refused.
@@ -213,6 +216,7 @@ impl<E: Effects> Colony<E> {
             request: None,
             memory_max_kib: self.model.nodes[node as usize].memory_max_kib,
             pids_max: self.model.nodes[node as usize].pids_max,
+            ready_fd: None,
         };
         let slot32 = u32::try_from(slot).unwrap_or(u32::MAX);
         match self.effects.start_instance(slot32, spec) {
@@ -266,7 +270,11 @@ impl<E: Effects> Colony<E> {
                 RequestError::Consistency => 4,
             }));
         }
-        if req(&args.request, Q_READY_KIND) == READY_PIPE || !streams_match(&args) {
+        // A readiness pipe goes with `wait_ready` and with nothing else. (A pipe routed to the
+        // descriptor of a stream does not decode: the decoder keeps the numbers apart.)
+        let pipe = req(&args.request, Q_READY_KIND) == READY_PIPE;
+        let ready_fd = req(&args.request, Q_READY_FD);
+        if pipe != args.wait_ready || !streams_match(&args) {
             return Err(RunError::Denied(0));
         }
         let launch_name = format!("~{}", args.name);
@@ -285,7 +293,11 @@ impl<E: Effects> Colony<E> {
                 name,
                 kind: Kind::Forager,
                 exec: Vec::new(),
-                ready: Ready::Exit,
+                ready: if args.wait_ready {
+                    Ready::Pipe
+                } else {
+                    Ready::Exit
+                },
                 stop: args.stop,
                 grace_ms: args.grace_ms,
                 start_timeout_ms: 0,
@@ -296,6 +308,7 @@ impl<E: Effects> Colony<E> {
             request: Some(args.request_fd),
             memory_max_kib: args.memory_max_kib,
             pids_max: args.pids_max,
+            ready_fd: args.wait_ready.then_some(ready_fd),
         };
         let slot32 = u32::try_from(slot).unwrap_or(u32::MAX);
         match self.effects.start_instance(slot32, spec) {
@@ -381,11 +394,9 @@ impl<E: Effects> Colony<E> {
                 }
             }
             CellPhase::Empty | CellPhase::Failed(_) => self.finish_instance(i, &mut out),
-            CellPhase::Created
-            | CellPhase::Ready
-            | CellPhase::NotReady
-            | CellPhase::Removed
-            | CellPhase::Refused => {}
+            // The readiness byte of an instance that was started to wait for it.
+            CellPhase::Ready => out.notices.push(Notice::InstanceReady(id)),
+            CellPhase::Created | CellPhase::NotReady | CellPhase::Removed | CellPhase::Refused => {}
         }
         self.after_event(now, &mut out);
         out

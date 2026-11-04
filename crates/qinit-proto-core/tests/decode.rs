@@ -472,11 +472,41 @@ fn run_grace_99_is_consistency() {
 #[test]
 fn run_enums_are_bounded() {
     let (b, fds) = ok(T_RUN);
-    for (w, v) in [(RU_FD_ROLES, 8), (RU_FLAGS, 2), (RU_STOP_MODE, 2)] {
+    for (w, v) in [(RU_FD_ROLES, 8), (RU_FLAGS, 4), (RU_STOP_MODE, 2)] {
         assert_eq!(
             check(&with(&b, |x| x[at(w)] = v), fds).unwrap_err(),
             DecodeError::Enum,
             "word {w}"
         );
     }
+}
+
+#[test]
+fn run_flags_bit_1_decodes() {
+    let (b, fds) = ok(T_RUN);
+    for flags in [0, FLAG_PIDFD, FLAG_WAIT_READY, FLAG_PIDFD | FLAG_WAIT_READY] {
+        assert!(
+            check(&with(&b, |x| x[at(RU_FLAGS)] = flags), fds).is_ok(),
+            "flags {flags:#x}"
+        );
+    }
+    for flags in [4, 7, 0x8000_0000] {
+        assert_eq!(
+            check(&with(&b, |x| x[at(RU_FLAGS)] = flags), fds).unwrap_err(),
+            DecodeError::Enum,
+            "flags {flags:#x}"
+        );
+    }
+    assert_eq!(FLAG_WAIT_READY, 2);
+}
+
+#[test]
+fn launch_flags_bit_1_is_invalid() {
+    // A forager has no readiness pipe: `wait_ready` on a `Launch` is an enum error, which the
+    // server answers with `Invalid`.
+    let (b, fds) = ok(T_LAUNCH);
+    assert_eq!(
+        check(&with(&b, |x| x[at(LA_FLAGS)] = FLAG_WAIT_READY), fds).unwrap_err(),
+        DecodeError::Enum
+    );
 }

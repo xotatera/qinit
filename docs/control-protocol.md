@@ -240,7 +240,7 @@ the policy compiled into the database.
 | --- | --- | --- |
 | 0, 1 | `name_off`, `name_len` | the launch name, 1 to 95 bytes of letters, digits and `.` `_` `@` `:` `+` `-` (the node-name bytes, so the instance name splits at its first `#`); the instance is `~<name>#<id>` (`~` is not a node-name byte, so it never collides with a frame's instances) |
 | 2 | `fd_roles` | 1 stdin, 2 stdout, 4 stderr, as `Launch` |
-| 3 | `flags` | bit 0 `pidfd`, as `Launch` |
+| 3 | `flags` | bit 0 `pidfd`, as `Launch`; bit 1 `wait_ready`: the second reply waits for the service's readiness byte instead of its exit (below). `Launch` refuses bit 1 with `Error(Invalid)` |
 | 4 | `memory_max_kib` | 0 for none |
 | 5 | `pids_max` | 0 for none |
 | 6 | `stop_mode` | 0 main, 1 cell |
@@ -253,12 +253,29 @@ holding at most 65536 bytes, read whole from offset 0; any other descriptor is `
 (reason 21 not fully sealed, 19 too large, 20 unreadable). Colony checks, in order: the request
 decodes (`Error(Invalid)`, detail 1 header, 2 pool, 3 enum, 4 consistency of the request, 0 for a name that is empty, too long or has another byte); its streams agree with the
 roles sent (stdin, stdout and stderr arrive as descriptors 5, 6 and 7; a stream `fd n` names a
-sent role's number and every role sent is used) and it names no readiness pipe (`Error(Denied)`,
-detail 0); the policy allows it under the name `~<name>` (`Error(Denied)`, the detail the
+sent role's number and every role sent is used) and it names a readiness pipe exactly when `wait_ready` is set (`Error(Denied)`, detail 0; a pipe routed to a stream's descriptor number is a request that does not decode); the policy allows it under the name `~<name>` (`Error(Denied)`, the detail the
 first failing clause: 1 no policy, 2 user, 3 capabilities, 4 `no_new_privs`, 5 seccomp, 6 user
 namespace, 7 limits, 8 default); a slot is free (`Error(NoSlot)`). Then it runs as an instance
-and replies, waits, and ends exactly as `Launch` does, with the record's stop mode and grace. It
+and replies, waits, and ends as `Launch` does, with the record's stop mode and grace. It
 has no frame, so a refresh never touches it; a shutdown stops it with the other instances.
+
+**Waiting for readiness.** `Launched` (the id, and the pidfd when asked) goes out when the instance
+is accepted, with or without `wait_ready`, so the caller always has both. Without the flag the
+second reply is `Exited` or `Pending`, as for `Launch`. With it the request must route a readiness
+pipe (`ready_fd`, a routed number from 5 to 37 that no stream uses): the instance starts with
+readiness by pipe, and the second reply is `Settled` with the state *running* (3) when the
+service writes its byte, `Exited` with the wait status if it ends first (no `Settled` then), or
+`Pending` at `wait_ms` (state *starting*, 2, while no byte has come: the process runs but is
+not ready). After `Settled` the call is over and the instance runs on; the caller learns of its
+exit from the pidfd or from `Status` on `~<name>#<id>`. A caller that disconnects while waiting
+leaves the instance running. Nothing bounds a service that never writes the byte except
+`wait_ms` and an explicit stop.
+
+```
+client: Run   name="db" flags=2 wait_ms=30000     # fds: request (readiness pipe at 5)
+server: Launched id=7
+server: Settled  state=3                           # the service wrote its byte
+```
 
 ## Replies
 

@@ -47,6 +47,11 @@ pub struct InstanceSpec {
     /// The cell's memory ceiling in KiB and its process ceiling, 0 for none.
     pub memory_max_kib: u32,
     pub pids_max: u32,
+    /// For a `Run` that waits for readiness (`node.ready` is `Ready::Pipe`): the descriptor
+    /// number the request routes its readiness pipe to. The effects layer creates the pipe,
+    /// places its write end at that number for the executor and reports the byte as the cell's
+    /// `Ready`. `None` otherwise.
+    pub ready_fd: Option<u32>,
 }
 
 /// Effects per node. Every error is an errno; colony turns a failed `start` into a spawn

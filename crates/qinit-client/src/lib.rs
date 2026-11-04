@@ -140,6 +140,8 @@ pub enum LaunchOutcome {
     Exited { id: u32, status: i32 },
     /// The wait ended first; read the instance with `status` on `<frame>#<id>`.
     Pending { id: u32, state: StateWord },
+    /// The service wrote its readiness byte (a `run` with `wait_ready`); it runs on.
+    Ready { id: u32 },
     /// The instance could not be started.
     Failed { step: u32, errno: u32 },
 }
@@ -195,6 +197,10 @@ pub struct RunArgs<'a> {
     pub stop_mode: StopMode,
     /// The grace before the kill, in milliseconds, at least 100.
     pub stop_grace_ms: u32,
+    /// Wait for the service's readiness byte instead of its exit: the request must route a
+    /// readiness pipe (`ready_fd`), and `finish` returns [`LaunchOutcome::Ready`] when the byte
+    /// arrives, `Exited` if the service ends first and `Pending` at the end of `wait`.
+    pub wait_ready: bool,
 }
 
 impl Default for RunArgs<'_> {
@@ -207,6 +213,7 @@ impl Default for RunArgs<'_> {
             pids_max: 0,
             stop_mode: StopMode::Main,
             stop_grace_ms: 10_000,
+            wait_ready: false,
         }
     }
 }
@@ -482,6 +489,7 @@ impl Client {
         match self.reply()? {
             Reply::Exited(status) => Ok(LaunchOutcome::Exited { id, status }),
             Reply::Pending(state) => Ok(LaunchOutcome::Pending { id, state }),
+            Reply::Settled(_) => Ok(LaunchOutcome::Ready { id }),
             _ => Err(ClientError::Unexpected),
         }
     }
@@ -533,7 +541,8 @@ impl Client {
             Req::Run {
                 name,
                 fd_roles: roles,
-                flags: u32::from(pidfd) * qinit_proto_core::FLAG_PIDFD,
+                flags: (u32::from(pidfd) * qinit_proto_core::FLAG_PIDFD)
+                    | (u32::from(args.wait_ready) * qinit_proto_core::FLAG_WAIT_READY),
                 memory_max_kib: args.memory_max_kib,
                 pids_max: args.pids_max,
                 stop_mode: u32::from(args.stop_mode == StopMode::Cell),
