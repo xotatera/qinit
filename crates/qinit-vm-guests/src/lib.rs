@@ -38,7 +38,7 @@ pub fn run(suite: &'static str, cases: &[Case]) -> ! {
         std::process::exit(helper(&role, &args.collect::<Vec<String>>()));
     }
     let setup = if qinit_sys::proc::pid() == 1 {
-        setup()
+        enter_tmpfs_root().and_then(|()| setup())
     } else {
         Ok(())
     };
@@ -70,6 +70,53 @@ fn console(line: &str) {
     if let Ok(mut c) = std::fs::OpenOptions::new().write(true).open("/dev/console") {
         let _ = writeln!(c, "{line}");
     }
+}
+
+/// Copies the directory `from` into `to`, leaving out the entries named in `skip`.
+fn copy_tree(from: &Path, to: &Path, skip: &[&Path]) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let path = entry.path();
+        if skip.contains(&path.as_path()) {
+            continue;
+        }
+        let target = to.join(entry.file_name());
+        let meta = std::fs::symlink_metadata(&path)?;
+        if meta.is_dir() {
+            std::fs::create_dir(&target)?;
+            std::fs::set_permissions(&target, meta.permissions())?;
+            copy_tree(&path, &target, skip)?;
+        } else if meta.file_type().is_symlink() {
+            std::os::unix::fs::symlink(std::fs::read_link(&path)?, &target)?;
+        } else {
+            std::fs::copy(&path, &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Moves the guest from the initramfs root onto a tmpfs root (what `switch_root` does):
+/// `pivot_root`, which the executor's path view needs, refuses to run when the root is the
+/// initramfs itself.
+fn enter_tmpfs_root() -> Result<(), String> {
+    use qinit_sys::mount::{chroot, mkdir, mount, mount_move};
+    let new = Path::new("/.root");
+    mkdir(new, 0o755).map_err(|x| format!("mkdir /.root: {x}"))?;
+    mount("tmpfs", new, "tmpfs", 0).map_err(|x| format!("mount the new root: {x}"))?;
+    let skip = [
+        new,
+        Path::new("/proc"),
+        Path::new("/sys"),
+        Path::new("/dev"),
+    ];
+    copy_tree(Path::new("/"), new, &skip).map_err(|x| format!("copy the root: {x}"))?;
+    for d in ["dev", "proc", "sys"] {
+        mkdir(&new.join(d), 0o755).map_err(|x| format!("mkdir /{d}: {x}"))?;
+    }
+    std::env::set_current_dir(new).map_err(|x| format!("enter the new root: {x}"))?;
+    mount_move(Path::new("."), Path::new("/")).map_err(|x| format!("move the new root: {x}"))?;
+    chroot(Path::new(".")).map_err(|x| format!("chroot: {x}"))?;
+    std::env::set_current_dir("/").map_err(|x| format!("chdir /: {x}"))
 }
 
 fn setup() -> Result<(), String> {
@@ -743,6 +790,7 @@ fn helper(role: &str, args: &[String]) -> i32 {
 
 /// The helpers of the executor suites: they report what a launch gave them on standard output
 /// or by exit code. `None` for a role this function does not know.
+#[allow(clippy::too_many_lines)] // one arm per helper role
 fn launch_helper(role: &str, args: &[String]) -> Option<i32> {
     let a0 = args.first().map(String::as_str);
     Some(match role {
@@ -783,6 +831,40 @@ fn launch_helper(role: &str, args: &[String]) -> Option<i32> {
             }
             _ => 2,
         },
+        // `probe-statvfs <path>`: 0 when the mount holding the path is read-only, 1 when not,
+        // the errno when the path cannot be examined.
+        "probe-statvfs" => a0.map_or(2, |p| match qinit_sys::fs::is_readonly(Path::new(p)) {
+            Ok(true) => 0,
+            Ok(false) => 1,
+            Err(e) => e.0,
+        }),
+        // `probe-kind <path>`: 10 for a symlink, 11 for a directory, 12 for a regular file,
+        // 13 for anything else, the errno when the path cannot be examined (no link followed).
+        "probe-kind" => a0.map_or(2, |p| match qinit_sys::fs::lstat_kind(Path::new(p)) {
+            Ok(qinit_sys::fs::Kind::Symlink) => 10,
+            Ok(qinit_sys::fs::Kind::Dir) => 11,
+            Ok(qinit_sys::fs::Kind::File) => 12,
+            Ok(qinit_sys::fs::Kind::Other) => 13,
+            Err(e) => e.0,
+        }),
+        // `probe-procs`: the number of process directories in `/proc`, on standard output.
+        "probe-procs" => {
+            let n = std::fs::read_dir("/proc").map_or(0, |d| {
+                d.filter_map(Result::ok)
+                    .filter(|e| {
+                        e.file_name()
+                            .to_string_lossy()
+                            .bytes()
+                            .all(|b| b.is_ascii_digit())
+                    })
+                    .count()
+            });
+            if writeln!(std::io::stdout(), "{n}").is_ok() {
+                0
+            } else {
+                2
+            }
+        }
         // `probe-syscall <getppid|ptrace|unshare-net|clone3>`: `ok` or the errno, on stdout.
         "probe-syscall" => {
             let r: qinit_sys::Result<()> = match a0 {

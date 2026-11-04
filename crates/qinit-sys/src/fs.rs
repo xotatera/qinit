@@ -82,3 +82,13 @@ pub fn mkdir_all(path: &Path, mode: u32) -> Result<()> {
         Err(e) => Err(e),
     }
 }
+
+/// Whether the mount holding `path` is read-only (`statvfs`: `ST_RDONLY`).
+pub fn is_readonly(path: &Path) -> Result<bool> {
+    let p = cpath(path)?;
+    // SAFETY: statvfs is a plain C struct; zeroed is a valid starting value.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: a NUL-terminated path and a writable statvfs.
+    check(unsafe { libc::statvfs(p.as_ptr(), &raw mut st) })?;
+    Ok(st.f_flag & libc::ST_RDONLY != 0)
+}

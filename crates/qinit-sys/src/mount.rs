@@ -120,6 +120,16 @@ struct MountAttr {
 /// `mount_setattr(AT_FDCWD, path, AT_RECURSIVE, {set, clear})`: changes the attributes of the
 /// mount at `path` and of every mount below it.
 pub fn setattr_rec(path: &Path, set: u64, clear: u64) -> Result<()> {
+    setattr_with(path, set, clear, libc::AT_RECURSIVE)
+}
+
+/// `mount_setattr(AT_FDCWD, path, 0, {set, clear})`: changes the attributes of the mount at
+/// `path` only.
+pub fn setattr(path: &Path, set: u64, clear: u64) -> Result<()> {
+    setattr_with(path, set, clear, 0)
+}
+
+fn setattr_with(path: &Path, set: u64, clear: u64, flags: libc::c_int) -> Result<()> {
     let p = cpath(path)?;
     let attr = MountAttr {
         attr_set: set,
@@ -133,7 +143,7 @@ pub fn setattr_rec(path: &Path, set: u64, clear: u64) -> Result<()> {
             libc::SYS_mount_setattr,
             libc::AT_FDCWD,
             p.as_ptr(),
-            libc::AT_RECURSIVE,
+            flags,
             &raw const attr,
             std::mem::size_of::<MountAttr>(),
         )
@@ -155,5 +165,38 @@ pub fn umount_detach(path: &Path) -> Result<()> {
     let p = cpath(path)?;
     // SAFETY: a NUL-terminated path that outlives the call.
     check(unsafe { libc::umount2(p.as_ptr(), libc::MNT_DETACH) })?;
+    Ok(())
+}
+
+/// `mount(source, target, NULL, MS_MOVE, NULL)`: the mount at `source` moves to `target`.
+pub fn mount_move(source: &Path, target: &Path) -> Result<()> {
+    let s = cpath(source)?;
+    let t = cpath(target)?;
+    // SAFETY: NUL-terminated paths that outlive the call, no type and no data.
+    check(unsafe {
+        libc::mount(
+            s.as_ptr(),
+            t.as_ptr(),
+            std::ptr::null(),
+            libc::MS_MOVE,
+            std::ptr::null(),
+        )
+    })?;
+    Ok(())
+}
+
+/// `chroot(path)`.
+pub fn chroot(path: &Path) -> Result<()> {
+    let p = cpath(path)?;
+    // SAFETY: a NUL-terminated path that outlives the call.
+    check(unsafe { libc::chroot(p.as_ptr()) })?;
+    Ok(())
+}
+
+/// `rmdir(path)`.
+pub fn rmdir(path: &Path) -> Result<()> {
+    let p = cpath(path)?;
+    // SAFETY: a NUL-terminated path that outlives the call.
+    check(unsafe { libc::rmdir(p.as_ptr()) })?;
     Ok(())
 }

@@ -64,6 +64,18 @@ pub enum Step {
     LoopbackUp,
     /// Fork into the new pid namespace; the child continues.
     Fork,
+    /// A `tmpfs` at the fresh directory that becomes the view's root.
+    ViewRoot,
+    /// The view's `/dev`: a `tmpfs` with the five device nodes, `/dev/shm` and the fd symlinks.
+    ViewDev,
+    /// The view's private `/tmp`.
+    ViewTmp,
+    /// The path list's entry at this index: a bind (or, for a symlink, a copy of the link).
+    ViewEntry(u32),
+    /// `pivot_root` into the view, detaching the old root.
+    ViewPivot,
+    /// The view's root mount made read-only.
+    ViewSeal,
     /// Arm the deadline timer, in milliseconds.
     ArmDeadline(u32),
     /// Arm the deadline timer again at the same instant, in the new pid namespace's child (the
@@ -110,6 +122,9 @@ pub enum Step {
     LandlockRule(u32),
     /// `landlock_restrict_self`.
     LandlockRestrict,
+    /// `landlock_add_rule` for the fixed entries of the view: the five device nodes, `/tmp`
+    /// and `/dev/shm`.
+    LandlockViewRules,
     /// Install the seccomp program.
     Seccomp,
     /// `close_range(4, ~0, 0)`.
@@ -135,6 +150,12 @@ pub open spec fn phase(s: Step) -> int {
         Step::MountTmp => 4,
         Step::Fork => 5,
         Step::RearmDeadline => 6,
+        Step::ViewRoot => 7,
+        Step::ViewDev => 7,
+        Step::ViewTmp => 7,
+        Step::ViewEntry(_) => 7,
+        Step::ViewPivot => 7,
+        Step::ViewSeal => 7,
         Step::LoopbackUp => 9,
         Step::Setgroups => 10,
         Step::Setgid => 10,
@@ -147,6 +168,7 @@ pub open spec fn phase(s: Step) -> int {
         Step::NoNewPrivs => 17,
         Step::Chdir => 18,
         Step::LandlockRuleset => 19,
+        Step::LandlockViewRules => 20,
         Step::LandlockRule(_) => 20,
         Step::LandlockRestrict => 21,
         Step::Seccomp => 22,
@@ -160,6 +182,11 @@ pub open spec fn sub(s: Step) -> int {
     match s {
         Step::MountSlaveRoot => 1,
         Step::MountTmp => 2,
+        Step::ViewDev => 1,
+        Step::ViewTmp => 2,
+        Step::ViewEntry(i) => 3 + i as int,
+        Step::ViewPivot => 68,
+        Step::ViewSeal => 69,
         Step::OpenStdout => 1,
         Step::OpenStderr => 2,
         Step::RouteReady(_) => 3,
@@ -172,7 +199,7 @@ pub open spec fn sub(s: Step) -> int {
             c as int
         },
         Step::AmbientRaise(c) => c as int,
-        Step::LandlockRule(i) => i as int,
+        Step::LandlockRule(i) => 1 + i as int,
         _ => 0,
     }
 }
@@ -212,6 +239,10 @@ pub proof fn lemma_phase_table(c: u32, i: u32, f: u32, r: u32, v: u64)
         phase(Step::Unshare(f)) < phase(Step::Fork),
         phase(Step::MountTmp) < phase(Step::Fork),
         phase(Step::Fork) < phase(Step::RearmDeadline),
+        phase(Step::RearmDeadline) < phase(Step::ViewRoot),
+        phase(Step::ViewTmp) < phase(Step::LoopbackUp),
+        phase(Step::ViewSeal) < phase(Step::Setgroups),
+        phase(Step::ViewSeal) < phase(Step::LandlockRuleset),
         phase(Step::RearmDeadline) < phase(Step::LoopbackUp),
         phase(Step::LoopbackUp) < phase(Step::Setgroups),
         phase(Step::OpenStdout) < phase(Step::Setgroups),
@@ -224,7 +255,10 @@ pub proof fn lemma_phase_table(c: u32, i: u32, f: u32, r: u32, v: u64)
         phase(Step::Pdeathsig) < phase(Step::NoNewPrivs),
         phase(Step::Setuid) < phase(Step::NoNewPrivs),
         phase(Step::NoNewPrivs) < phase(Step::LandlockRuleset),
+        phase(Step::LandlockRuleset) < phase(Step::LandlockViewRules),
         phase(Step::LandlockRuleset) < phase(Step::LandlockRule(i)),
+        phase(Step::LandlockRule(i)) < phase(Step::LandlockRestrict),
+        phase(Step::LandlockViewRules) < phase(Step::LandlockRestrict),
         phase(Step::LandlockRule(i)) < phase(Step::LandlockRestrict),
         phase(Step::LandlockRestrict) < phase(Step::Seccomp),
         phase(Step::Setuid) < phase(Step::Chdir),
@@ -298,6 +332,13 @@ pub open spec fn step_ok(b: Seq<u8>, x: Step) -> bool {
         Step::AmbientRaise(c) => c <= CAP_LAST && cap_has(b, c as int),
         Step::Pdeathsig => ((qw(b, Q_FLAGS) as u32) & 1u32) != 0u32,
         Step::NoNewPrivs => qw(b, Q_NNP) == 1,
+        Step::ViewRoot => qw(b, Q_PATHS_LEN) > 0,
+        Step::ViewDev => qw(b, Q_PATHS_LEN) > 0,
+        Step::ViewTmp => qw(b, Q_PATHS_LEN) > 0,
+        Step::ViewEntry(i) => (i as int) < paths_elems(b),
+        Step::ViewPivot => qw(b, Q_PATHS_LEN) > 0,
+        Step::ViewSeal => qw(b, Q_PATHS_LEN) > 0,
+        Step::LandlockViewRules => qw(b, Q_PATHS_LEN) > 0,
         Step::LandlockRuleset => qw(b, Q_PATHS_LEN) > 0,
         Step::LandlockRule(i) => (i as int) < paths_elems(b),
         Step::LandlockRestrict => qw(b, Q_PATHS_LEN) > 0,
@@ -351,6 +392,15 @@ pub open spec fn present_ns(b: Seq<u8>, s: Seq<Step>) -> bool {
     ))
 }
 
+/// The view: its fixed steps and one step per path entry.
+pub open spec fn present_view(b: Seq<u8>, s: Seq<Step>) -> bool {
+    &&& (qw(b, Q_PATHS_LEN) > 0 ==> has(s, Step::ViewRoot) && has(s, Step::ViewDev) && has(
+        s,
+        Step::ViewTmp,
+    ) && has(s, Step::ViewPivot) && has(s, Step::ViewSeal))
+    &&& forall|i: int| 0 <= i < paths_elems(b) ==> #[trigger] has(s, Step::ViewEntry(i as u32))
+}
+
 /// The loopback, the groups and the securebits.
 pub open spec fn present_ids(b: Seq<u8>, s: Seq<Step>) -> bool {
     &&& (((qw(b, Q_NS) as u32) & 16u32) != 0u32 ==> has(s, Step::LoopbackUp))
@@ -382,7 +432,8 @@ pub open spec fn present_tail(b: Seq<u8>, s: Seq<Step>) -> bool {
 
 /// The Landlock ruleset, one rule per entry, and the restriction.
 pub open spec fn present_landlock(b: Seq<u8>, s: Seq<Step>) -> bool {
-    &&& (qw(b, Q_PATHS_LEN) > 0 ==> has(s, Step::LandlockRuleset) && has(s, Step::LandlockRestrict))
+    &&& (qw(b, Q_PATHS_LEN) > 0 ==> has(s, Step::LandlockRuleset) && has(s, Step::LandlockViewRules)
+        && has(s, Step::LandlockRestrict))
     &&& forall|i: int| 0 <= i < paths_elems(b) ==> #[trigger] has(s, Step::LandlockRule(i as u32))
 }
 
@@ -398,6 +449,7 @@ pub open spec fn present(b: Seq<u8>, s: Seq<Step>) -> bool {
     &&& present_early(b, s)
     &&& present_env(b, s)
     &&& present_ns(b, s)
+    &&& present_view(b, s)
     &&& present_ids(b, s)
     &&& present_drops(b, s)
     &&& present_creds(b, s)
@@ -414,6 +466,7 @@ pub proof fn lemma_present_mono(b: Seq<u8>, s: Seq<Step>, t: Seq<Step>)
         present_early(b, s) ==> present_early(b, t),
         present_env(b, s) ==> present_env(b, t),
         present_ns(b, s) ==> present_ns(b, t),
+        present_view(b, s) ==> present_view(b, t),
         present_ids(b, s) ==> present_ids(b, t),
         present_drops(b, s) ==> present_drops(b, t),
         present_creds(b, s) ==> present_creds(b, t),
@@ -714,14 +767,84 @@ fn sec_ns(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     n
 }
 
-/// Phases 9 to 11: the loopback, the groups and the securebits.
-fn sec_ids(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
+/// Phase 7: the view of the path list.
+#[allow(clippy::cast_possible_truncation)]  // the index is below MAX_PATH_ENTRIES
+fn sec_view(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
         n0 <= 29,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 7, 0),
+    ensures
+        n0 <= m <= n0 + 70,
+        final(out)@.len() == old(out)@.len(),
+        sorted(final(out)@.take(m as int)),
+        faithful(b@, final(out)@.take(m as int)),
+        below(final(out)@, m as int, 8, 0),
+        ext(old(out)@.take(n0 as int), final(out)@.take(m as int)),
+        present_view(b@, final(out)@.take(m as int)),
+{
+    let len = req(b, Q_PATHS_LEN);
+    let entries = {
+        assert(req_pool_ref(b@, qw(b@, Q_PATHS_OFF), qw(b@, Q_PATHS_LEN)));
+        count_elements(pool(b, req(b, Q_PATHS_OFF), len))
+    };
+    assert(entries as int == paths_elems(b@));
+    assert(entries <= MAX_PATH_ENTRIES);
+    let mut n = n0;
+    if len > 0 {
+        n = emit(b, out, n, Step::ViewRoot);
+        n = emit(b, out, n, Step::ViewDev);
+        n = emit(b, out, n, Step::ViewTmp);
+        let ghost t_fixed = out@.take(n as int);
+        #[allow(unused_variables)]  // `base` appears only in the invariants
+        let base = n;
+        let mut i: usize = 0;
+        while i < entries
+            invariant
+                accepted(b@),
+                entries as int == paths_elems(b@),
+                entries <= MAX_PATH_ENTRIES,
+                i <= entries,
+                base <= n <= base + i,
+                base == n0 + 3,
+                n0 <= 29,
+                n <= 29 + 3 + 64,
+                out@.len() == old(out)@.len(),
+                sorted(out@.take(n as int)),
+                faithful(b@, out@.take(n as int)),
+                ext(old(out)@.take(n0 as int), out@.take(n as int)),
+                has(out@.take(n as int), Step::ViewRoot),
+                has(out@.take(n as int), Step::ViewDev),
+                has(out@.take(n as int), Step::ViewTmp),
+                n > 0,
+                phase(out@[n - 1]) < 7 || (phase(out@[n - 1]) == 7 && sub(out@[n - 1]) < 3
+                    + i as int),
+                forall|d: int|
+                    0 <= d < i as int ==> #[trigger] has(
+                        out@.take(n as int),
+                        Step::ViewEntry(d as u32),
+                    ),
+            decreases entries - i,
+        {
+            n = emit(b, out, n, Step::ViewEntry(i as u32));  // i < 64
+            i += 1;
+        }
+        n = emit(b, out, n, Step::ViewPivot);
+        n = emit(b, out, n, Step::ViewSeal);
+    }
+    n
+}
+
+/// Phases 9 to 11: the loopback, the groups and the securebits.
+fn sec_ids(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
+    requires
+        accepted(b@),
+        n0 <= 102,
+        sorted(old(out)@.take(n0 as int)),
+        faithful(b@, old(out)@.take(n0 as int)),
+        below(old(out)@, n0 as int, 8, 0),
     ensures
         n0 + 3 <= m <= n0 + 4,
         final(out)@.len() == old(out)@.len(),
@@ -766,7 +889,7 @@ fn sec_ids(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_drops(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 33,
+        n0 <= 106,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 12, 0),
@@ -786,8 +909,8 @@ fn sec_drops(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
             accepted(b@),
             c <= CAP_LAST + 1,
             n0 <= n <= n0 + c,
-            n0 <= 33,
-            n <= 33 + 41,
+            n0 <= 106,
+            n <= 106 + 41,
             out@.len() == old(out)@.len(),
             sorted(out@.take(n as int)),
             faithful(b@, out@.take(n as int)),
@@ -816,7 +939,7 @@ fn sec_drops(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_creds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 75,
+        n0 <= 148,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 13, 0),
@@ -841,8 +964,8 @@ fn sec_creds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
             c <= CAP_LAST + 1,
             base <= n <= base + c,
             base == n0 + 2,
-            n0 <= 75,
-            n <= 75 + 2 + 41,
+            n0 <= 148,
+            n <= 148 + 2 + 41,
             out@.len() == old(out)@.len(),
             sorted(out@.take(n as int)),
             faithful(b@, out@.take(n as int)),
@@ -870,7 +993,7 @@ fn sec_creds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_tail(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 118,
+        n0 <= 191,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 16, 0),
@@ -900,12 +1023,12 @@ fn sec_tail(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_landlock(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 121,
+        n0 <= 194,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 19, 0),
     ensures
-        n0 <= m <= n0 + 66,
+        n0 <= m <= n0 + 67,
         final(out)@.len() == old(out)@.len(),
         sorted(final(out)@.take(m as int)),
         faithful(b@, final(out)@.take(m as int)),
@@ -923,6 +1046,7 @@ fn sec_landlock(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     let mut n = n0;
     if ll_len > 0 {
         n = emit(b, out, n, Step::LandlockRuleset);
+        n = emit(b, out, n, Step::LandlockViewRules);
         #[allow(unused_variables)]  // `base` appears only in the invariants
         let base = n;
         let mut i: usize = 0;
@@ -933,17 +1057,18 @@ fn sec_landlock(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
                 ll_rules <= MAX_PATH_ENTRIES,
                 i <= ll_rules,
                 base <= n <= base + i,
-                base == n0 + 1,
-                n0 <= 121,
-                n <= 121 + 1 + 64,
+                base == n0 + 2,
+                n0 <= 194,
+                n <= 194 + 2 + 64,
                 out@.len() == old(out)@.len(),
                 sorted(out@.take(n as int)),
                 faithful(b@, out@.take(n as int)),
                 ext(old(out)@.take(n0 as int), out@.take(n as int)),
                 has(out@.take(n as int), Step::LandlockRuleset),
+                has(out@.take(n as int), Step::LandlockViewRules),
                 n > 0,
-                phase(out@[n - 1]) < 20 || (phase(out@[n - 1]) == 20 && sub(out@[n - 1])
-                    < i as int),
+                phase(out@[n - 1]) < 20 || (phase(out@[n - 1]) == 20 && sub(out@[n - 1]) < 1
+                    + i as int),
                 forall|d: int|
                     0 <= d < i as int ==> #[trigger] has(
                         out@.take(n as int),
@@ -963,7 +1088,7 @@ fn sec_landlock(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_finish(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 187,
+        n0 <= 261,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 22, 0),
@@ -1003,7 +1128,9 @@ pub fn plan(b: &[u8], out: &mut [Step; MAX_STEPS]) -> (n: usize)
     let ghost t1 = out@.take(n1 as int);
     let n2 = sec_ns(b, out, n1);
     let ghost t2 = out@.take(n2 as int);
-    let n3 = sec_ids(b, out, n2);
+    let nv = sec_view(b, out, n2);
+    let ghost tv = out@.take(nv as int);
+    let n3 = sec_ids(b, out, nv);
     let ghost t3 = out@.take(n3 as int);
     let n4 = sec_drops(b, out, n3);
     let ghost t4 = out@.take(n4 as int);
@@ -1020,12 +1147,14 @@ pub fn plan(b: &[u8], out: &mut [Step; MAX_STEPS]) -> (n: usize)
         lemma_ext_trans(t5, t6, t8);
         lemma_ext_trans(t4, t5, t8);
         lemma_ext_trans(t3, t4, t8);
-        lemma_ext_trans(t2, t3, t8);
+        lemma_ext_trans(tv, t3, t8);
+        lemma_ext_trans(t2, tv, t8);
         lemma_ext_trans(t1, t2, t8);
         lemma_ext_trans(t0, t1, t8);
         lemma_present_mono(b@, t0, t8);
         lemma_present_mono(b@, t1, t8);
         lemma_present_mono(b@, t2, t8);
+        lemma_present_mono(b@, tv, t8);
         lemma_present_mono(b@, t3, t8);
         lemma_present_mono(b@, t4, t8);
         lemma_present_mono(b@, t5, t8);

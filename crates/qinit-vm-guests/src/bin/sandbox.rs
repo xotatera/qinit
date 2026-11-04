@@ -48,11 +48,12 @@ fn landlock() -> Result<(), String> {
         0,
         "read of /etc/passwd",
     )?;
-    want(
-        probe_path("ll2", "/etc/passwd", "w", &rules)?,
-        eacces,
-        "write of /etc/passwd",
-    )?;
+    // The bind is read-only and Landlock grants no write: either refuses, whichever the
+    // kernel asks first.
+    let w = probe_path("ll2", "/etc/passwd", "w", &rules)?;
+    if w != eacces && w != libc::EROFS {
+        return Err(format!("write of /etc/passwd: {w}, want EACCES or EROFS"));
+    }
     want(
         probe_path("ll3", "/tmp/ll/x", "w", &rules)?,
         0,
@@ -60,8 +61,174 @@ fn landlock() -> Result<(), String> {
     )?;
     want(
         probe_path("ll4", "/proc/self/status", "r", &rules)?,
-        eacces,
-        "read of /proc",
+        libc::ENOENT,
+        "read of the unlisted /proc",
+    )
+}
+
+/// Runs the helper `role` in a view of `paths` (`/init`, which every helper needs, is added).
+fn viewed(
+    name: &str,
+    role: &str,
+    args: &[&str],
+    paths: &[&str],
+    ns: u32,
+) -> Result<(i32, String), String> {
+    let mut request = spec("svc", role, args);
+    request.ns = NS_MOUNT | ns;
+    let mut list: Vec<String> = paths.iter().map(ToString::to_string).collect();
+    list.push("ro:/init".into());
+    list.sort_by(|a, b| a[3..].cmp(&b[3..]));
+    request.paths = list;
+    let o = run_to_end(name, request, true)?;
+    if let Some(f) = o.failure {
+        return Err(format!("launch failed: {f:?}"));
+    }
+    Ok((o.code()?, o.out.trim().to_string()))
+}
+
+fn an_unlisted_path_does_not_exist() -> Result<(), String> {
+    want(
+        viewed("v1", "probe-path", &["/overseer", "r"], &["ro:/etc"], 0)?.0,
+        libc::ENOENT,
+        "open of an unlisted path",
+    )?;
+    want(
+        viewed("v2", "probe-path", &["/etc/passwd", "r"], &["ro:/etc"], 0)?.0,
+        0,
+        "open of a listed path",
+    )
+}
+
+fn the_root_is_read_only() -> Result<(), String> {
+    want(
+        viewed("v3", "probe-statvfs", &["/"], &["ro:/etc"], 0)?.0,
+        0,
+        "the root is read-only",
+    )
+}
+
+fn a_ro_bind_below_rw_is_read_only() -> Result<(), String> {
+    e(std::fs::create_dir_all("/tmp/rwp/sub"))?;
+    let paths = ["rw:/tmp/rwp", "ro:/tmp/rwp/sub"];
+    want(
+        viewed("v4", "probe-statvfs", &["/tmp/rwp"], &paths, 0)?.0,
+        1,
+        "the rw parent is writable",
+    )?;
+    want(
+        viewed("v5", "probe-statvfs", &["/tmp/rwp/sub"], &paths, 0)?.0,
+        0,
+        "the ro child is read-only",
+    )
+}
+
+fn a_submount_below_a_listed_dir_appears_read_only() -> Result<(), String> {
+    e(std::fs::create_dir_all("/tmp/srv/m"))?;
+    e(
+        qinit_sys::mount::mount("tmpfs", std::path::Path::new("/tmp/srv/m"), "tmpfs", 0)
+            .map_err(|x| x.to_string()),
+    )?;
+    let r = viewed("v6", "probe-statvfs", &["/tmp/srv/m"], &["ro:/tmp/srv"], 0);
+    let _ = qinit_sys::mount::umount_detach(std::path::Path::new("/tmp/srv/m"));
+    want(r?.0, 0, "the submount is read-only")
+}
+
+fn a_listed_symlink_is_a_symlink() -> Result<(), String> {
+    let _ = std::fs::remove_file("/tmp/lnk");
+    e(std::os::unix::fs::symlink("/init", "/tmp/lnk"))?;
+    want(
+        viewed("v7", "probe-kind", &["/tmp/lnk"], &["ro:/tmp/lnk"], 0)?.0,
+        10,
+        "a listed symlink",
+    )
+}
+
+fn a_listed_file_is_bound_as_a_file() -> Result<(), String> {
+    want(
+        viewed("v8", "probe-kind", &["/etc/passwd"], &["ro:/etc/passwd"], 0)?.0,
+        12,
+        "a listed file",
+    )?;
+    want(
+        viewed(
+            "v9",
+            "probe-path",
+            &["/etc/passwd", "r"],
+            &["ro:/etc/passwd"],
+            0,
+        )?
+        .0,
+        0,
+        "reading a listed file",
+    )
+}
+
+fn fixed_dev_nodes_work_and_shm_tmp_are_private() -> Result<(), String> {
+    for (i, node) in ["null", "zero", "full", "random", "urandom"]
+        .iter()
+        .enumerate()
+    {
+        let path = format!("/dev/{node}");
+        want(
+            viewed(
+                &format!("vd{i}"),
+                "probe-path",
+                &[&path, "r"],
+                &["ro:/etc"],
+                0,
+            )?
+            .0,
+            0,
+            &format!("reading {path}"),
+        )?;
+    }
+    want(
+        viewed("vd5", "probe-path", &["/dev/null", "w"], &["ro:/etc"], 0)?.0,
+        0,
+        "writing /dev/null",
+    )?;
+    for (i, path) in ["/tmp/private-x", "/dev/shm/private-x"].iter().enumerate() {
+        want(
+            viewed(
+                &format!("vp{i}"),
+                "probe-path",
+                &[path, "w"],
+                &["ro:/etc"],
+                0,
+            )?
+            .0,
+            0,
+            &format!("writing {path}"),
+        )?;
+        if std::path::Path::new(path).exists() {
+            return Err(format!("{path} reached the host"));
+        }
+    }
+    Ok(())
+}
+
+fn proc_in_a_pid_namespace_shows_only_the_namespace() -> Result<(), String> {
+    let (code, out) = viewed("vq", "probe-procs", &[], &["ro:/proc"], NS_PID)?;
+    want(code, 0, "the helper's exit")?;
+    let n: usize = e(out.parse())?;
+    if (1..=3).contains(&n) {
+        Ok(())
+    } else {
+        Err(format!("{n} processes in /proc, want the namespace's few"))
+    }
+}
+
+fn a_setuid_binary_outside_the_list_is_absent() -> Result<(), String> {
+    e(std::fs::write("/tmp/su", b"x"))?;
+    e(std::fs::set_permissions(
+        "/tmp/su",
+        std::os::unix::fs::PermissionsExt::from_mode(0o4755),
+    ))?;
+    want(
+        viewed("vs", "probe-path", &["/tmp/su", "r"], &["ro:/etc"], 0)?.0,
+        libc::ENOENT,
+        "an unlisted setuid file",
     )
 }
 
@@ -259,6 +426,39 @@ fn main() {
         "sandbox",
         &[
             ("landlock_grants_ro_and_rw_and_denies_the_rest", landlock),
+            (
+                "an_unlisted_path_does_not_exist",
+                an_unlisted_path_does_not_exist,
+            ),
+            ("the_root_is_read_only", the_root_is_read_only),
+            (
+                "a_ro_bind_below_rw_is_read_only",
+                a_ro_bind_below_rw_is_read_only,
+            ),
+            (
+                "a_submount_below_a_listed_dir_appears_read_only",
+                a_submount_below_a_listed_dir_appears_read_only,
+            ),
+            (
+                "a_listed_symlink_is_a_symlink",
+                a_listed_symlink_is_a_symlink,
+            ),
+            (
+                "a_listed_file_is_bound_as_a_file",
+                a_listed_file_is_bound_as_a_file,
+            ),
+            (
+                "fixed_dev_nodes_work_and_shm_tmp_are_private",
+                fixed_dev_nodes_work_and_shm_tmp_are_private,
+            ),
+            (
+                "proc_in_a_pid_namespace_shows_only_the_namespace",
+                proc_in_a_pid_namespace_shows_only_the_namespace,
+            ),
+            (
+                "a_setuid_binary_outside_the_list_is_absent",
+                a_setuid_binary_outside_the_list_is_absent,
+            ),
             ("the_default_denylist_returns_eperm", default_denylist),
             ("a_deny_list_adds_to_the_default", deny_list),
             ("an_allow_list_permits_only_its_calls", allow_list),

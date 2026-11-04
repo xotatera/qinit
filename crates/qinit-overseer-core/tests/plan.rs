@@ -205,9 +205,10 @@ fn landlock_entries_follow_nnp_and_precede_seccomp() {
     let s = steps(&spec);
     let i = pos(&s, Step::LandlockRuleset);
     assert_eq!(
-        &s[i..i + 5],
+        &s[i..i + 6],
         &[
             Step::LandlockRuleset,
+            Step::LandlockViewRules,
             Step::LandlockRule(0),
             Step::LandlockRule(1),
             Step::LandlockRule(2),
@@ -227,6 +228,7 @@ fn landlock_entries_follow_nnp_and_precede_seccomp() {
 fn no_landlock_list_means_no_landlock_steps() {
     let s = steps(&minimal());
     assert!(!s.contains(&Step::LandlockRuleset) && !s.contains(&Step::LandlockRestrict));
+    assert!(!s.contains(&Step::LandlockViewRules));
     assert!(!s.contains(&Step::Seccomp));
 }
 
@@ -358,4 +360,88 @@ fn plan_without_limits_has_only_core0() {
     let s = steps(&minimal());
     assert!(!s.iter().any(|x| matches!(x, Step::Rlimit(..))));
     assert!(s.contains(&Step::RlimitCore0));
+}
+
+fn listed() -> ReqSpec {
+    ReqSpec {
+        ns: 0b00011,
+        argv: "/etc/x",
+        paths: "ro:/etc\0rw:/run/x\0ro:/usr",
+        ..minimal()
+    }
+}
+
+fn is_view(x: &Step) -> bool {
+    matches!(
+        x,
+        Step::ViewRoot
+            | Step::ViewDev
+            | Step::ViewTmp
+            | Step::ViewEntry(_)
+            | Step::ViewPivot
+            | Step::ViewSeal
+    )
+}
+
+#[test]
+fn view_steps_follow_the_fork_and_precede_the_credentials() {
+    let s = steps(&listed());
+    let first = s.iter().position(is_view).unwrap();
+    let last = s.iter().rposition(is_view).unwrap();
+    assert!(pos(&s, Step::RearmDeadline) < first);
+    assert!(last < pos(&s, Step::Setgroups));
+    assert!(last < pos(&s, Step::LandlockRuleset));
+    assert_eq!(s[first], Step::ViewRoot);
+    assert_eq!(
+        &s[first..first + 3],
+        &[Step::ViewRoot, Step::ViewDev, Step::ViewTmp]
+    );
+}
+
+#[test]
+fn the_pivot_follows_every_entry_and_precedes_the_seal() {
+    let s = steps(&listed());
+    for i in 0..3 {
+        assert!(pos(&s, Step::ViewEntry(i)) < pos(&s, Step::ViewPivot));
+    }
+    assert!(pos(&s, Step::ViewPivot) < pos(&s, Step::ViewSeal));
+    assert!(pos(&s, Step::ViewTmp) < pos(&s, Step::ViewEntry(0)));
+    assert!(pos(&s, Step::ViewEntry(0)) < pos(&s, Step::ViewEntry(1)));
+}
+
+#[test]
+fn one_view_entry_per_path() {
+    let s = steps(&listed());
+    let entries: Vec<_> = s
+        .iter()
+        .filter(|x| matches!(x, Step::ViewEntry(_)))
+        .collect();
+    assert_eq!(
+        entries,
+        [
+            &Step::ViewEntry(0),
+            &Step::ViewEntry(1),
+            &Step::ViewEntry(2)
+        ]
+    );
+    // Landlock follows the pivot, one rule per entry.
+    assert!(pos(&s, Step::ViewSeal) < pos(&s, Step::LandlockRuleset));
+}
+
+#[test]
+fn no_view_without_a_list() {
+    for ns in [0, 1, 0b00011, 0b11111] {
+        let mut spec = minimal();
+        spec.ns = ns;
+        assert!(!steps(&spec).iter().any(is_view), "ns {ns:#b}");
+    }
+}
+
+#[test]
+fn landlock_view_rules_iff_a_list() {
+    let s = steps(&listed());
+    assert!(pos(&s, Step::LandlockRuleset) < pos(&s, Step::LandlockViewRules));
+    assert!(pos(&s, Step::LandlockViewRules) < pos(&s, Step::LandlockRule(0)));
+    assert!(pos(&s, Step::LandlockRule(2)) < pos(&s, Step::LandlockRestrict));
+    assert!(!steps(&minimal()).contains(&Step::LandlockViewRules));
 }

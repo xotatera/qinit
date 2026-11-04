@@ -62,11 +62,11 @@ fn e_dir(path: &str) -> Result<(), String> {
         .map_err(|x| x.to_string())
 }
 
-fn missing_landlock_path() -> Result<(), String> {
+fn missing_listed_path() -> Result<(), String> {
     let mut request = spec("svc", "exit-0", &[]);
     request.ns = 1;
     request.paths = vec!["ro:/init".into(), "ro:/nonexistent".into()];
-    at("f5", request, "landlock-rule", libc::ENOENT)
+    at("f5", request, "view-entry", libc::ENOENT)
 }
 
 fn unpassed_fd() -> Result<(), String> {
@@ -129,8 +129,8 @@ fn main() {
                 cwd_not_enterable,
             ),
             (
-                "a_missing_landlock_path_fails_the_launch",
-                missing_landlock_path,
+                "a_missing_listed_path_fails_at_its_view_step",
+                missing_listed_path,
             ),
             ("an_unpassed_routed_fd_fails_the_launch", unpassed_fd),
             ("a_tiny_nofile_fails_after_its_step", tiny_nofile),

@@ -8,13 +8,15 @@ use crate::output::{open_input, open_route};
 use crate::request::RequestSpec;
 use crate::status::{STEP_DECODE, STEP_IDENTITY, Status};
 use crate::supervisor::supervise;
+use crate::view;
 use qinit_overseer_core::{
     DEFAULT_DENY, Insn, MAX_BPF, MAX_REQUEST, MAX_STEPS, Q_ARGV_LEN, Q_ARGV_OFF, Q_CAPS_HI,
-    Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_ENV_LEN, Q_ENV_OFF, Q_PATHS_LEN, Q_PATHS_OFF, Q_SECCOMP,
-    Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_STDERR_A, Q_STDERR_B, Q_STDERR_KIND, Q_STDIN_A, Q_STDIN_B,
-    Q_STDIN_KIND, Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND, Q_UMASK, Q_USER_LEN, Q_USER_OFF,
-    STREAM_FD, STREAM_PATH, Step, decode, plan, pool, program, req,
+    Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_ENV_LEN, Q_ENV_OFF, Q_NS, Q_PATHS_LEN, Q_PATHS_OFF,
+    Q_SECCOMP, Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_STDERR_A, Q_STDERR_B, Q_STDERR_KIND, Q_STDIN_A,
+    Q_STDIN_B, Q_STDIN_KIND, Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND, Q_UMASK, Q_USER_LEN,
+    Q_USER_OFF, STREAM_FD, STREAM_PATH, Step, decode, plan, pool, program, req,
 };
+use qinit_sys::fs::{Kind, lstat_kind};
 use qinit_sys::landlock::{
     LANDLOCK_ACCESS_FS_ALL_V3, LANDLOCK_ACCESS_FS_READ, add_path_rule, restrict_self, ruleset,
 };
@@ -23,6 +25,7 @@ use qinit_sys::timer::{Alarm, arm_alarm_at, now_monotonic_ns};
 use qinit_sys::{Errno, Result, cred, fd, memfd, ns, proc, seccomp, spawn};
 use std::ffi::{CStr, CString};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
+use std::path::Path;
 
 /// The sealed request.
 pub const REQUEST_FD: RawFd = 3;
@@ -107,6 +110,15 @@ impl<'a> Run<'a> {
         Ok(items(self.text(off, len)?))
     }
 
+    /// Runs `f` with the mask cleared: the view's directories and mount points are made with
+    /// the modes the view wants, not the service's mask.
+    fn unmasked<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+        let old = umask(0);
+        let r = f();
+        let _ = umask(old);
+        r
+    }
+
     fn caps(&self) -> u64 {
         u64::from(req(self.b, Q_CAPS_LO)) | (u64::from(req(self.b, Q_CAPS_HI)) << 32)
     }
@@ -164,13 +176,17 @@ impl<'a> Run<'a> {
     fn landlock_rule(&self, i: u32) -> Result<()> {
         let list = self.list(Q_PATHS_OFF, Q_PATHS_LEN)?;
         let entry = list.get(i as usize).ok_or(Errno(libc::EINVAL))?;
-        let (access, path) = if let Some(p) = entry.strip_prefix("ro:") {
-            (LANDLOCK_ACCESS_FS_READ, p)
-        } else if let Some(p) = entry.strip_prefix("rw:") {
-            (LANDLOCK_ACCESS_FS_ALL_V3, p)
+        let (ro, path) = view::split(entry)?;
+        let access = if ro {
+            LANDLOCK_ACCESS_FS_READ
         } else {
-            return Err(Errno(libc::EINVAL));
+            LANDLOCK_ACCESS_FS_ALL_V3
         };
+        // A symlink entry is a link in the view: what it points to is reachable only if that
+        // is listed too, so it gets no rule (`O_PATH` would follow it).
+        if lstat_kind(Path::new(path))? == Kind::Symlink {
+            return Ok(());
+        }
         let rs = self.ruleset.as_ref().ok_or(Errno(libc::EBADF))?;
         add_path_rule(rs.as_fd(), &cstring(path)?, access)
     }
@@ -228,6 +244,16 @@ impl<'a> Run<'a> {
             Step::MountTmp => ns::mount_private_tmp(),
             Step::LoopbackUp => ns::loopback_up(),
             Step::Fork => Err(Errno(libc::EINVAL)),
+            Step::ViewRoot => Self::unmasked(view::root),
+            Step::ViewDev => Self::unmasked(view::dev),
+            Step::ViewTmp => Self::unmasked(view::tmp),
+            Step::ViewEntry(i) => {
+                let list = self.list(Q_PATHS_OFF, Q_PATHS_LEN)?;
+                let entry = list.get(i as usize).ok_or(Errno(libc::EINVAL))?;
+                Self::unmasked(|| view::entry(entry, req(self.b, Q_NS) & 2 != 0))
+            }
+            Step::ViewPivot => Self::unmasked(view::pivot),
+            Step::ViewSeal => view::seal(),
             Step::ArmDeadline(ms) => {
                 self.deadline_ns = now_monotonic_ns().saturating_add(u64::from(ms) * 1_000_000);
                 self.alarm = Some(arm_alarm_at(self.deadline_ns)?);
@@ -281,6 +307,10 @@ impl<'a> Run<'a> {
             Step::LandlockRuleset => {
                 self.ruleset = Some(ruleset(LANDLOCK_ACCESS_FS_ALL_V3)?);
                 Ok(())
+            }
+            Step::LandlockViewRules => {
+                let rs = self.ruleset.as_ref().ok_or(Errno(libc::EBADF))?;
+                view::landlock_rules(rs.as_fd())
             }
             Step::LandlockRule(i) => self.landlock_rule(i),
             Step::LandlockRestrict => {
