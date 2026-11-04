@@ -54,7 +54,7 @@ pub fn worker(name: &str) -> Node {
         env: Vec::new(),
         cwd: "/".into(),
         umask: 0o027,
-        rlimit_nofile: 0,
+        rlimits: [None; 16],
         reload: None,
         launch: None,
     }

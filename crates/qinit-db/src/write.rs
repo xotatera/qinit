@@ -9,8 +9,9 @@ use crate::model::{
 };
 use qinit_db_core::{
     HEADER_WORDS, MAGIC, MAX_CREDS, MAX_EDGES, MAX_EDGES_PER_GROUP, MAX_GROUPS,
-    MAX_GROUPS_PER_NODE, MAX_NAME_LEN, MAX_NODES, MAX_POOL, MAX_ROUTES, MAX_SYSCALL, NONE,
-    SECCOMP_ALLOW, SECCOMP_DEFAULT, SECCOMP_DENY, SECCOMP_NONE, T_POOL, VERSION, WORDS,
+    MAX_GROUPS_PER_NODE, MAX_NAME_LEN, MAX_NODES, MAX_POOL, MAX_ROUTES, MAX_SYSCALL, N_RLIMIT_BASE,
+    NONE, RLIMIT_COUNT, SECCOMP_ALLOW, SECCOMP_DEFAULT, SECCOMP_DENY, SECCOMP_NONE, T_POOL,
+    VERSION, WORDS,
 };
 use std::collections::BTreeMap;
 
@@ -131,7 +132,7 @@ fn node_words(
     pool: &mut Pool,
     group_first: u32,
     limits: (usize, usize),
-) -> Result<[u32; 36], WriteError> {
+) -> Result<[u32; WORDS[0]], WriteError> {
     let (routes, creds) = limits;
     if n.name.is_empty() || n.name.len() > MAX_NAME_LEN {
         return Err(WriteError::Limit("name"));
@@ -153,7 +154,7 @@ fn node_words(
     let env = pool.intern_list(&n.env)?;
     let cwd = pool.intern(&n.cwd)?;
     let launch = launch_words(n.launch.as_ref(), pool)?;
-    Ok([
+    let head = [
         kind_word(n.kind),
         name.0,
         name.1,
@@ -183,7 +184,7 @@ fn node_words(
         cwd.0,
         cwd.1,
         n.umask,
-        n.rlimit_nofile,
+        rlimit_mask(&n.rlimits),
         match n.reload {
             None => 0,
             Some(Reload::Hup) => 1,
@@ -195,7 +196,23 @@ fn node_words(
         launch[2],
         launch[3],
         launch[4],
-    ])
+    ];
+    let mut words = [0u32; WORDS[0]];
+    words[..head.len()].copy_from_slice(&head);
+    for (r, limit) in n.rlimits.iter().enumerate() {
+        let v = limit.unwrap_or(0);
+        words[N_RLIMIT_BASE + 2 * r] = v as u32;
+        words[N_RLIMIT_BASE + 2 * r + 1] = (v >> 32) as u32;
+    }
+    Ok(words)
+}
+
+/// The `rlimit_mask` word: bit `r` is set when resource `r` has a limit.
+fn rlimit_mask(limits: &[Option<u64>; RLIMIT_COUNT]) -> u32 {
+    limits
+        .iter()
+        .enumerate()
+        .fold(0, |m, (r, l)| m | (u32::from(l.is_some()) << r))
 }
 
 /// The launch words of a node: concurrency, argv tail, env offset and length, descriptor mask.

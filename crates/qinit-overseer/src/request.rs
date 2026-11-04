@@ -250,7 +250,7 @@ fn build(
         env: node.env.clone(),
         cwd: node.cwd.clone(),
         umask: node.umask,
-        nofile: node.rlimit_nofile,
+        nofile: node.rlimits[7].map_or(0, |v| u32::try_from(v).unwrap_or(u32::MAX)),
         user: cred.user.clone(),
         caps: cred.caps,
         securebits: cred.securebits,

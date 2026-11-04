@@ -263,7 +263,7 @@ fn stop_parallel_on_a_sync_require_path_edge_is_hard_parallel() {
 fn launch_fields_resolve_with_their_defaults() {
     let r = ok("[worker.a]\nexec = [\"/a\"]\ncredentials = { uid = \"svc\" }\n");
     let n = node(&r.model, "a");
-    assert_eq!((n.cwd.as_str(), n.umask, n.rlimit_nofile), ("/", 0o027, 0));
+    assert_eq!((n.cwd.as_str(), n.umask, n.rlimits[7]), ("/", 0o027, None));
     assert!(n.env.is_empty());
     let r = ok(
         "[worker.a]\nexec = [\"/a\"]\ncredentials = { uid = \"svc\" }\nenv = { B = \"2\", A = \"1\", C = \"\" }\ncwd = \"/srv\"\numask = 0o077\nrlimits = { nofile = 4096 }\n",
@@ -271,8 +271,8 @@ fn launch_fields_resolve_with_their_defaults() {
     let n = node(&r.model, "a");
     assert_eq!(n.env, ["A=1", "B=2", "C="]);
     assert_eq!(
-        (n.cwd.as_str(), n.umask, n.rlimit_nofile),
-        ("/srv", 0o077, 4096)
+        (n.cwd.as_str(), n.umask, n.rlimits[7]),
+        ("/srv", 0o077, Some(4096))
     );
 }
 

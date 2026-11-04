@@ -178,9 +178,9 @@ impl Block<'_> {
             }
             self.line("cwd", &quote(&n.cwd));
             self.line("umask", &format!("0o{:03o}", n.umask));
-            let nofile = match n.rlimit_nofile {
-                0 => quote("default"),
-                n => n.to_string(),
+            let nofile = match n.rlimits[7] {
+                None => quote("default"),
+                Some(n) => n.to_string(),
             };
             self.line("rlimits.nofile", &nofile);
             self.reload_and_launch(n);

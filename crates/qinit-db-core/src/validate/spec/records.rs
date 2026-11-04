@@ -104,6 +104,27 @@ pub open spec fn keys_ascending(s: Seq<u8>) -> bool {
         )
 }
 
+/// One resource limit of a node: both words 0 when unset; `nofile` at least 1 and finite;
+/// `nice` and `rtprio` within their ceilings.
+pub open spec fn rlimit_ok(b: Seq<u8>, i: int, r: usize) -> bool {
+    let lo = nf(b, i, (N_RLIMIT_BASE + 2 * r) as usize);
+    let hi = nf(b, i, (N_RLIMIT_BASE + 2 * r + 1) as usize);
+    if ((nf(b, i, N_RLIMIT_MASK) as u32) >> (r as u32)) & 1 == 0 {
+        lo == 0 && hi == 0
+    } else {
+        &&& (r == RLIMIT_NOFILE as usize ==> !(lo == 0 && hi == 0) && !(lo == u32::MAX as int && hi
+            == u32::MAX as int))
+        &&& (r == RLIMIT_NICE as usize ==> hi == 0 && lo <= MAX_RLIMIT_NICE as int)
+        &&& (r == RLIMIT_RTPRIO as usize ==> hi == 0 && lo <= MAX_RLIMIT_RTPRIO as int)
+    }
+}
+
+/// The limit mask holds no bit but `RLIMIT_MASK_ALLOWED`'s and every limit is [`rlimit_ok`].
+pub open spec fn rlimits_ok(b: Seq<u8>, i: int) -> bool {
+    &&& (nf(b, i, N_RLIMIT_MASK) as u32) & !RLIMIT_MASK_ALLOWED == 0
+    &&& forall|r: usize| r < RLIMIT_COUNT ==> #[trigger] rlimit_ok(b, i, r)
+}
+
 pub open spec fn node_enum_ok(b: Seq<u8>, i: int) -> bool {
     &&& nf(b, i, N_KIND) <= 2
     &&& nf(b, i, N_READY_KIND) <= 3
@@ -123,6 +144,7 @@ pub open spec fn node_enum_ok(b: Seq<u8>, i: int) -> bool {
     &&& nf(b, i, N_LAUNCH_CONCURRENCY) <= MAX_LAUNCH_CONCURRENCY
     &&& nf(b, i, N_LAUNCH_ARGV_TAIL) <= MAX_ARGV_TAIL
     &&& nf(b, i, N_LAUNCH_FDS) <= 7
+    &&& rlimits_ok(b, i)
     &&& (nf(b, i, N_KIND) != 1 ==> nf(b, i, N_LAUNCH_CONCURRENCY) == 0)
     &&& (nf(b, i, N_LAUNCH_CONCURRENCY) == 0 ==> nf(b, i, N_LAUNCH_ARGV_TAIL) == 0 && nf(
         b,

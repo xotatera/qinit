@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The owned, nested form of a database. Node references are indices into `Model::nodes`.
 
+use qinit_db_core::RLIMIT_COUNT;
 use qinit_graph_core::GEdge;
 
 /// A whole database.
@@ -56,13 +57,35 @@ pub struct Node {
     pub cwd: String,
     /// The file-mode creation mask, at most `0o777`.
     pub umask: u32,
-    /// `RLIMIT_NOFILE`; 0 keeps the kernel default.
-    pub rlimit_nofile: u32,
-    /// The signal that makes the process re-read its configuration; workers and foragers.
+    /// The resource limits to set, indexed by kernel resource number (`RLIMIT_KEYS`); `None`
+    /// keeps the inherited limit and `Some(u64::MAX)` is infinity. `core` is never set,
+    /// `nofile` is at least 1 and finite, `nice` at most 40 and `rtprio` at most 99.
+    pub rlimits: [Option<u64>; RLIMIT_COUNT],
+    /// The signal that makes the process re-read its configuration; workers.
     pub reload: Option<Reload>,
     /// The launch table of a forager that callers may start instances of.
     pub launch: Option<Launch>,
 }
+
+/// The frame keys of the resource limits, indexed by kernel resource number.
+pub const RLIMIT_KEYS: [&str; RLIMIT_COUNT] = [
+    "cpu",
+    "fsize",
+    "data",
+    "stack",
+    "core",
+    "rss",
+    "nproc",
+    "nofile",
+    "memlock",
+    "as",
+    "locks",
+    "sigpending",
+    "msgqueue",
+    "nice",
+    "rtprio",
+    "rttime",
+];
 
 /// The reload signal of a node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

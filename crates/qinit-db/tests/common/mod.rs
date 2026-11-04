@@ -49,7 +49,7 @@ pub fn node(name: &str, kind: Kind) -> Node {
         env: Vec::new(),
         cwd: "/".into(),
         umask: 0o027,
-        rlimit_nofile: 0,
+        rlimits: [None; 16],
         reload: None,
         launch: None,
     }
@@ -77,7 +77,7 @@ pub fn sample() -> Model {
     logd.env = vec!["LOGD_DIR=/var/log/qinit".into()];
     logd.cwd = "/var/log/qinit".into();
     logd.umask = 0o077;
-    logd.rlimit_nofile = 1024;
+    logd.rlimits[7] = Some(1024);
     logd.restart = Restart {
         policy: RestartPolicy::Always,
         max: 5,

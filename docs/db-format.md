@@ -48,7 +48,7 @@ limits of `qinit-graph-core`.
 
 ## Records
 
-### Node (36 words)
+### Node (68 words)
 
 | Word | Name | Meaning |
 | --- | --- | --- |
@@ -74,12 +74,13 @@ limits of `qinit-graph-core`.
 | 24, 25 | `N_ENV_OFF`, `N_ENV_LEN` | environment entries `KEY=VALUE` in the pool, NUL-separated, sorted by key; length 0 for none |
 | 26, 27 | `N_CWD_OFF`, `N_CWD_LEN` | working directory in the pool, a non-empty absolute path |
 | 28 | `N_UMASK` | file-mode creation mask, at most `MAX_UMASK` |
-| 29 | `N_RLIMIT_NOFILE` | `RLIMIT_NOFILE` soft and hard limit; 0 keeps the kernel default |
+| 29 | `N_RLIMIT_MASK` | the resource limits that are set: bit `r` for kernel resource number `r` (cpu 0, fsize 1, data 2, stack 3, core 4, rss 5, nproc 6, nofile 7, memlock 8, as 9, locks 10, sigpending 11, msgqueue 12, nice 13, rtprio 14, rttime 15); bit 4 (`core`) and bits above 15 are never set |
 | 30 | `N_RELOAD` | the signal that makes the process re-read its configuration: 0 none, 1 `SIGHUP`, 2 `SIGUSR1`, 3 `SIGUSR2`; at most 3 |
 | 31 | `N_LAUNCH_CONCURRENCY` | instances of a forager at once, 1 to `MAX_LAUNCH_CONCURRENCY` (64); 0 for a node that cannot be launched, which every node but a forager must be |
 | 32 | `N_LAUNCH_ARGV_TAIL` | extra argv elements a caller may append, at most `MAX_ARGV_TAIL` (64); 0 when `N_LAUNCH_CONCURRENCY` is 0 |
 | 33, 34 | `N_LAUNCH_ENV_OFF`, `N_LAUNCH_ENV_LEN` | the environment keys a caller may set, in the pool, NUL-separated: no key is empty or holds `=`, and the keys ascend strictly bytewise (so none repeats); length 0 for none, and always 0 when `N_LAUNCH_CONCURRENCY` is 0 |
 | 35 | `N_LAUNCH_FDS` | the standard descriptors a caller may supply: a mask of `FD_STDIN` (1), `FD_STDOUT` (2) and `FD_STDERR` (4); at most 7, and 0 when `N_LAUNCH_CONCURRENCY` is 0 |
+| 36–67 | `N_RLIMIT_BASE` + 2`r`, + 2`r` + 1 | the low and high word of resource `r`'s limit (soft and hard are both set to it); both 0 when bit `r` of `N_RLIMIT_MASK` is clear; all ones is infinity; `nofile` is at least 1 and finite, `nice` at most 40, `rtprio` at most 99 |
 
 ### Group (3 words)
 

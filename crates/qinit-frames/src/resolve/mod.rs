@@ -387,7 +387,16 @@ fn node(
         env,
         cwd: f.cwd.clone().unwrap_or_else(|| "/".to_owned()),
         umask: f.umask.unwrap_or(DEFAULT_UMASK),
-        rlimit_nofile: f.rlimits.as_ref().and_then(|r| r.nofile).unwrap_or(0),
+        rlimits: {
+            let mut l = [None; 16];
+            l[7] = f
+                .rlimits
+                .as_ref()
+                .and_then(|r| r.nofile)
+                .filter(|v| *v > 0)
+                .map(u64::from);
+            l
+        },
         reload: f.reload.as_deref().map(reload_of),
         launch: f.launch.as_ref().map(launch_of),
     }

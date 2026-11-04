@@ -7,7 +7,7 @@ use qinit_db::{
     Kind, Launch, Model, ReadError, Reload, Seccomp, Stop, StopMode, Target, WriteError, crc32,
     open, write,
 };
-use qinit_db_core::{T_POOL, word};
+use qinit_db_core::{N_RLIMIT_BASE, N_RLIMIT_MASK, RLIMIT_COUNT, T_NODES, T_POOL, WORDS, word};
 
 #[test]
 fn a_model_round_trips_through_write_open_decode() {
@@ -171,8 +171,8 @@ fn launch_fields_and_seccomp_lists_round_trip() {
     let logd = back.nodes.iter().find(|n| n.name == "logd").unwrap();
     assert_eq!(logd.env, ["LOGD_DIR=/var/log/qinit"]);
     assert_eq!(
-        (logd.cwd.as_str(), logd.umask, logd.rlimit_nofile),
-        ("/var/log/qinit", 0o077, 1024)
+        (logd.cwd.as_str(), logd.umask, logd.rlimits[7]),
+        ("/var/log/qinit", 0o077, Some(1024))
     );
     assert_eq!(back.creds[0].seccomp, Seccomp::Deny(vec![101, 310]));
 }
@@ -234,4 +234,50 @@ fn a_launch_table_with_unsorted_keys_does_not_open() {
     });
     let bytes = write(&model).expect("writes");
     assert!(matches!(open(&bytes), Err(ReadError::Db(_))));
+}
+
+/// Word `w` of node `i`'s record.
+fn node_word(bytes: &[u8], i: usize, w: usize) -> u32 {
+    word(
+        bytes,
+        word(bytes, 4 + 2 * T_NODES) as usize / 4 + i * WORDS[T_NODES] + w,
+    )
+}
+
+#[test]
+fn every_limit_round_trips() {
+    let mut model = sample();
+    let values = [0, 1, u64::MAX, 1 << 40, 7, 4096];
+    for r in (0..RLIMIT_COUNT).filter(|r| *r != 4) {
+        let v = values[r % values.len()];
+        // nofile is at least 1 and finite; nice and rtprio are small.
+        model.nodes[0].rlimits[r] = Some(match r {
+            7 => 1 + (r as u64) * 100,
+            13 | 14 => 9,
+            _ => v,
+        });
+    }
+    let bytes = write(&model).expect("writes");
+    let back = open(&bytes).expect("opens").decode();
+    assert_eq!(back.nodes[0].rlimits, model.nodes[0].rlimits);
+    assert_eq!(back, model);
+}
+
+#[test]
+fn a_node_without_limits_has_mask_zero() {
+    let bytes = write(&sample()).expect("writes");
+    assert_eq!(node_word(&bytes, 0, N_RLIMIT_MASK), 0);
+    for w in N_RLIMIT_BASE..N_RLIMIT_BASE + 2 * RLIMIT_COUNT {
+        assert_eq!(node_word(&bytes, 0, w), 0, "word {w}");
+    }
+}
+
+#[test]
+fn a_set_limit_sets_its_bit_and_words() {
+    let mut model = sample();
+    model.nodes[0].rlimits[3] = Some((5 << 32) | 6);
+    let bytes = write(&model).expect("writes");
+    assert_eq!(node_word(&bytes, 0, N_RLIMIT_MASK), 1 << 3);
+    assert_eq!(node_word(&bytes, 0, N_RLIMIT_BASE + 6), 6);
+    assert_eq!(node_word(&bytes, 0, N_RLIMIT_BASE + 7), 5);
 }

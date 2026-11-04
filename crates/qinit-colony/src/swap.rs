@@ -99,7 +99,7 @@ fn launch_same(a: &Canon, b: &Canon) -> bool {
         && x.env == y.env
         && x.cwd == y.cwd
         && x.umask == y.umask
-        && x.rlimit_nofile == y.rlimit_nofile
+        && x.rlimits == y.rlimits
         && x.memory_max_kib == y.memory_max_kib
         && x.pids_max == y.pids_max
         && x.instance_of == y.instance_of
