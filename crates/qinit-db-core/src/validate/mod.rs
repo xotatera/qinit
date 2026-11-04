@@ -5,11 +5,13 @@ mod graph;
 mod header;
 mod keys;
 mod lists;
+mod paths;
 mod pool;
 mod records;
 mod spec;
 mod utf8;
 
+pub use paths::{canonical_exec, path_entry_ok_exec};
 pub use pool::{count_elements, elements_ok, nul_list_ok};
 #[allow(unused_imports)] // the specs only; Verus erases them outside verification
 pub use spec::*;
@@ -147,7 +149,7 @@ pub open spec fn edge_string_readable(b: Seq<u8>, x: int) -> bool {
 /// Credential `c`'s strings are readable.
 pub open spec fn cred_strings_readable(b: Seq<u8>, c: int) -> bool {
     &&& slice_readable(b, cf(b, c, C_USER_OFF), cf(b, c, C_USER_LEN))
-    &&& slice_readable(b, cf(b, c, C_LANDLOCK_OFF), cf(b, c, C_LANDLOCK_LEN))
+    &&& slice_readable(b, cf(b, c, C_PATHS_OFF), cf(b, c, C_PATHS_LEN))
     &&& slice_readable(b, cf(b, c, C_SECCOMP_OFF), cf(b, c, C_SECCOMP_LEN))
 }
 

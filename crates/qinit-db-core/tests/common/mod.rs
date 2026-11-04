@@ -90,6 +90,8 @@ pub struct CredSpec {
     pub seccomp: u32,
     /// The seccomp list, raw NUL-joined decimals.
     pub seccomp_list: &'static str,
+    /// The path list, raw NUL-joined `ro:`/`rw:` entries.
+    pub paths: &'static str,
 }
 
 /// A credential for `user`: no caps, `no_new_privs` on, no seccomp.
@@ -100,6 +102,7 @@ pub fn cred(user: &'static str) -> CredSpec {
         nnp: 1,
         seccomp: 0,
         seccomp_list: "",
+        paths: "",
     }
 }
 
@@ -252,6 +255,7 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
     for c in &spec.creds {
         let (uo, ul) = intern(&mut pool, c.user.as_bytes());
         let (so, sl) = intern(&mut pool, c.seccomp_list.as_bytes());
+        let (po, pl) = intern(&mut pool, c.paths.as_bytes());
         let mut rec = [0u32; 12];
         rec[C_USER_OFF] = uo;
         rec[C_USER_LEN] = ul;
@@ -259,6 +263,8 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
         rec[C_SECCOMP] = c.seccomp;
         rec[C_SECCOMP_OFF] = so;
         rec[C_SECCOMP_LEN] = sl;
+        rec[C_PATHS_OFF] = po;
+        rec[C_PATHS_LEN] = pl;
         rec[C_CAPS_LO] = n32(usize::try_from(c.caps & 0xffff_ffff).unwrap());
         rec[C_CAPS_HI] = n32(usize::try_from(c.caps >> 32).unwrap());
         creds.extend_from_slice(&rec);

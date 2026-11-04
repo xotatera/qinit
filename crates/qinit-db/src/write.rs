@@ -287,7 +287,7 @@ fn edge_words(e: &Edge, pool: &mut Pool, nodes: usize) -> Result<[u32; 7], Write
 
 fn cred_words(c: &Cred, pool: &mut Pool) -> Result<[u32; 12], WriteError> {
     let user = pool.intern(&c.user)?;
-    let landlock = pool.intern_list(&c.landlock)?;
+    let paths = pool.intern_list(&c.paths)?;
     let (seccomp, list) = seccomp_words(&c.seccomp, pool)?;
     Ok([
         user.0,
@@ -302,8 +302,8 @@ fn cred_words(c: &Cred, pool: &mut Pool) -> Result<[u32; 12], WriteError> {
         u32::from(c.nnp),
         c.ns,
         seccomp,
-        landlock.0,
-        landlock.1,
+        paths.0,
+        paths.1,
         list.0,
         list.1,
     ])

@@ -5,7 +5,7 @@ exec = ["/usr/lib/qinit/logd", "--dir", "/var/log/qinit"]
 restart = { policy = "on-failure", max = 3, window = "1m" }
 cell = { memory_max = "16M", pids_max = 4 }
 credentials = { uid = "logd" }
-sandbox = { namespaces = ["ipc", "uts"], seccomp = "default", landlock = ["ro:/etc/logd", "rw:/var/log/qinit"] }
+sandbox = { namespaces = ["ipc", "uts"], seccomp = "default", paths = ["ro:/etc/logd", "rw:/var/log/qinit"] }
 env = { LOGD_DIR = "/var/log/qinit" }
 cwd = "/var/log/qinit"
 umask = 0o077

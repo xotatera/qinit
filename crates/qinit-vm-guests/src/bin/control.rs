@@ -66,7 +66,7 @@ fn world() -> Result<Colony<Sim>, String> {
             nnp: true,
             ns: 0,
             seccomp: Seccomp::None,
-            landlock: Vec::new(),
+            paths: Vec::new(),
         }],
         routes: Vec::new(),
         enabled: vec![0],

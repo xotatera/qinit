@@ -4,6 +4,7 @@
 //! lists (argv, Landlock entries) hold no empty element.
 use super::DbError;
 use super::header::{field, header_word};
+use super::paths::{canonical_exec, path_entry_ok_exec};
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use super::spec::*;
 use super::utf8::utf8_check;
@@ -214,7 +215,7 @@ fn check_cred_pool(b: &[u8], c: usize) -> (r: Result<(), DbError>)
     let t = T_CREDS;
     let (tb, rec) = (tid(t), rid(c));
     pool_ref_ok(b, field(b, t, c, C_USER_OFF), field(b, t, c, C_USER_LEN), tb, rec)?;
-    list_ok(b, field(b, t, c, C_LANDLOCK_OFF), field(b, t, c, C_LANDLOCK_LEN), tb, rec)?;
+    list_ok(b, field(b, t, c, C_PATHS_OFF), field(b, t, c, C_PATHS_LEN), tb, rec)?;
     list_ok(b, field(b, t, c, C_SECCOMP_OFF), field(b, t, c, C_SECCOMP_LEN), tb, rec)
 }
 
@@ -327,35 +328,15 @@ pub(crate) proof fn lemma_elem_start(s: Seq<u8>, es: int, i: int, p: int)
     }
 }
 
-/// `s[p..q]` is a [`landlock_entry_ok`] entry: `ro:/` or `rw:/` and a path.
-fn landlock_entry_ok_exec(s: &[u8], p: usize, q: usize) -> (ok: bool)
-    requires
-        p <= q <= s@.len(),
-    ensures
-        ok ==> landlock_entry_ok(s@.subrange(p as int, q as int)),
-{
-    if q - p < 4 {
-        return false;
-    }
-    let ok = s[p] == 0x72 && (s[p + 1] == 0x6f || s[p + 1] == 0x77) && s[p + 2] == 0x3a && s[p + 3]
-        == 0x2f;
-    if ok {
-        let ghost entry = s@.subrange(p as int, q as int);
-        assert(entry[0] == s@[p as int] && entry[1] == s@[p + 1] && entry[2] == s@[p + 2]
-            && entry[3] == s@[p + 3]);
-    }
-    ok
-}
-
 /// The element rule of `kind`: [`env_entry_ok`] for 0, [`decimal_ok`] for 1,
-/// [`landlock_entry_ok`] for 2, [`launch_key_ok`] for 3.
+/// [`path_entry_ok`] for 2, [`launch_key_ok`] for 3.
 pub open spec fn elem_ok(e: Seq<u8>, kind: u32) -> bool {
     if kind == 0 {
         env_entry_ok(e)
     } else if kind == 1 {
         decimal_ok(e)
     } else if kind == 2 {
-        landlock_entry_ok(e)
+        path_entry_ok(e)
     } else {
         launch_key_ok(e)
     }
@@ -402,14 +383,14 @@ fn elem_ok_exec(s: &[u8], p: usize, q: usize, kind: u32) -> (ok: bool)
     } else if kind == 1 {
         decimal_ok_exec(s, p, q)
     } else if kind == 2 {
-        landlock_entry_ok_exec(s, p, q)
+        path_entry_ok_exec(s, p, q)
     } else {
         launch_key_ok_exec(s, p, q)
     }
 }
 
 /// Every element of the NUL-separated list `s` passes the check of `kind`: [`env_entry_ok`]
-/// for 0, [`decimal_ok`] for 1, [`landlock_entry_ok`] for 2, [`launch_key_ok`] for 3.
+/// for 0, [`decimal_ok`] for 1, [`path_entry_ok`] for 2, [`launch_key_ok`] for 3.
 #[must_use]
 pub fn elements_ok(s: &[u8], kind: u32) -> (ok: bool)
     requires
@@ -418,7 +399,7 @@ pub fn elements_ok(s: &[u8], kind: u32) -> (ok: bool)
     ensures
         ok && kind == 0 ==> env_list_ok(s@),
         ok && kind == 1 ==> seccomp_list_ok(s@),
-        ok && kind == 2 ==> landlock_list_ok(s@),
+        ok && kind == 2 ==> paths_list_ok(s@),
         ok && kind == 3 ==> launch_keys_ok(s@),
 {
     let n = s.len();
@@ -531,7 +512,7 @@ pub(crate) fn seccomp_list_ok_exec(b: &[u8], off: u32, len: u32) -> (ok: bool)
     elements_ok(s, 1)
 }
 
-/// The pool string `off..off + len` is a non-empty absolute path (V4).
+/// The pool string `off..off + len` is a canonical absolute path (V4).
 pub(crate) fn cwd_ok_exec(b: &[u8], off: u32, len: u32) -> (ok: bool)
     requires
         v1(b@),
@@ -541,7 +522,30 @@ pub(crate) fn cwd_ok_exec(b: &[u8], off: u32, len: u32) -> (ok: bool)
 {
     assert(table_ok(b@, T_POOL as int));
     let a = header_word(b, 4 + 2 * T_POOL) as usize + off as usize;
-    len >= 1 && b[a] == 0x2f
+    let ok = canonical_exec(b, a, a + len as usize);
+    proof {
+        if ok {
+            assert(pool_slice(b@, off as int, len as int) =~= b@.subrange(
+                a as int,
+                a as int + len as int,
+            ));
+        }
+    }
+    ok
+}
+
+/// The pool list `off..off + len` holds only [`path_entry_ok`] entries (V4).
+pub(crate) fn paths_list_ok_exec(b: &[u8], off: u32, len: u32) -> (ok: bool)
+    requires
+        v1(b@),
+        list_ref(b@, off as int, len as int),
+    ensures
+        ok ==> paths_list_ok(pool_slice(b@, off as int, len as int)),
+{
+    assert(table_ok(b@, T_POOL as int));
+    let a = header_word(b, 4 + 2 * T_POOL) as usize + off as usize;
+    let s = vstd::slice::slice_subrange(b, a, a + len as usize);
+    elements_ok(s, 2)
 }
 
 /// Checks every pool reference of every record (V2).

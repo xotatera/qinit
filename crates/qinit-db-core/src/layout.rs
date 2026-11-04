@@ -331,11 +331,11 @@ pub const C_NS: usize = 6;
 /// Credential record word 7: `seccomp`.
 pub const C_SECCOMP: usize = 7;
 
-/// Credential record word 8: `landlock_off`.
-pub const C_LANDLOCK_OFF: usize = 8;
+/// Credential record word 8: `paths_off`.
+pub const C_PATHS_OFF: usize = 8;
 
-/// Credential record word 9: `landlock_len`.
-pub const C_LANDLOCK_LEN: usize = 9;
+/// Credential record word 9: `paths_len`.
+pub const C_PATHS_LEN: usize = 9;
 
 /// Credential record word 10: `seccomp_off`, NUL-separated canonical decimals below
 /// `MAX_SYSCALL`.

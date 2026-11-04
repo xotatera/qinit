@@ -133,7 +133,7 @@ fn check_refs(b: &[u8]) -> (r: Result<(), LaunchError>)
     pool_ref_ok(b, rword(b, Q_CWD_OFF), rword(b, Q_CWD_LEN))?;
     pool_ref_ok(b, rword(b, Q_USER_OFF), rword(b, Q_USER_LEN))?;
     list_ref_ok(b, rword(b, Q_SECCOMP_OFF), rword(b, Q_SECCOMP_LEN))?;
-    list_ref_ok(b, rword(b, Q_LANDLOCK_OFF), rword(b, Q_LANDLOCK_LEN))?;
+    list_ref_ok(b, rword(b, Q_PATHS_OFF), rword(b, Q_PATHS_LEN))?;
     if rword(b, Q_STDIN_KIND) == STREAM_PATH {
         pool_ref_ok(b, rword(b, Q_STDIN_A), rword(b, Q_STDIN_B))?;
     }
@@ -294,13 +294,12 @@ fn check_content(b: &[u8]) -> (r: Result<(), LaunchError>)
     if user_len == 0 || user_len as usize > MAX_NAME_LEN {
         return Err(LaunchError::Consistency);
     }
-    let cwd_off = rword(b, Q_CWD_OFF);
-    if rword(b, Q_CWD_LEN) == 0 {
+    let cwd = field(b, rword(b, Q_CWD_OFF), rword(b, Q_CWD_LEN));
+    if !canonical_exec(cwd, 0, cwd.len()) {
         return Err(LaunchError::Consistency);
     }
-    let pool_off = hword(b, H_POOL_OFF) as usize;
-    if b[pool_off + cwd_off as usize] != 0x2f {
-        return Err(LaunchError::Consistency);
+    proof {
+        assert(cwd@.subrange(0, cwd@.len() as int) =~= cwd@);
     }
     let env = field(b, rword(b, Q_ENV_OFF), rword(b, Q_ENV_LEN));
     if !elements_ok(env, 0) || count_elements(env) > MAX_ENV_ENTRIES {
@@ -310,11 +309,11 @@ fn check_content(b: &[u8]) -> (r: Result<(), LaunchError>)
     if !elements_ok(seccomp, 1) || count_elements(seccomp) > MAX_SECCOMP_LIST {
         return Err(LaunchError::Consistency);
     }
-    let landlock = field(b, rword(b, Q_LANDLOCK_OFF), rword(b, Q_LANDLOCK_LEN));
-    if !elements_ok(landlock, 2) || count_elements(landlock) > MAX_LANDLOCK_ENTRIES {
+    let paths = field(b, rword(b, Q_PATHS_OFF), rword(b, Q_PATHS_LEN));
+    if !elements_ok(paths, 2) || count_elements(paths) > MAX_PATH_ENTRIES {
         return Err(LaunchError::Consistency);
     }
-    if rword(b, Q_NNP) == 0 && (rword(b, Q_LANDLOCK_LEN) > 0 || rword(b, Q_SECCOMP) != 0) && rword(
+    if rword(b, Q_NNP) == 0 && (rword(b, Q_PATHS_LEN) > 0 || rword(b, Q_SECCOMP) != 0) && rword(
         b,
         Q_CAPS_LO,
     ) & CAP_SYS_ADMIN_MASK == 0 {

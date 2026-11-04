@@ -264,7 +264,7 @@ pub struct Cred {
     /// Seccomp filter.
     pub seccomp: Seccomp,
     /// Landlock entries, `ro:/path` or `rw:/path`; non-empty, no NUL.
-    pub landlock: Vec<String>,
+    pub paths: Vec<String>,
 }
 
 /// Securebits preset.

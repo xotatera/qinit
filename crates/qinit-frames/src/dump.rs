@@ -238,10 +238,7 @@ impl Block<'_> {
         self.line("credentials.securebits", &quote(securebits));
         self.line("sandbox.namespaces", &list(ns));
         self.line("sandbox.seccomp", &seccomp);
-        self.line(
-            "sandbox.landlock",
-            &list(c.landlock.iter().map(|s| quote(s))),
-        );
+        self.line("sandbox.paths", &list(c.paths.iter().map(|s| quote(s))));
     }
 }
 

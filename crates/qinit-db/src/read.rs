@@ -241,7 +241,7 @@ impl Reader<'_> {
                 SECCOMP_DENY => Seccomp::Deny(self.syscalls(f(10), f(11))),
                 _ => Seccomp::Allow(self.syscalls(f(10), f(11))),
             },
-            landlock: self.list(f(8), f(9)),
+            paths: self.list(f(8), f(9)),
         }
     }
 

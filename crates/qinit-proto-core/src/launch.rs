@@ -25,7 +25,7 @@ pub const FIXED_BYTES: usize = 4 * (HEADER_WORDS + REQ_WORDS);
 pub const MAX_REQUEST: usize = 65536;
 
 /// Landlock entries a request may hold at most.
-pub const MAX_LANDLOCK_ENTRIES: usize = 64;
+pub const MAX_PATH_ENTRIES: usize = 64;
 
 /// Seccomp list entries a request may hold at most.
 pub const MAX_SECCOMP_LIST: usize = 512;
@@ -110,11 +110,11 @@ pub const Q_SECCOMP_OFF: usize = 16;
 /// Record word 17: `seccomp_len`, 0 exactly when `seccomp` is 0 or 1.
 pub const Q_SECCOMP_LEN: usize = 17;
 
-/// Record word 18: `landlock_off`, NUL-separated `ro:/path` or `rw:/path` entries.
-pub const Q_LANDLOCK_OFF: usize = 18;
+/// Record word 18: `paths_off`, NUL-separated `ro:/path` or `rw:/path` entries.
+pub const Q_PATHS_OFF: usize = 18;
 
-/// Record word 19: `landlock_len`.
-pub const Q_LANDLOCK_LEN: usize = 19;
+/// Record word 19: `paths_len`.
+pub const Q_PATHS_LEN: usize = 19;
 
 /// Record word 20: `stdout_kind`, `STREAM_PATH` or `STREAM_FD`.
 pub const Q_STDOUT_KIND: usize = 20;

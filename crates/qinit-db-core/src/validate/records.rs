@@ -6,7 +6,7 @@
 
 use super::header::{field, header_word};
 use super::keys::launch_keys_exec;
-use super::pool::{cwd_ok_exec, env_list_ok_exec, seccomp_list_ok_exec};
+use super::pool::{cwd_ok_exec, env_list_ok_exec, paths_list_ok_exec, seccomp_list_ok_exec};
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use super::spec::*;
 use super::{DbError, rid, tid};
@@ -187,12 +187,15 @@ fn check_cred(b: &[u8], c: usize) -> (r: Result<(), DbError>)
         return Err(DbError::Enum { table: tid(t), record: rid(c) });
     }
     let caps_lo = field(b, t, c, C_CAPS_LO);
-    if nnp == 0 && (field(b, t, c, C_LANDLOCK_LEN) > 0 || seccomp != 0) && caps_lo
-        & CAP_SYS_ADMIN_MASK == 0 {
+    if nnp == 0 && (field(b, t, c, C_PATHS_LEN) > 0 || seccomp != 0) && caps_lo & CAP_SYS_ADMIN_MASK
+        == 0 {
         assert(!has_sys_admin(b@, c as int));
         return Err(DbError::Consistency { table: tid(t), record: rid(c) });
     }
     if !seccomp_list_ok_exec(b, field(b, t, c, C_SECCOMP_OFF), seccomp_len) {
+        return Err(DbError::Consistency { table: tid(t), record: rid(c) });
+    }
+    if !paths_list_ok_exec(b, field(b, t, c, C_PATHS_OFF), field(b, t, c, C_PATHS_LEN)) {
         return Err(DbError::Consistency { table: tid(t), record: rid(c) });
     }
     Ok(())

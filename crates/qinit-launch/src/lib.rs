@@ -5,7 +5,7 @@
 use qinit_proto_core::launch::{
     FLAG_DIE_WITH_PARENT, HEADER_WORDS, LAUNCH_MAGIC, LAUNCH_VERSION, MAX_REQUEST, Q_ARGV_LEN,
     Q_ARGV_OFF, Q_CAPS_HI, Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_DEADLINE_MS, Q_ENV_LEN, Q_ENV_OFF,
-    Q_FLAGS, Q_LANDLOCK_LEN, Q_LANDLOCK_OFF, Q_NNP, Q_NS, Q_READY_FD, Q_READY_KIND, Q_RLIMIT_BASE,
+    Q_FLAGS, Q_NNP, Q_NS, Q_PATHS_LEN, Q_PATHS_OFF, Q_READY_FD, Q_READY_KIND, Q_RLIMIT_BASE,
     Q_RLIMIT_MASK, Q_SECCOMP, Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_SECUREBITS, Q_STDERR_A, Q_STDERR_B,
     Q_STDERR_KIND, Q_STDIN_A, Q_STDIN_B, Q_STDIN_KIND, Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND,
     Q_UMASK, Q_USER_LEN, Q_USER_OFF, READY_NONE, READY_PIPE, REQ_WORDS, STREAM_FD, STREAM_PATH,
@@ -55,7 +55,7 @@ pub struct RequestSpec {
     pub nnp: bool,
     pub ns: u32,
     pub seccomp: Seccomp,
-    pub landlock: Vec<String>,
+    pub paths: Vec<String>,
     pub stdin: Stream,
     pub stdout: Stream,
     pub stderr: Stream,
@@ -78,7 +78,7 @@ impl Default for RequestSpec {
             nnp: true,
             ns: 0,
             seccomp: Seccomp::None,
-            landlock: Vec::new(),
+            paths: Vec::new(),
             stdin: Stream::Path("/dev/null".into()),
             stdout: Stream::Path("/dev/null".into()),
             stderr: Stream::Same,
@@ -141,8 +141,8 @@ impl RequestSpec {
         let (o, l) = pool.list(&nums)?;
         rec[Q_SECCOMP] = mode;
         (rec[Q_SECCOMP_OFF], rec[Q_SECCOMP_LEN]) = (o, l);
-        let (o, l) = pool.list(&self.landlock)?;
-        (rec[Q_LANDLOCK_OFF], rec[Q_LANDLOCK_LEN]) = (o, l);
+        let (o, l) = pool.list(&self.paths)?;
+        (rec[Q_PATHS_OFF], rec[Q_PATHS_LEN]) = (o, l);
         if self.stdin == Stream::Same || self.stdout == Stream::Same {
             return Err(EncodeError::BadStream);
         }

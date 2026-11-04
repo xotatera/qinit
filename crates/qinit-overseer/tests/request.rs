@@ -31,7 +31,7 @@ fn full() -> RequestSpec {
         nnp: true,
         ns: 0b10011,
         seccomp: Seccomp::Deny(vec![101, 110]),
-        landlock: vec!["ro:/etc".into(), "rw:/var/log".into()],
+        paths: vec!["ro:/etc".into(), "rw:/var/log".into()],
         stdin: Stream::Fd(8),
         stdout: Stream::Path("/var/log/out".into()),
         stderr: Stream::Fd(7),
@@ -55,10 +55,7 @@ fn a_request_spec_round_trips_through_decode() {
     assert_eq!(text(&b, Q_CWD_OFF, Q_CWD_LEN), "/srv");
     assert_eq!(text(&b, Q_USER_OFF, Q_USER_LEN), "svc");
     assert_eq!(text(&b, Q_SECCOMP_OFF, Q_SECCOMP_LEN), "101\x00110");
-    assert_eq!(
-        text(&b, Q_LANDLOCK_OFF, Q_LANDLOCK_LEN),
-        "ro:/etc\0rw:/var/log"
-    );
+    assert_eq!(text(&b, Q_PATHS_OFF, Q_PATHS_LEN), "ro:/etc\0rw:/var/log");
     assert_eq!(text(&b, Q_STDOUT_A, Q_STDOUT_B), "/var/log/out");
     assert_eq!(req(&b, Q_UMASK), 0o077);
     assert_eq!(req(&b, Q_RLIMIT_MASK), 1 << 7);
@@ -138,7 +135,7 @@ fn from_model_on_the_golden_tree_decodes() {
     assert_eq!(spec.user, "logd");
     assert_eq!(spec.ns, 0b01100);
     assert_eq!(spec.seccomp, Seccomp::Default);
-    assert_eq!(spec.landlock, ["ro:/etc/logd", "rw:/var/log/qinit"]);
+    assert_eq!(spec.paths, ["ro:/etc/logd", "rw:/var/log/qinit"]);
     assert_eq!(spec.ready_fd, Some(6));
     let piped = m
         .nodes

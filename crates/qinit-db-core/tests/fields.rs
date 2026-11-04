@@ -433,6 +433,61 @@ fn a_relative_or_empty_cwd_is_a_consistency_error() {
 }
 
 #[test]
+fn a_path_entry_without_its_prefix_is_consistency() {
+    for bad in ["xx:/a", "/a", "ro:", "ro:a"] {
+        let mut spec = minimal_spec();
+        spec.creds[0].paths = bad;
+        assert_eq!(
+            check(&build(&spec)),
+            Err(DbError::Consistency {
+                table: tid(T_CREDS),
+                record: 0
+            }),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn a_non_canonical_path_entry_is_consistency() {
+    for bad in [
+        "ro:/a/..",
+        "rw:/tmp/",
+        "ro://x",
+        "rw:/dev/.",
+        "ro:/a//b",
+        "ro:/a/./b",
+        "ro:/a/../b",
+    ] {
+        let mut spec = minimal_spec();
+        spec.creds[0].paths = bad;
+        assert_eq!(
+            check(&build(&spec)),
+            Err(DbError::Consistency {
+                table: tid(T_CREDS),
+                record: 0
+            }),
+            "{bad:?}"
+        );
+    }
+    let mut spec = minimal_spec();
+    spec.creds[0].paths = "ro:/\0rw:/a/.b/..c/d.\0ro:/a/b";
+    assert_eq!(check(&build(&spec)), Ok(()));
+}
+
+#[test]
+fn a_non_canonical_cwd_is_consistency() {
+    for bad in ["/a/..", "/a/", "//a", "/a/./b", "/a//b", "/.."] {
+        let mut spec = minimal_spec();
+        spec.nodes[0].cwd = bad;
+        assert_eq!(check(&build(&spec)), consistency(), "{bad:?}");
+    }
+    let mut spec = minimal_spec();
+    spec.nodes[0].cwd = "/a/.b/..c";
+    assert_eq!(check(&build(&spec)), Ok(()));
+}
+
+#[test]
 fn an_env_entry_without_a_key_or_without_an_equals_sign_is_a_consistency_error() {
     for bad in ["=x", "NOEQ", "A=1\0=b", "A=1\0B"] {
         let mut spec = minimal_spec();

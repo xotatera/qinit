@@ -251,8 +251,8 @@ pub open spec fn sb_value(sb: int) -> int {
 }
 
 /// The Landlock entries of the request.
-pub open spec fn landlock_elems(b: Seq<u8>) -> int {
-    elems(field_slice(b, Q_LANDLOCK_OFF, Q_LANDLOCK_LEN))
+pub open spec fn paths_elems(b: Seq<u8>) -> int {
+    elems(field_slice(b, Q_PATHS_OFF, Q_PATHS_LEN))
 }
 
 /// Bit `r` of the request's limit mask.
@@ -285,9 +285,9 @@ pub open spec fn step_ok(b: Seq<u8>, x: Step) -> bool {
         Step::AmbientRaise(c) => c <= CAP_LAST && cap_has(b, c as int),
         Step::Pdeathsig => ((qw(b, Q_FLAGS) as u32) & 1u32) != 0u32,
         Step::NoNewPrivs => qw(b, Q_NNP) == 1,
-        Step::LandlockRuleset => qw(b, Q_LANDLOCK_LEN) > 0,
-        Step::LandlockRule(i) => (i as int) < landlock_elems(b),
-        Step::LandlockRestrict => qw(b, Q_LANDLOCK_LEN) > 0,
+        Step::LandlockRuleset => qw(b, Q_PATHS_LEN) > 0,
+        Step::LandlockRule(i) => (i as int) < paths_elems(b),
+        Step::LandlockRestrict => qw(b, Q_PATHS_LEN) > 0,
         Step::Seccomp => qw(b, Q_SECCOMP) != 0,
         _ => true,
     }
@@ -361,12 +361,8 @@ pub open spec fn present_tail(b: Seq<u8>, s: Seq<Step>) -> bool {
 
 /// The Landlock ruleset, one rule per entry, and the restriction.
 pub open spec fn present_landlock(b: Seq<u8>, s: Seq<Step>) -> bool {
-    &&& (qw(b, Q_LANDLOCK_LEN) > 0 ==> has(s, Step::LandlockRuleset) && has(
-        s,
-        Step::LandlockRestrict,
-    ))
-    &&& forall|i: int|
-        0 <= i < landlock_elems(b) ==> #[trigger] has(s, Step::LandlockRule(i as u32))
+    &&& (qw(b, Q_PATHS_LEN) > 0 ==> has(s, Step::LandlockRuleset) && has(s, Step::LandlockRestrict))
+    &&& forall|i: int| 0 <= i < paths_elems(b) ==> #[trigger] has(s, Step::LandlockRule(i as u32))
 }
 
 /// Seccomp, `close_range` and `execve`.
@@ -853,7 +849,7 @@ fn sec_tail(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 }
 
 /// Phases 15 to 17: the Landlock ruleset, one rule per entry, the restriction.
-#[allow(clippy::cast_possible_truncation)]  // the index is below MAX_LANDLOCK_ENTRIES
+#[allow(clippy::cast_possible_truncation)]  // the index is below MAX_PATH_ENTRIES
 fn sec_landlock(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
@@ -870,13 +866,13 @@ fn sec_landlock(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
         ext(old(out)@.take(n0 as int), final(out)@.take(m as int)),
         present_landlock(b@, final(out)@.take(m as int)),
 {
-    let ll_len = req(b, Q_LANDLOCK_LEN);
+    let ll_len = req(b, Q_PATHS_LEN);
     let ll_rules = {
-        assert(req_pool_ref(b@, qw(b@, Q_LANDLOCK_OFF), qw(b@, Q_LANDLOCK_LEN)));
-        count_elements(pool(b, req(b, Q_LANDLOCK_OFF), ll_len))
+        assert(req_pool_ref(b@, qw(b@, Q_PATHS_OFF), qw(b@, Q_PATHS_LEN)));
+        count_elements(pool(b, req(b, Q_PATHS_OFF), ll_len))
     };
-    assert(ll_rules as int == landlock_elems(b@));
-    assert(ll_rules <= MAX_LANDLOCK_ENTRIES);
+    assert(ll_rules as int == paths_elems(b@));
+    assert(ll_rules <= MAX_PATH_ENTRIES);
     let mut n = n0;
     if ll_len > 0 {
         n = emit(b, out, n, Step::LandlockRuleset);
@@ -886,8 +882,8 @@ fn sec_landlock(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
         while i < ll_rules
             invariant
                 accepted(b@),
-                ll_rules as int == landlock_elems(b@),
-                ll_rules <= MAX_LANDLOCK_ENTRIES,
+                ll_rules as int == paths_elems(b@),
+                ll_rules <= MAX_PATH_ENTRIES,
                 i <= ll_rules,
                 base <= n <= base + i,
                 base == n0 + 1,

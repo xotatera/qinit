@@ -349,6 +349,12 @@ fn node(
             "a worker or forager must declare its user",
         );
     }
+    if f.cwd.as_deref().is_some_and(|c| !cred::canonical(c)) {
+        cx.bad(
+            format!("{base}.cwd"),
+            "cwd must be a canonical absolute path (no empty, . or .. component)",
+        );
+    }
     let cred = cred::cred(cx, &base, f.credentials.as_ref(), f.sandbox.as_ref()).map(|c| {
         creds.push(c);
         u32::try_from(creds.len() - 1).unwrap_or(u32::MAX)

@@ -22,7 +22,7 @@ pub fn svc() -> Cred {
         nnp: true,
         ns: 0,
         seccomp: Seccomp::None,
-        landlock: Vec::new(),
+        paths: Vec::new(),
     }
 }
 

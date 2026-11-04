@@ -13,7 +13,7 @@ fn credentials_and_sandbox_merge_into_one_cred() {
         [worker.a]
         exec = ["/a"]
         credentials = { uid = "sshd", caps = ["chown", "net_bind_service", "checkpoint_restore"], nnp = true, securebits = "noroot-locked" }
-        sandbox = { namespaces = ["mount", "net"], landlock = ["ro:/etc", "rw:/run/a"], seccomp = "default" }
+        sandbox = { namespaces = ["mount", "net"], paths = ["ro:/etc", "rw:/run/a"], seccomp = "default" }
         [worker.b]
 credentials = { uid = "svc" }
         exec = ["/b"]
@@ -30,7 +30,7 @@ credentials = { uid = "svc" }
     assert_eq!(a.securebits, Securebits::NorootLocked);
     assert_eq!(a.ns, 0b1_0001);
     assert_eq!(a.seccomp, Seccomp::Default);
-    assert_eq!(a.landlock, ["ro:/etc", "rw:/run/a"]);
+    assert_eq!(a.paths, ["ro:/etc", "rw:/run/a"]);
     // A sandbox next to a bare user: the identity's defaults (no caps, no-new-privileges on)
     // and the sandbox in one record.
     let b = &m.creds[node(m, "b").cred.expect("cred") as usize];
@@ -67,7 +67,7 @@ fn bad_credential_strings_are_bad_values() {
         [worker.c]
 credentials = { uid = "svc" }
         exec = ["/c"]
-        sandbox = { landlock = ["/etc"], seccomp = "strict" }
+        sandbox = { paths = ["/etc"], seccomp = "strict" }
     "#,
     );
     let keys: Vec<_> = es.iter().map(|e| (e.code, e.key.as_str())).collect();
@@ -76,7 +76,7 @@ credentials = { uid = "svc" }
         [
             (Code::BadValue, "worker.a.credentials.uid"),
             (Code::BadValue, "worker.b.credentials.securebits"),
-            (Code::BadValue, "worker.c.sandbox.landlock"),
+            (Code::BadValue, "worker.c.sandbox.paths"),
             (Code::BadValue, "worker.c.sandbox.seccomp"),
         ]
     );
@@ -180,7 +180,7 @@ credentials = { uid = "svc" }
         errors = "/dev/console"
         cell = { memory_max = "512M", pids_max = 256 }
         credentials = { uid = "sshd", caps = ["net_bind_service"], securebits = "noroot-locked" }
-        sandbox = { namespaces = ["mount", "pid"], landlock = ["ro:/etc/ssh"], seccomp = "default" }
+        sandbox = { namespaces = ["mount", "pid"], paths = ["ro:/etc/ssh"], seccomp = "default" }
         deps = [
           { group = "require_all", edges = [
               { to = "firewall", mode = "sync" },
@@ -330,4 +330,44 @@ fn an_allow_list_may_name_them() {
         sandbox = { seccomp = { allow = ["clone", "read"] } }
     "#);
     assert_eq!(r.model.creds.len(), 1);
+}
+
+fn paths_src(sandbox: &str) -> String {
+    format!(
+        "[worker.a]\nexec = [\"/a\"]\ncredentials = {{ uid = \"svc\" }}\nsandbox = {{ {sandbox} }}\n"
+    )
+}
+
+#[test]
+fn non_canonical_paths_are_refused() {
+    for bad in [
+        "ro:/x/..",
+        "rw:/tmp/",
+        "ro://x",
+        "rw:/dev/.",
+        "ro:x",
+        "ro:/a//b",
+        "ro:/a/./b",
+        "ro:/a/../b",
+    ] {
+        let es = errs(&paths_src(&format!("paths = [\"{bad}\"]")));
+        assert_eq!(es.len(), 1, "{bad}: {es:?}");
+        assert_eq!(
+            (es[0].code, es[0].key.as_str()),
+            (Code::BadValue, "worker.a.sandbox.paths"),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn a_non_canonical_cwd_is_refused() {
+    let es =
+        errs("[worker.a]\nexec = [\"/a\"]\ncwd = \"/a/../b\"\ncredentials = { uid = \"svc\" }\n");
+    assert_eq!(
+        es.iter()
+            .map(|e| (e.code, e.key.as_str()))
+            .collect::<Vec<_>>(),
+        [(Code::BadValue, "worker.a.cwd")]
+    );
 }

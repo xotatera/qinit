@@ -100,7 +100,7 @@ fn an_etc_amend_changes_only_the_amended_key() {
         "credentials.securebits",
         "sandbox.namespaces",
         "sandbox.seccomp",
-        "sandbox.landlock",
+        "sandbox.paths",
     ];
     for l in lines
         .iter()

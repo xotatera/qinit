@@ -3,6 +3,8 @@
 //! V2: pool references, names and NUL-separated lists, and the content rules of the launch
 //! strings (environment entries, the working directory, seccomp lists) that V4 applies to them.
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only use: Verus erases it
+use super::paths::*;
+#[allow(unused_imports, clippy::wildcard_imports)] // spec-only use: Verus erases it
 use super::tables::*;
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use crate::layout::*;
@@ -114,19 +116,10 @@ pub open spec fn launch_keys_ok(s: Seq<u8>) -> bool {
         is_elem(s, p, q) ==> launch_key_ok(s.subrange(p, q))
 }
 
-/// A Landlock entry: `ro:/...` or `rw:/...`.
-pub open spec fn landlock_entry_ok(e: Seq<u8>) -> bool {
-    &&& e.len() >= 4
-    &&& e[0] == 0x72
-    &&& (e[1] == 0x6f || e[1] == 0x77)
-    &&& e[2] == 0x3a
-    &&& e[3] == 0x2f
-}
-
-/// Every element of the NUL-separated list `s` is a [`landlock_entry_ok`] entry.
-pub open spec fn landlock_list_ok(s: Seq<u8>) -> bool {
+/// Every element of the NUL-separated list `s` is a [`path_entry_ok`] entry.
+pub open spec fn paths_list_ok(s: Seq<u8>) -> bool {
     s.len() == 0 || forall|p: int, q: int| #[trigger]
-        is_elem(s, p, q) ==> landlock_entry_ok(s.subrange(p, q))
+        is_elem(s, p, q) ==> path_entry_ok(s.subrange(p, q))
 }
 
 /// The NUL bytes in `s`.
@@ -154,9 +147,9 @@ pub open spec fn elems(s: Seq<u8>) -> int {
     }
 }
 
-/// A working directory: non-empty and absolute.
+/// A working directory: a canonical absolute path.
 pub open spec fn cwd_ok(b: Seq<u8>, off: int, len: int) -> bool {
-    len >= 1 && b[toff(b, T_POOL as int) + off] == 0x2f
+    canonical(pool_slice(b, off, len))
 }
 
 pub open spec fn node_pool_ok(b: Seq<u8>, i: int) -> bool {
@@ -176,7 +169,7 @@ pub open spec fn edge_pool_ok(b: Seq<u8>, x: int) -> bool {
 
 pub open spec fn cred_pool_ok(b: Seq<u8>, c: int) -> bool {
     &&& pool_ref(b, cf(b, c, C_USER_OFF), cf(b, c, C_USER_LEN))
-    &&& list_ref(b, cf(b, c, C_LANDLOCK_OFF), cf(b, c, C_LANDLOCK_LEN))
+    &&& list_ref(b, cf(b, c, C_PATHS_OFF), cf(b, c, C_PATHS_LEN))
     &&& list_ref(b, cf(b, c, C_SECCOMP_OFF), cf(b, c, C_SECCOMP_LEN))
 }
 

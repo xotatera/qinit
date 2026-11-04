@@ -123,7 +123,7 @@ later step, not at the limit's own.
 | 5 | `C_NNP` | no_new_privs, 0 or 1 |
 | 6 | `C_NS` | namespaces, bits 0..=4: mount, pid, ipc, uts, net |
 | 7 | `C_SECCOMP` | 0 none, 1 default, 2 deny-list, 3 allow-list |
-| 8, 9 | `C_LANDLOCK_OFF`, `C_LANDLOCK_LEN` | entries `ro:/path` or `rw:/path`, NUL-separated |
+| 8, 9 | `C_PATHS_OFF`, `C_PATHS_LEN` | the sandbox path list: entries `ro:<path>` or `rw:<path>` with a canonical absolute path (starts `/`, no empty, `.` or `..` component, no trailing `/`), NUL-separated |
 | 10, 11 | `C_SECCOMP_OFF`, `C_SECCOMP_LEN` | syscall numbers of the deny- or allow-list, NUL-separated canonical decimals; length 0 exactly when `C_SECCOMP` is 0 or 1 |
 
 The default program answers `clone`, `unshare`, `clone3` and `setns` itself (`clone` and
@@ -154,8 +154,8 @@ and every credential record names a non-empty user; the overseer resolves that n
 `/etc/passwd` and `/etc/group` of the booted system. A brood runs nothing and has `N_CRED`
 `NONE`. There is no default identity: a database whose worker has no credential, or whose
 credential has an empty user, is refused. The sandbox fields of a credential (`C_NS`,
-`C_SECCOMP`, the Landlock and seccomp lists) go with the identity in the same record. A
-credential with `C_NNP` 0 and a Landlock list or a seccomp filter needs `CAP_SYS_ADMIN` (bit
+`C_SECCOMP`, the path and seccomp lists) go with the identity in the same record. A
+credential with `C_NNP` 0 and a path list or a seccomp filter needs `CAP_SYS_ADMIN` (bit
 `CAP_SYS_ADMIN_BIT` = 21 of `C_CAPS_LO`), because installing those without `no_new_privs`
 requires it.
 
@@ -164,9 +164,9 @@ requires it.
 The validator is total and never panics. It accepts a database only if all of the following hold:
 
 1. **V1** Header fields, offsets and counts are in bounds and within the limits, and tables do not overlap.
-2. **V2** The pool is valid UTF-8, and every pool reference is an in-bounds slice between two character boundaries, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, environment entries, Landlock entries, seccomp lists) holds no empty element. `N_INSTANCE_OF` may be empty, but at most `MAX_NAME_LEN` bytes.
+2. **V2** The pool is valid UTF-8, and every pool reference is an in-bounds slice between two character boundaries, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, environment entries, path entries, seccomp lists) holds no empty element. `N_INSTANCE_OF` may be empty, but at most `MAX_NAME_LEN` bytes.
 3. **V3** Every cross-table index is `NONE` or in range of its table.
-4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline). A node's `stop_mode` is 0 or 1, its `restart_delay_ms` and `stop_grace_ms` are at least 100, `restart_max > 0` implies `restart_window_ms > 0`, and its `umask` is at most `MAX_UMASK`. A worker or forager has a credential and a brood has none; the working directory is non-empty and starts with `/`; every environment entry has a non-empty key before its first `=`. A credential's user is non-empty, `seccomp` is at most 3 and its list is non-empty exactly when `seccomp` is 2 or 3; every list entry is a canonical decimal below `MAX_SYSCALL`; `nnp` 0 with a Landlock list or a seccomp filter requires `CAP_SYS_ADMIN` in `caps_lo`.
+4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline). A node's `stop_mode` is 0 or 1, its `restart_delay_ms` and `stop_grace_ms` are at least 100, `restart_max > 0` implies `restart_window_ms > 0`, and its `umask` is at most `MAX_UMASK`. A worker or forager has a credential and a brood has none; the working directory is a canonical absolute path; every path entry is `ro:` or `rw:` and a canonical absolute path; every environment entry has a non-empty key before its first `=`. A credential's user is non-empty, `seccomp` is at most 3 and its list is non-empty exactly when `seccomp` is 2 or 3; every list entry is a canonical decimal below `MAX_SYSCALL`; `nnp` 0 with a path list or a seccomp filter requires `CAP_SYS_ADMIN` in `caps_lo`.
 5. **V5** The ordering-edge graph is acyclic.
 6. **V6** The stop order derived by `qinit-graph-core` places every hard dependent before its dependency, whatever the opt-outs.
 7. **V7** `stop = "parallel"` appears on no hard edge.
@@ -180,12 +180,12 @@ functions `v1` to `v8` in `crates/qinit-db-core/src/validate/spec/`, and
 - Tables appear in header order, each starting at or after the end of the one before (the
   first after the header). Every table but the pool starts on a 4-byte boundary.
 - Every pool reference (names, argv, readiness arguments, instanced-frame names, environment
-  entries, working directories, path targets, users, Landlock entries, seccomp lists, launch keys, route
+  entries, working directories, path targets, users, path entries, seccomp lists, launch keys, route
   paths) is in the pool and starts and ends on a character boundary of the pool, which as a whole
   is valid UTF-8 as `core::str::from_utf8` defines it (`DbError::Utf8 { offset }` names the first
   bad pool offset; `DbError::Pool { table, record }` names the record whose reference leaves the
   pool or splits a character). Node names are 1 to `MAX_NAME_LEN` bytes and strictly ascending, bytewise.
-- The argv, environment, Landlock and seccomp lists are either empty (length 0) or have no NUL
+- The argv, environment, path and seccomp lists are either empty (length 0) or have no NUL
   as their first or last byte and no two NULs in a row, so every element is non-empty
   (`DbError::Pool { table, record }` otherwise). The content of environment and seccomp entries and of the working
   directory is a V4 rule (`DbError::Consistency`), checked after V2 has placed the bytes in the

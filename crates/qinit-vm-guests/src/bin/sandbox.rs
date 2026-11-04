@@ -26,9 +26,9 @@ fn want<T: PartialEq + std::fmt::Debug>(got: T, expected: T, what: &str) -> Resu
     }
 }
 
-fn probe_path(name: &str, path: &str, mode: &str, landlock: &[&str]) -> Result<i32, String> {
+fn probe_path(name: &str, path: &str, mode: &str, paths: &[&str]) -> Result<i32, String> {
     let mut request = spec("svc", "probe-path", &[path, mode]);
-    request.landlock = landlock.iter().map(ToString::to_string).collect();
+    request.paths = paths.iter().map(ToString::to_string).collect();
     let o = run_to_end(name, request, false)?;
     if let Some(f) = o.failure {
         return Err(format!("launch failed: {f:?}"));

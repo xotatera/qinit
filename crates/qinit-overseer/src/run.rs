@@ -10,10 +10,10 @@ use crate::status::{STEP_DECODE, STEP_IDENTITY, Status};
 use crate::supervisor::supervise;
 use qinit_overseer_core::{
     DEFAULT_DENY, Insn, MAX_BPF, MAX_REQUEST, MAX_STEPS, Q_ARGV_LEN, Q_ARGV_OFF, Q_CAPS_HI,
-    Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_ENV_LEN, Q_ENV_OFF, Q_LANDLOCK_LEN, Q_LANDLOCK_OFF,
-    Q_SECCOMP, Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_STDERR_A, Q_STDERR_B, Q_STDERR_KIND, Q_STDIN_A,
-    Q_STDIN_B, Q_STDIN_KIND, Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND, Q_UMASK, Q_USER_LEN,
-    Q_USER_OFF, STREAM_FD, STREAM_PATH, Step, decode, plan, pool, program, req,
+    Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_ENV_LEN, Q_ENV_OFF, Q_PATHS_LEN, Q_PATHS_OFF, Q_SECCOMP,
+    Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_STDERR_A, Q_STDERR_B, Q_STDERR_KIND, Q_STDIN_A, Q_STDIN_B,
+    Q_STDIN_KIND, Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND, Q_UMASK, Q_USER_LEN, Q_USER_OFF,
+    STREAM_FD, STREAM_PATH, Step, decode, plan, pool, program, req,
 };
 use qinit_sys::landlock::{
     LANDLOCK_ACCESS_FS_ALL_V3, LANDLOCK_ACCESS_FS_READ, add_path_rule, restrict_self, ruleset,
@@ -156,7 +156,7 @@ impl<'a> Run<'a> {
     }
 
     fn landlock_rule(&self, i: u32) -> Result<()> {
-        let list = self.list(Q_LANDLOCK_OFF, Q_LANDLOCK_LEN)?;
+        let list = self.list(Q_PATHS_OFF, Q_PATHS_LEN)?;
         let entry = list.get(i as usize).ok_or(Errno(libc::EINVAL))?;
         let (access, path) = if let Some(p) = entry.strip_prefix("ro:") {
             (LANDLOCK_ACCESS_FS_READ, p)

@@ -114,7 +114,7 @@ fn a_high_capability_comes_from_the_second_word() {
 #[test]
 fn landlock_entries_follow_nnp_and_precede_seccomp() {
     let mut spec = minimal();
-    spec.landlock = "ro:/etc\0rw:/run/x\0ro:/usr";
+    spec.paths = "ro:/etc\0rw:/run/x\0ro:/usr";
     spec.seccomp = 1;
     let s = steps(&spec);
     let i = pos(&s, Step::LandlockRuleset);
@@ -194,7 +194,7 @@ fn rlimits_umask_ready_and_deadline_come_from_the_request() {
 #[test]
 fn exec_is_last_and_occurs_once() {
     let mut spec = minimal();
-    spec.landlock = "ro:/etc";
+    spec.paths = "ro:/etc";
     spec.seccomp = 1;
     spec.ns = 0b11111;
     let s = steps(&spec);
@@ -205,7 +205,7 @@ fn exec_is_last_and_occurs_once() {
 
 #[test]
 fn the_plan_never_exceeds_max_steps() {
-    let landlock: &'static str = Box::leak(
+    let paths: &'static str = Box::leak(
         (0..64)
             .map(|i| format!("ro:/p{i}"))
             .collect::<Vec<_>>()
@@ -214,7 +214,7 @@ fn the_plan_never_exceeds_max_steps() {
     );
     let mut spec = minimal();
     spec.caps = (1u64 << 41) - 1;
-    spec.landlock = landlock;
+    spec.paths = paths;
     spec.seccomp = 1;
     spec.ns = 0b11111;
     spec.flags = FLAG_DIE_WITH_PARENT;

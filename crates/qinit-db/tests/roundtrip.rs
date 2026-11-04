@@ -93,7 +93,7 @@ fn with_node(f: impl FnOnce(&mut qinit_db::Node)) -> Model {
 fn with_landlock(entries: &[&str]) -> Model {
     let mut m = Model::default();
     m.creds.push(sample().creds.remove(0));
-    m.creds[0].landlock = entries.iter().map(|s| (*s).to_owned()).collect();
+    m.creds[0].paths = entries.iter().map(|s| (*s).to_owned()).collect();
     m
 }
 

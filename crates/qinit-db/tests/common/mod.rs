@@ -17,7 +17,7 @@ pub fn svc() -> Cred {
         nnp: true,
         ns: 0,
         seccomp: Seccomp::None,
-        landlock: Vec::new(),
+        paths: Vec::new(),
     }
 }
 
@@ -132,7 +132,7 @@ pub fn sample() -> Model {
                 nnp: true,
                 ns: 0b10101,
                 seccomp: Seccomp::Deny(vec![101, 310]),
-                landlock: vec!["ro:/etc".into(), "rw:/run/sshd".into()],
+                paths: vec!["ro:/etc".into(), "rw:/run/sshd".into()],
             },
             svc(),
         ],

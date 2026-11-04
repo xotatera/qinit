@@ -210,7 +210,7 @@ pub struct Creds {
 pub struct Sandbox {
     pub namespaces: Option<Vec<String>>,
     pub seccomp: Option<SeccompCfg>,
-    pub landlock: Option<Vec<String>>,
+    pub paths: Option<Vec<String>>,
 }
 
 /// The seccomp filter: `"none"`, `"default"`, a denylist or an allowlist of syscall names.
@@ -593,7 +593,7 @@ const TABLE_KEYS: [(&str, &[&str]); 7] = [
     ("stop", &["mode", "grace"]),
     ("cell", &["memory_max", "pids_max"]),
     ("credentials", &["uid", "caps", "nnp", "securebits"]),
-    ("sandbox", &["namespaces", "seccomp", "landlock"]),
+    ("sandbox", &["namespaces", "seccomp", "paths"]),
     (
         "rlimits",
         &[

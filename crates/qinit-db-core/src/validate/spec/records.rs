@@ -181,9 +181,10 @@ pub open spec fn cred_enum_ok(b: Seq<u8>, c: int) -> bool {
     &&& cf(b, c, C_NS) <= 0x1f
     &&& cf(b, c, C_SECCOMP) <= 3
     &&& (cf(b, c, C_SECCOMP) <= 1) == (cf(b, c, C_SECCOMP_LEN) == 0)
-    &&& (cf(b, c, C_NNP) == 0 && (cf(b, c, C_LANDLOCK_LEN) > 0 || cf(b, c, C_SECCOMP) != 0)
+    &&& (cf(b, c, C_NNP) == 0 && (cf(b, c, C_PATHS_LEN) > 0 || cf(b, c, C_SECCOMP) != 0)
         ==> has_sys_admin(b, c))
     &&& seccomp_list_ok(pool_slice(b, cf(b, c, C_SECCOMP_OFF), cf(b, c, C_SECCOMP_LEN)))
+    &&& paths_list_ok(pool_slice(b, cf(b, c, C_PATHS_OFF), cf(b, c, C_PATHS_LEN)))
 }
 
 pub open spec fn route_enum_ok(b: Seq<u8>, r: int) -> bool {

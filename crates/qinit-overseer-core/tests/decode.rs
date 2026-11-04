@@ -160,10 +160,32 @@ fn the_seccomp_list_matches_its_mode() {
 #[test]
 fn landlock_entries_are_ro_or_rw_paths() {
     let mut spec = minimal();
-    spec.landlock = "ro:/etc\0rw:/run/x";
+    spec.paths = "ro:/etc\0rw:/run/x";
     assert_eq!(decode(&build(&spec)), Ok(()));
     for bad in ["/etc", "rx:/etc", "ro:etc", "ro:"] {
-        spec.landlock = bad;
+        spec.paths = bad;
+        assert_eq!(
+            decode(&build(&spec)),
+            Err(LaunchError::Consistency),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn non_canonical_entries_and_cwd_are_refused() {
+    for bad in ["ro:/a/..", "rw:/tmp/", "ro://x", "rw:/dev/.", "ro:/a//b"] {
+        let mut spec = minimal();
+        spec.paths = bad;
+        assert_eq!(
+            decode(&build(&spec)),
+            Err(LaunchError::Consistency),
+            "{bad:?}"
+        );
+    }
+    for bad in ["/a/..", "/a/", "//a", "/a/./b"] {
+        let mut spec = minimal();
+        spec.cwd = bad;
         assert_eq!(
             decode(&build(&spec)),
             Err(LaunchError::Consistency),
@@ -174,7 +196,7 @@ fn landlock_entries_are_ro_or_rw_paths() {
 
 #[test]
 fn too_many_list_entries_is_a_consistency_error() {
-    let landlock: &'static str = Box::leak(
+    let paths: &'static str = Box::leak(
         (0..65)
             .map(|i| format!("ro:/p{i}"))
             .collect::<Vec<_>>()
@@ -182,7 +204,7 @@ fn too_many_list_entries_is_a_consistency_error() {
             .into_boxed_str(),
     );
     let mut spec = minimal();
-    spec.landlock = landlock;
+    spec.paths = paths;
     assert_eq!(decode(&build(&spec)), Err(LaunchError::Consistency));
     let env: &'static str = Box::leak(
         (0..257)
@@ -218,7 +240,7 @@ fn nnp_off_with_a_sandbox_needs_sys_admin() {
     assert_eq!(decode(&build(&spec)), Ok(()));
     spec.caps = 0;
     spec.seccomp = 0;
-    spec.landlock = "ro:/etc";
+    spec.paths = "ro:/etc";
     assert_eq!(decode(&build(&spec)), Err(LaunchError::Consistency));
 }
 

@@ -101,7 +101,7 @@ fn build(
             qinit_db::Seccomp::Deny(v) => Seccomp::Deny(v.clone()),
             qinit_db::Seccomp::Allow(v) => Seccomp::Allow(v.clone()),
         },
-        landlock: cred.landlock.clone(),
+        paths: cred.paths.clone(),
         stdin: routed
             .stdin
             .map_or_else(|| Stream::Path("/dev/null".into()), Stream::Fd),

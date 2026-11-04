@@ -85,8 +85,21 @@ fn namespaces(cx: &mut Cx, key: &str, names: &[String]) -> u32 {
     bits
 }
 
-fn landlock_entry(s: &str) -> bool {
-    (s.starts_with("ro:/") || s.starts_with("rw:/")) && !s.contains('\0')
+/// A canonical absolute path: starts with `/`, no empty, `.` or `..` component, no trailing `/`
+/// (except `/` itself), no NUL. The same rule as the validator's `canonical` (spec §2.1).
+pub(crate) fn canonical(p: &str) -> bool {
+    p.starts_with('/')
+        && !p.contains('\0')
+        && (p == "/"
+            || p[1..]
+                .split('/')
+                .all(|c| !c.is_empty() && c != "." && c != ".."))
+}
+
+fn path_entry(s: &str) -> bool {
+    s.strip_prefix("ro:")
+        .or_else(|| s.strip_prefix("rw:"))
+        .is_some_and(canonical)
 }
 
 fn from_creds(cx: &mut Cx, base: &str, c: &Creds, out: &mut Cred) {
@@ -114,12 +127,12 @@ fn from_creds(cx: &mut Cx, base: &str, c: &Creds, out: &mut Cred) {
 fn from_sandbox(cx: &mut Cx, base: &str, s: &Sandbox, out: &mut Cred) {
     let key = format!("{base}.sandbox.namespaces");
     out.ns = namespaces(cx, &key, s.namespaces.as_deref().unwrap_or_default());
-    let landlock = s.landlock.clone().unwrap_or_default();
-    if let Some(bad) = landlock.iter().find(|e| !landlock_entry(e)) {
-        let why = format!("landlock entry {bad:?} must start with ro:/ or rw:/ and hold no NUL");
-        cx.bad(format!("{base}.sandbox.landlock"), why);
+    let paths = s.paths.clone().unwrap_or_default();
+    if let Some(bad) = paths.iter().find(|e| !path_entry(e)) {
+        let why = format!("path entry {bad:?} must be ro: or rw: and a canonical absolute path");
+        cx.bad(format!("{base}.sandbox.paths"), why);
     }
-    out.landlock = landlock;
+    out.paths = paths;
     let key = format!("{base}.sandbox.seccomp");
     out.seccomp = match &s.seccomp {
         None => Seccomp::None,
@@ -184,13 +197,13 @@ pub(super) fn cred(
         nnp: true,
         ns: 0,
         seccomp: Seccomp::None,
-        landlock: Vec::new(),
+        paths: Vec::new(),
     };
     from_creds(cx, base, c, &mut out);
     if let Some(s) = s {
         from_sandbox(cx, base, s, &mut out);
     }
-    let restricts = !out.landlock.is_empty() || out.seccomp != Seccomp::None;
+    let restricts = !out.paths.is_empty() || out.seccomp != Seccomp::None;
     if !out.nnp && restricts && out.caps & (1 << CAP_SYS_ADMIN_BIT) == 0 {
         cx.bad(
             format!("{base}.credentials.nnp"),
