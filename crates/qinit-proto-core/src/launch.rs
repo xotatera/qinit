@@ -110,7 +110,7 @@ pub const Q_SECCOMP_OFF: usize = 16;
 /// Record word 17: `seccomp_len`, 0 exactly when `seccomp` is 0 or 1.
 pub const Q_SECCOMP_LEN: usize = 17;
 
-/// Record word 18: `paths_off`, NUL-separated `ro:/path` or `rw:/path` entries.
+/// Record word 18: `paths_off`, NUL-separated `<mode>:/path` entries (`ro` `rw` `ri` `wi` `rs` `ws`).
 pub const Q_PATHS_OFF: usize = 18;
 
 /// Record word 19: `paths_len`.

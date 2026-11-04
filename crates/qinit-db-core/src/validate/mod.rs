@@ -13,7 +13,8 @@ mod spec;
 mod utf8;
 
 pub use paths::{
-    canonical_exec, first_elem_len, path_entry_ok_exec, paths_cover_exec, paths_shape_exec,
+    canonical_exec, first_elem_len, no_idmapped_exec, path_entry_ok_exec, paths_cover_exec,
+    paths_shape_exec,
 };
 pub(crate) use pool::pool_bytes;
 pub use pool::{count_elements, elements_ok, nul_list_ok};

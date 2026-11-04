@@ -67,6 +67,8 @@ pub enum Step {
     LoopbackUp,
     /// Fork into the new pid namespace; the child continues.
     Fork,
+    /// The helper user namespace that idmapped path entries (`ri:`, `wi:`) are mapped through.
+    IdmapNamespace,
     /// A `tmpfs` at the fresh directory that becomes the view's root.
     ViewRoot,
     /// The view's `/dev`: a `tmpfs` with the five device nodes, `/dev/shm` and the fd symlinks.
@@ -161,6 +163,7 @@ pub open spec fn phase(s: Step) -> int {
         Step::MountTmp => 4,
         Step::Fork => 5,
         Step::RearmDeadline => 6,
+        Step::IdmapNamespace => 7,
         Step::ViewRoot => 7,
         Step::ViewDev => 7,
         Step::ViewTmp => 7,
@@ -195,6 +198,7 @@ pub open spec fn phase(s: Step) -> int {
 /// The position of a step within its phase.
 pub open spec fn sub(s: Step) -> int {
     match s {
+        Step::IdmapNamespace => -1,
         Step::MountSlaveRoot => 1,
         Step::MountTmp => 2,
         Step::ViewDev => 1,
@@ -364,6 +368,7 @@ pub open spec fn step_ok(b: Seq<u8>, x: Step) -> bool {
         Step::AmbientRaise(c) => c <= CAP_LAST && cap_has(b, c as int),
         Step::Pdeathsig => ((qw(b, Q_FLAGS) as u32) & 1u32) != 0u32,
         Step::NoNewPrivs => qw(b, Q_NNP) == 1,
+        Step::IdmapNamespace => !paths_no_idmapped(field_slice(b, Q_PATHS_OFF, Q_PATHS_LEN)),
         Step::ViewRoot => qw(b, Q_PATHS_LEN) > 0,
         Step::ViewDev => qw(b, Q_PATHS_LEN) > 0,
         Step::ViewTmp => qw(b, Q_PATHS_LEN) > 0,
@@ -433,6 +438,10 @@ pub open spec fn present_view(b: Seq<u8>, s: Seq<Step>) -> bool {
         s,
         Step::ViewTmp,
     ) && has(s, Step::ViewPivot) && has(s, Step::ViewSeal))
+    &&& (!paths_no_idmapped(field_slice(b, Q_PATHS_OFF, Q_PATHS_LEN)) ==> has(
+        s,
+        Step::IdmapNamespace,
+    ))
     &&& forall|i: int| 0 <= i < paths_elems(b) ==> #[trigger] has(s, Step::ViewEntry(i as u32))
 }
 
@@ -852,7 +861,7 @@ fn sec_ns(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
         final(out)@.len() == old(out)@.len(),
         sorted(final(out)@.take(m as int)),
         faithful(b@, final(out)@.take(m as int)),
-        below(final(out)@, m as int, 7, 0),
+        below(final(out)@, m as int, 7, -1),
         ext(old(out)@.take(n0 as int), final(out)@.take(m as int)),
         present_ns(b@, final(out)@.take(m as int)),
 {
@@ -886,9 +895,9 @@ fn sec_view(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
         n0 <= 29,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
-        below(old(out)@, n0 as int, 7, 0),
+        below(old(out)@, n0 as int, 7, -1),
     ensures
-        n0 <= m <= n0 + 70,
+        n0 <= m <= n0 + 71,
         final(out)@.len() == old(out)@.len(),
         sorted(final(out)@.take(m as int)),
         faithful(b@, final(out)@.take(m as int)),
@@ -906,6 +915,13 @@ fn sec_view(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     assert(entries <= MAX_PATH_ENTRIES);
     let mut n = n0;
     if len > 0 {
+        let idmapped = {
+            assert(req_pool_ref(b@, qw(b@, Q_PATHS_OFF), qw(b@, Q_PATHS_LEN)));
+            !no_idmapped_exec(pool(b, req(b, Q_PATHS_OFF), len))
+        };
+        if idmapped {
+            n = emit(b, out, n, Step::IdmapNamespace);
+        }
         n = emit(b, out, n, Step::ViewRoot);
         n = emit(b, out, n, Step::ViewDev);
         n = emit(b, out, n, Step::ViewTmp);
@@ -920,9 +936,11 @@ fn sec_view(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
                 entries <= MAX_PATH_ENTRIES,
                 i <= entries,
                 base <= n <= base + i,
-                base == n0 + 3,
+                n0 + 3 <= base <= n0 + 4,
                 n0 <= 29,
-                n <= 29 + 3 + 64,
+                n <= 29 + 4 + 64,
+                idmapped == !paths_no_idmapped(field_slice(b@, Q_PATHS_OFF, Q_PATHS_LEN)),
+                idmapped ==> has(out@.take(n as int), Step::IdmapNamespace),
                 out@.len() == old(out)@.len(),
                 sorted(out@.take(n as int)),
                 faithful(b@, out@.take(n as int)),
@@ -948,8 +966,18 @@ fn sec_view(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
         }
         n = emit(b, out, n, Step::ViewPivot);
         n = emit(b, out, n, Step::ViewSeal);
-    } else if req(b, Q_NS) & 32 != 0 {
-        n = emit(b, out, n, Step::ProcSelf);
+    } else {
+        proof {
+            let f = field_slice(b@, Q_PATHS_OFF, Q_PATHS_LEN);
+            assert(f.len() == 0);
+            assert(paths_no_idmapped(f)) by {
+                assert forall|p: int, q: int|
+                    is_elem(f, p, q) && q - p >= 4 implies !entry_idmapped(f.subrange(p, q)) by {}
+            }
+        }
+        if req(b, Q_NS) & 32 != 0 {
+            n = emit(b, out, n, Step::ProcSelf);
+        }
     }
     n
 }
@@ -958,7 +986,7 @@ fn sec_view(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_user(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 99,
+        n0 <= 100,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 8, 0),
@@ -987,7 +1015,7 @@ fn sec_user(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_ids(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 102,
+        n0 <= 103,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 9, 0),
@@ -1037,7 +1065,7 @@ fn sec_ids(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_drops(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 106,
+        n0 <= 107,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 12, 0),
@@ -1057,8 +1085,8 @@ fn sec_drops(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
             accepted(b@),
             c <= CAP_LAST + 1,
             n0 <= n <= n0 + c,
-            n0 <= 106,
-            n <= 106 + 41,
+            n0 <= 107,
+            n <= 107 + 41,
             out@.len() == old(out)@.len(),
             sorted(out@.take(n as int)),
             faithful(b@, out@.take(n as int)),
@@ -1087,7 +1115,7 @@ fn sec_drops(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_creds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 148,
+        n0 <= 149,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 13, 0),
@@ -1112,8 +1140,8 @@ fn sec_creds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
             c <= CAP_LAST + 1,
             base <= n <= base + c,
             base == n0 + 2,
-            n0 <= 148,
-            n <= 148 + 2 + 41,
+            n0 <= 149,
+            n <= 149 + 2 + 41,
             out@.len() == old(out)@.len(),
             sorted(out@.take(n as int)),
             faithful(b@, out@.take(n as int)),
@@ -1141,7 +1169,7 @@ fn sec_creds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_tail(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 191,
+        n0 <= 192,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 16, 0),
@@ -1171,7 +1199,7 @@ fn sec_tail(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_landlock(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 194,
+        n0 <= 195,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 19, 0),
@@ -1206,8 +1234,8 @@ fn sec_landlock(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
                 i <= ll_rules,
                 base <= n <= base + i,
                 base == n0 + 2,
-                n0 <= 194,
-                n <= 194 + 2 + 64,
+                n0 <= 195,
+                n <= 195 + 2 + 64,
                 out@.len() == old(out)@.len(),
                 sorted(out@.take(n as int)),
                 faithful(b@, out@.take(n as int)),
@@ -1236,7 +1264,7 @@ fn sec_landlock(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_finish(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 261,
+        n0 <= 262,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 22, 0),

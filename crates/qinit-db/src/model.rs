@@ -299,7 +299,7 @@ pub struct Cred {
     pub user_map: UserMap,
     /// Seccomp filter.
     pub seccomp: Seccomp,
-    /// Landlock entries, `ro:/path` or `rw:/path`; non-empty, no NUL.
+    /// Landlock entries, `<mode>:/path` with a mode of `ro` `rw` `ri` `wi` `rs` `ws`; non-empty, no NUL.
     pub paths: Vec<String>,
 }
 

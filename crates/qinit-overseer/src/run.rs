@@ -184,8 +184,8 @@ impl<'a> Run<'a> {
     fn landlock_rule(&self, i: u32) -> Result<()> {
         let list = self.list(Q_PATHS_OFF, Q_PATHS_LEN)?;
         let entry = list.get(i as usize).ok_or(Errno(libc::EINVAL))?;
-        let (ro, path) = view::split(entry)?;
-        let access = if ro {
+        let (mode, path) = view::split(entry)?;
+        let access = if mode.read_only() {
             LANDLOCK_ACCESS_FS_READ
         } else {
             LANDLOCK_ACCESS_FS_ALL_V3
@@ -253,6 +253,8 @@ impl<'a> Run<'a> {
             Step::MountTmp => ns::mount_private_tmp(),
             Step::LoopbackUp => ns::loopback_up(),
             Step::Fork => Err(Errno(libc::EINVAL)),
+            // The helper user namespace of the idmapped entries arrives with the idmapped mounts.
+            Step::IdmapNamespace => Err(Errno(libc::ENOSYS)),
             Step::ViewRoot => Self::unmasked(view::root),
             Step::ViewDev => Self::unmasked(view::dev),
             Step::ViewTmp => Self::unmasked(view::tmp),

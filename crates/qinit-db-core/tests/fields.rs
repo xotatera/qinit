@@ -810,3 +810,59 @@ fn nice_40_rtprio_99_nproc_infinity_are_valid() {
         consistency()
     );
 }
+
+/// Paths for the mode tests: `ro:/bin` covers the minimal node's program, `entry` is under test.
+fn with_entry(entry: &str, ns: u32) -> DbSpec {
+    let paths: &'static str = Box::leak(format!("ro:/bin\0{entry}").into_boxed_str());
+    with_paths(paths, ns)
+}
+
+#[test]
+fn the_validator_accepts_the_six_modes_and_nothing_else() {
+    for mode in ["ro", "rw", "ri", "wi", "rs", "ws"] {
+        assert_eq!(
+            check(&build(&with_entry(&format!("{mode}:/c"), 33))),
+            Ok(()),
+            "{mode}"
+        );
+    }
+    for bad in [
+        "rx:/c", "ws/c", "wo:/c", "rr:/c", "ww:/c", "ri/c", "RO:/c", "r:/c",
+    ] {
+        assert_eq!(
+            check(&build(&with_entry(bad, 33))),
+            cred_consistency(),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn an_idmapped_entry_without_the_user_bit_is_refused() {
+    for entry in ["ri:/c", "wi:/c"] {
+        assert_eq!(
+            check(&build(&with_entry(entry, 1))),
+            cred_consistency(),
+            "{entry}"
+        );
+        assert_eq!(check(&build(&with_entry(entry, 33))), Ok(()), "{entry}");
+    }
+    // A plain or following entry needs only the mount bit.
+    for entry in ["ro:/c", "rw:/c", "rs:/c", "ws:/c"] {
+        assert_eq!(check(&build(&with_entry(entry, 1))), Ok(()), "{entry}");
+    }
+}
+
+#[test]
+fn a_writable_proc_is_forbidden_in_every_writable_mode() {
+    for entry in ["rw:/proc", "wi:/proc", "ws:/proc"] {
+        assert_eq!(
+            check(&build(&with_entry(entry, 33))),
+            cred_consistency(),
+            "{entry}"
+        );
+    }
+    for entry in ["ro:/proc", "ri:/proc", "rs:/proc"] {
+        assert_eq!(check(&build(&with_entry(entry, 33))), Ok(()), "{entry}");
+    }
+}

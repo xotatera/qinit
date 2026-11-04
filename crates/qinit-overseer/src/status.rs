@@ -60,6 +60,7 @@ pub fn name(s: Step) -> &'static str {
         Step::MountTmp => "mount-tmp",
         Step::LoopbackUp => "loopback-up",
         Step::Fork => "fork",
+        Step::IdmapNamespace => "idmap-namespace",
         Step::ViewRoot => "view-root",
         Step::ViewDev => "view-dev",
         Step::ViewTmp => "view-tmp",

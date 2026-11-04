@@ -72,15 +72,62 @@ pub fn tmp() -> Result<()> {
     tmpfs(&tmp, libc::MS_NOSUID | libc::MS_NODEV, "mode=1777")
 }
 
-/// Splits a list entry into whether it is read-only and its path.
-pub fn split(entry: &str) -> Result<(bool, &str)> {
-    if let Some(p) = entry.strip_prefix("ro:") {
-        Ok((true, p))
-    } else if let Some(p) = entry.strip_prefix("rw:") {
-        Ok((false, p))
-    } else {
-        Err(Errno(libc::EINVAL))
+/// How a list entry is bound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// `ro:` read-only.
+    Ro,
+    /// `rw:` writable.
+    Rw,
+    /// `ri:` read-only, ids mapped through the helper user namespace.
+    Ri,
+    /// `wi:` writable, ids mapped.
+    Wi,
+    /// `rs:` read-only, and the mounts the host makes below it later appear in the view.
+    Rs,
+    /// `ws:` writable, and following the host's later mounts.
+    Ws,
+}
+
+impl Mode {
+    /// The entry is bound read-only.
+    #[must_use]
+    pub fn read_only(self) -> bool {
+        matches!(self, Mode::Ro | Mode::Ri | Mode::Rs)
     }
+
+    /// The entry is bound writable.
+    #[must_use]
+    pub fn writable(self) -> bool {
+        !self.read_only()
+    }
+
+    /// The entry's ids are mapped through a user namespace.
+    #[must_use]
+    pub fn idmapped(self) -> bool {
+        matches!(self, Mode::Ri | Mode::Wi)
+    }
+
+    /// The entry follows the host's later mounts instead of being cut off from them.
+    #[must_use]
+    pub fn follows(self) -> bool {
+        matches!(self, Mode::Rs | Mode::Ws)
+    }
+}
+
+/// Splits a list entry into its mode and its path.
+pub fn split(entry: &str) -> Result<(Mode, &str)> {
+    let (mode, path) = entry.split_at_checked(3).ok_or(Errno(libc::EINVAL))?;
+    let mode = match mode {
+        "ro:" => Mode::Ro,
+        "rw:" => Mode::Rw,
+        "ri:" => Mode::Ri,
+        "wi:" => Mode::Wi,
+        "rs:" => Mode::Rs,
+        "ws:" => Mode::Ws,
+        _ => return Err(Errno(libc::EINVAL)),
+    };
+    Ok((mode, path))
 }
 
 /// `path` is `/dev` or below it: devices must work there.
@@ -95,10 +142,11 @@ fn below_dev(path: &str) -> bool {
 pub fn writable_ancestor(list: &[&str], i: usize) -> Option<usize> {
     let (_, path) = split(list.get(i)?).ok()?;
     (0..i).rev().find(|&j| {
-        split(list[j]).is_ok_and(|(ro, p)| {
-            !ro && path
-                .strip_prefix(p)
-                .is_some_and(|rest| rest.starts_with('/'))
+        split(list[j]).is_ok_and(|(mode, p)| {
+            mode.writable()
+                && path
+                    .strip_prefix(p)
+                    .is_some_and(|rest| rest.starts_with('/'))
         })
     })
 }
@@ -108,7 +156,8 @@ pub fn writable_ancestor(list: &[&str], i: usize) -> Option<usize> {
 /// above this one; the path is then opened below it without following any symlink, the last
 /// component included (`ELOOP`), so nothing planted there redirects the bind.
 pub fn entry(entry: &str, pid: bool, beneath: Option<&Path>) -> Result<()> {
-    let (ro, path) = split(entry)?;
+    let (mode, path) = split(entry)?;
+    let ro = mode.read_only();
     let host = Path::new(path);
     let target = at(path);
     let source = match beneath {

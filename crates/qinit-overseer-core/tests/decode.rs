@@ -496,3 +496,45 @@ fn rlimit_rules_match_the_database() {
         assert_eq!(decode(&bad), Err(LaunchError::Consistency));
     }
 }
+
+fn with_entry(entry: &str, ns: u32) -> ReqSpec {
+    let paths: &'static str = Box::leak(format!("ro:/etc\0{entry}").into_boxed_str());
+    with_paths(paths, ns)
+}
+
+#[test]
+fn decode_refuses_what_the_validator_refuses() {
+    for mode in ["ro", "rw", "ri", "wi", "rs", "ws"] {
+        assert_eq!(
+            decode(&build(&with_entry(&format!("{mode}:/z"), 33))),
+            Ok(()),
+            "{mode}"
+        );
+    }
+    for bad in ["rx:/z", "ws/z", "wo:/z", "rr:/z", "ww:/z", "ri/z"] {
+        assert_eq!(
+            decode(&build(&with_entry(bad, 33))),
+            Err(LaunchError::Consistency),
+            "{bad:?}"
+        );
+    }
+    // An idmapped entry needs the user bit.
+    for entry in ["ri:/z", "wi:/z"] {
+        assert_eq!(
+            decode(&build(&with_entry(entry, 1))),
+            Err(LaunchError::Consistency),
+            "{entry}"
+        );
+    }
+    // `/proc` is never writable, whatever the mode.
+    for entry in ["rw:/proc", "wi:/proc", "ws:/proc"] {
+        assert_eq!(
+            decode(&build(&with_entry(entry, 33))),
+            Err(LaunchError::Consistency),
+            "{entry}"
+        );
+    }
+    for entry in ["ro:/proc", "ri:/proc", "rs:/proc"] {
+        assert_eq!(decode(&build(&with_entry(entry, 33))), Ok(()), "{entry}");
+    }
+}

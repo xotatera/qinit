@@ -47,7 +47,7 @@ A pool reference is an `(offset, length)` pair of words into the pool.
 | 14 | `ns` | namespace bits: 1 mount, 2 pid, 4 ipc, 8 uts, 16 net, 32 user; at most `0x3f` |
 | 15 | `seccomp` | 0 none, 1 default program, 2 deny-list, 3 allow-list |
 | 16, 17 | `seccomp_off`, `seccomp_len` | the list: NUL-separated canonical decimal syscall numbers below 512; length 0 exactly when `seccomp` is 0 or 1; at most 512 entries |
-| 18, 19 | `paths_off`, `paths_len` | the path list (below), NUL-separated `ro:<path>` or `rw:<path>` entries, at most 64 |
+| 18, 19 | `paths_off`, `paths_len` | the path list (below), NUL-separated `<mode>:<path>` entries (`ro` `rw` `ri` `wi` `rs` `ws`), at most 64 |
 | 20, 21, 22 | `stdout_kind`, `stdout_a`, `stdout_b` | a stream (below); kind 0 or 1 |
 | 23, 24, 25 | `stderr_kind`, `stderr_a`, `stderr_b` | a stream; kind 0, 1 or 2 |
 | 26 | `ready_kind` | 0 none, 1 a readiness pipe |
@@ -118,7 +118,7 @@ descriptor is closed before `execve`.
 
 ### The path list
 
-Each entry is `ro:` or `rw:` and a canonical absolute path. The list is strictly ascending by path
+Each entry is a mode (`ro:` `rw:` `ri:` `wi:` `rs:` `ws:`) and a canonical absolute path. The list is strictly ascending by path
 (so a path never repeats), holds none of `/`, `/dev` or `/tmp`, and no writable `/proc`. A non-
 empty list needs the `mount` bit of `ns`, the program (the first argv element) must be at or below
 an entry, and the working directory must be `/` or at or below an entry.
