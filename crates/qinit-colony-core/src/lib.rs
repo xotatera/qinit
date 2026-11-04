@@ -254,6 +254,7 @@ pub fn meta() -> (r: Meta)
 #[must_use]
 pub fn off() -> (r: NodeState)
     ensures
+        r == off_spec(),
         r.state == State::Off,
         !r.wanted && !r.to_stop && !r.restart_after,
         r.timer is None,

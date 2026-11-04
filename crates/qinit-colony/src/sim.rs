@@ -278,6 +278,52 @@ impl Effects for Sim {
         Ok(())
     }
 
+    fn remap(&mut self, map: &[u32]) {
+        // New index of each old node that survives.
+        let new_of: HashMap<u32, u32> = map
+            .iter()
+            .enumerate()
+            .filter(|(_, old)| **old != u32::MAX)
+            .map(|(new, &old)| (old, u32::try_from(new).unwrap_or(u32::MAX)))
+            .collect();
+        let gone: Vec<(u64, u64)> = self
+            .due
+            .iter()
+            .filter(|(_, what)| match what {
+                Due::Timer(n, _) | Due::Cell(n, _) => !new_of.contains_key(n),
+                Due::Instance(..) => false,
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        for key in gone {
+            self.due.remove(&key);
+        }
+        for what in self.due.values_mut() {
+            match what {
+                Due::Timer(n, _) | Due::Cell(n, _) => *n = new_of[n],
+                Due::Instance(..) => {}
+            }
+        }
+        let rekey = |n: &u32| new_of.get(n).copied();
+        self.cells = self.cells.iter().filter_map(rekey).collect();
+        self.fail_start = self.fail_start.iter().filter_map(rekey).collect();
+        self.scripts = self
+            .scripts
+            .drain()
+            .filter_map(|(n, s)| new_of.get(&n).map(|&m| (m, s)))
+            .collect();
+        self.cell_events = self
+            .cell_events
+            .drain()
+            .filter_map(|(n, k)| new_of.get(&n).map(|&m| (m, k)))
+            .collect();
+        self.timers = self
+            .timers
+            .drain()
+            .filter_map(|((n, t), k)| new_of.get(&n).map(|&m| ((m, t), k)))
+            .collect();
+    }
+
     fn signal(&mut self, node: u32, sig: i32) -> Result<(), Errno> {
         self.calls.push(Call::Signal(node, sig));
         Ok(())

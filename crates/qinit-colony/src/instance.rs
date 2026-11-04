@@ -19,6 +19,7 @@ pub const RING: usize = 256;
 #[derive(Debug)]
 pub struct Inst {
     pub(crate) frame: u32,
+    pub(crate) frame_name: String,
     pub(crate) id: u32,
     pub(crate) pid: Option<i32>,
     /// The wait status of the main process, once seen.
@@ -26,9 +27,11 @@ pub struct Inst {
 }
 
 /// One remembered exit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Exit {
+    /// The frame's node index; `u32::MAX` once a refresh removed the frame.
     pub frame: u32,
+    pub frame_name: String,
     pub id: u32,
     /// The wait status; -1 when the main process's exit was not seen.
     pub status: i32,
@@ -67,10 +70,11 @@ pub enum LaunchError {
 }
 
 /// An instance as `Status` shows it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstanceView {
-    /// The frame's node index.
+    /// The frame's node index; `u32::MAX` once a refresh removed the frame.
     pub frame: u32,
+    pub frame_name: String,
     pub id: u32,
     pub state: SlotState,
     pub pid: Option<i32>,
@@ -118,6 +122,7 @@ impl<E: Effects> Colony<E> {
         let slot =
             claim(&mut self.slots, node, launch.concurrency, id).ok_or(LaunchError::NoSlot)?;
         let name = format!("{}#{id}", args.frame);
+        let frame_name = args.frame.clone();
         let spec = InstanceSpec {
             name,
             frame: node,
@@ -132,6 +137,7 @@ impl<E: Effects> Colony<E> {
                 self.next_id = next;
                 self.insts[slot] = Some(Inst {
                     frame: node,
+                    frame_name,
                     id,
                     pid: Some(pid),
                     status: None,
@@ -177,7 +183,7 @@ impl<E: Effects> Colony<E> {
     }
 
     /// What an instance's cell reported.
-    pub fn on_instance(&mut self, slot: u32, report: CellPhase, _now: u64) -> Outcome {
+    pub fn on_instance(&mut self, slot: u32, report: CellPhase, now: u64) -> Outcome {
         let mut out = Outcome::default();
         let i = slot as usize;
         if i >= self.insts.len() || self.insts[i].is_none() {
@@ -207,6 +213,7 @@ impl<E: Effects> Colony<E> {
             | CellPhase::Removed
             | CellPhase::Refused => {}
         }
+        self.after_event(now, &mut out);
         out
     }
 
@@ -224,6 +231,7 @@ impl<E: Effects> Colony<E> {
         }
         self.ring.push_back(Exit {
             frame: rec.frame,
+            frame_name: rec.frame_name,
             id: rec.id,
             status,
         });
@@ -238,6 +246,7 @@ impl<E: Effects> Colony<E> {
             let rec = self.insts[slot].as_ref()?;
             return Some(InstanceView {
                 frame: rec.frame,
+                frame_name: rec.frame_name.clone(),
                 id,
                 state: self.slots[slot].state,
                 pid: rec.pid,
@@ -245,6 +254,7 @@ impl<E: Effects> Colony<E> {
         }
         self.ring.iter().find(|e| e.id == id).map(|e| InstanceView {
             frame: e.frame,
+            frame_name: e.frame_name.clone(),
             id,
             state: SlotState::Exited(e.status),
             pid: None,

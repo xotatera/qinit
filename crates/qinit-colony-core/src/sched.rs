@@ -1995,6 +1995,136 @@ fn mark_enabled(db: &[u8], tbl: &mut [NodeState])
     }
 }
 
+// ---- the swap (spec 2026-11-04 §6.2, obligation 6) ----
+/// Whether two nodes' machines read the same words.
+fn params_eq(a: Params, b: Params) -> (r: bool)
+    ensures
+        r == (a == b),
+{
+    a.kind == b.kind && a.ready_kind == b.ready_kind && a.policy == b.policy && a.max == b.max
+        && a.window_ms == b.window_ms && a.delay_ms == b.delay_ms && a.stop_mode == b.stop_mode
+        && a.grace_ms == b.grace_ms && a.start_timeout_ms == b.start_timeout_ms && a.reload
+        == b.reload
+}
+
+/// Entry `i` of the new table: the old entry `j` when that node exists and its machine reads
+/// the same words in both databases, and a node that is off otherwise.
+pub open spec fn remap_entry(
+    old_db: Seq<u8>,
+    new_db: Seq<u8>,
+    from: Seq<NodeState>,
+    j: int,
+    i: int,
+) -> NodeState {
+    if 0 <= j < from.len() && params_of(old_db, j) == params_of(new_db, i) {
+        from[j]
+    } else {
+        off_spec()
+    }
+}
+
+/// One entry of the new table, with the invariant for the new database.
+fn remap_one(old_db: &[u8], new_db: &[u8], from: &[NodeState], j: u32, i: usize) -> (r: NodeState)
+    requires
+        well_formed(old_db@),
+        well_formed(new_db@),
+        from@.len() == nodes(old_db@),
+        i < nodes(new_db@),
+        inv_all(old_db@, from@),
+    ensures
+        r == remap_entry(old_db@, new_db@, from@, j as int, i as int),
+        inv_node(r, params_of(new_db@, i as int)),
+{
+    let j = j as usize;
+    let keep = if j < from.len() {
+        let a = params(old_db, j);
+        let b = params(new_db, i);
+        params_eq(a, b)
+    } else {
+        false
+    };
+    if keep {
+        assert(inv_node(from@[j as int], params_of(old_db@, j as int)));
+        from[j]
+    } else {
+        off()
+    }
+}
+
+/// The new table for a new database: entry `i` is the old entry `map[i]` when that node exists
+/// and its machine reads the same words in both databases, and a node that is off otherwise.
+/// The invariant therefore holds for the new database whatever it says.
+pub fn remap(old_db: &[u8], new_db: &[u8], from: &[NodeState], map: &[u32], out: &mut [NodeState])
+    requires
+        well_formed(old_db@),
+        well_formed(new_db@),
+        from@.len() == nodes(old_db@),
+        old(out)@.len() == nodes(new_db@),
+        map@.len() == old(out)@.len(),
+        inv_all(old_db@, from@),
+    ensures
+        final(out)@.len() == old(out)@.len(),
+        inv_all(new_db@, final(out)@),
+        forall|i: int|
+            0 <= i < final(out)@.len() ==> final(out)@[i] == remap_entry(
+                old_db@,
+                new_db@,
+                from@,
+                map@[i] as int,
+                i,
+            ),
+{
+    let n = out.len();
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            i <= n,
+            n == out@.len(),
+            n == old(out)@.len(),
+            n == map@.len(),
+            well_formed(old_db@),
+            well_formed(new_db@),
+            from@.len() == nodes(old_db@),
+            n == nodes(new_db@),
+            inv_all(old_db@, from@),
+            forall|k: int|
+                0 <= k < i ==> out@[k] == remap_entry(old_db@, new_db@, from@, map@[k] as int, k),
+            forall|k: int| 0 <= k < i ==> inv_node(#[trigger] out@[k], params_of(new_db@, k)),
+        decreases n - i,
+    {
+        out[i] = remap_one(old_db, new_db, from, map[i], i);
+        i += 1;
+    }
+}
+
+/// Marks, for every node that holds a process, the edges whose target is not ready as late,
+/// as starting it would have: the table of a new database starts with no edge late.
+pub fn rebuild_late(db: &[u8], tbl: &[NodeState], paths: &[bool], late: &mut [bool])
+    requires
+        sized(db@, tbl@.len() as int, paths@.len() as int, old(late)@.len() as int),
+    ensures
+        final(late)@.len() == old(late)@.len(),
+{
+    let n = tbl.len();
+    proof {
+        assert(table_ok(db@, T_NODES as int));
+    }
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            i <= n,
+            n == tbl@.len(),
+            sized(db@, tbl@.len() as int, paths@.len() as int, late@.len() as int),
+            late@.len() == old(late)@.len(),
+        decreases n - i,
+    {
+        if matches!(tbl[i].state, State::Starting | State::Ready) {
+            set_late(db, tbl, paths, late, i);
+        }
+        i += 1;
+    }
+}
+
 /// Starts colony on a database whose nodes may already be in any state that satisfies the
 /// invariant (workers colony found running when it started): the enabled nodes are wanted,
 /// then the table settles.

@@ -11,9 +11,11 @@ mod effects;
 mod engine;
 mod instance;
 pub mod sim;
+mod swap;
 pub mod text;
 
 pub use effects::{Effects, Errno, InstanceSpec, NodeSpec};
 pub use engine::{Colony, Error, Notice, Outcome};
 pub use instance::{Exit, InstanceView, LaunchArgs, LaunchError, RING};
 pub use qinit_colony_core::{Reason, Report, Request, SlotState, State, StopMode, TimerKind, Why};
+pub use swap::SwapError;

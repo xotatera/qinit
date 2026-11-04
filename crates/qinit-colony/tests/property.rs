@@ -349,3 +349,73 @@ fn random_graphs_keep_their_invariants() {
         );
     }
 }
+
+/// Two random graphs, swapped at a random moment: the swap always ends, the table has the new
+/// graph's size, and the same checks hold afterwards.
+fn swap_run(seed: u64) -> bool {
+    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    let (n1, n2) = (
+        3 + usize::try_from(rng.below(8)).unwrap(),
+        3 + usize::try_from(rng.below(8)).unwrap(),
+    );
+    let (text1, roots1) = frames(&mut rng, n1);
+    let (text2, roots2) = frames(&mut rng, n2);
+    let roots1: Vec<&str> = roots1.iter().map(String::as_str).collect();
+    let roots2: Vec<&str> = roots2.iter().map(String::as_str).collect();
+    let (Some(first), Some(second)) =
+        (try_database(&text1, &roots1), try_database(&text2, &roots2))
+    else {
+        return false;
+    };
+    let mut sim = Sim::new();
+    for i in 0..n1.max(n2) {
+        sim.scripts
+            .insert(u32::try_from(i).unwrap(), script(&mut rng));
+    }
+    let (mut c, _) = Colony::load(first, &[], sim, 0).expect("loads");
+    advance(&mut c, rng.below(5000));
+    let now = c.effects.now();
+    let out = c.refresh(second, now).expect("a valid database swaps");
+    assert!(
+        !out.errors.contains(&Error::Unconverged),
+        "seed {seed}: unconverged at the swap\n{text1}\n{text2}"
+    );
+    // Phase 1 ends: every stop is bounded by its grace period.
+    for _ in 0..40 {
+        if !c.swapping() {
+            break;
+        }
+        advance(&mut c, 1000);
+    }
+    assert!(
+        !c.swapping(),
+        "seed {seed}: the swap did not finish\n{}\n{text1}\n==== second\n{text2}",
+        c.status(c.effects.now())
+    );
+    assert_eq!(c.model().nodes.len(), n2, "seed {seed}");
+    for step in 0..30 {
+        let target = c.effects.now() + 1 + rng.below(3000);
+        loop {
+            let b = c.effects.calls.len();
+            let Some(out) = deliver_next(&mut c, target) else {
+                break;
+            };
+            assert!(!out.errors.contains(&Error::Unconverged), "seed {seed}");
+            check(&c, b, false, seed, step, "event");
+        }
+        let rest = target - c.effects.now();
+        advance(&mut c, rest);
+    }
+    true
+}
+
+#[test]
+fn random_swaps_settle() {
+    let mut ran = 0;
+    for seed in 0..200 {
+        if swap_run(seed) {
+            ran += 1;
+        }
+    }
+    assert!(ran >= 150, "only {ran} of 200 swaps ran");
+}

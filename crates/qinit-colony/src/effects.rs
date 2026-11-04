@@ -68,6 +68,10 @@ pub trait Effects {
     fn arm(&mut self, node: u32, timer: TimerKind, ms: u32) -> Result<(), Errno>;
     /// Cancels the node's timer of that kind, if armed.
     fn cancel(&mut self, node: u32, timer: TimerKind) -> Result<(), Errno>;
+    /// The node table was renumbered by a database swap: new node `i` was node `map[i]` before
+    /// (`u32::MAX` for a node that is new). Everything the layer keeps per node index (cells,
+    /// timers, pids) moves with it; nodes absent from `map` have none.
+    fn remap(&mut self, map: &[u32]);
     /// Sends the node's main process the Linux signal `sig` (its reload signal).
     fn signal(&mut self, node: u32, sig: i32) -> Result<(), Errno>;
 }
