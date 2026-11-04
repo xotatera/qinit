@@ -1,0 +1,171 @@
+// SPDX-FileCopyrightText: 2026 Xota Tera
+// SPDX-License-Identifier: MPL-2.0
+
+//! One message with descriptors: `sendmsg` and `recvmsg` with `SCM_RIGHTS`.
+use crate::{Errno, Result};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+
+/// The most descriptors one message carries.
+pub const MAX_FDS: usize = 3;
+
+/// The data bytes of a full `SCM_RIGHTS` message (`MAX_FDS` ints).
+const FDS_BYTES: u32 = 12;
+
+/// `CMSG_SPACE` for `MAX_FDS` descriptors, rounded up for alignment.
+const CONTROL_BYTES: usize = 64;
+
+/// A control buffer aligned for `cmsghdr`.
+#[repr(C)]
+struct Control {
+    align: [libc::cmsghdr; 0],
+    bytes: [u8; CONTROL_BYTES],
+}
+
+impl Control {
+    fn new() -> Control {
+        Control {
+            align: [],
+            bytes: [0; CONTROL_BYTES],
+        }
+    }
+}
+
+fn iov(bytes: &[u8]) -> libc::iovec {
+    libc::iovec {
+        iov_base: bytes.as_ptr().cast_mut().cast(),
+        iov_len: bytes.len(),
+    }
+}
+
+fn header(iov: &mut libc::iovec, control: &mut Control) -> libc::msghdr {
+    // SAFETY: msghdr is a plain C struct; zeroed is a valid value.
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.bytes.as_mut_ptr().cast();
+    msg.msg_controllen = CONTROL_BYTES;
+    msg
+}
+
+/// The `index`th descriptor slot in the data area of `cmsg`.
+fn slot(cmsg: *mut libc::cmsghdr, index: usize) -> *mut u8 {
+    // SAFETY: cmsg points at a header inside a control buffer.
+    let data = unsafe { libc::CMSG_DATA(cmsg) };
+    // SAFETY: the caller keeps `index` inside the data area of the header.
+    unsafe { data.add(index * core::mem::size_of::<libc::c_int>()) }
+}
+
+fn put_fd(cmsg: *mut libc::cmsghdr, index: usize, fd: libc::c_int) {
+    let bytes = fd.to_ne_bytes();
+    // SAFETY: the slot has room for one int and does not overlap `bytes`.
+    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), slot(cmsg, index), bytes.len()) };
+}
+
+fn get_fd(cmsg: *mut libc::cmsghdr, index: usize) -> libc::c_int {
+    let mut bytes = [0u8; core::mem::size_of::<libc::c_int>()];
+    // SAFETY: the slot holds one int and does not overlap `bytes`.
+    unsafe { core::ptr::copy_nonoverlapping(slot(cmsg, index), bytes.as_mut_ptr(), bytes.len()) };
+    libc::c_int::from_ne_bytes(bytes)
+}
+
+fn check_long(r: libc::ssize_t) -> Result<usize> {
+    usize::try_from(r).map_err(|_| Errno::last())
+}
+
+/// Sends `bytes` as one message with `fds` attached (`EINVAL` for more than [`MAX_FDS`]).
+pub fn send(fd: BorrowedFd<'_>, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> Result<()> {
+    if fds.len() > MAX_FDS {
+        return Err(Errno(libc::EINVAL));
+    }
+    let mut vec = iov(bytes);
+    let mut control = Control::new();
+    let mut msg = header(&mut vec, &mut control);
+    if fds.is_empty() {
+        msg.msg_control = core::ptr::null_mut();
+        msg.msg_controllen = 0;
+    } else {
+        let payload = fds.len() * core::mem::size_of::<libc::c_int>();
+        let payload = u32::try_from(payload).map_err(|_| Errno(libc::EINVAL))?;
+        // SAFETY: pure arithmetic on the sizes.
+        let space = unsafe { libc::CMSG_SPACE(payload) } as usize;
+        // SAFETY: pure arithmetic on the sizes.
+        let len = unsafe { libc::CMSG_LEN(payload) } as usize;
+        msg.msg_controllen = space;
+        // SAFETY: msg_control points at an aligned buffer with room for the header.
+        let cmsg = unsafe { libc::CMSG_FIRSTHDR(&raw const msg) };
+        // SAFETY: cmsg points into the control buffer, which is large enough for MAX_FDS.
+        unsafe { (*cmsg).cmsg_level = libc::SOL_SOCKET };
+        // SAFETY: as above.
+        unsafe { (*cmsg).cmsg_type = libc::SCM_RIGHTS };
+        // SAFETY: as above.
+        unsafe { (*cmsg).cmsg_len = len };
+        for (i, f) in fds.iter().enumerate() {
+            put_fd(cmsg, i, f.as_raw_fd());
+        }
+    }
+    // SAFETY: msg points at valid iovec and control buffers for the call.
+    let sent =
+        check_long(unsafe { libc::sendmsg(fd.as_raw_fd(), &raw const msg, libc::MSG_NOSIGNAL) })?;
+    if sent == bytes.len() {
+        Ok(())
+    } else {
+        Err(Errno(libc::EMSGSIZE))
+    }
+}
+
+/// What one `recv` brought.
+#[derive(Debug)]
+pub struct Received {
+    /// Bytes written into the caller's buffer; 0 means the peer closed.
+    pub len: usize,
+    /// The descriptors that came with the message, close-on-exec.
+    pub fds: Vec<OwnedFd>,
+    /// The message was longer than the buffer.
+    pub truncated: bool,
+    /// The kernel dropped descriptors that did not fit the control buffer.
+    pub ctrunc: bool,
+}
+
+/// Receives one message into `buf`.
+pub fn recv(fd: BorrowedFd<'_>, buf: &mut [u8]) -> Result<Received> {
+    let mut vec = libc::iovec {
+        iov_base: buf.as_mut_ptr().cast(),
+        iov_len: buf.len(),
+    };
+    let mut control = Control::new();
+    let mut msg = header(&mut vec, &mut control);
+    // Room for exactly MAX_FDS descriptors: a fourth is dropped and reported as `ctrunc`.
+    // SAFETY: pure arithmetic on the sizes.
+    msg.msg_controllen = unsafe { libc::CMSG_LEN(FDS_BYTES) } as usize;
+    // SAFETY: msg points at valid iovec and control buffers for the call.
+    let got =
+        check_long(unsafe { libc::recvmsg(fd.as_raw_fd(), &raw mut msg, libc::MSG_CMSG_CLOEXEC) })?;
+    let mut fds = Vec::new();
+    // SAFETY: msg was filled in by recvmsg and its control buffer is still live.
+    let mut cmsg = unsafe { libc::CMSG_FIRSTHDR(&raw const msg) };
+    while !cmsg.is_null() {
+        // SAFETY: cmsg is a header inside the control buffer.
+        let level = unsafe { (*cmsg).cmsg_level };
+        // SAFETY: as above.
+        let kind = unsafe { (*cmsg).cmsg_type };
+        // SAFETY: as above.
+        let len = unsafe { (*cmsg).cmsg_len };
+        if level == libc::SOL_SOCKET && kind == libc::SCM_RIGHTS {
+            // SAFETY: pure arithmetic on the sizes.
+            let header = unsafe { libc::CMSG_LEN(0) } as usize;
+            let count = len.saturating_sub(header) / core::mem::size_of::<libc::c_int>();
+            for i in 0..count {
+                // SAFETY: the kernel installed this descriptor for this process; nothing else owns it.
+                fds.push(unsafe { OwnedFd::from_raw_fd(get_fd(cmsg, i)) });
+            }
+        }
+        // SAFETY: cmsg is a header inside the control buffer of msg.
+        cmsg = unsafe { libc::CMSG_NXTHDR(&raw const msg, cmsg) };
+    }
+    Ok(Received {
+        len: got.min(buf.len()),
+        fds,
+        truncated: msg.msg_flags & libc::MSG_TRUNC != 0,
+        ctrunc: msg.msg_flags & libc::MSG_CTRUNC != 0,
+    })
+}
