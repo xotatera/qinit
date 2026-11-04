@@ -355,9 +355,10 @@ fn the_cascade_flag_is_accepted_and_bit_2_is_not() {
 }
 
 #[test]
-fn a_node_record_has_30_words_and_a_credential_12() {
-    assert_eq!(WORDS[T_NODES], 30);
-    assert_eq!(N_RLIMIT_NOFILE + 1, WORDS[T_NODES]);
+fn a_node_record_has_36_words_and_a_credential_12() {
+    assert_eq!(WORDS[T_NODES], 36);
+    assert_eq!(N_LAUNCH_FDS + 1, WORDS[T_NODES]);
+    assert_eq!(N_RELOAD, N_RLIMIT_NOFILE + 1);
     assert_eq!(WORDS[T_CREDS], 12);
     assert_eq!(C_SECCOMP_LEN + 1, WORDS[T_CREDS]);
 }
@@ -454,4 +455,102 @@ fn an_env_list_with_an_empty_element_is_a_pool_error() {
     let mut spec = minimal_spec();
     spec.nodes[0].env = "A=1\0\0B=2";
     assert_eq!(check(&build(&spec)), Err(DbError::Pool));
+}
+
+fn forager_with(launch: LaunchSpec) -> Vec<u8> {
+    let mut spec = minimal_spec();
+    spec.nodes[1].kind = 1;
+    spec.nodes[1].launch = launch;
+    build(&spec)
+}
+
+fn launch(concurrency: u32, argv_tail: u32, env: &'static str, fds: u32) -> LaunchSpec {
+    LaunchSpec {
+        concurrency,
+        argv_tail,
+        env,
+        fds,
+    }
+}
+
+fn node_error(kind: &str, record: u32) -> DbError {
+    match kind {
+        "enum" => DbError::Enum {
+            table: tid(T_NODES),
+            record,
+        },
+        _ => DbError::Consistency {
+            table: tid(T_NODES),
+            record,
+        },
+    }
+}
+
+#[test]
+fn a_forager_with_a_launch_table_is_accepted() {
+    let db = forager_with(launch(
+        4,
+        8,
+        "TARGET\0VERBOSE",
+        FD_STDIN | FD_STDOUT | FD_STDERR,
+    ));
+    assert_eq!(check(&db), Ok(()));
+    assert_eq!(check(&forager_with(launch(64, 64, "", 0))), Ok(()));
+}
+
+#[test]
+fn launch_ranges_are_enum_errors() {
+    for bad in [
+        launch(65, 0, "", 0),
+        launch(1, 65, "", 0),
+        launch(1, 0, "", 8),
+    ] {
+        assert_eq!(check(&forager_with(bad)), Err(node_error("enum", 1)));
+    }
+    let mut spec = minimal_spec();
+    spec.nodes[1].reload = 4;
+    assert_eq!(check(&build(&spec)), Err(node_error("enum", 1)));
+    spec.nodes[1].reload = 3;
+    assert_eq!(check(&build(&spec)), Ok(()));
+}
+
+#[test]
+fn launch_words_on_a_worker_or_brood_are_a_consistency_error() {
+    let mut spec = minimal_spec();
+    spec.nodes[1].launch = launch(1, 0, "", 0);
+    assert_eq!(check(&build(&spec)), Err(node_error("consistency", 1)));
+    spec.nodes[1].kind = 2;
+    spec.nodes[1].cred = NONE;
+    assert_eq!(check(&build(&spec)), Err(node_error("consistency", 1)));
+}
+
+#[test]
+fn launch_words_without_a_concurrency_are_a_consistency_error() {
+    for bad in [
+        launch(0, 1, "", 0),
+        launch(0, 0, "A", 0),
+        launch(0, 0, "", 1),
+    ] {
+        assert_eq!(check(&forager_with(bad)), Err(node_error("consistency", 1)));
+    }
+}
+
+#[test]
+fn launch_env_keys_must_be_strictly_ascending() {
+    for bad in ["B\0A", "A\0A", "A\0C\0B"] {
+        assert_eq!(
+            check(&forager_with(launch(1, 0, bad, 0))),
+            Err(node_error("consistency", 1)),
+            "{bad:?}"
+        );
+    }
+    assert_eq!(check(&forager_with(launch(1, 0, "A\0B\0C", 0))), Ok(()));
+}
+
+#[test]
+fn a_launch_env_key_may_not_hold_an_equals_sign() {
+    assert_eq!(
+        check(&forager_with(launch(1, 0, "A=1", 0))),
+        Err(node_error("consistency", 1))
+    );
 }

@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! V1 and the field accessors: header words, table bounds and record words.
-
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use crate::layout::*;
 use vstd::prelude::*;
@@ -26,7 +25,7 @@ pub open spec fn tcnt(b: Seq<u8>, t: int) -> int {
 /// Words per record of table `t` (`WORDS`).
 pub open spec fn spec_words(t: int) -> int {
     if t == 0 {
-        30
+        36
     } else if t == 1 {
         3
     } else if t == 2 {

@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! V1: the header and the table bounds, and the record field reader built on them.
-
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use super::spec::*;
 use super::{DbError, tid};
@@ -20,7 +19,7 @@ pub(crate) fn words_of(t: usize) -> (w: usize)
         w == WORDS[t as int],
 {
     if t == 0 {
-        30
+        36
     } else if t == 1 {
         3
     } else if t == 2 {

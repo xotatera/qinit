@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The validator: total, never panics, and accepts only well-formed databases (V1-V9).
-
 mod graph;
 mod header;
+mod keys;
 mod lists;
 mod pool;
 mod records;

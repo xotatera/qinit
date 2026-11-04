@@ -28,7 +28,7 @@ Table ids, in header order, with the words per record (`WORDS`):
 
 | Id | Table | Words |
 | --- | --- | --- |
-| 0 `T_NODES` | nodes | 30 |
+| 0 `T_NODES` | nodes | 36 |
 | 1 `T_GROUPS` | dependency groups | 3 |
 | 2 `T_EDGES` | edges | 7 |
 | 3 `T_CREDS` | credentials | 12 |
@@ -48,7 +48,7 @@ limits of `qinit-graph-core`.
 
 ## Records
 
-### Node (30 words)
+### Node (36 words)
 
 | Word | Name | Meaning |
 | --- | --- | --- |
@@ -75,6 +75,11 @@ limits of `qinit-graph-core`.
 | 26, 27 | `N_CWD_OFF`, `N_CWD_LEN` | working directory in the pool, a non-empty absolute path |
 | 28 | `N_UMASK` | file-mode creation mask, at most `MAX_UMASK` |
 | 29 | `N_RLIMIT_NOFILE` | `RLIMIT_NOFILE` soft and hard limit; 0 keeps the kernel default |
+| 30 | `N_RELOAD` | the signal that makes the process re-read its configuration: 0 none, 1 `SIGHUP`, 2 `SIGUSR1`, 3 `SIGUSR2`; at most 3 |
+| 31 | `N_LAUNCH_CONCURRENCY` | instances of a forager at once, 1 to `MAX_LAUNCH_CONCURRENCY` (64); 0 for a node that cannot be launched, which every node but a forager must be |
+| 32 | `N_LAUNCH_ARGV_TAIL` | extra argv elements a caller may append, at most `MAX_ARGV_TAIL` (64); 0 when `N_LAUNCH_CONCURRENCY` is 0 |
+| 33, 34 | `N_LAUNCH_ENV_OFF`, `N_LAUNCH_ENV_LEN` | the environment keys a caller may set, in the pool, NUL-separated: no key is empty or holds `=`, and the keys ascend strictly bytewise (so none repeats); length 0 for none, and always 0 when `N_LAUNCH_CONCURRENCY` is 0 |
+| 35 | `N_LAUNCH_FDS` | the standard descriptors a caller may supply: a mask of `FD_STDIN` (1), `FD_STDOUT` (2) and `FD_STDERR` (4); at most 7, and 0 when `N_LAUNCH_CONCURRENCY` is 0 |
 
 ### Group (3 words)
 
@@ -162,14 +167,18 @@ functions `v1` to `v8` in `crates/qinit-db-core/src/validate/spec/`, and
 - Tables appear in header order, each starting at or after the end of the one before (the
   first after the header). Every table but the pool starts on a 4-byte boundary.
 - Every pool reference (names, argv, readiness arguments, instanced-frame names, environment
-  entries, working directories, path targets, users, Landlock entries, seccomp lists, route
+  entries, working directories, path targets, users, Landlock entries, seccomp lists, launch keys, route
   paths) is in the pool and valid UTF-8, as
   `core::str::from_utf8` defines it. Node names are 1 to `MAX_NAME_LEN` bytes and strictly ascending, bytewise.
 - The argv, environment, Landlock and seccomp lists are either empty (length 0) or have no NUL
   as their first or last byte and no two NULs in a row, so every element is non-empty
   (`DbError::Pool` otherwise). The content of environment and seccomp entries and of the working
   directory is a V4 rule (`DbError::Consistency`), checked after V2 has placed the bytes in the
-  pool.
+  pool. So is the launch key list: each key is non-empty and holds no `=`, and each key sorts
+  strictly after the one before it.
+- The launch words: `N_RELOAD` is at most 3 and `N_LAUNCH_CONCURRENCY` at most 64, `N_LAUNCH_ARGV_TAIL`
+  at most 64 and `N_LAUNCH_FDS` at most 7 (`DbError::Enum`). Only a forager has a non-zero
+  concurrency, and with concurrency 0 the other launch words are 0 (`DbError::Consistency`).
 - Tiling: node `i`'s groups start where node `i - 1`'s end (node 0's at 0), and the last node's
   end at the group count; groups tile the edge table the same way. A node has at most
   `MAX_GROUPS_PER_NODE` groups, a group at most `MAX_EDGES_PER_GROUP` edges.

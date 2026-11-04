@@ -55,6 +55,8 @@ pub fn worker(name: &str) -> Node {
         cwd: "/".into(),
         umask: 0o027,
         rlimit_nofile: 0,
+        reload: None,
+        launch: None,
     }
 }
 

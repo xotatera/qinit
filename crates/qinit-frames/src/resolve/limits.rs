@@ -31,6 +31,9 @@ fn pool_bytes(m: &Model) -> usize {
         seen.extend(n.instance_of.clone());
         seen.insert(n.env.join("\0"));
         seen.insert(n.cwd.clone());
+        if let Some(l) = &n.launch {
+            seen.insert(l.env.join("\0"));
+        }
         for e in n.groups.iter().flat_map(|g| g.edges.iter()) {
             if let Target::Path(p) = &e.target {
                 seen.insert(p.clone());

@@ -3,4 +3,5 @@
 [forager.mount-var]
 exec = ["/usr/bin/mount", "/var"]
 credentials = { uid = "root" }
+launch = { concurrency = 2, argv_tail = 1, env = ["TARGET"], fds = ["stderr"] }
 deps = [{ group = "require_all", edges = [{ path = "/dev/disk/by-label/var" }] }]

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Database layout: limits, header words, table ids, record word indices and the word reader.
 //! The byte-level description is `docs/db-format.md`.
-
 use vstd::prelude::*;
 
 verus! {
@@ -71,7 +70,7 @@ pub const T_PRESYSLOG: usize = 6;
 pub const T_POOL: usize = 7;
 
 /// Words per record, tables 0..=6.
-pub const WORDS: [usize; 7] = [30, 3, 7, 12, 3, 1, 1];
+pub const WORDS: [usize; 7] = [36, 3, 7, 12, 3, 1, 1];
 
 /// Header word: magic.
 pub const H_MAGIC: usize = 0;
@@ -174,6 +173,44 @@ pub const N_UMASK: usize = 28;
 
 /// Node record word 29: `rlimit_nofile`, 0 for the kernel default.
 pub const N_RLIMIT_NOFILE: usize = 29;
+
+/// Node record word 30: `reload`, the signal that re-reads configuration: 0 none, 1 `SIGHUP`,
+/// 2 `SIGUSR1`, 3 `SIGUSR2`.
+pub const N_RELOAD: usize = 30;
+
+/// Node record word 31: `launch_concurrency`, instances at once: 0 for a node that is not
+/// launchable, else 1 to `MAX_LAUNCH_CONCURRENCY` (foragers only).
+pub const N_LAUNCH_CONCURRENCY: usize = 31;
+
+/// Node record word 32: `launch_argv_tail`, extra argv elements a caller may append, at most
+/// `MAX_ARGV_TAIL`.
+pub const N_LAUNCH_ARGV_TAIL: usize = 32;
+
+/// Node record word 33: `launch_env_off`, the keys a caller may set: NUL-separated, none
+/// containing `=`, strictly ascending bytewise.
+pub const N_LAUNCH_ENV_OFF: usize = 33;
+
+/// Node record word 34: `launch_env_len`.
+pub const N_LAUNCH_ENV_LEN: usize = 34;
+
+/// Node record word 35: `launch_fds`, the standard descriptors a caller may supply: a mask of
+/// `FD_STDIN`, `FD_STDOUT` and `FD_STDERR`.
+pub const N_LAUNCH_FDS: usize = 35;
+
+/// `launch_fds` bit: the caller may supply stdin.
+pub const FD_STDIN: u32 = 1;
+
+/// `launch_fds` bit: the caller may supply stdout.
+pub const FD_STDOUT: u32 = 2;
+
+/// `launch_fds` bit: the caller may supply stderr.
+pub const FD_STDERR: u32 = 4;
+
+/// Ceiling of `launch_concurrency`.
+pub const MAX_LAUNCH_CONCURRENCY: u32 = 64;
+
+/// Ceiling of `launch_argv_tail`.
+pub const MAX_ARGV_TAIL: u32 = 64;
 
 /// Floor of `restart_delay_ms` and `stop_grace_ms`, milliseconds.
 pub const MIN_DELAY_MS: u32 = 100;

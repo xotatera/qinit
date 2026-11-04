@@ -79,12 +79,14 @@ pub(super) fn inherit(f: Frame, t: &Frame) -> Frame {
         cwd: f.cwd.or_else(|| t.cwd.clone()),
         umask: f.umask.or(t.umask),
         rlimits: f.rlimits.or_else(|| t.rlimits.clone()),
+        reload: f.reload.or_else(|| t.reload.clone()),
+        launch: f.launch.or_else(|| t.launch.clone()),
         deps,
     }
 }
 
 /// Which of the fields a template can pass on `f` sets.
-fn fields_set(f: &Frame) -> [(&'static str, bool); 16] {
+fn fields_set(f: &Frame) -> [(&'static str, bool); 18] {
     [
         ("exec", f.exec.is_some()),
         ("instances", f.instances.is_some()),
@@ -101,6 +103,8 @@ fn fields_set(f: &Frame) -> [(&'static str, bool); 16] {
         ("cwd", f.cwd.is_some()),
         ("umask", f.umask.is_some()),
         ("rlimits", f.rlimits.is_some()),
+        ("reload", f.reload.is_some()),
+        ("launch", f.launch.is_some()),
         ("deps", f.deps.is_some()),
     ]
 }

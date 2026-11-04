@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! A UTF-8 scanner proved against `vstd::utf8::valid_utf8`, which rejects overlong encodings,
 //! surrogates and values above U+10FFFF as `core::str::from_utf8` does.
-
 use vstd::prelude::*;
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use vstd::utf8::*;

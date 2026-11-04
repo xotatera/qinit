@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! V2: pool references, names and NUL-separated lists, and the content rules of the launch
 //! strings (environment entries, the working directory, seccomp lists) that V4 applies to them.
-
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only use: Verus erases it
 use super::tables::*;
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
@@ -92,6 +91,18 @@ pub open spec fn seccomp_list_ok(s: Seq<u8>) -> bool {
         is_elem(s, p, q) ==> decimal_ok(s.subrange(p, q))
 }
 
+/// A launch environment key: non-empty and without `=`.
+pub open spec fn launch_key_ok(e: Seq<u8>) -> bool {
+    &&& e.len() >= 1
+    &&& forall|k: int| 0 <= k < e.len() ==> #[trigger] e[k] != 0x3d
+}
+
+/// Every element of the NUL-separated list `s` is a [`launch_key_ok`] key.
+pub open spec fn launch_keys_ok(s: Seq<u8>) -> bool {
+    s.len() == 0 || forall|p: int, q: int| #[trigger]
+        is_elem(s, p, q) ==> launch_key_ok(s.subrange(p, q))
+}
+
 /// A Landlock entry: `ro:/...` or `rw:/...`.
 pub open spec fn landlock_entry_ok(e: Seq<u8>) -> bool {
     &&& e.len() >= 4
@@ -145,6 +156,7 @@ pub open spec fn node_pool_ok(b: Seq<u8>, i: int) -> bool {
     &&& pool_ref(b, nf(b, i, N_INSTANCE_OF_OFF), nf(b, i, N_INSTANCE_OF_LEN))
     &&& list_ref(b, nf(b, i, N_ENV_OFF), nf(b, i, N_ENV_LEN))
     &&& pool_ref(b, nf(b, i, N_CWD_OFF), nf(b, i, N_CWD_LEN))
+    &&& list_ref(b, nf(b, i, N_LAUNCH_ENV_OFF), nf(b, i, N_LAUNCH_ENV_LEN))
 }
 
 pub open spec fn edge_pool_ok(b: Seq<u8>, x: int) -> bool {

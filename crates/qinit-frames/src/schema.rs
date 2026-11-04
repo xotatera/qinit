@@ -27,7 +27,19 @@ pub struct Frame {
     pub cwd: Option<String>,
     pub umask: Option<u32>,
     pub rlimits: Option<Rlimits>,
+    pub reload: Option<String>,
+    pub launch: Option<LaunchCfg>,
     pub deps: Option<Vec<DepGroup>>,
+}
+
+/// The forager `launch` table: what a caller may do when it launches an instance.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchCfg {
+    pub concurrency: Option<u32>,
+    pub argv_tail: Option<u32>,
+    pub env: Option<Vec<String>>,
+    pub fds: Option<Vec<String>>,
 }
 
 /// Resource limits applied before exec.
@@ -156,6 +168,9 @@ fn bad(base: &str, field: &str, detail: impl Into<String>) -> Error {
 /// Keys a forager or brood must not carry. Expansion runs it again after a template merge.
 pub(crate) fn check_kind(kind: &str, f: &Frame, base: &str) -> Result<(), Error> {
     let mut banned: Vec<(&str, bool)> = Vec::new();
+    if kind == "worker" {
+        banned.push(("launch", f.launch.is_some()));
+    }
     if kind == "forager" {
         banned.push(("restart", f.restart.is_some()));
         banned.push(("instances", f.instances.is_some()));
@@ -177,6 +192,8 @@ pub(crate) fn check_kind(kind: &str, f: &Frame, base: &str) -> Result<(), Error>
             ("cwd", f.cwd.is_some()),
             ("umask", f.umask.is_some()),
             ("rlimits", f.rlimits.is_some()),
+            ("reload", f.reload.is_some()),
+            ("launch", f.launch.is_some()),
         ]);
     }
     match banned.into_iter().find(|(_, present)| *present) {
@@ -238,8 +255,81 @@ fn check_launch(f: &Frame, base: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// The environment keys the overseer sets itself, which a caller may not.
+const RESERVED_ENV: [&str; 5] = ["PATH", "HOME", "USER", "LOGNAME", "QINIT_READY_FD"];
+
+/// The most instances of one forager at once, extra argv elements, and (see `LaunchCfg`) caller
+/// environment keys the database format allows.
+const MAX_LAUNCH_CONCURRENCY: u32 = 64;
+const MAX_ARGV_TAIL: u32 = 64;
+
+fn check_reload(f: &Frame, base: &str) -> Result<(), Error> {
+    match f.reload.as_deref() {
+        None | Some("SIGHUP" | "SIGUSR1" | "SIGUSR2") => Ok(()),
+        Some(other) => Err(bad(
+            base,
+            "reload",
+            format!("`{other}` is not SIGHUP, SIGUSR1 or SIGUSR2"),
+        )),
+    }
+}
+
+fn check_launch_table(f: &Frame, base: &str) -> Result<(), Error> {
+    let Some(l) = &f.launch else {
+        return Ok(());
+    };
+    let key = |k: &str| format!("launch.{k}");
+    match l.concurrency {
+        Some(c) if (1..=MAX_LAUNCH_CONCURRENCY).contains(&c) => {}
+        Some(c) => {
+            let why = format!("{c} is not between 1 and {MAX_LAUNCH_CONCURRENCY}");
+            return Err(bad(base, &key("concurrency"), why));
+        }
+        None => {
+            return Err(bad(
+                base,
+                &key("concurrency"),
+                "a launch table needs a concurrency",
+            ));
+        }
+    }
+    if let Some(t) = l.argv_tail.filter(|t| *t > MAX_ARGV_TAIL) {
+        let why = format!("{t} is more than {MAX_ARGV_TAIL}");
+        return Err(bad(base, &key("argv_tail"), why));
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    for k in l.env.iter().flatten() {
+        if !env_key_ok(k) {
+            let why = format!("`{k}` must match ^[A-Za-z_][A-Za-z0-9_]*$");
+            return Err(bad(base, &key("env"), why));
+        }
+        if RESERVED_ENV.contains(&k.as_str()) {
+            let why = format!("`{k}` is set by the overseer");
+            return Err(bad(base, &key("env"), why));
+        }
+        if seen.contains(&k.as_str()) {
+            return Err(bad(base, &key("env"), format!("`{k}` is listed twice")));
+        }
+        seen.push(k);
+    }
+    let mut roles: Vec<&str> = Vec::new();
+    for r in l.fds.iter().flatten() {
+        if !["stdin", "stdout", "stderr"].contains(&r.as_str()) {
+            let why = format!("`{r}` is not stdin, stdout or stderr");
+            return Err(bad(base, &key("fds"), why));
+        }
+        if roles.contains(&r.as_str()) {
+            return Err(bad(base, &key("fds"), format!("`{r}` is listed twice")));
+        }
+        roles.push(r);
+    }
+    Ok(())
+}
+
 fn check_values(f: &Frame, base: &str) -> Result<(), Error> {
     check_launch(f, base)?;
+    check_reload(f, base)?;
+    check_launch_table(f, base)?;
     if let Some(k) = f.ready.as_ref().and_then(|r| match r {
         Ready::Kind(k) if k != "pipe" && k != "exit" => Some(k),
         _ => None,
@@ -365,7 +455,7 @@ fn check_edge(e: &DepEdge, group: &str, at: &str, base: &str) -> Result<(), Erro
 
 /// The keys each table of a frame allows: the frame itself, then the named tables, then a
 /// `deps` group and an edge.
-const FRAME_KEYS: [&str; 17] = [
+const FRAME_KEYS: [&str; 19] = [
     "exec",
     "template",
     "instances",
@@ -382,15 +472,18 @@ const FRAME_KEYS: [&str; 17] = [
     "cwd",
     "umask",
     "rlimits",
+    "reload",
+    "launch",
     "deps",
 ];
-const TABLE_KEYS: [(&str, &[&str]); 6] = [
+const TABLE_KEYS: [(&str, &[&str]); 7] = [
     ("restart", &["policy", "max", "window", "delay"]),
     ("stop", &["mode", "grace"]),
     ("cell", &["memory_max", "pids_max"]),
     ("credentials", &["uid", "caps", "nnp", "securebits"]),
     ("sandbox", &["namespaces", "seccomp", "landlock"]),
     ("rlimits", &["nofile"]),
+    ("launch", &["concurrency", "argv_tail", "env", "fds"]),
 ];
 const GROUP_KEYS: [&str; 2] = ["group", "edges"];
 const EDGE_KEYS: [&str; 7] = [

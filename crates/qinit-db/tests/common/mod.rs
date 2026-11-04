@@ -50,6 +50,8 @@ pub fn node(name: &str, kind: Kind) -> Node {
         cwd: "/".into(),
         umask: 0o027,
         rlimit_nofile: 0,
+        reload: None,
+        launch: None,
     }
 }
 

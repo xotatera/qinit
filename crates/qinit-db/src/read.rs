@@ -4,8 +4,8 @@
 
 use crate::crc::file_crc;
 use crate::model::{
-    Cred, Edge, Group, GroupKind, Kind, Mode, Model, Node, Ready, Restart, RestartOn,
-    RestartPolicy, Route, Seccomp, Securebits, Stop, StopMode, Target,
+    Cred, Edge, Group, GroupKind, Kind, Launch, Mode, Model, Node, Ready, Reload, Restart,
+    RestartOn, RestartPolicy, Route, Seccomp, Securebits, Stop, StopMode, Target,
 };
 use qinit_db_core::{
     DbError, H_CRC32, HEADER_WORDS, MAX_EDGES, MAX_NODES, NONE, SECCOMP_DEFAULT, SECCOMP_DENY,
@@ -158,6 +158,18 @@ impl Reader<'_> {
             cwd: self.string(f(26), f(27)).to_owned(),
             umask: f(28),
             rlimit_nofile: f(29),
+            reload: match f(30) {
+                0 => None,
+                1 => Some(Reload::Hup),
+                2 => Some(Reload::Usr1),
+                _ => Some(Reload::Usr2),
+            },
+            launch: (f(31) != 0).then(|| Launch {
+                concurrency: f(31),
+                argv_tail: f(32),
+                env: self.list(f(33), f(34)),
+                fds: f(35),
+            }),
         }
     }
 

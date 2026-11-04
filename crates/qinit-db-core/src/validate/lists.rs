@@ -3,7 +3,6 @@
 //! V8 (and the list part of V3): the enabled and pre-syslog lists are ascending node indices,
 //! and the enabled set is closed under the `require_all` and `require_any` node targets of its
 //! members.
-
 #![allow(clippy::many_single_char_names)] // `b`, `n`, `i`, `g`, `x`, `k` follow the spec names
 
 use super::header::{field, header_word};

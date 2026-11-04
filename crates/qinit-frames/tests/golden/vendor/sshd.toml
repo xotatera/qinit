@@ -6,6 +6,7 @@ ready = "pipe"
 restart = { policy = "on-failure", max = 3, window = "120s" }
 output = { pipe = "logd" }
 cell = { memory_max = "64M", pids_max = 64 }
+reload = "SIGHUP"
 credentials = { uid = "root", caps = ["net_bind_service", "sys_chroot", "setuid", "setgid"], nnp = false, securebits = "noroot" }
 deps = [
   { group = "require_all", edges = [{ to = "mount-var", restart_on = "error" }, { path = "/etc/ssh/sshd_config" }] },

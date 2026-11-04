@@ -67,6 +67,8 @@ fn instantiate(f: &Frame, inst: &str) -> Frame {
         cwd: s(&f.cwd),
         umask: f.umask,
         rlimits: f.rlimits.clone(),
+        reload: f.reload.clone(),
+        launch: f.launch.clone(),
         deps: f.deps.as_ref().map(|gs| {
             gs.iter()
                 .map(|g| DepGroup {
