@@ -12,6 +12,7 @@ license.workspace = true
 [dependencies]
 vstd.workspace = true
 qinit-db-core = { path = "../qinit-db-core" }
+qinit-proto-core = { path = "../qinit-proto-core" }
 
 [package.metadata.verus]
 verify = true
@@ -21,4 +22,4 @@ workspace = true
 
 [package.metadata.disciplines]
 layer = "core"
-allow = ["qinit-db-core", "vstd"]
+allow = ["qinit-db-core", "qinit-proto-core", "vstd"]

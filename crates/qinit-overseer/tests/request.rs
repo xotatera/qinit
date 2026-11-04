@@ -1,9 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The request builder, the environment of the service and the status record.
-use qinit_db::{Model, Seccomp, Securebits};
+use qinit_db::Model;
 use qinit_overseer::identity::Identity;
-use qinit_overseer::request::{BuildError, RequestSpec, Routed, Stream, from_instance, from_model};
+use qinit_overseer::request::{
+    BuildError, EncodeError, RequestSpec, Routed, Seccomp, Securebits, Stream, from_instance,
+    from_model,
+};
 use qinit_overseer::run::envp;
 use qinit_overseer::status::{STEP_DECODE, Status, step_name};
 use qinit_overseer_core::*;
@@ -99,7 +102,7 @@ fn a_request_over_the_size_limit_is_a_build_error() {
         user: "svc".into(),
         ..RequestSpec::default()
     };
-    assert_eq!(spec.bytes().unwrap_err(), BuildError::TooLarge);
+    assert_eq!(spec.bytes().unwrap_err(), EncodeError::TooLarge);
 }
 
 fn golden() -> Model {
@@ -300,7 +303,7 @@ fn stdin_same_is_bad_stream() {
         stdin: Stream::Same,
         ..full()
     };
-    assert_eq!(spec.bytes().unwrap_err(), BuildError::BadStream);
+    assert_eq!(spec.bytes().unwrap_err(), EncodeError::BadStream);
 }
 
 #[test]

@@ -230,11 +230,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "qinit-launch"
+version = "0.1.0"
+dependencies = [
+ "qinit-overseer-core",
+ "qinit-proto-core",
+]
+
+[[package]]
 name = "qinit-overseer"
 version = "0.1.0"
 dependencies = [
  "libc",
  "qinit-db",
+ "qinit-launch",
  "qinit-overseer-core",
  "qinit-sys",
 ]
@@ -244,6 +253,7 @@ name = "qinit-overseer-core"
 version = "0.1.0"
 dependencies = [
  "qinit-db-core",
+ "qinit-proto-core",
  "vstd",
 ]
 
