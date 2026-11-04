@@ -320,6 +320,57 @@ fn a_symlinked_directory_outside_a_writable_entry_still_works() -> Result<(), St
     )
 }
 
+/// Lists `entry` over a host directory `/tmp/fol` with an empty `m` below it, starts a service that
+/// looks for `/tmp/fol/m/marker` after a second, and mounts a `tmpfs` holding the marker on the
+/// host's `m` while the service runs. The service's exit: 0 when it saw the marker.
+fn mount_after_the_service_started(name: &str, entry: &str) -> Result<i32, String> {
+    // A shared host tree, as a service manager's host has.
+    e(qinit_sys::mount::mount(
+        "none",
+        std::path::Path::new("/"),
+        "none",
+        libc::MS_SHARED | libc::MS_REC,
+    )
+    .map_err(|x| x.to_string()))?;
+    let _ = qinit_sys::mount::umount_detach(std::path::Path::new("/tmp/fol/m"));
+    e(std::fs::create_dir_all("/tmp/fol/m"))?;
+    let mounter = std::thread::spawn(|| -> Result<(), String> {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let m = std::path::Path::new("/tmp/fol/m");
+        e(qinit_sys::mount::mount("tmpfs", m, "tmpfs", 0).map_err(|x| x.to_string()))?;
+        e(std::fs::write("/tmp/fol/m/marker", b"x"))
+    });
+    let r = viewed(
+        name,
+        "probe-wait-file",
+        &["/tmp/fol/m/marker", "1500"],
+        &[entry],
+        0,
+    );
+    let mounted = mounter
+        .join()
+        .map_err(|_| "the mounting thread panicked".to_string())?;
+    let _ = qinit_sys::mount::umount_detach(std::path::Path::new("/tmp/fol/m"));
+    mounted?;
+    Ok(r?.0)
+}
+
+fn a_following_entry_sees_a_later_host_mount() -> Result<(), String> {
+    want(
+        mount_after_the_service_started("fo1", "rs:/tmp/fol")?,
+        0,
+        "the marker of a mount made after the launch, through rs:",
+    )
+}
+
+fn a_plain_entry_does_not_see_a_later_host_mount() -> Result<(), String> {
+    want(
+        mount_after_the_service_started("fo2", "ro:/tmp/fol")?,
+        libc::ENOENT,
+        "the marker of a mount made after the launch, through ro:",
+    )
+}
+
 fn a_setuid_binary_outside_the_list_is_absent() -> Result<(), String> {
     e(std::fs::write("/tmp/su", b"x"))?;
     e(std::fs::set_permissions(
@@ -732,6 +783,14 @@ fn main() {
             (
                 "a_symlinked_directory_outside_a_writable_entry_still_works",
                 a_symlinked_directory_outside_a_writable_entry_still_works,
+            ),
+            (
+                "a_following_entry_sees_a_later_host_mount",
+                a_following_entry_sees_a_later_host_mount,
+            ),
+            (
+                "a_plain_entry_does_not_see_a_later_host_mount",
+                a_plain_entry_does_not_see_a_later_host_mount,
             ),
             (
                 "a_setuid_binary_outside_the_list_is_absent",

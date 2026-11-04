@@ -49,7 +49,7 @@ pub fn dev() -> Result<()> {
     for node in DEV_NODES {
         let target = dev.join(node);
         create_file(&target, 0o644)?;
-        attach(&Path::new("/dev").join(node), &target, 0)?;
+        attach(&Path::new("/dev").join(node), &target, 0, false)?;
     }
     let shm = dev.join("shm");
     mkdir_all(&shm, 0o755)?;
@@ -196,8 +196,8 @@ pub fn entry(entry: &str, pid: bool, beneath: Option<&Path>) -> Result<()> {
         set |= MOUNT_ATTR_RDONLY;
     }
     match source {
-        Some(fd) => attach_fd(fd.as_fd(), &target, set),
-        None => attach(host, &target, set),
+        Some(fd) => attach_fd(fd.as_fd(), &target, set, mode.follows()),
+        None => attach(host, &target, set, mode.follows()),
     }
 }
 
@@ -205,17 +205,18 @@ pub fn entry(entry: &str, pid: bool, beneath: Option<&Path>) -> Result<()> {
 /// attributes `set` before it is attached, so it is never visible without them. Attaching under
 /// a shared parent joins the clone to its peer group whatever the clone's own propagation was,
 /// so it is made private afterwards: a mount the host makes later below `host` must not
-/// appear in the view, writable and without `nosuid`.
-fn attach(host: &Path, target: &Path, set: u64) -> Result<()> {
-    attach_fd(open_path(host)?.as_fd(), target, set)
+/// appear in the view, writable and without `nosuid`. `follows`: it is left a slave of the
+/// host's mount instead, so the mounts the host makes below `host` later do appear (`rs:`, `ws:`).
+fn attach(host: &Path, target: &Path, set: u64, follows: bool) -> Result<()> {
+    attach_fd(open_path(host)?.as_fd(), target, set, follows)
 }
 
 /// `attach` for a source already opened.
-fn attach_fd(source: BorrowedFd<'_>, target: &Path, set: u64) -> Result<()> {
+fn attach_fd(source: BorrowedFd<'_>, target: &Path, set: u64, follows: bool) -> Result<()> {
     let clone = open_tree(source, c"", true)?;
     setattr_fd(clone.as_fd(), set, 0, 0, None, true)?;
     move_mount_to(clone.as_fd(), target)?;
-    private_rec(target)
+    if follows { Ok(()) } else { private_rec(target) }
 }
 
 /// `ViewPivot`: the view becomes the root and the old root is gone.
