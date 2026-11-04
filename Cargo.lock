@@ -233,10 +233,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "qinit-proto-core"
+version = "0.1.0"
+dependencies = [
+ "vstd",
+]
+
+[[package]]
 name = "qinit-sys"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "qinit-ipc",
 ]
 
 [[package]]
@@ -260,6 +268,13 @@ dependencies = [
  "qinit-frames",
  "qinit-overseer",
  "qinit-sys",
+]
+
+[[package]]
+name = "qinit-wire"
+version = "0.1.0"
+dependencies = [
+ "qinit-proto-core",
 ]
 
 [[package]]

@@ -175,6 +175,7 @@ fn gate_list_prints_the_global_order() {
             "repo/proof:qinit-db-core".to_string(),
             "repo/proof:qinit-colony-core".to_string(),
             "repo/proof:qinit-overseer-core".to_string(),
+            "repo/proof:qinit-proto-core".to_string(),
             "repo/vm".to_string(),
         ])
         .collect();
@@ -458,7 +459,8 @@ fn repository_declares_exactly_the_core_crate_proofs() {
             "proof:qinit-graph-core",
             "proof:qinit-db-core",
             "proof:qinit-colony-core",
-            "proof:qinit-overseer-core"
+            "proof:qinit-overseer-core",
+            "proof:qinit-proto-core"
         ]
     );
 }

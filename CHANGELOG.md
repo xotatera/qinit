@@ -12,6 +12,11 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Control protocol (sub-project 6, in progress): `qinit-ipc` (seqpacket sockets, `SCM_RIGHTS`,
+  peer credentials and pidfd), `qinit-proto-core` (the QCP1 message format with a Verus-proved
+  total decoder) and `qinit-wire` (messages as values); the frame keys `reload` and the forager
+  `[launch]` table with their database words (the node record grows to 36 words); a stdin route
+  in the overseer launch request (the record grows to 35 words).
 - `docs/design-principles.md`: the rules that decide whether a feature belongs in qinit and
   which part owns it, with a tie-break order and the patterns qinit does not use.
 - `qinit-graph-core`: the dependency graph model, Verus-proved: cycle detection
