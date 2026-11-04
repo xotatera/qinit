@@ -214,6 +214,39 @@ fn declared_descriptors_only() -> Result<(), String> {
     }
 }
 
+fn stdin_from_a_routed_pipe() -> Result<(), String> {
+    let mut cells = cells()?;
+    let (reader, writer) = capture();
+    let (input_r, input_w) = capture();
+    let mut request = spec("svc", "cat", &[]);
+    request.stdin = Stream::Fd(7);
+    request.stdout = Stream::Fd(6);
+    {
+        use std::io::Write;
+        let mut feed = std::fs::File::from(input_w);
+        feed.write_all(b"hello\n")
+            .map_err(|x| format!("feed stdin: {x}"))?;
+    }
+    let l = launch(
+        &mut cells,
+        "stdin",
+        &request,
+        vec![(writer, 6), (input_r, 7)],
+        ReadyMode::Exit,
+    )?;
+    expect(&mut cells, l.id, Report::Empty)?;
+    if let Some(why) = failure(&l, &request) {
+        return Err(why);
+    }
+    remove(&mut cells, l.id)?;
+    let out = read_all(reader);
+    if out == "hello\n" {
+        Ok(())
+    } else {
+        Err(format!("the service wrote {out:?}, want \"hello\\n\""))
+    }
+}
+
 fn status_pipe_at_eof() -> Result<(), String> {
     let mut cells = cells()?;
     let request = spec("svc", "exit-0", &[]);
@@ -249,6 +282,10 @@ fn main() {
             (
                 "only_the_declared_descriptors_arrive",
                 declared_descriptors_only,
+            ),
+            (
+                "stdin_from_a_routed_pipe_reaches_the_service",
+                stdin_from_a_routed_pipe,
             ),
             (
                 "a_successful_launch_leaves_the_status_pipe_at_eof",

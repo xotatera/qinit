@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! What `decode` accepts: the header, every pool reference, the enums, the routed descriptors
 //! and the content rules, as spec functions over the bytes.
-
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use crate::layout::*;
 // Explicit, so these shadow the same names of the database header.
@@ -67,6 +66,7 @@ pub open spec fn refs_ok(b: Seq<u8>) -> bool {
     &&& req_pool_ref(b, qw(b, Q_USER_OFF), qw(b, Q_USER_LEN))
     &&& req_list_ref(b, qw(b, Q_SECCOMP_OFF), qw(b, Q_SECCOMP_LEN))
     &&& req_list_ref(b, qw(b, Q_LANDLOCK_OFF), qw(b, Q_LANDLOCK_LEN))
+    &&& (qw(b, Q_STDIN_KIND) == STREAM_PATH ==> req_pool_ref(b, qw(b, Q_STDIN_A), qw(b, Q_STDIN_B)))
     &&& (qw(b, Q_STDOUT_KIND) == STREAM_PATH ==> req_pool_ref(
         b,
         qw(b, Q_STDOUT_A),
@@ -89,6 +89,7 @@ pub open spec fn enums_ok(b: Seq<u8>) -> bool {
     &&& qw(b, Q_NS) <= 0x1f
     &&& qw(b, Q_SECCOMP) <= 3
     &&& (qw(b, Q_SECCOMP) <= 1) == (qw(b, Q_SECCOMP_LEN) == 0)
+    &&& qw(b, Q_STDIN_KIND) <= STREAM_FD
     &&& qw(b, Q_STDOUT_KIND) <= STREAM_FD
     &&& qw(b, Q_STDERR_KIND) <= STREAM_SAME
     &&& qw(b, Q_READY_KIND) <= READY_PIPE
@@ -120,17 +121,20 @@ pub open spec fn ready_fd(b: Seq<u8>) -> int {
     }
 }
 
-/// Routed descriptors are in range and distinct; the unused words of a descriptor or "same"
+/// Routed descriptors (stdin, stdout, stderr, ready) are in range and distinct; the unused words of a descriptor or "same"
 /// stream and of an absent ready pipe are zero.
 pub open spec fn routes_ok(b: Seq<u8>) -> bool {
+    let inp = stream_fd(b, Q_STDIN_KIND, Q_STDIN_A);
     let out = stream_fd(b, Q_STDOUT_KIND, Q_STDOUT_A);
     let err = stream_fd(b, Q_STDERR_KIND, Q_STDERR_A);
     let ready = ready_fd(b);
+    &&& (qw(b, Q_STDIN_KIND) == STREAM_FD ==> fd_ok(inp) && qw(b, Q_STDIN_B) == 0)
     &&& (qw(b, Q_STDOUT_KIND) == STREAM_FD ==> fd_ok(out) && qw(b, Q_STDOUT_B) == 0)
     &&& (qw(b, Q_STDERR_KIND) == STREAM_FD ==> fd_ok(err) && qw(b, Q_STDERR_B) == 0)
     &&& (qw(b, Q_STDERR_KIND) == STREAM_SAME ==> qw(b, Q_STDERR_A) == 0 && qw(b, Q_STDERR_B) == 0)
     &&& (qw(b, Q_READY_KIND) == READY_PIPE ==> fd_ok(ready))
     &&& (qw(b, Q_READY_KIND) == READY_NONE ==> qw(b, Q_READY_FD) == 0)
+    &&& (inp >= 0 ==> inp != out && inp != err && inp != ready)
     &&& (out >= 0 ==> out != err && out != ready)
     &&& (err >= 0 ==> err != ready)
 }

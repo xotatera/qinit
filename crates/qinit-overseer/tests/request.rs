@@ -25,6 +25,7 @@ fn full() -> RequestSpec {
         ns: 0b10011,
         seccomp: Seccomp::Deny(vec![101, 110]),
         landlock: vec!["ro:/etc".into(), "rw:/var/log".into()],
+        stdin: Stream::Fd(8),
         stdout: Stream::Path("/var/log/out".into()),
         stderr: Stream::Fd(7),
         ready_fd: Some(6),
@@ -109,6 +110,7 @@ fn golden() -> Model {
 fn from_model_on_the_golden_tree_decodes() {
     let m = golden();
     let routed = Routed {
+        stdin: None,
         stdout: Some(5),
         stderr: None,
         ready: Some(6),
@@ -159,6 +161,7 @@ fn a_pipe_route_without_its_fd_is_a_build_error() {
         })
         .unwrap();
     let none = Routed {
+        stdin: None,
         stdout: None,
         stderr: None,
         ready: Some(6),
@@ -169,6 +172,7 @@ fn a_pipe_route_without_its_fd_is_a_build_error() {
     );
     let logd = m.nodes.iter().find(|n| n.name == "logd").unwrap();
     let no_ready = Routed {
+        stdin: None,
         stdout: Some(5),
         stderr: None,
         ready: None,
@@ -184,6 +188,7 @@ fn a_brood_has_no_request() {
     let m = golden();
     let brood = m.nodes.iter().find(|n| n.cred.is_none()).unwrap();
     let routed = Routed {
+        stdin: None,
         stdout: None,
         stderr: None,
         ready: None,
@@ -265,4 +270,50 @@ fn step_names_cover_the_pseudo_steps_and_the_plan() {
     assert_eq!(step_name(&b, STEP_DECODE - 1), "identity");
     assert_eq!(step_name(&b, 0), "setsid");
     assert_eq!(step_name(&b, 1_000_000), "?");
+}
+
+#[test]
+fn a_routed_stdin_is_laid_out_like_stdout() {
+    let b = full().bytes().unwrap();
+    assert_eq!(decode(&b), Ok(()));
+    assert_eq!(req(&b, Q_STDIN_KIND), STREAM_FD);
+    assert_eq!(req(&b, Q_STDIN_A), 8);
+    let default = RequestSpec {
+        argv: vec!["/bin/true".into()],
+        user: "svc".into(),
+        ..RequestSpec::default()
+    };
+    let b = default.bytes().unwrap();
+    assert_eq!(decode(&b), Ok(()));
+    assert_eq!(req(&b, Q_STDIN_KIND), STREAM_PATH);
+    assert_eq!(text(&b, Q_STDIN_A, Q_STDIN_B), "/dev/null");
+}
+
+#[test]
+fn stdin_same_is_bad_stream() {
+    let spec = RequestSpec {
+        stdin: Stream::Same,
+        ..full()
+    };
+    assert_eq!(spec.bytes().unwrap_err(), BuildError::BadStream);
+}
+
+#[test]
+fn from_model_routes_a_supplied_stdin() {
+    let m = golden();
+    let logd = m.nodes.iter().find(|n| n.name == "logd").unwrap();
+    let routed = Routed {
+        stdin: Some(9),
+        stdout: Some(5),
+        stderr: None,
+        ready: Some(6),
+    };
+    let spec = from_model(logd, &m, &routed, 1000).unwrap();
+    assert_eq!(spec.stdin, Stream::Fd(9));
+    let routed = Routed {
+        stdin: None,
+        ..routed
+    };
+    let spec = from_model(logd, &m, &routed, 1000).unwrap();
+    assert_eq!(spec.stdin, Stream::Path("/dev/null".into()));
 }

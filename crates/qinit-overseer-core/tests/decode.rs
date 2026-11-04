@@ -248,3 +248,58 @@ fn accessors_read_what_was_laid_out() {
         b"/bin/true"
     );
 }
+
+#[test]
+fn stdin_defaults_to_a_path() {
+    let db = valid();
+    assert_eq!(req(&db, Q_STDIN_KIND), STREAM_PATH);
+    assert_eq!(
+        pool(&db, req(&db, Q_STDIN_A), req(&db, Q_STDIN_B)),
+        b"/dev/null"
+    );
+}
+
+#[test]
+fn a_stdin_fd_must_be_in_range_and_distinct() {
+    let mut spec = minimal();
+    spec.stdin = Stream::Fd(5);
+    assert_eq!(decode(&build(&spec)), Ok(()));
+    spec.stdout = Stream::Fd(5);
+    assert_eq!(decode(&build(&spec)), Err(LaunchError::Consistency));
+    spec.stdout = Stream::Path("/dev/null");
+    spec.stderr = Stream::Fd(5);
+    assert_eq!(decode(&build(&spec)), Err(LaunchError::Consistency));
+    spec.stderr = Stream::Same;
+    spec.ready = Some(5);
+    assert_eq!(decode(&build(&spec)), Err(LaunchError::Consistency));
+    spec.ready = None;
+    spec.stdin = Stream::Fd(4);
+    assert_eq!(decode(&build(&spec)), Err(LaunchError::Consistency));
+    spec.stdin = Stream::Fd(38);
+    assert_eq!(decode(&build(&spec)), Err(LaunchError::Consistency));
+    spec.stdin = Stream::Fd(37);
+    assert_eq!(decode(&build(&spec)), Ok(()));
+}
+
+#[test]
+fn a_stdin_kind_of_2_is_an_enum_error() {
+    let db = with(&valid(), |w| w[at(Q_STDIN_KIND)] = STREAM_SAME);
+    assert_eq!(decode(&db), Err(LaunchError::Enum));
+}
+
+#[test]
+fn a_stdin_path_outside_the_pool_is_a_pool_error() {
+    let db = with(&valid(), |w| {
+        let pool_len = w[H_POOL_LEN];
+        w[at(Q_STDIN_A)] = pool_len;
+    });
+    assert_eq!(decode(&db), Err(LaunchError::Pool));
+}
+
+#[test]
+fn a_stdin_fd_has_no_length() {
+    let mut spec = minimal();
+    spec.stdin = Stream::Fd(6);
+    let db = with(&build(&spec), |w| w[at(Q_STDIN_B)] = 1);
+    assert_eq!(decode(&db), Err(LaunchError::Consistency));
+}

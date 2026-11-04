@@ -9,8 +9,8 @@ use qinit_overseer_core::{
     Q_ARGV_OFF, Q_CAPS_HI, Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_DEADLINE_MS, Q_ENV_LEN, Q_ENV_OFF,
     Q_FLAGS, Q_LANDLOCK_LEN, Q_LANDLOCK_OFF, Q_NNP, Q_NOFILE, Q_NS, Q_READY_FD, Q_READY_KIND,
     Q_SECCOMP, Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_SECUREBITS, Q_STDERR_A, Q_STDERR_B, Q_STDERR_KIND,
-    Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND, Q_UMASK, Q_USER_LEN, Q_USER_OFF, READY_NONE, READY_PIPE,
-    REQ_WORDS, STREAM_FD, STREAM_PATH, STREAM_SAME,
+    Q_STDIN_A, Q_STDIN_B, Q_STDIN_KIND, Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND, Q_UMASK, Q_USER_LEN,
+    Q_USER_OFF, READY_NONE, READY_PIPE, REQ_WORDS, STREAM_FD, STREAM_PATH, STREAM_SAME,
 };
 
 /// Where a stream goes.
@@ -39,6 +39,7 @@ pub struct RequestSpec {
     pub ns: u32,
     pub seccomp: Seccomp,
     pub landlock: Vec<String>,
+    pub stdin: Stream,
     pub stdout: Stream,
     pub stderr: Stream,
     pub ready_fd: Option<u32>,
@@ -61,6 +62,7 @@ impl Default for RequestSpec {
             ns: 0,
             seccomp: Seccomp::None,
             landlock: Vec::new(),
+            stdin: Stream::Path("/dev/null".into()),
             stdout: Stream::Path("/dev/null".into()),
             stderr: Stream::Same,
             ready_fd: None,
@@ -79,13 +81,14 @@ pub enum BuildError {
     NoCredentials,
     /// The request is longer than `MAX_REQUEST`.
     TooLarge,
-    /// Standard output was [`Stream::Same`].
+    /// Standard input or output was [`Stream::Same`].
     BadStream,
 }
 
 /// The descriptor numbers the launcher routes in, by role.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Routed {
+    pub stdin: Option<u32>,
     pub stdout: Option<u32>,
     pub stderr: Option<u32>,
     pub ready: Option<u32>,
@@ -112,7 +115,7 @@ impl RequestSpec {
     ///
     /// # Errors
     /// [`BuildError::TooLarge`] past `MAX_REQUEST`, [`BuildError::BadStream`] for a `Same`
-    /// standard output. Nothing else is checked here: `decode` is the judge.
+    /// standard input or output. Nothing else is checked here: `decode` is the judge.
     pub fn bytes(&self) -> Result<Vec<u8>, BuildError> {
         let mut pool = Pool(Vec::new());
         let mut rec = [0u32; REQ_WORDS];
@@ -136,10 +139,11 @@ impl RequestSpec {
         (rec[Q_SECCOMP_OFF], rec[Q_SECCOMP_LEN]) = (o, l);
         let (o, l) = pool.list(&self.landlock)?;
         (rec[Q_LANDLOCK_OFF], rec[Q_LANDLOCK_LEN]) = (o, l);
-        if self.stdout == Stream::Same {
+        if self.stdin == Stream::Same || self.stdout == Stream::Same {
             return Err(BuildError::BadStream);
         }
         for (s, kind, a, b) in [
+            (&self.stdin, Q_STDIN_KIND, Q_STDIN_A, Q_STDIN_B),
             (&self.stdout, Q_STDOUT_KIND, Q_STDOUT_A, Q_STDOUT_B),
             (&self.stderr, Q_STDERR_KIND, Q_STDERR_A, Q_STDERR_B),
         ] {
@@ -244,6 +248,9 @@ pub fn from_model(
         ns: cred.ns,
         seccomp: cred.seccomp.clone(),
         landlock: cred.landlock.clone(),
+        stdin: routed
+            .stdin
+            .map_or_else(|| Stream::Path("/dev/null".into()), Stream::Fd),
         stdout,
         stderr,
         ready_fd,
