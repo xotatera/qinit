@@ -97,6 +97,8 @@ pub struct Sim {
     pub instance_cells: HashSet<u32>,
     /// The descriptors each started instance was given, by slot.
     pub instance_fds: HashMap<u32, Vec<std::os::fd::OwnedFd>>,
+    /// The launch request each started `Run` instance was given, by slot.
+    pub instance_requests: HashMap<u32, OwnedFd>,
     /// The pidfds `instance_pidfd` hands out, one per call; a test fills the queue (the real
     /// layer opens one on the instance's pid). An empty queue fails with `EMFILE`.
     pub pidfds: VecDeque<OwnedFd>,
@@ -221,6 +223,9 @@ impl Effects for Sim {
         self.instance_cells.insert(slot);
         self.instance_fds
             .insert(slot, spec.fds.into_iter().flatten().collect());
+        if let Some(fd) = spec.request {
+            self.instance_requests.insert(slot, fd);
+        }
         let t = self.now;
         self.instance_event(slot, t, CellPhase::Running);
         if let Some((ms, status)) = script.exit_after {

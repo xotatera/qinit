@@ -214,6 +214,8 @@ fn check_refs(b: &[u8], t: u32) -> (r: Result<(), DecodeError>)
         sref_ok(b, rend, rword(b, LA_FRAME_OFF), rword(b, LA_FRAME_LEN))?;
         lref_ok(b, rend, rword(b, LA_ARGV_OFF), rword(b, LA_ARGV_LEN))?;
         lref_ok(b, rend, rword(b, LA_ENV_OFF), rword(b, LA_ENV_LEN))
+    } else if t == T_RUN {
+        sref_ok(b, rend, rword(b, RU_NAME_OFF), rword(b, RU_NAME_LEN))
     } else if t == T_NODE_STATUS {
         sref_ok(b, rend, rword(b, NS_NAME_OFF), rword(b, NS_NAME_LEN))?;
         sref_ok(b, rend, rword(b, NS_TARGET_OFF), rword(b, NS_TARGET_LEN))
@@ -280,6 +282,11 @@ fn check_enums(b: &[u8], t: u32) -> (r: Result<(), DecodeError>)
         }
     } else if t == T_SHUTDOWN {
         if rword(b, SH_MODE) > 2 || rword(b, SH_SETTLED) > 1 {
+            return bad;
+        }
+    } else if t == T_RUN {
+        if rword(b, RU_FD_ROLES) > 7 || rword(b, RU_FLAGS) > FLAG_PIDFD || rword(b, RU_STOP_MODE)
+            > 1 {
             return bad;
         }
     } else if t == T_ERROR {
@@ -417,6 +424,12 @@ fn check_content(b: &[u8], t: u32) -> (r: Result<(), DecodeError>)
         }
     } else if t == T_LAUNCH {
         return check_launch_content(b);
+    } else if t == T_RUN {
+        let len = rword(b, RU_NAME_LEN);
+        if len < 1 || len as usize >= MAX_NAME_LEN || rword(b, RU_STOP_GRACE_MS) < MIN_GRACE_MS
+            || !wait_ok_exec(1, rword(b, RU_WAIT_MS)) {
+            return bad;
+        }
     } else if t == T_REFRESH {
         if !wait_ok_exec(rword(b, RF_SETTLED), rword(b, RF_WAIT_MS)) {
             return bad;
@@ -476,6 +489,8 @@ fn check_fds(b: &[u8], t: u32, received: usize) -> (r: Result<(), DecodeError>)
         roles_count(rword(b, LA_FD_ROLES))
     } else if t == T_REFRESH {
         1
+    } else if t == T_RUN {
+        1 + roles_count(rword(b, RU_FD_ROLES))
     } else {
         0
     };

@@ -15,6 +15,7 @@ pub enum Op {
     Launch,
     Refresh,
     Shutdown,
+    Run,
 }
 
 /// The identity of the peer that sent a request.
@@ -43,7 +44,8 @@ pub fn op_of_type(t: u32) -> (r: Option<Op>)
         t == 4 ==> r == Some(Op::Launch),
         t == 5 ==> r == Some(Op::Refresh),
         t == 6 ==> r == Some(Op::Shutdown),
-        (t == 0 || t > 6) ==> r is None,
+        t == 7 ==> r == Some(Op::Run),
+        (t == 0 || t > 7) ==> r is None,
 {
     if t == 1 {
         Some(Op::Status)
@@ -57,6 +59,8 @@ pub fn op_of_type(t: u32) -> (r: Option<Op>)
         Some(Op::Refresh)
     } else if t == 6 {
         Some(Op::Shutdown)
+    } else if t == 7 {
+        Some(Op::Run)
     } else {
         None
     }

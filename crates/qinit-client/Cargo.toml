@@ -11,11 +11,13 @@ license = "MPL-2.0"
 
 [dependencies]
 qinit-ipc = { path = "../qinit-ipc" }
+qinit-launch = { path = "../qinit-launch" }
 qinit-proto-core = { path = "../qinit-proto-core" }
 qinit-wire = { path = "../qinit-wire" }
 
 [dev-dependencies]
 qinit-colony = { path = "../qinit-colony" }
+qinit-colony-core = { path = "../qinit-colony-core" }
 qinit-frames = { path = "../qinit-frames" }
 qinit-proto = { path = "../qinit-proto", features = ["testing"] }
 qinit-sys = { path = "../qinit-sys" }
@@ -27,4 +29,4 @@ workspace = true
 # on MPL crates only (the dev-dependencies are the GPL server it is tested against).
 [package.metadata.disciplines]
 layer = "runtime"
-allow = ["qinit-ipc", "qinit-proto-core", "qinit-wire"]
+allow = ["qinit-ipc", "qinit-launch", "qinit-proto-core", "qinit-wire"]

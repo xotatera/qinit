@@ -20,7 +20,7 @@ cannot drift from the code.
 - Sequenced packets keep message boundaries and keep the file descriptors of a message with
   that message. One message is one `sendmsg`/`recvmsg`; descriptors travel in one `SCM_RIGHTS`
   control message. Receive with `MSG_CMSG_CLOEXEC`.
-- A message is at most 65536 bytes and carries at most 3 descriptors.
+- A message is at most 65536 bytes and carries at most 4 descriptors.
 
 ## Who is on the other end
 
@@ -110,6 +110,7 @@ sent as a reply, or the other way round, is a protocol error.
 | 4 | `Launch` | request |
 | 5 | `Refresh` | request |
 | 6 | `Shutdown` | request |
+| 7 | `Run` | request |
 | 64 | `Error` | reply |
 | 65 | `NodeStatus` | reply |
 | 66 | `InstanceStatus` | reply |
@@ -229,6 +230,35 @@ No descriptors. Colony stops every instance and then the whole graph in order. A
 `Shutdown` with another mode replaces the mode. While shutting down, every request except
 `Status`, `List` and `Shutdown` gets `Error(ShuttingDown)`. Reply: `Accepted`, and if `settled`,
 `Settled` once the graph and the instances are stopped, or `Pending`.
+
+### `Run` (type 7), user id 0
+
+Launches a whole launch request (QLR1, `docs/launch-request.md`) as an instance, checked against
+the policy compiled into the database.
+
+| Word | Name | Meaning |
+| --- | --- | --- |
+| 0, 1 | `name_off`, `name_len` | the launch name, 1 to 95 bytes; the instance is `~<name>#<id>` (`~` is not a node-name byte, so it never collides with a frame's instances) |
+| 2 | `fd_roles` | 1 stdin, 2 stdout, 4 stderr, as `Launch` |
+| 3 | `flags` | bit 0 `pidfd`, as `Launch` |
+| 4 | `memory_max_kib` | 0 for none |
+| 5 | `pids_max` | 0 for none |
+| 6 | `stop_mode` | 0 main, 1 cell |
+| 7 | `stop_grace_ms` | at least 100 |
+| 8 | `wait_ms` | 1 to 600000 |
+
+Descriptors: first the request, then one per role set in the order stdin, stdout, stderr. The
+request is a memfd sealed with `F_SEAL_SHRINK`, `F_SEAL_GROW`, `F_SEAL_WRITE` and `F_SEAL_SEAL`
+holding at most 65536 bytes, read whole from offset 0; any other descriptor is `Error(Invalid)`
+(reason 21 not fully sealed, 19 too large, 20 unreadable). Colony checks, in order: the request
+decodes (`Error(Invalid)`, detail 1 header, 2 pool, 3 enum, 4 consistency of the request, 0 for a name that does not fit); its streams agree with the
+roles sent (stdin, stdout and stderr arrive as descriptors 5, 6 and 7; a stream `fd n` names a
+sent role's number and every role sent is used) and it names no readiness pipe (`Error(Denied)`,
+detail 0); the policy allows it under the name `~<name>` (`Error(Denied)`, the detail the
+first failing clause: 1 no policy, 2 user, 3 capabilities, 4 `no_new_privs`, 5 seccomp, 6 user
+namespace, 7 limits, 8 default); a slot is free (`Error(NoSlot)`). Then it runs as an instance
+and replies, waits, and ends exactly as `Launch` does, with the record's stop mode and grace. It
+has no frame, so a refresh never touches it; a shutdown stops it with the other instances.
 
 ## Replies
 
@@ -368,6 +398,13 @@ Text after `#` is a comment.
 # fds: 0
 51435031 01000000 20000000 06000000 00000000  # header: magic, version, total_len, type, fd_count
 01000000 01000000 88130000  # record
+```
+### Run
+```qcp1
+# fds: 3
+51435031 01000000 3b000000 07000000 03000000  # header: magic, version, total_len, type, fd_count
+38000000 03000000 06000000 01000000 00040000 08000000 01000000 64000000 60ea0000  # record
+6a6f62  # pool: "job"
 ```
 ### Error
 ```qcp1

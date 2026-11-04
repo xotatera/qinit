@@ -322,6 +322,20 @@ pub enum Req<'a> {
         settled: bool,
         wait_ms: u32,
     },
+    /// Launch the whole request in the first descriptor (a sealed memfd).
+    Run {
+        /// The launch name, 1 to 95 bytes; the instance is `~<name>#<id>`.
+        name: &'a str,
+        fd_roles: u32,
+        /// `FLAG_PIDFD`.
+        flags: u32,
+        memory_max_kib: u32,
+        pids_max: u32,
+        /// 0 main, 1 cell.
+        stop_mode: u32,
+        stop_grace_ms: u32,
+        wait_ms: u32,
+    },
 }
 
 /// A reply.
@@ -409,6 +423,16 @@ fn request(b: &[u8], t: u32) -> Result<Req<'_>, DecodeError> {
         T_REFRESH => Req::Refresh {
             settled: flag(rec(b, RF_SETTLED)),
             wait_ms: rec(b, RF_WAIT_MS),
+        },
+        T_RUN => Req::Run {
+            name: text(b, rec(b, RU_NAME_OFF), rec(b, RU_NAME_LEN))?,
+            fd_roles: rec(b, RU_FD_ROLES),
+            flags: rec(b, RU_FLAGS),
+            memory_max_kib: rec(b, RU_MEMORY_MAX_KIB),
+            pids_max: rec(b, RU_PIDS_MAX),
+            stop_mode: rec(b, RU_STOP_MODE),
+            stop_grace_ms: rec(b, RU_STOP_GRACE_MS),
+            wait_ms: rec(b, RU_WAIT_MS),
         },
         _ => Req::Shutdown {
             mode: Mode::from_word(rec(b, SH_MODE)).ok_or(bad)?,
@@ -507,11 +531,12 @@ pub fn op_of(r: &Req<'_>) -> Op {
         Req::Launch { .. } => Op::Launch,
         Req::Refresh { .. } => Op::Refresh,
         Req::Shutdown { .. } => Op::Shutdown,
+        Req::Run { .. } => Op::Run,
     }
 }
 
-/// The descriptors a message carries: one per role of a launch, one for a refresh, none
-/// otherwise. A `Launched` reply carries none or a pidfd (see [`FLAG_PIDFD`]): this counts none.
+/// The descriptors a message carries: one per role of a launch, one for a refresh, the request
+/// and one per role for a run, none otherwise. A `Launched` reply carries none or a pidfd (see [`FLAG_PIDFD`]): this counts none.
 #[must_use]
 pub fn required_fds(m: &Msg<'_>) -> u32 {
     match m {
@@ -519,6 +544,9 @@ pub fn required_fds(m: &Msg<'_>) -> u32 {
             (fd_roles & 1) + ((fd_roles >> 1) & 1) + ((fd_roles >> 2) & 1)
         }
         Msg::Req(Req::Refresh { .. }) => 1,
+        Msg::Req(Req::Run { fd_roles, .. }) => {
+            1 + (fd_roles & 1) + ((fd_roles >> 1) & 1) + ((fd_roles >> 2) & 1)
+        }
         _ => 0,
     }
 }
@@ -618,6 +646,26 @@ fn request_record<'a>(r: &Req<'a>, rec: &mut Rec<'a>) -> u32 {
         } => {
             rec.w(mode.word()).w(word_of(settled)).w(wait_ms);
             T_SHUTDOWN
+        }
+        Req::Run {
+            name,
+            fd_roles,
+            flags,
+            memory_max_kib,
+            pids_max,
+            stop_mode,
+            stop_grace_ms,
+            wait_ms,
+        } => {
+            rec.s(name)
+                .w(fd_roles)
+                .w(flags)
+                .w(memory_max_kib)
+                .w(pids_max)
+                .w(stop_mode)
+                .w(stop_grace_ms)
+                .w(wait_ms);
+            T_RUN
         }
     }
 }

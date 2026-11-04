@@ -65,7 +65,7 @@ fn n(x: usize) -> u32 {
 #[test]
 fn an_unknown_type_is_type() {
     let (b, fds) = ok(T_LIST);
-    for t in [0, 7, 63, 75, 1000] {
+    for t in [0, 8, 63, 75, 1000] {
         let b = with(&b, |w| w[H_TYPE] = t);
         assert_eq!(check(&b, fds).unwrap_err(), DecodeError::Type, "type {t}");
     }
@@ -360,12 +360,12 @@ fn a_list_entry_with_a_bad_name_is_refused() {
 
 #[test]
 fn the_record_table_matches_the_function() {
-    assert_eq!(RECORD_WORDS.len(), 17);
+    assert_eq!(RECORD_WORDS.len(), 18);
     for (t, n) in RECORD_WORDS {
         assert_eq!(record_words(t), n, "type {t}");
         assert!(known_type(t));
     }
-    assert!(!known_type(0) && !known_type(7) && !known_type(75));
+    assert!(!known_type(0) && !known_type(8) && !known_type(75));
 }
 
 #[test]
@@ -405,6 +405,78 @@ fn every_other_reply_with_an_fd_is_fd_count() {
             check(&one, 1).unwrap_err(),
             DecodeError::FdCount,
             "type {t}"
+        );
+    }
+}
+
+#[test]
+fn run_is_root_only() {
+    assert!(authorized(Op::Run, PeerId { uid: 0 }));
+    assert!(!authorized(Op::Run, PeerId { uid: 1000 }));
+    assert_eq!(T_RUN, 7);
+    assert_eq!(MAX_FDS, 4);
+}
+
+fn run_with(name: &'static str, roles: u32, grace: u32, wait: u32) -> Vec<u8> {
+    build(
+        T_RUN,
+        1 + roles.count_ones(),
+        &[S(name), N(roles), N(0), N(0), N(0), N(0), N(grace), N(wait)],
+        &[],
+    )
+}
+
+#[test]
+fn run_name_96_is_consistency() {
+    let ok95: &'static str = Box::leak("a".repeat(95).into_boxed_str());
+    let bad96: &'static str = Box::leak("a".repeat(96).into_boxed_str());
+    assert!(check(&run_with(ok95, 0, 1000, 5000), 1).is_ok());
+    assert_eq!(
+        check(&run_with(bad96, 0, 1000, 5000), 1).unwrap_err(),
+        DecodeError::Consistency
+    );
+    assert_eq!(
+        check(&run_with("", 0, 1000, 5000), 1).unwrap_err(),
+        DecodeError::Consistency
+    );
+}
+
+#[test]
+fn run_needs_one_fd_plus_its_roles() {
+    assert!(check(&run_with("job", 0, 1000, 5000), 1).is_ok());
+    assert!(check(&run_with("job", 7, 1000, 5000), 4).is_ok());
+    assert!(check(&run_with("job", 2, 1000, 5000), 2).is_ok());
+    assert_eq!(
+        check(&run_with("job", 0, 1000, 5000), 0).unwrap_err(),
+        DecodeError::FdCount
+    );
+    assert_eq!(
+        check(&run_with("job", 7, 1000, 5000), 3).unwrap_err(),
+        DecodeError::FdCount
+    );
+}
+
+#[test]
+fn run_grace_99_is_consistency() {
+    assert!(check(&run_with("job", 0, 100, 5000), 1).is_ok());
+    assert_eq!(
+        check(&run_with("job", 0, 99, 5000), 1).unwrap_err(),
+        DecodeError::Consistency
+    );
+    assert_eq!(
+        check(&run_with("job", 0, 1000, 0), 1).unwrap_err(),
+        DecodeError::Consistency
+    );
+}
+
+#[test]
+fn run_enums_are_bounded() {
+    let (b, fds) = ok(T_RUN);
+    for (w, v) in [(RU_FD_ROLES, 8), (RU_FLAGS, 2), (RU_STOP_MODE, 2)] {
+        assert_eq!(
+            check(&with(&b, |x| x[at(w)] = v), fds).unwrap_err(),
+            DecodeError::Enum,
+            "word {w}"
         );
     }
 }

@@ -4,3 +4,4 @@
 # Accepted duplicate groups. Shrink-only: a group not covered here fails the
 # duplication gate; `cargo xtask dup bless` removes entries that no longer match.
 # One group per line, members sorted:  <member> | <member>  # reason
+crates/qinit-ipc/src/memfd.rs::read_all | crates/qinit-sys/src/memfd.rs::read_all  # qinit-ipc is MPL-2.0 (client library) and may not depend on GPL qinit-sys; the copy is licence-forced

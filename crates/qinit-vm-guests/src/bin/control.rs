@@ -85,7 +85,11 @@ fn world() -> Result<Colony<Sim>, String> {
         routes: Vec::new(),
         enabled: vec![1],
         presyslog: Vec::new(),
-        policy: None,
+        policy: Some(qinit_db::Policy {
+            allow_by_default: false,
+            ceiling: [None; 16],
+            rules: Vec::new(),
+        }),
     };
     let bytes = write(&model).map_err(|e| format!("{e:?}"))?;
     let (colony, _) =
@@ -96,13 +100,14 @@ fn world() -> Result<Colony<Sim>, String> {
 /// Runs the server in this process until the forked client `client` exits, and returns the
 /// client's exit status (0 is success).
 fn serve_while(client: impl FnOnce() -> i32) -> Result<(), String> {
-    serve_with(|_| Ok(()), client)
+    serve_with(|_| Ok(()), client, |_| Ok(()))
 }
 
 /// As [`serve_while`], with `prepare` run on the colony before the client starts.
 fn serve_with(
     prepare: impl FnOnce(&mut Colony<Sim>) -> Result<(), String>,
     client: impl FnOnce() -> i32,
+    after: impl FnOnce(&mut Colony<Sim>) -> Result<(), String>,
 ) -> Result<(), String> {
     let _ = std::fs::remove_file(SOCKET);
     let path = CString::new(SOCKET).map_err(|e| e.to_string())?;
@@ -124,11 +129,10 @@ fn serve_with(
         })
         .map_err(|e| format!("serve: {e}"))?;
     let status = qinit_sys::proc::wait_pidfd(&pidfd).map_err(|e| format!("wait: {e}"))?;
-    if status == 0 {
-        Ok(())
-    } else {
-        Err(format!("the client failed (wait status {status})"))
+    if status != 0 {
+        return Err(format!("the client failed (wait status {status})"));
     }
+    after(&mut colony)
 }
 
 fn connect() -> Result<Client, String> {
@@ -250,9 +254,71 @@ fn a_launch_pidfd_polls_readable_at_exit() -> Result<(), String> {
             // Dead: readable within the hang guard.
             i32::from(readable(30_000) != Some(true)) * 5
         },
+        |_| Ok(()),
     );
     let _ = qinit_sys::proc::kill(victim, libc::SIGKILL);
     result
+}
+
+/// A `Run` of a whole request reaches the executor intact and the helper it names runs.
+fn run_request_reaches_the_executor_and_runs() -> Result<(), String> {
+    use qinit_vm_guests::{run_fd_to_end, spec};
+    let request = spec("svc", "exit-0", &[]);
+    let expected = request.bytes().map_err(|e| format!("{e:?}"))?;
+    serve_with(
+        |_| Ok(()),
+        move || {
+            let Ok(mut c) = connect() else { return 1 };
+            // The sim's clock stands still, so the wait never ends: read only the start.
+            let got = c.begin_run(
+                "job",
+                &request,
+                &qinit_client::RunArgs::default(),
+                false,
+                std::time::Duration::from_secs(60),
+            );
+            i32::from(!matches!(got, Ok(qinit_client::Begun::Started(_))))
+        },
+        |colony| {
+            // The sim captured the memfd the client sent: those are the request's bytes, and the
+            // executor runs them.
+            let fd = colony
+                .effects
+                .instance_requests
+                .remove(&0)
+                .ok_or("the sim saw no request")?;
+            let got = qinit_sys::memfd::read_all(fd.as_fd(), 65536).map_err(|e| e.to_string())?;
+            if got != expected {
+                return Err("the request changed on the way".into());
+            }
+            let o = run_fd_to_end("run-job", fd)?;
+            if o.failure.is_some() || o.exit != Some(0) {
+                return Err(format!(
+                    "the executor ran it badly: exit {:?}, failure {:?}",
+                    o.exit, o.failure
+                ));
+            }
+            Ok(())
+        },
+    )
+}
+
+/// With a deny default and no rule for it, a privileged `Run` is refused with the clause.
+fn run_is_refused_without_a_run_rule() -> Result<(), String> {
+    use qinit_vm_guests::spec;
+    let mut privileged = spec("root", "exit-0", &[]);
+    privileged.nnp = true;
+    serve_while(move || {
+        let Ok(mut c) = connect() else { return 1 };
+        let got = c.run(
+            "job",
+            &privileged,
+            &qinit_client::RunArgs::default(),
+            std::time::Duration::from_secs(1),
+        );
+        // Clause 8: no rule matches and the default is deny.
+        i32::from(got.err() != Some(ClientError::Server(ErrorCode::Denied, 8)))
+    })
 }
 
 fn main() {
@@ -268,6 +334,14 @@ fn main() {
             (
                 "a_launch_pidfd_polls_readable_at_exit",
                 a_launch_pidfd_polls_readable_at_exit,
+            ),
+            (
+                "run_request_reaches_the_executor_and_runs",
+                run_request_reaches_the_executor_and_runs,
+            ),
+            (
+                "run_is_refused_without_a_run_rule",
+                run_is_refused_without_a_run_rule,
             ),
         ],
     )

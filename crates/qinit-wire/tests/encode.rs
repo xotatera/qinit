@@ -72,6 +72,16 @@ fn every_request_round_trips() {
             settled: false,
             wait_ms: 0,
         }),
+        Msg::Req(Req::Run {
+            name: "job",
+            fd_roles: 6,
+            flags: 1,
+            memory_max_kib: 1024,
+            pids_max: 8,
+            stop_mode: 1,
+            stop_grace_ms: 100,
+            wait_ms: 60_000,
+        }),
     ];
     for m in &msgs {
         round_trip(m);
@@ -311,4 +321,27 @@ fn op_of_names_the_operation() {
         }),
         Op::Refresh
     );
+}
+
+#[test]
+fn a_run_requires_its_request_fd_and_its_roles() {
+    let named = |name, fd_roles| Req::Run {
+        name,
+        fd_roles,
+        flags: 0,
+        memory_max_kib: 0,
+        pids_max: 0,
+        stop_mode: 0,
+        stop_grace_ms: 100,
+        wait_ms: 1,
+    };
+    let run = |fd_roles| named("job", fd_roles);
+    assert_eq!(required_fds(&Msg::Req(run(0))), 1);
+    assert_eq!(required_fds(&Msg::Req(run(7))), 4);
+    assert_eq!(
+        encoded(&Msg::Req(run(7)), 3).unwrap_err(),
+        EncodeError::Invalid
+    );
+    let long = "a".repeat(96);
+    assert!(encoded(&Msg::Req(named(&long, 0)), 1).is_err());
 }

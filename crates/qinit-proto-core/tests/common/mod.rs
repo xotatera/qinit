@@ -81,6 +81,10 @@ pub fn valid(t: u32) -> (Vec<u8>, usize) {
             ],
         ),
         T_REFRESH => (1, vec![N(1), N(5000)]),
+        T_RUN => (
+            3,
+            vec![S("job"), N(6), N(0), N(0), N(0), N(0), N(1000), N(5000)],
+        ),
         T_SHUTDOWN => (0, vec![N(1), N(1), N(5000)]),
         T_ERROR => (0, vec![N(CODE_DENIED), N(0), N(1)]),
         T_NODE_STATUS => (
@@ -117,13 +121,14 @@ pub fn valid(t: u32) -> (Vec<u8>, usize) {
 }
 
 /// Every message type of the format.
-pub const TYPES: [u32; 17] = [
+pub const TYPES: [u32; 18] = [
     T_STATUS,
     T_LIST,
     T_CHANGE,
     T_LAUNCH,
     T_REFRESH,
     T_SHUTDOWN,
+    T_RUN,
     T_ERROR,
     T_NODE_STATUS,
     T_INSTANCE_STATUS,

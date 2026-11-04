@@ -667,3 +667,65 @@ fn launched_carries_the_pidfd_over_the_socket() {
     let got = recv(c2.as_fd(), &mut buf).unwrap();
     assert!(got.fds.is_empty());
 }
+
+fn run_req(roles: u32) -> Req<'static> {
+    Req::Run {
+        name: "job",
+        fd_roles: roles,
+        flags: 0,
+        memory_max_kib: 0,
+        pids_max: 0,
+        stop_mode: 0,
+        stop_grace_ms: 1000,
+        wait_ms: 1000,
+    }
+}
+
+fn invalid_reason(c: &OwnedFd) -> u32 {
+    let (code, detail, _) = error_of(c);
+    assert_eq!(code, ErrorCode::Invalid);
+    detail
+}
+
+#[test]
+fn an_unsealed_request_is_invalid() {
+    let mut r = rig(&[], Limits::default(), Sim::new());
+    r.root();
+    let c = r.connect();
+    // A memfd that was never sealed, and a pipe: neither is a sealed request.
+    let fd = qinit_sys::memfd::sealed(c"x", b"abc").unwrap();
+    let plain: OwnedFd = std::io::pipe().unwrap().0.into();
+    send_msg(&c, &Msg::Req(run_req(0)), &[plain.as_fd()]);
+    r.pump();
+    assert_eq!(invalid_reason(&c), 21);
+    drop(fd);
+    assert!(r.colony.effects.instance_requests.is_empty());
+}
+
+#[test]
+fn an_oversized_request_is_invalid() {
+    let mut r = rig(&[], Limits::default(), Sim::new());
+    r.root();
+    let c = r.connect();
+    let big = qinit_ipc::memfd::sealed(c"big", &vec![0u8; 65_537]).unwrap();
+    send_msg(&c, &Msg::Req(run_req(0)), &[big.as_fd()]);
+    r.pump();
+    assert_eq!(invalid_reason(&c), 19);
+}
+
+#[test]
+fn a_sealed_request_reaches_colony_and_a_non_root_one_is_denied() {
+    let mut r = rig(&[], Limits::default(), Sim::new());
+    let user = r.connect();
+    let bytes = qinit_ipc::memfd::sealed(c"x", b"not a request").unwrap();
+    send_msg(&user, &Msg::Req(run_req(0)), &[bytes.as_fd()]);
+    r.pump();
+    let (code, detail, _) = error_of(&user);
+    assert_eq!((code, detail), (ErrorCode::Denied, 0));
+    r.root();
+    let root = r.connect();
+    send_msg(&root, &Msg::Req(run_req(0)), &[bytes.as_fd()]);
+    r.pump();
+    // The server read the bytes; the decoder (colony) refuses them: header error 1.
+    assert_eq!(invalid_reason(&root), 1);
+}

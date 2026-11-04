@@ -4,6 +4,7 @@
 
 use qinit_colony::{Attached, Colony, Effects, Outcome, OwnedRep, Peer, WaitId};
 use qinit_ipc::{PeerCred, Received, peer_cred, peer_pidfd, recv, send_nowait};
+use qinit_proto_core::launch::MAX_REQUEST;
 use qinit_proto_core::{DecodeError, MAX_MESSAGE, authorized};
 use qinit_wire::{ErrorCode, Msg, Req, decode, op_of};
 use std::collections::HashMap;
@@ -19,6 +20,12 @@ const REASON_TOO_LARGE: u32 = 19;
 
 /// The wire number of a database that cannot be read.
 const REASON_UNREADABLE: u32 = 20;
+
+/// `EFBIG`: the file is longer than the reader's maximum.
+const EFBIG: i32 = 27;
+
+/// The wire number of a `Run` request descriptor that is not a fully sealed memfd.
+const REASON_UNSEALED: u32 = 21;
 
 /// Connection limits (spec R5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +123,20 @@ fn read_database(fd: OwnedFd) -> Result<Vec<u8>, u32> {
     }
     bytes.truncate(have);
     Ok(bytes)
+}
+
+/// Reads the launch request a `Run` passed: a memfd carrying every seal, at most
+/// `MAX_REQUEST` bytes. Returns the bytes and the descriptor, which the executor receives.
+fn read_request(fd: OwnedFd) -> Result<(Vec<u8>, OwnedFd), u32> {
+    match qinit_ipc::memfd::seals(fd.as_fd()) {
+        Ok(s) if s == qinit_ipc::memfd::ALL_SEALS => {}
+        _ => return Err(REASON_UNSEALED),
+    }
+    match qinit_ipc::memfd::read_all(fd.as_fd(), MAX_REQUEST) {
+        Ok(bytes) => Ok((bytes, fd)),
+        Err(qinit_ipc::Errno(EFBIG)) => Err(REASON_TOO_LARGE),
+        Err(_) => Err(REASON_UNREADABLE),
+    }
 }
 
 impl Server {
@@ -350,6 +371,14 @@ impl Server {
                 // Only a peer that may refresh gets its descriptor read.
                 if authorized(op_of(req), qinit_proto_core::PeerId { uid: peer.uid }) {
                     attached.database = fds.into_iter().next().map(read_database);
+                }
+            }
+            Req::Run { .. } => {
+                // Only a peer that may run gets its request descriptor read.
+                if authorized(op_of(req), qinit_proto_core::PeerId { uid: peer.uid }) {
+                    let mut rest = fds.into_iter();
+                    attached.request = rest.next().map(read_request);
+                    attached.fds = rest.collect();
                 }
             }
             _ => attached.fds = fds,

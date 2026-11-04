@@ -305,3 +305,35 @@ fn begin_launch_without_the_flag_has_no_pidfd_and_a_failed_launch_none() {
         .unwrap();
     assert!(matches!(got, Begun::Failed { errno: 2, .. }), "{got:?}");
 }
+
+#[test]
+fn begin_run_sends_the_sealed_request_first() {
+    use qinit_client::RunArgs;
+    use qinit_launch::RequestSpec;
+    let s = Served::start(&[], true, instant(Some(0)));
+    let mut c = s.client();
+    let request = RequestSpec {
+        argv: vec!["/bin/job".into()],
+        user: "svc".into(),
+        ..RequestSpec::default()
+    };
+    // The server read the memfd and the decoder accepted it; the colony has no policy, so the
+    // policy refuses (clause 1, no policy): the request travelled intact and first.
+    let got = c.begin_run(
+        "job",
+        &request,
+        &RunArgs::default(),
+        false,
+        Duration::from_secs(5),
+    );
+    assert_eq!(got.err(), Some(ClientError::Server(ErrorCode::Denied, 1)));
+    // A stream descriptor the request does not name is refused before the policy: detail 0.
+    let (_r, w) = qinit_sys::fd::pipe(0o2_000_000).unwrap();
+    let mut c = s.client();
+    let args = RunArgs {
+        stdout: Some(w.as_fd()),
+        ..RunArgs::default()
+    };
+    let got = c.run("job", &request, &args, Duration::from_secs(5));
+    assert_eq!(got.err(), Some(ClientError::Server(ErrorCode::Denied, 0)));
+}

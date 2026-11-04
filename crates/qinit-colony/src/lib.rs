@@ -22,6 +22,8 @@ pub use handle::{
     Attached, EntryView, Handled, InstanceStatusView, NodeStatusView, OwnedRep, Peer, ShutdownMode,
     WaitId, state_word,
 };
-pub use instance::{Exit, InstanceView, LaunchArgs, LaunchError, RING};
+pub use instance::{
+    Exit, FRAMELESS, InstanceView, LaunchArgs, LaunchError, MAX_RUN_NAME, RING, RunArgs, RunError,
+};
 pub use qinit_colony_core::{Reason, Report, Request, SlotState, State, StopMode, TimerKind, Why};
 pub use swap::SwapError;

@@ -3,13 +3,14 @@
 //! Who may do what.
 use qinit_proto_core::*;
 
-const OPS: [Op; 6] = [
+const OPS: [Op; 7] = [
     Op::Status,
     Op::List,
     Op::Change,
     Op::Launch,
     Op::Refresh,
     Op::Shutdown,
+    Op::Run,
 ];
 
 #[test]
@@ -38,6 +39,7 @@ fn request_types_map_to_operations_and_replies_to_none() {
         (T_LAUNCH, Some(Op::Launch)),
         (T_REFRESH, Some(Op::Refresh)),
         (T_SHUTDOWN, Some(Op::Shutdown)),
+        (T_RUN, Some(Op::Run)),
         (0, None),
         (T_ERROR, None),
         (T_EXITED, None),

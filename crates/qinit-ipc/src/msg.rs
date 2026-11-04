@@ -6,10 +6,10 @@ use crate::{Errno, Result};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 
 /// The most descriptors one message carries.
-pub const MAX_FDS: usize = 3;
+pub const MAX_FDS: usize = 4;
 
 /// The data bytes of a full `SCM_RIGHTS` message (`MAX_FDS` ints).
-const FDS_BYTES: u32 = 12;
+const FDS_BYTES: u32 = 16;
 
 /// `CMSG_SPACE` for `MAX_FDS` descriptors, rounded up for alignment.
 const CONTROL_BYTES: usize = 64;

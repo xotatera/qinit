@@ -41,6 +41,12 @@ pub struct InstanceSpec {
     pub env_add: Vec<(String, String)>,
     /// The descriptors the caller supplied: stdin, stdout, stderr.
     pub fds: [Option<OwnedFd>; 3],
+    /// The sealed launch request to hand the executor as its descriptor 3, for an instance of a
+    /// `Run`; `None` for a frame's instance, whose request the effects layer builds.
+    pub request: Option<OwnedFd>,
+    /// The cell's memory ceiling in KiB and its process ceiling, 0 for none.
+    pub memory_max_kib: u32,
+    pub pids_max: u32,
 }
 
 /// Effects per node. Every error is an errno; colony turns a failed `start` into a spawn

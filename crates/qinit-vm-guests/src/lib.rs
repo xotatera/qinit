@@ -193,6 +193,17 @@ pub fn launch(
 ) -> Result<Launched, String> {
     let bytes = e(spec.bytes().map_err(|x| format!("{x:?}")))?;
     let request = sys(qinit_sys::memfd::sealed(c"req", &bytes), "seal the request")?;
+    launch_fd(cells, name, request, extra, ready)
+}
+
+/// As [`launch`], with the sealed request already in a memfd (what a `Run` passes on).
+pub fn launch_fd(
+    cells: &mut Cells,
+    name: &str,
+    request: OwnedFd,
+    extra: Vec<(OwnedFd, RawFd)>,
+    ready: ReadyMode,
+) -> Result<Launched, String> {
     let (status_r, status_w) = sys(qinit_sys::fd::pipe(libc::O_CLOEXEC), "status pipe")?;
     let id = e(cells.create(name))?;
     let mut fds = vec![(request, 3), (status_w, 4)];
@@ -387,6 +398,31 @@ pub fn run_to_end(
         exit,
         failure,
         request: e(request.bytes().map_err(|x| format!("{x:?}")))?,
+    })
+}
+
+/// Runs the request in the sealed memfd `request` through the executor in a new cell `name`
+/// and waits for the cell to empty: the main's status and the executor's record.
+pub fn run_fd_to_end(name: &str, request: OwnedFd) -> Result<Outcome, String> {
+    let bytes = sys(
+        qinit_sys::memfd::read_all(request.as_fd(), 65536),
+        "read the request",
+    )?;
+    let mut cells = cells()?;
+    let l = launch_fd(&mut cells, name, request, Vec::new(), ReadyMode::Exit)?;
+    let seen = expect(&mut cells, l.id, Report::Empty)?;
+    let exit = reports_of(&seen, l.id).iter().find_map(|r| match r {
+        Report::MainExited(st) => *st,
+        Report::Ready => Some(0),
+        _ => None,
+    });
+    let failure = status_of(&l);
+    remove(&mut cells, l.id)?;
+    Ok(Outcome {
+        out: String::new(),
+        exit,
+        failure,
+        request: bytes,
     })
 }
 

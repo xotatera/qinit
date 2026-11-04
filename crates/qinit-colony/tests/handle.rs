@@ -304,6 +304,7 @@ fn a_refresh_that_removes_the_node_supersedes_its_wait() {
     let attached = Attached {
         fds: Vec::new(),
         database: Some(Ok(database(&smaller, &[]))),
+        ..Attached::default()
     };
     let h = c.handle(
         ROOT,
@@ -524,6 +525,7 @@ fn refresh_settled_replies_after_phase_2() {
         Attached {
             fds: Vec::new(),
             database: Some(Ok(database(&changed, &["db"]))),
+            ..Attached::default()
         },
         WaitId(21),
         now,
@@ -550,6 +552,7 @@ fn a_refused_database_is_invalid_with_its_reason() {
         Attached {
             fds: Vec::new(),
             database: Some(Ok(bad)),
+            ..Attached::default()
         },
         WaitId(1),
         now,
@@ -570,6 +573,7 @@ fn a_refused_database_is_invalid_with_its_reason() {
         Attached {
             fds: Vec::new(),
             database: Some(Err(19)),
+            ..Attached::default()
         },
         WaitId(2),
         now,
@@ -808,6 +812,7 @@ fn an_identical_refresh_settles_at_once_after_a_restarting_one() {
             Attached {
                 fds: Vec::new(),
                 database: Some(Ok(database(&changed, &["db"]))),
+                ..Attached::default()
             },
             WaitId(id),
             now,
@@ -882,6 +887,7 @@ fn a_refresh_that_adds_an_enabled_forager_runs_it() {
         Attached {
             fds: Vec::new(),
             database: Some(Ok(database(&frames(), &["db", "plain"]))),
+            ..Attached::default()
         },
         WaitId(41),
         now,

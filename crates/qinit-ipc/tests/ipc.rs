@@ -115,7 +115,7 @@ fn a_closed_peer_reads_as_zero_length() {
 #[allow(clippy::multiple_unsafe_ops_per_block)] // a hand-built SCM_RIGHTS message is the point of this test
 fn a_received_fd_beyond_the_buffer_sets_ctrunc() {
     let (a, b) = seqpacket_pair().unwrap();
-    let pipes: Vec<_> = (0..4).map(|_| pipe()).collect();
+    let pipes: Vec<_> = (0..5).map(|_| pipe()).collect();
     let raws: Vec<libc::c_int> = pipes.iter().map(|p| p.1.as_raw_fd()).collect();
     let mut data = *b"x";
     let mut vec = libc::iovec {
@@ -129,15 +129,15 @@ fn a_received_fd_beyond_the_buffer_sets_ctrunc() {
     msg.msg_iovlen = 1;
     msg.msg_control = control.as_mut_ptr().cast();
     // SAFETY: pure arithmetic on the sizes.
-    msg.msg_controllen = unsafe { libc::CMSG_SPACE(16) } as usize;
+    msg.msg_controllen = unsafe { libc::CMSG_SPACE(20) } as usize;
     // SAFETY: the control buffer is aligned and large enough for one header.
     let cmsg = unsafe { libc::CMSG_FIRSTHDR(&raw const msg) };
-    // SAFETY: cmsg points into `control`, which holds the header and four ints.
+    // SAFETY: cmsg points into `control`, which holds the header and five ints.
     unsafe {
         (*cmsg).cmsg_level = libc::SOL_SOCKET;
         (*cmsg).cmsg_type = libc::SCM_RIGHTS;
-        (*cmsg).cmsg_len = libc::CMSG_LEN(16) as usize;
-        std::ptr::copy_nonoverlapping(raws.as_ptr(), libc::CMSG_DATA(cmsg).cast(), 4);
+        (*cmsg).cmsg_len = libc::CMSG_LEN(20) as usize;
+        std::ptr::copy_nonoverlapping(raws.as_ptr(), libc::CMSG_DATA(cmsg).cast(), 5);
     }
     // SAFETY: msg points at valid buffers for the call.
     let sent = unsafe { libc::sendmsg(a.as_raw_fd(), &raw const msg, 0) };
@@ -164,4 +164,34 @@ fn send_nowait_reports_a_full_queue_instead_of_blocking() {
     }
     assert!(full, "the queue never filled");
     drop(b);
+}
+
+#[test]
+fn a_sealed_memfd_reports_all_four_seals() {
+    use qinit_ipc::memfd::{ALL_SEALS, read_all, sealed, seals};
+    use std::os::fd::AsFd;
+    let fd = sealed(c"req", b"hello").unwrap();
+    assert_eq!(seals(fd.as_fd()).unwrap(), ALL_SEALS);
+    assert_eq!(ALL_SEALS, 0xf);
+    assert_eq!(read_all(fd.as_fd(), 16).unwrap(), b"hello");
+    assert_eq!(
+        read_all(fd.as_fd(), 4).unwrap_err(),
+        qinit_ipc::Errno(libc::EFBIG)
+    );
+    // A plain pipe is not sealable.
+    let (r, _w) = std::io::pipe().unwrap();
+    assert!(seals(r.as_fd()).is_err());
+}
+
+#[test]
+fn four_descriptors_travel_and_five_do_not() {
+    use std::os::fd::AsFd;
+    let (a, b) = qinit_ipc::seqpacket_pair().unwrap();
+    let pipes: Vec<_> = (0..5).map(|_| std::io::pipe().unwrap()).collect();
+    let fds: Vec<_> = pipes.iter().map(|p| p.1.as_fd()).collect();
+    qinit_ipc::send(a.as_fd(), b"x", &fds[..4]).unwrap();
+    let mut buf = [0u8; 8];
+    let got = qinit_ipc::recv(b.as_fd(), &mut buf).unwrap();
+    assert_eq!((got.fds.len(), got.ctrunc), (4, false));
+    assert!(qinit_ipc::send(a.as_fd(), b"x", &fds).is_err());
 }

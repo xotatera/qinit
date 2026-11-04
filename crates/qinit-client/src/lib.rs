@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 use qinit_ipc::{connect_seqpacket, recv, send};
+use qinit_launch::RequestSpec;
 use qinit_proto_core::{DecodeError, MAX_MESSAGE};
 use qinit_wire::{Msg, Rep, Req, decode, encode};
 use std::ffi::CString;
@@ -167,6 +168,45 @@ pub struct LaunchArgs<'a> {
     pub stdin: Option<BorrowedFd<'a>>,
     pub stdout: Option<BorrowedFd<'a>>,
     pub stderr: Option<BorrowedFd<'a>>,
+}
+
+/// What a `run` sets besides the request: the streams, the cell limits and how the instance
+/// stops.
+pub struct RunArgs<'a> {
+    pub stdin: Option<BorrowedFd<'a>>,
+    pub stdout: Option<BorrowedFd<'a>>,
+    pub stderr: Option<BorrowedFd<'a>>,
+    /// The cell's memory ceiling in KiB, 0 for none.
+    pub memory_max_kib: u32,
+    /// The cell's process ceiling, 0 for none.
+    pub pids_max: u32,
+    /// How the instance stops: the main process only, or the whole cell.
+    pub stop_mode: StopMode,
+    /// The grace before the kill, in milliseconds, at least 100.
+    pub stop_grace_ms: u32,
+}
+
+impl Default for RunArgs<'_> {
+    fn default() -> Self {
+        RunArgs {
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            memory_max_kib: 0,
+            pids_max: 0,
+            stop_mode: StopMode::Main,
+            stop_grace_ms: 10_000,
+        }
+    }
+}
+
+/// How a launched instance is stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopMode {
+    /// Signal the main process.
+    Main,
+    /// Signal every process of the cell.
+    Cell,
 }
 
 /// A connection to colony.
@@ -404,6 +444,11 @@ impl Client {
             },
             &fds,
         )?;
+        self.started()
+    }
+
+    /// Reads the reply to a launch or a run.
+    fn started(&mut self) -> Result<Begun, ClientError> {
         match self.reply_with_fds()? {
             (Reply::Launched(id), mut got) => Ok(Begun::Started(Started {
                 id,
@@ -428,6 +473,65 @@ impl Client {
             Reply::Pending(state) => Ok(LaunchOutcome::Pending { id, state }),
             _ => Err(ClientError::Unexpected),
         }
+    }
+
+    /// Launches `request` as an instance named `~<name>#<id>` (root only) and waits for it to
+    /// end for at most `wait`. No pidfd: see [`Client::begin_run`].
+    ///
+    /// # Errors
+    /// [`ClientError`]; `Server(Denied, clause)` when the policy refuses the request.
+    pub fn run(
+        &mut self,
+        name: &str,
+        request: &RequestSpec,
+        args: &RunArgs<'_>,
+        wait: Duration,
+    ) -> Result<LaunchOutcome, ClientError> {
+        match self.begin_run(name, request, args, false, wait)? {
+            Begun::Failed { step, errno } => Ok(LaunchOutcome::Failed { step, errno }),
+            Begun::Started(Started { id, .. }) => self.finish(id),
+        }
+    }
+
+    /// Sends a `Run` of `request`: its bytes in a sealed memfd, sent first, then the streams of
+    /// `args`. With `pidfd` the reply to a started instance carries a pidfd of its main
+    /// process. [`Client::finish`] reads how the instance ends, within `wait`.
+    ///
+    /// # Errors
+    /// [`ClientError`]; `Io(EINVAL)` for a request that does not encode.
+    pub fn begin_run(
+        &mut self,
+        name: &str,
+        request: &RequestSpec,
+        args: &RunArgs<'_>,
+        pidfd: bool,
+        wait: Duration,
+    ) -> Result<Begun, ClientError> {
+        let bytes = request.bytes().map_err(|_| ClientError::Io(22))?;
+        let memfd = qinit_ipc::memfd::sealed(c"qinit-run", &bytes)?;
+        let mut roles = 0u32;
+        let mut fds: Vec<BorrowedFd<'_>> = vec![memfd.as_fd()];
+        for (bit, fd) in [(1, args.stdin), (2, args.stdout), (4, args.stderr)] {
+            if let Some(fd) = fd {
+                roles |= bit;
+                fds.push(fd);
+            }
+        }
+        let (_, wait_ms) = Wait::Settled(wait).words();
+        self.ask(
+            Req::Run {
+                name,
+                fd_roles: roles,
+                flags: u32::from(pidfd) * qinit_proto_core::FLAG_PIDFD,
+                memory_max_kib: args.memory_max_kib,
+                pids_max: args.pids_max,
+                stop_mode: u32::from(args.stop_mode == StopMode::Cell),
+                stop_grace_ms: args.stop_grace_ms,
+                wait_ms,
+            },
+            &fds,
+        )?;
+        self.started()
     }
 
     /// Swaps in the compiled database in `db` (a regular file or a memfd; root only).
