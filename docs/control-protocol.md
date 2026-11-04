@@ -338,7 +338,10 @@ effect. `Superseded`: another request changed what the wait waited for, or a ref
 
 A `Launched` reply carries no descriptor, or one: the pidfd a `Launch` with the `pidfd` flag asked
 for. A server that cannot open it replies without; the instance runs either way. A
-`LaunchFailed` reply never carries one.
+`LaunchFailed` reply never carries one. The pidfd signals and polls readable on the exit; the exit
+status is readable from it with `PIDFD_GET_INFO` and `PIDFD_INFO_EXIT` on Linux 6.15 and later, from
+the moment the process has been reaped (the kernel records it at the reap). On an older kernel the
+pidfd carries no status. The client library wraps this as `pidfd_exit`.
 
 ### `LaunchFailed` (type 73)
 

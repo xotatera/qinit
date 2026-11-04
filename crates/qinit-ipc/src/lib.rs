@@ -13,6 +13,7 @@ compile_error!("qinit-ipc's socket structures are written for x86_64");
 pub mod memfd;
 mod msg;
 mod peer;
+pub mod pidfd;
 mod sock;
 
 pub use msg::{MAX_FDS, Received, recv, send, send_nowait, send_unchecked};

@@ -14,6 +14,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 use std::time::Duration;
 
+pub use qinit_ipc::pidfd::PidfdExit;
 pub use qinit_wire::{Action, ErrorCode, Mode, StateWord};
 
 /// Where colony listens.
@@ -141,6 +142,16 @@ pub enum LaunchOutcome {
     Pending { id: u32, state: StateWord },
     /// The instance could not be started.
     Failed { step: u32, errno: u32 },
+}
+
+/// The exit status of the process behind a launch's pidfd, once its parent has reaped it
+/// ([`PidfdExit::Exited`]; Linux 6.15 and later, [`PidfdExit::Unsupported`] before). The pidfd
+/// alone signals and polls readable on the exit but carries no status on an older kernel.
+///
+/// # Errors
+/// The errno of the `PIDFD_GET_INFO` call, other than the kernel not knowing the request.
+pub fn pidfd_exit(fd: &OwnedFd) -> std::io::Result<PidfdExit> {
+    qinit_ipc::pidfd::pidfd_exit(fd).map_err(std::io::Error::from)
 }
 
 /// A launch the server started: the instance's id, and a pidfd of its main process when the

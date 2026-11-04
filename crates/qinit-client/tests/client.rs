@@ -337,3 +337,22 @@ fn begin_run_sends_the_sealed_request_first() {
     let got = c.run("job", &request, &args, Duration::from_secs(5));
     assert_eq!(got.err(), Some(ClientError::Server(ErrorCode::Denied, 0)));
 }
+
+#[test]
+fn pidfd_exit_is_exported_and_works_on_a_spawned_child() {
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "exit 5"])
+        .spawn()
+        .unwrap();
+    let fd = qinit_sys::proc::pidfd_open(child.id().cast_signed()).unwrap();
+    let live = qinit_client::pidfd_exit(&fd).unwrap();
+    assert!(matches!(
+        live,
+        qinit_client::PidfdExit::Running | qinit_client::PidfdExit::Unsupported
+    ));
+    child.wait().unwrap();
+    match qinit_client::pidfd_exit(&fd).unwrap() {
+        qinit_client::PidfdExit::Exited(status) => assert_eq!((status >> 8) & 0xff, 5),
+        other => assert_eq!(other, qinit_client::PidfdExit::Unsupported),
+    }
+}

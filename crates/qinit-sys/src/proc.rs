@@ -224,6 +224,13 @@ pub fn pidfd_cgroup_id(pidfd: impl AsFd) -> Result<u64> {
     Ok(info.cgroupid)
 }
 
+pub use qinit_ipc::pidfd::PidfdExit;
+
+/// The exit status of the process behind `pidfd`: see [`qinit_ipc::pidfd::pidfd_exit`].
+pub fn pidfd_exit(pidfd: impl AsFd) -> Result<PidfdExit> {
+    qinit_ipc::pidfd::pidfd_exit(pidfd).map_err(|e| Errno(e.0))
+}
+
 /// Blocks until the process behind `pidfd` exits and reaps it: its wait status. For tests and
 /// guest programs; daemons wait on the loop instead.
 pub fn wait_pidfd(pidfd: impl AsFd) -> Result<i32> {
