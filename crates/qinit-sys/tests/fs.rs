@@ -41,7 +41,10 @@ fn child_roles() {
         "alarm-deleted" => {
             let a = arm_alarm_at(now_monotonic_ns() + 50_000_000).unwrap();
             a.delete().unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(150));
+            // Waiting out the deadline is the point: a poll with no descriptors times out at
+            // 150 ms, three times the alarm's delay.
+            // SAFETY: a null descriptor array with a count of zero is a pure timeout.
+            unsafe { libc::poll(std::ptr::null_mut(), 0, 150) };
             0
         }
         _ => 99,

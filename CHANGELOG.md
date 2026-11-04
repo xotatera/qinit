@@ -12,6 +12,10 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Group 2 (path views, user namespaces, launch pidfd, full-request launch), in progress: `qinit-sys`
+  gains `mount_setattr`, `pivot_root`, recursive binds, `lstat`/`readlink`/`symlink` helpers and
+  absolute `CLOCK_MONOTONIC` alarms; the QLR1 layout moves to `qinit_proto_core::launch` and its
+  encoder to the new `qinit-launch` crate (both MPL-2.0).
 - Every kernel resource limit but `core` is a frame key under `rlimits` (`cpu fsize data stack rss
   nproc nofile memlock as locks sigpending msgqueue nice rtprio rttime`): a number, `"infinity"`
   or, for the byte limits, a size such as `"64M"`. The policy bounds them at the kernel's boot hard
