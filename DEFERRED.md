@@ -152,11 +152,12 @@ once and each reference needs only two boundary tests, proved to give a valid sl
 (`lemma_ref_utf8`): the worst case is one pass over at most `MAX_POOL` bytes plus a constant per
 reference. A pool holding unreferenced garbage is now refused too.
 
-### D20 — Policy error rule index by line scan · `ACCEPTED`
+### D20 — Policy error rule index by line scan · `RESOLVED`
 
-`qinit-frames` finds the `[[rule]]` index of a policy shape error by scanning
-for `[[rule]]` header lines, not by parsing TOML. The limits of that scan are
-documented in `crates/qinit-frames/src/policy.rs`.
+`qinit-frames` used to find the `[[rule]]` index of a policy shape error by scanning for
+`[[rule]]` header lines. It now takes the index from a `toml::de::DeTable` parse: the `rule`
+element whose span holds the error, so inline arrays, `[[ rule ]]` and header-like lines in
+strings are indexed correctly.
 
 ### D21 — Overseer runs undeclared workers unprivileged · `RESOLVED`
 

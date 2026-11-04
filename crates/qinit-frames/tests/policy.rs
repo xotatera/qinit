@@ -261,6 +261,31 @@ fn a_missing_policy_file_is_an_io_error() {
     assert_eq!(es[0].file.as_deref(), Some(path.as_path()));
 }
 
+fn bad_key(tag: &str, body: &str) -> String {
+    let es = policy(tag, body).expect_err("refused");
+    assert_eq!(es.len(), 1, "{es:?}");
+    es[0].key.clone()
+}
+
+#[test]
+fn an_inline_rule_array_is_indexed() {
+    let body =
+        "default = \"deny\"\nrule = [{ match = \"a\" }, { match = \"b\", caps_max = \"x\" }]\n";
+    assert_eq!(bad_key("inline-rules", body), "rule[1].caps_max");
+}
+
+#[test]
+fn a_spaced_header_is_indexed() {
+    let body = "default = \"deny\"\n[[ rule ]]\nmatch = \"a\"\n[[ rule ]]\nmatch = \"b\"\ncaps_max = \"x\"\n";
+    assert_eq!(bad_key("spaced-header", body), "rule[1].caps_max");
+}
+
+#[test]
+fn a_header_inside_a_multiline_string_is_not_a_rule() {
+    let body = "default = \"deny\"\n[[rule]]\nmatch = \"\"\"\n[[rule]]\n\"\"\"\n[[rule]]\nmatch = \"b\"\ncaps_max = \"x\"\n";
+    assert_eq!(bad_key("string-header", body), "rule[1].caps_max");
+}
+
 #[test]
 fn shape_errors_name_the_rule_and_field() {
     let key = |tag: &str, body: &str| {

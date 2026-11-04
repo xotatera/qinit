@@ -88,16 +88,20 @@ pub fn glob_match(pattern: &str, name: &str) -> bool {
     p[pi..].iter().all(|c| *c == b'*')
 }
 
-/// The bare key at the end of `before` when it is a `key = ` prefix of a line, else `None`.
+/// The bare key of the `key = ` prefix of the line at the end of `before`, else `None`. In an
+/// inline table (`{ a = 1, b = `) it is the key just before the last `=`.
 fn key_before_value(before: &str) -> Option<&str> {
+    let bare = |b: &u8| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-';
     let line = before.rsplit('\n').next()?;
-    let (key, _) = line.split_once('=')?;
-    let key = key.trim();
-    let bare = !key.is_empty()
-        && key
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-    bare.then_some(key)
+    let key = if line.contains('{') {
+        let (left, _) = line.rsplit_once('=')?;
+        let left = left.trim_end();
+        let start = left.bytes().rposition(|b| !bare(&b)).map_or(0, |i| i + 1);
+        &left[start..]
+    } else {
+        line.split_once('=')?.0.trim()
+    };
+    (!key.is_empty() && key.bytes().all(|b| bare(&b))).then_some(key)
 }
 
 /// The text between the first pair of backticks of `msg` after `prefix`.
@@ -106,24 +110,25 @@ fn quoted<'a>(msg: &'a str, prefix: &str) -> Option<&'a str> {
     rest.split_once('`').map(|(f, _)| f)
 }
 
-/// The index of the `[[rule]]` table that contains byte `at`: the last `[[rule]]` header line at
-/// or before it. This is a line scan, not a TOML parse, so a `[[rule]]` line inside a
-/// multi-line string, rules written as an inline `rule = [...]` array, and a header with inner
-/// spaces such as `[[ rule ]]` are not recognised, so the error is keyed by the last recognised
-/// `[[rule]]` before it (or by the bare field when none precedes it).
+/// The index of the `rule` array element that contains byte `at`, from a TOML parse of `text`
+/// (so inline arrays, spaced headers and header-like lines in strings are all handled). An
+/// inline table owns its braces; a `[[rule]]` header owns the text up to the next element (the
+/// parser spans only the header). `None` when `rule` is missing or not an array, or no element
+/// contains `at`.
 fn rule_at(text: &str, at: usize) -> Option<usize> {
-    let mut headers = 0usize;
-    let mut offset = 0usize;
-    for line in text.split_inclusive('\n') {
-        if offset > at {
-            break;
-        }
-        if line.trim_start().starts_with("[[rule]]") {
-            headers += 1;
-        }
-        offset += line.len();
-    }
-    headers.checked_sub(1)
+    let table = toml::de::DeTable::parse(text).ok()?;
+    let toml::de::DeValue::Array(rules) = table.get_ref().get("rule")?.get_ref() else {
+        return None;
+    };
+    rules.iter().enumerate().position(|(i, r)| {
+        let span = r.span();
+        let end = if text.get(span.clone()).is_some_and(|t| t.starts_with('{')) {
+            span.end
+        } else {
+            rules.get(i + 1).map_or(text.len(), |n| n.span().start)
+        };
+        (span.start..end).contains(&at)
+    })
 }
 
 /// The error for a policy whose TOML is valid but whose shape is not.
@@ -131,9 +136,8 @@ fn rule_at(text: &str, at: usize) -> Option<usize> {
 /// The key is `rule[i].<field>` inside the `i`-th `[[rule]]` table, the bare field at top level
 /// (`default`, or an unknown key), and `policy` when neither the rule nor the field can be told.
 /// Both come from the error's byte span: the field is the unknown or missing field the message
-/// names, else the key on the span's line; the rule is found by [`rule_at`], so the limits
-/// documented there apply: an unrecognised header is keyed by the last recognised `[[rule]]`
-/// before it, or by the bare field when none precedes it. An unknown field is an `UnknownKey`, anything else a `BadValue`.
+/// names, else the key on the span's line; the rule is the `rule` element containing the span
+/// ([`rule_at`]). An unknown field is an `UnknownKey`, anything else a `BadValue`.
 fn serde_error(path: &Path, text: &str, e: &toml::de::Error) -> Error {
     let msg = e.message();
     let unknown = quoted(msg, "unknown field `");
