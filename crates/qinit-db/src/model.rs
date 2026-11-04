@@ -50,6 +50,8 @@ pub struct PolicyRule {
     pub require_seccomp: bool,
     /// Which user namespace maps the rule allows.
     pub allow_userns: Userns,
+    /// Whether a request may run as a non-zero id inside its user namespace.
+    pub allow_inside_ids: bool,
     /// The rule's own limit ceilings, by kernel resource number.
     pub rlimits: [Option<u64>; RLIMIT_COUNT],
 }
@@ -297,6 +299,11 @@ pub struct Cred {
     pub ns: u32,
     /// The user namespace's id map; `Range` only with the `user` bit.
     pub user_map: UserMap,
+    /// The user id the service runs as inside its user namespace, at most 4294967294; non-zero
+    /// only with the `user` bit.
+    pub inside_uid: u32,
+    /// The group id the service runs as inside its user namespace; as `inside_uid`.
+    pub inside_gid: u32,
     /// Seccomp filter.
     pub seccomp: Seccomp,
     /// Landlock entries, `<mode>:/path` with a mode of `ro` `rw` `ri` `wi` `rs` `ws`; non-empty, no NUL.

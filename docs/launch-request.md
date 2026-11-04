@@ -18,7 +18,7 @@ drift from the code.
 ## Layout
 
 Every word is a 32-bit little-endian unsigned integer. A request is a header of 5 words, a
-record of 67 words and a string pool, in that order; it is at most `MAX_REQUEST` = 65536 bytes.
+record of 69 words and a string pool, in that order; it is at most `MAX_REQUEST` = 65536 bytes.
 A pool reference is an `(offset, length)` pair of words into the pool.
 
 ### Header
@@ -58,6 +58,7 @@ A pool reference is an `(offset, length)` pair of words into the pool.
 | 31 | reserved | 0 |
 | 32, 33, 34 | `stdin_kind`, `stdin_a`, `stdin_b` | a stream; kind 0 or 1 |
 | 35 + 2r, 36 + 2r | limit `r` | low and high word of the value of resource `r`, for `r` in 0..=15 (the kernel's resource numbers); both 0 unless bit `r` of `rlimit_mask` is set; all ones is infinity |
+| 67, 68 | `inside_uid`, `inside_gid` | the ids the service runs as inside its user namespace, at most 4294967294; 0 unless the `user` bit of `ns` is set |
 
 Limits: `nofile` (7) must not be 0 or infinity, `nice` (13) is at most 40 and `rtprio` (14) at
 most 99, and the high word of those two is 0.
@@ -110,6 +111,8 @@ descriptor is closed before `execve`.
    - the user is 1 to 96 bytes; the working directory is canonical (starts with `/`, no empty,
      `.` or `..` component, no trailing `/`, except `/` itself);
    - environment entries have a non-empty key before the first `=`;
+   - `inside_uid` and `inside_gid` are at most 4294967294, and non-zero only with the `user` bit
+     of `ns`;
    - `user_map` 1 needs the `user` bit of `ns`, and a request with the `user` bit does not run
      as `root`;
    - **the path list** (below);
@@ -132,7 +135,8 @@ Every mount of the view is private, so a mount the host makes later is not seen 
 
 ### User namespace
 
-With the `user` bit the service runs in its own user namespace, as `0` inside it. `user_map` 0
+With the `user` bit the service runs in its own user namespace, as `inside_uid` and `inside_gid`
+inside it (0 unless set). `user_map` 0
 maps inside id 0 onto the user's own user and group id and denies `setgroups`; 1 also maps
 inside ids 1 and up onto the user's subordinate ranges (`/etc/subuid`, `/etc/subgid`) and allows
 `setgroups`. Whether a request may ask for a user namespace, and for the range map, is the
@@ -174,7 +178,7 @@ Run `/bin/true` as `svc`, in `/`, with standard input and output on `/dev/null` 
 error following standard output.
 
 ```qlr1
-514c5231 01000000 3f010000 20010000 1f000000  # header: magic, version, total_len, pool_off, pool_len
+514c5231 01000000 47010000 28010000 1f000000  # header: magic, version, total_len, pool_off, pool_len
 00000000 09000000  # argv_off, argv_len
 09000000 00000000  # env_off, env_len
 09000000 01000000  # cwd_off, cwd_len
@@ -199,6 +203,7 @@ error following standard output.
 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000  # limits: resource 4 to 7
 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000  # limits: resource 8 to 11
 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000  # limits: resource 12 to 15
+00000000 00000000  # inside_uid, inside_gid
 2f62696e 2f747275 652f7376 632f6465 762f6e75 6c6c2f64 65762f6e 756c6c  # pool: "/bin/true", "/", "svc", then "/dev/null" for stdin and again for stdout
 ```
 
@@ -210,7 +215,7 @@ paths `/usr` (read-only) and `/work` (writable). Standard output goes to routed 
 the service dies with its parent.
 
 ```qlr1
-514c5231 01000000 5a010000 20010000 3a000000  # header: magic, version, total_len, pool_off, pool_len
+514c5231 01000000 62010000 28010000 3a000000  # header: magic, version, total_len, pool_off, pool_len
 00000000 13000000  # argv_off, argv_len
 13000000 06000000  # env_off, env_len
 19000000 05000000  # cwd_off, cwd_len
@@ -235,6 +240,7 @@ the service dies with its parent.
 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000  # limits: resource 4 to 7
 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000  # limits: resource 8 to 11
 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000  # limits: resource 12 to 15
+e8030000 e8030000  # inside_uid, inside_gid
 2f757372 2f62696e 2f6a6f62 002d2d6f 6e63654c 414e473d 432f776f 726b7376  # pool: "/usr/bin/job" NUL "--once", "LANG=C", "/work", "svc", "ro:/usr" NUL "rw:/work", "/dev/null" for stdin
 63726f3a 2f757372 0072773a 2f776f72 6b2f6465 762f6e75 6c6c
 ```

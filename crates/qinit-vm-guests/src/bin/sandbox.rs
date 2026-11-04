@@ -347,11 +347,11 @@ fn mount_after_the_service_started(name: &str, entry: &str) -> Result<i32, Strin
         &[entry],
         0,
     );
-    let mounted = mounter
+    let done = mounter
         .join()
         .map_err(|_| "the mounting thread panicked".to_string())?;
     let _ = qinit_sys::mount::umount_detach(std::path::Path::new("/tmp/fol/m"));
-    mounted?;
+    done?;
     Ok(r?.0)
 }
 

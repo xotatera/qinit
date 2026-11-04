@@ -135,6 +135,22 @@ fn user_map(cx: &mut Cx, base: &str, word: Option<&str>, ns: u32) -> UserMap {
     map
 }
 
+/// The id a service runs as inside its user namespace: 0 to 4294967294, and non-zero only with
+/// the `user` namespace.
+fn inside_id(cx: &mut Cx, key: String, id: Option<i64>, ns: u32) -> u32 {
+    let Some(n) = id else {
+        return 0;
+    };
+    let Some(id) = u32::try_from(n).ok().filter(|id| *id != u32::MAX) else {
+        cx.bad(key, format!("{n} is not an id from 0 to 4294967294"));
+        return 0;
+    };
+    if id != 0 && ns & USER_BIT == 0 {
+        cx.bad(key, "a non-zero inside id needs \"user\" in namespaces");
+    }
+    id
+}
+
 /// `e` is an entry a list may not hold: `/`, `/dev`, `/tmp`, or `/proc` writable (`rw:`, `wi:`
 /// or `ws:`).
 fn forbidden(e: &str) -> bool {
@@ -237,6 +253,18 @@ fn from_sandbox(cx: &mut Cx, base: &str, s: &Sandbox, out: &mut Cred) {
         cx.bad(format!("{base}.sandbox.paths"), why);
     }
     out.user_map = user_map(cx, base, s.user_map.as_deref(), out.ns);
+    out.inside_uid = inside_id(
+        cx,
+        format!("{base}.sandbox.inside_uid"),
+        s.inside_uid,
+        out.ns,
+    );
+    out.inside_gid = inside_id(
+        cx,
+        format!("{base}.sandbox.inside_gid"),
+        s.inside_gid,
+        out.ns,
+    );
     out.paths = sorted_paths(cx, base, paths);
     if !out.paths.is_empty() {
         // A path list is a view: it needs its own mount namespace.
@@ -308,6 +336,8 @@ pub(super) fn cred(
         seccomp: Seccomp::None,
         paths: Vec::new(),
         user_map: UserMap::Own,
+        inside_uid: 0,
+        inside_gid: 0,
     };
     from_creds(cx, base, c, &mut out);
     if let Some(s) = s {

@@ -81,6 +81,8 @@ fn world() -> Result<Colony<Sim>, String> {
             seccomp: Seccomp::None,
             paths: Vec::new(),
             user_map: UserMap::Own,
+            inside_uid: 0,
+            inside_gid: 0,
         }],
         routes: Vec::new(),
         enabled: vec![1],

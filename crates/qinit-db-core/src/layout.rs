@@ -76,7 +76,7 @@ pub const T_POLICY_HEAD: usize = 8;
 pub const T_POOL: usize = 9;
 
 /// Words per record, tables 0..=8.
-pub const WORDS: [usize; 9] = [68, 3, 7, 13, 3, 1, 1, 43, 34];
+pub const WORDS: [usize; 9] = [68, 3, 7, 15, 3, 1, 1, 44, 34];
 
 /// Policy rules.
 pub const MAX_POLICY_RULES: usize = 1024;
@@ -122,6 +122,10 @@ pub const P_RLIMIT_MASK: usize = 10;
 /// Policy rule record word 11: the first of 16 ceiling pairs (low word, high word), as the
 /// node record's limits.
 pub const P_RLIMIT_BASE: usize = 11;
+
+/// Policy rule record word 43: `allow_inside_ids`, 0 or 1: a request that runs as a non-zero id
+/// inside its user namespace needs a matching rule with 1.
+pub const P_ALLOW_INSIDE_IDS: usize = 43;
 
 /// Policy header record word 0: `allow`, 1 when the default is to allow.
 pub const PH_ALLOW: usize = 0;
@@ -406,6 +410,13 @@ pub const C_SECCOMP_LEN: usize = 11;
 
 /// Credential record word 12: `user_map`, 0 own, 1 range; 1 only with the `user` namespace.
 pub const C_USER_MAP: usize = 12;
+
+/// Credential record word 13: `inside_uid`, the user id the service runs as inside its user
+/// namespace, at most `0xFFFF_FFFE`; non-zero only with the `user` namespace.
+pub const C_INSIDE_UID: usize = 13;
+
+/// Credential record word 14: `inside_gid`, as `inside_uid` for the group id.
+pub const C_INSIDE_GID: usize = 14;
 
 /// Route record word 0: `kind`.
 pub const R_KIND: usize = 0;

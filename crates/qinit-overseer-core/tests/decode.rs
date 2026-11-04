@@ -538,3 +538,34 @@ fn decode_refuses_what_the_validator_refuses() {
         assert_eq!(decode(&build(&with_entry(entry, 33))), Ok(()), "{entry}");
     }
 }
+
+#[test]
+fn decode_reads_inside_ids_and_refuses_the_validators_cases() {
+    let with = |ns: u32, uid: u32, gid: u32| {
+        let mut spec = minimal();
+        spec.ns = ns;
+        spec.inside_uid = uid;
+        spec.inside_gid = gid;
+        decode(&build(&spec))
+    };
+    // 32 is the user namespace; the minimal request runs as `svc`, not root.
+    assert_eq!(with(32, 0, 0), Ok(()));
+    assert_eq!(with(32, 1000, 1001), Ok(()));
+    assert_eq!(with(32, 4_294_967_294, 4_294_967_294), Ok(()));
+    for (uid, gid) in [(u32::MAX, 0), (0, u32::MAX)] {
+        assert_eq!(
+            with(32, uid, gid),
+            Err(LaunchError::Consistency),
+            "{uid} {gid}"
+        );
+    }
+    // A non-zero inside id means a user namespace.
+    for (uid, gid) in [(1, 0), (0, 1), (1000, 1000)] {
+        assert_eq!(
+            with(0, uid, gid),
+            Err(LaunchError::Consistency),
+            "{uid} {gid}"
+        );
+    }
+    assert_eq!(with(0, 0, 0), Ok(()));
+}

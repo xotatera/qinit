@@ -31,11 +31,11 @@ pub open spec fn spec_words(t: int) -> int {
     } else if t == 2 {
         7
     } else if t == 3 {
-        13
+        15
     } else if t == 4 {
         3
     } else if t == T_POLICY as int {
-        43
+        44
     } else if t == T_POLICY_HEAD as int {
         34
     } else {

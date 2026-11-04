@@ -9,12 +9,12 @@ use crate::model::{
     UserMap, Userns,
 };
 use qinit_db_core::{
-    DbError, H_CRC32, HEADER_WORDS, MAX_EDGES, MAX_NODES, N_RLIMIT_BASE, NONE, P_ALLOW_USERNS,
-    P_CAPS_HI, P_CAPS_LO, P_PATTERN_LEN, P_PATTERN_OFF, P_REQUIRE_NNP, P_REQUIRE_SECCOMP,
-    P_RLIMIT_BASE, P_RLIMIT_MASK, P_USERS_ANY, P_USERS_LEN, P_USERS_OFF, PH_ALLOW, PH_RLIMIT_BASE,
-    PH_RLIMIT_MASK, RLIMIT_COUNT, SECCOMP_DEFAULT, SECCOMP_DENY, SECCOMP_NONE, T_CREDS, T_EDGES,
-    T_ENABLED, T_GROUPS, T_NODES, T_POLICY, T_POLICY_HEAD, T_POOL, T_PRESYSLOG, T_ROUTES, WORDS,
-    validate, word,
+    C_INSIDE_GID, C_INSIDE_UID, DbError, H_CRC32, HEADER_WORDS, MAX_EDGES, MAX_NODES,
+    N_RLIMIT_BASE, NONE, P_ALLOW_INSIDE_IDS, P_ALLOW_USERNS, P_CAPS_HI, P_CAPS_LO, P_PATTERN_LEN,
+    P_PATTERN_OFF, P_REQUIRE_NNP, P_REQUIRE_SECCOMP, P_RLIMIT_BASE, P_RLIMIT_MASK, P_USERS_ANY,
+    P_USERS_LEN, P_USERS_OFF, PH_ALLOW, PH_RLIMIT_BASE, PH_RLIMIT_MASK, RLIMIT_COUNT,
+    SECCOMP_DEFAULT, SECCOMP_DENY, SECCOMP_NONE, T_CREDS, T_EDGES, T_ENABLED, T_GROUPS, T_NODES,
+    T_POLICY, T_POLICY_HEAD, T_POOL, T_PRESYSLOG, T_ROUTES, WORDS, validate, word,
 };
 use qinit_graph_core::GEdge;
 
@@ -252,6 +252,8 @@ impl Reader<'_> {
             } else {
                 UserMap::Own
             },
+            inside_uid: f(C_INSIDE_UID),
+            inside_gid: f(C_INSIDE_GID),
         }
     }
 
@@ -284,6 +286,7 @@ impl Reader<'_> {
                 1 => Userns::Own,
                 _ => Userns::Range,
             },
+            allow_inside_ids: f(P_ALLOW_INSIDE_IDS) == 1,
             rlimits: Self::limits(f(P_RLIMIT_MASK), |r| {
                 u64::from(f(P_RLIMIT_BASE + 2 * r)) | u64::from(f(P_RLIMIT_BASE + 2 * r + 1)) << 32
             }),

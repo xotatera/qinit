@@ -99,6 +99,8 @@ fn build(
             qinit_db::UserMap::Own => UserMap::Own,
             qinit_db::UserMap::Range => UserMap::Range,
         },
+        inside_uid: cred.inside_uid,
+        inside_gid: cred.inside_gid,
         seccomp: match &cred.seccomp {
             qinit_db::Seccomp::None => Seccomp::None,
             qinit_db::Seccomp::Default => Seccomp::Default,

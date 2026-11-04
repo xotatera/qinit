@@ -98,6 +98,9 @@ pub struct CredSpec {
     pub ns: u32,
     /// 0 own map, 1 range map.
     pub user_map: u32,
+    /// The ids the service runs as inside its user namespace.
+    pub inside_uid: u32,
+    pub inside_gid: u32,
 }
 
 /// A credential for `user`: no caps, `no_new_privs` on, no seccomp.
@@ -111,6 +114,8 @@ pub fn cred(user: &'static str) -> CredSpec {
         paths: "",
         ns: 0,
         user_map: 0,
+        inside_uid: 0,
+        inside_gid: 0,
     }
 }
 
@@ -138,6 +143,8 @@ pub struct RuleSpec {
     pub require_seccomp: u32,
     /// 0 none, 1 own, 2 own or range.
     pub allow_userns: u32,
+    /// 1 when the rule lets a request run as a non-zero inside id.
+    pub allow_inside_ids: u32,
     /// The ceilings, by kernel resource number; `u64::MAX` is infinity.
     pub rlimits: [Option<u64>; 16],
 }
@@ -152,6 +159,7 @@ pub fn rule(pattern: &'static str) -> RuleSpec {
         require_nnp: 0,
         require_seccomp: 0,
         allow_userns: 0,
+        allow_inside_ids: 0,
         rlimits: [None; 16],
     }
 }
@@ -316,7 +324,7 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
         let (uo, ul) = intern(&mut pool, c.user.as_bytes());
         let (so, sl) = intern(&mut pool, c.seccomp_list.as_bytes());
         let (po, pl) = intern(&mut pool, c.paths.as_bytes());
-        let mut rec = [0u32; 13];
+        let mut rec = [0u32; 15];
         rec[C_USER_OFF] = uo;
         rec[C_USER_LEN] = ul;
         rec[C_NNP] = c.nnp;
@@ -325,6 +333,8 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
         rec[C_SECCOMP_LEN] = sl;
         rec[C_NS] = c.ns;
         rec[C_USER_MAP] = c.user_map;
+        rec[C_INSIDE_UID] = c.inside_uid;
+        rec[C_INSIDE_GID] = c.inside_gid;
         rec[C_PATHS_OFF] = po;
         rec[C_PATHS_LEN] = pl;
         rec[C_CAPS_LO] = n32(usize::try_from(c.caps & 0xffff_ffff).unwrap());
@@ -344,7 +354,7 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
     for r in &spec.policy {
         let (po, pl) = intern(&mut pool, r.pattern.as_bytes());
         let (uo, ul) = intern(&mut pool, r.users.as_bytes());
-        let mut rec = [0u32; 43];
+        let mut rec = [0u32; 44];
         rec[P_PATTERN_OFF] = po;
         rec[P_PATTERN_LEN] = pl;
         rec[P_USERS_OFF] = uo;
@@ -355,6 +365,7 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
         rec[P_REQUIRE_NNP] = r.require_nnp;
         rec[P_REQUIRE_SECCOMP] = r.require_seccomp;
         rec[P_ALLOW_USERNS] = r.allow_userns;
+        rec[P_ALLOW_INSIDE_IDS] = r.allow_inside_ids;
         let mut mask = 0;
         limit_words(&r.rlimits, &mut mask, &mut rec[P_RLIMIT_BASE..]);
         rec[P_RLIMIT_MASK] = mask;

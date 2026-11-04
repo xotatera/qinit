@@ -186,6 +186,10 @@ pub open spec fn content_ok(b: Seq<u8>) -> bool {
     &&& paths_list_ok(field_slice(b, Q_PATHS_OFF, Q_PATHS_LEN))
     &&& elems(field_slice(b, Q_PATHS_OFF, Q_PATHS_LEN)) <= MAX_PATH_ENTRIES
     &&& (qw(b, Q_USER_MAP) == 1 ==> (qw(b, Q_NS) as u32) & 32u32 != 0u32)
+    &&& qw(b, Q_INSIDE_UID) <= 0xFFFF_FFFE
+    &&& qw(b, Q_INSIDE_GID) <= 0xFFFF_FFFE
+    &&& ((qw(b, Q_NS) as u32) & 32u32 == 0u32 ==> qw(b, Q_INSIDE_UID) == 0 && qw(b, Q_INSIDE_GID)
+        == 0)
     &&& ((qw(b, Q_NS) as u32) & 32u32 != 0u32 ==> !is_root(field_slice(b, Q_USER_OFF, Q_USER_LEN)))
     &&& paths_shape_ok(field_slice(b, Q_PATHS_OFF, Q_PATHS_LEN), qw(b, Q_NS) as u32)
     &&& forall|e: Seq<u8>|

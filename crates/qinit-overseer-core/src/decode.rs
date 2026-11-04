@@ -319,6 +319,14 @@ fn check_content(b: &[u8]) -> (r: Result<(), LaunchError>)
     if rword(b, Q_USER_MAP) == 1 && ns & 32 == 0 {
         return Err(LaunchError::Consistency);
     }
+    let inner_uid = rword(b, Q_INSIDE_UID);
+    let inner_group = rword(b, Q_INSIDE_GID);
+    if inner_uid > 0xFFFF_FFFE || inner_group > 0xFFFF_FFFE {
+        return Err(LaunchError::Consistency);
+    }
+    if ns & 32 == 0 && (inner_uid != 0 || inner_group != 0) {
+        return Err(LaunchError::Consistency);
+    }
     let user = field(b, rword(b, Q_USER_OFF), rword(b, Q_USER_LEN));
     if ns & 32 != 0 && is_root_exec(user) {
         return Err(LaunchError::Consistency);

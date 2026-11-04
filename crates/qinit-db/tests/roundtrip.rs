@@ -312,12 +312,65 @@ fn user_map_round_trips() {
 }
 
 #[test]
+fn a_credential_with_inside_ids_round_trips() {
+    for (ns, uid, gid) in [(32 | 1, 1000, 1001), (32 | 1, 4_294_967_294, 0), (1, 0, 0)] {
+        let mut m = sample();
+        m.creds[0].ns = ns;
+        m.creds[0].inside_uid = uid;
+        m.creds[0].inside_gid = gid;
+        let bytes = write(&m).expect("writes");
+        assert_eq!(open(&bytes).expect("opens").decode(), m, "{uid} {gid}");
+    }
+}
+
+#[test]
+fn inside_ids_the_validator_refuses_do_not_open() {
+    // A non-zero inside id without the user namespace, and 4294967295 with it.
+    for (ns, uid, gid) in [
+        (1, 1000, 0),
+        (1, 0, 7),
+        (32 | 1, u32::MAX, 0),
+        (32 | 1, 0, u32::MAX),
+    ] {
+        let mut m = sample();
+        m.creds[0].ns = ns;
+        m.creds[0].inside_uid = uid;
+        m.creds[0].inside_gid = gid;
+        let bytes = write(&m).expect("writes");
+        assert!(open(&bytes).is_err(), "{ns} {uid} {gid}");
+    }
+}
+
+#[test]
 fn a_range_map_without_the_user_namespace_does_not_open() {
     let mut m = sample();
     m.creds[0].ns = 1;
     m.creds[0].user_map = UserMap::Range;
     let bytes = write(&m).expect("writes");
     assert!(open(&bytes).is_err());
+}
+
+#[test]
+fn allow_inside_ids_round_trips() {
+    use qinit_db::{Policy, PolicyRule, Userns};
+    let rule = |allow| PolicyRule {
+        pattern: "a".into(),
+        users: None,
+        caps_max: 0,
+        require_nnp: false,
+        require_seccomp: false,
+        allow_userns: Userns::Own,
+        allow_inside_ids: allow,
+        rlimits: [None; 16],
+    };
+    let mut m = sample();
+    m.policy = Some(Policy {
+        allow_by_default: false,
+        ceiling: [None; 16],
+        rules: vec![rule(true), rule(false)],
+    });
+    let bytes = write(&m).expect("writes");
+    assert_eq!(open(&bytes).expect("opens").decode(), m);
 }
 
 #[test]
@@ -341,6 +394,7 @@ fn a_policy_round_trips() {
                 require_nnp: true,
                 require_seccomp: true,
                 allow_userns: Userns::Range,
+                allow_inside_ids: false,
                 rlimits: own,
             },
             PolicyRule {
@@ -350,6 +404,7 @@ fn a_policy_round_trips() {
                 require_nnp: false,
                 require_seccomp: false,
                 allow_userns: Userns::Own,
+                allow_inside_ids: false,
                 rlimits: [None; 16],
             },
         ],

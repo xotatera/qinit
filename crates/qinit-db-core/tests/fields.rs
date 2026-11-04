@@ -355,14 +355,16 @@ fn the_cascade_flag_is_accepted_and_bit_2_is_not() {
 }
 
 #[test]
-fn a_node_record_has_68_words_and_a_credential_13() {
+fn a_node_record_has_68_words_and_a_credential_15() {
     assert_eq!(WORDS[T_NODES], 68);
     assert_eq!(N_RLIMIT_BASE, N_LAUNCH_FDS + 1);
     assert_eq!(N_RLIMIT_BASE + 2 * RLIMIT_COUNT, WORDS[T_NODES]);
     assert_eq!(N_RELOAD, N_RLIMIT_MASK + 1);
-    assert_eq!(WORDS[T_CREDS], 13);
-    assert_eq!(C_USER_MAP, 12);
-    assert_eq!(C_USER_MAP + 1, WORDS[T_CREDS]);
+    assert_eq!(WORDS[T_CREDS], 15);
+    assert_eq!((C_USER_MAP, C_INSIDE_UID, C_INSIDE_GID), (12, 13, 14));
+    assert_eq!(C_INSIDE_GID + 1, WORDS[T_CREDS]);
+    assert_eq!(WORDS[T_POLICY], 44);
+    assert_eq!(P_RLIMIT_BASE + 2 * RLIMIT_COUNT + 1, WORDS[T_POLICY]);
 }
 
 #[test]
@@ -864,5 +866,45 @@ fn a_writable_proc_is_forbidden_in_every_writable_mode() {
     }
     for entry in ["ro:/proc", "ri:/proc", "rs:/proc"] {
         assert_eq!(check(&build(&with_entry(entry, 33))), Ok(()), "{entry}");
+    }
+}
+
+fn with_inside(ns: u32, uid: u32, gid: u32) -> DbSpec {
+    let mut spec = minimal_spec();
+    spec.creds[0].ns = ns;
+    spec.creds[0].inside_uid = uid;
+    spec.creds[0].inside_gid = gid;
+    spec
+}
+
+#[test]
+fn the_validator_refuses_inside_ids_without_the_user_bit() {
+    assert_eq!(check(&build(&with_inside(0, 0, 0))), Ok(()));
+    for (uid, gid) in [(1, 0), (0, 1), (1000, 1000)] {
+        assert_eq!(
+            check(&build(&with_inside(1, uid, gid))),
+            cred_consistency(),
+            "{uid} {gid}"
+        );
+        assert_eq!(
+            check(&build(&with_inside(32, uid, gid))),
+            Ok(()),
+            "{uid} {gid}"
+        );
+    }
+}
+
+#[test]
+fn inside_id_4294967295_is_consistency() {
+    assert_eq!(
+        check(&build(&with_inside(32, 4_294_967_294, 4_294_967_294))),
+        Ok(())
+    );
+    for (uid, gid) in [(u32::MAX, 0), (0, u32::MAX)] {
+        assert_eq!(
+            check(&build(&with_inside(32, uid, gid))),
+            cred_consistency(),
+            "{uid} {gid}"
+        );
     }
 }

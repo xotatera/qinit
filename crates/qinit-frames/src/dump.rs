@@ -244,6 +244,8 @@ impl Block<'_> {
         self.line("sandbox.seccomp", &seccomp);
         self.line("sandbox.paths", &list(c.paths.iter().map(|s| quote(s))));
         self.line("sandbox.user_map", &quote(user_map));
+        self.line("sandbox.inside_uid", &c.inside_uid.to_string());
+        self.line("sandbox.inside_gid", &c.inside_gid.to_string());
     }
 }
 
