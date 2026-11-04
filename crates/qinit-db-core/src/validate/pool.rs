@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! V2: every pool reference is an in-bounds, UTF-8 slice; names are short and non-empty, and
 //! lists (argv, Landlock entries) hold no empty element.
-
 use super::DbError;
 use super::header::{field, header_word};
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
@@ -114,7 +113,8 @@ fn check_node_pool(b: &[u8], i: usize) -> (r: Result<(), DbError>)
     }
     pool_ref_ok(b, field(b, t, i, N_INSTANCE_OF_OFF), of_len)?;
     list_ok(b, field(b, t, i, N_ENV_OFF), field(b, t, i, N_ENV_LEN))?;
-    pool_ref_ok(b, field(b, t, i, N_CWD_OFF), field(b, t, i, N_CWD_LEN))
+    pool_ref_ok(b, field(b, t, i, N_CWD_OFF), field(b, t, i, N_CWD_LEN))?;
+    list_ok(b, field(b, t, i, N_LAUNCH_ENV_OFF), field(b, t, i, N_LAUNCH_ENV_LEN))
 }
 
 fn check_edge_pool(b: &[u8], x: usize) -> (r: Result<(), DbError>)
@@ -236,7 +236,7 @@ fn decimal_ok_exec(s: &[u8], p: usize, q: usize) -> (ok: bool)
 
 /// Every element `[p, q)` of the NUL-separated list `s` with `q <= i` starts where the element
 /// before it ends: `es` is the start of the element at `i` when `s[es..i]` has no NUL.
-proof fn lemma_elem_start(s: Seq<u8>, es: int, i: int, p: int)
+pub(crate) proof fn lemma_elem_start(s: Seq<u8>, es: int, i: int, p: int)
     requires
         0 <= es <= i <= s.len(),
         es == 0 || s[es - 1] == 0,
@@ -274,22 +274,52 @@ fn landlock_entry_ok_exec(s: &[u8], p: usize, q: usize) -> (ok: bool)
 }
 
 /// The element rule of `kind`: [`env_entry_ok`] for 0, [`decimal_ok`] for 1,
-/// [`landlock_entry_ok`] for 2.
+/// [`landlock_entry_ok`] for 2, [`launch_key_ok`] for 3.
 pub open spec fn elem_ok(e: Seq<u8>, kind: u32) -> bool {
     if kind == 0 {
         env_entry_ok(e)
     } else if kind == 1 {
         decimal_ok(e)
-    } else {
+    } else if kind == 2 {
         landlock_entry_ok(e)
+    } else {
+        launch_key_ok(e)
     }
+}
+
+/// `s[p..q]` is a [`launch_key_ok`] key: non-empty, no `=`.
+pub(crate) fn launch_key_ok_exec(s: &[u8], p: usize, q: usize) -> (ok: bool)
+    requires
+        p <= q <= s@.len(),
+    ensures
+        ok ==> launch_key_ok(s@.subrange(p as int, q as int)),
+{
+    if q == p {
+        return false;
+    }
+    let ghost key = s@.subrange(p as int, q as int);
+    let mut at = p;
+    while at < q
+        invariant
+            p <= at <= q <= s@.len(),
+            key == s@.subrange(p as int, q as int),
+            forall|k: int| 0 <= k < at - p ==> #[trigger] key[k] != 0x3d,
+        decreases q - at,
+    {
+        if s[at] == 0x3d {
+            return false;
+        }
+        assert(key[(at - p) as int] == s@[at as int]);
+        at += 1;
+    }
+    true
 }
 
 /// `s[p..q]` satisfies [`elem_ok`] for `kind`.
 fn elem_ok_exec(s: &[u8], p: usize, q: usize, kind: u32) -> (ok: bool)
     requires
         p <= q <= s@.len(),
-        kind <= 2,
+        kind <= 3,
     ensures
         ok ==> elem_ok(s@.subrange(p as int, q as int), kind),
 {
@@ -297,22 +327,25 @@ fn elem_ok_exec(s: &[u8], p: usize, q: usize, kind: u32) -> (ok: bool)
         env_entry_ok_exec(s, p, q)
     } else if kind == 1 {
         decimal_ok_exec(s, p, q)
-    } else {
+    } else if kind == 2 {
         landlock_entry_ok_exec(s, p, q)
+    } else {
+        launch_key_ok_exec(s, p, q)
     }
 }
 
 /// Every element of the NUL-separated list `s` passes the check of `kind`: [`env_entry_ok`]
-/// for 0, [`decimal_ok`] for 1, [`landlock_entry_ok`] for 2.
+/// for 0, [`decimal_ok`] for 1, [`landlock_entry_ok`] for 2, [`launch_key_ok`] for 3.
 #[must_use]
 pub fn elements_ok(s: &[u8], kind: u32) -> (ok: bool)
     requires
         nul_list(s@),
-        kind <= 2,
+        kind <= 3,
     ensures
         ok && kind == 0 ==> env_list_ok(s@),
         ok && kind == 1 ==> seccomp_list_ok(s@),
         ok && kind == 2 ==> landlock_list_ok(s@),
+        ok && kind == 3 ==> launch_keys_ok(s@),
 {
     let n = s.len();
     if n == 0 {
@@ -325,7 +358,7 @@ pub fn elements_ok(s: &[u8], kind: u32) -> (ok: bool)
             n == s@.len(),
             0 < n,
             nul_list(s@),
-            kind <= 2,
+            kind <= 3,
             es <= i <= n,
             es == 0 || s@[es - 1] == 0,
             forall|k: int| es <= k < i ==> #[trigger] s@[k] != 0,

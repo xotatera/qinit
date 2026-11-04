@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! V3 and V4 for the records: indices in range, enums in range, consistent fields, the group
 //! and edge tables tiled, and the nodes sorted by name.
-
 #![allow(clippy::many_single_char_names)] // `b`, `n`, `i`, `g`, `x`, `k` follow the spec names
 
 use super::header::{field, header_word};
+use super::keys::launch_keys_exec;
 use super::pool::{cwd_ok_exec, env_list_ok_exec, seccomp_list_ok_exec};
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use super::spec::*;
@@ -45,7 +45,17 @@ fn check_node(b: &[u8], i: usize) -> (r: Result<(), DbError>)
     let kind = field(b, t, i, N_KIND);
     let policy = field(b, t, i, N_RESTART_POLICY);
     if kind > 2 || field(b, t, i, N_READY_KIND) > 3 || policy > 2 || field(b, t, i, N_STOP_MODE) > 1
-        || field(b, t, i, N_UMASK) > MAX_UMASK {
+        || field(b, t, i, N_UMASK) > MAX_UMASK || field(b, t, i, N_RELOAD) > 3 || field(
+        b,
+        t,
+        i,
+        N_LAUNCH_CONCURRENCY,
+    ) > MAX_LAUNCH_CONCURRENCY || field(b, t, i, N_LAUNCH_ARGV_TAIL) > MAX_ARGV_TAIL || field(
+        b,
+        t,
+        i,
+        N_LAUNCH_FDS,
+    ) > 7 {
         return Err(DbError::Enum { table: tid(t), record: rid(i) });
     }
     let cred = field(b, t, i, N_CRED);
@@ -57,6 +67,14 @@ fn check_node(b: &[u8], i: usize) -> (r: Result<(), DbError>)
         field(b, t, i, N_ENV_OFF),
         field(b, t, i, N_ENV_LEN),
     ) {
+        return Err(DbError::Consistency { table: tid(t), record: rid(i) });
+    }
+    let concurrency = field(b, t, i, N_LAUNCH_CONCURRENCY);
+    if (kind != 1 && concurrency != 0) || (concurrency == 0 && (field(b, t, i, N_LAUNCH_ARGV_TAIL)
+        != 0 || field(b, t, i, N_LAUNCH_ENV_LEN) != 0 || field(b, t, i, N_LAUNCH_FDS) != 0)) {
+        return Err(DbError::Consistency { table: tid(t), record: rid(i) });
+    }
+    if !launch_keys_exec(b, field(b, t, i, N_LAUNCH_ENV_OFF), field(b, t, i, N_LAUNCH_ENV_LEN)) {
         return Err(DbError::Consistency { table: tid(t), record: rid(i) });
     }
     if (kind != 0 && policy != 0) || (kind == 2 && field(b, t, i, N_EXEC_LEN) != 0) || field(
@@ -161,7 +179,7 @@ fn check_route(b: &[u8], r: usize) -> (res: Result<(), DbError>)
 }
 
 /// `b[pa..pa + la]` sorts strictly before `b[pc..pc + lc]`, bytewise.
-fn bytes_lt(b: &[u8], pa: usize, la: usize, pc: usize, lc: usize) -> (r: bool)
+pub(crate) fn bytes_lt(b: &[u8], pa: usize, la: usize, pc: usize, lc: usize) -> (r: bool)
     requires
         pa + la <= b@.len(),
         pc + lc <= b@.len(),

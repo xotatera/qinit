@@ -4,7 +4,8 @@ mod common;
 
 use common::{node, sample, svc};
 use qinit_db::{
-    Kind, Model, ReadError, Seccomp, Stop, StopMode, Target, WriteError, crc32, open, write,
+    Kind, Launch, Model, ReadError, Reload, Seccomp, Stop, StopMode, Target, WriteError, crc32,
+    open, write,
 };
 use qinit_db_core::{T_POOL, word};
 
@@ -203,5 +204,34 @@ fn a_syscall_number_at_or_above_the_limit_is_refused_by_the_writer() {
 fn an_env_entry_without_a_key_is_refused_by_the_reader_not_the_writer() {
     let m = with_node(|n| n.env = vec!["=x".into()]);
     let bytes = write(&m).expect("the writer checks ranges only");
+    assert!(matches!(open(&bytes), Err(ReadError::Db(_))));
+}
+
+#[test]
+fn reload_and_the_launch_table_round_trip() {
+    let mut model = sample();
+    model.nodes[1].reload = Some(Reload::Usr1);
+    model.nodes[2].launch = Some(Launch {
+        concurrency: 4,
+        argv_tail: 8,
+        env: vec!["TARGET".into(), "VERBOSE".into()],
+        fds: qinit_db_core::FD_STDIN | qinit_db_core::FD_STDERR,
+    });
+    let bytes = write(&model).expect("writes");
+    let back = open(&bytes).expect("opens").decode();
+    assert_eq!(back, model);
+    assert_eq!(back.nodes[2].launch.as_ref().unwrap().env.len(), 2);
+}
+
+#[test]
+fn a_launch_table_with_unsorted_keys_does_not_open() {
+    let mut model = sample();
+    model.nodes[2].launch = Some(Launch {
+        concurrency: 1,
+        argv_tail: 0,
+        env: vec!["B".into(), "A".into()],
+        fds: 0,
+    });
+    let bytes = write(&model).expect("writes");
     assert!(matches!(open(&bytes), Err(ReadError::Db(_))));
 }

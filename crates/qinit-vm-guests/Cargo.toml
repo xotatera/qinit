@@ -12,8 +12,13 @@ license.workspace = true
 [dependencies]
 libc = { workspace = true, features = ["std"] }
 qinit-cell = { path = "../qinit-cell", features = ["test-hooks"] }
+qinit-client = { path = "../qinit-client" }
+qinit-colony = { path = "../qinit-colony" }
+qinit-db = { path = "../qinit-db" }
 qinit-event = { path = "../qinit-event" }
+qinit-ipc = { path = "../qinit-ipc" }
 qinit-overseer = { path = "../qinit-overseer" }
+qinit-proto = { path = "../qinit-proto", features = ["testing"] }
 qinit-sys = { path = "../qinit-sys" }
 
 [dev-dependencies]
@@ -24,4 +29,4 @@ workspace = true
 
 [package.metadata.disciplines]
 layer = "tooling"
-allow = ["libc", "qinit-cell", "qinit-event", "qinit-overseer", "qinit-sys"]
+allow = ["libc", "qinit-cell", "qinit-client", "qinit-colony", "qinit-db", "qinit-event", "qinit-ipc", "qinit-overseer", "qinit-proto", "qinit-sys"]

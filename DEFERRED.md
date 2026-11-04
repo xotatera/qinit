@@ -200,10 +200,12 @@ The colony core waits for a path edge through a `WatchPath` action and a `PathAp
 Watching a real filesystem path (inotify, with the race between setting the watch and the first
 check) belongs to the colony daemon sub-project.
 
-### D28 — Refresh operation · `OPEN`
+### D28 — Refresh operation · `RESOLVED`
 
-`restart_on = "refresh"` behaves as `restart` in the colony core, because nothing can refresh a
-worker yet. The refresh operation belongs to the control protocol sub-project, which narrows it.
+Resolved by the control protocol (sub-project 6): `Change(refresh)` signals a worker that
+declares `reload` and otherwise restarts it, and `restart_on = "refresh"` edges fire for a
+refreshed target; `restart_on = "restart"` edges do not fire for a reload. A new database is
+swapped in by the `Refresh` request, in two phases (see `docs/control-protocol.md`).
 
 ### D29 — Real cells, event loop and re-adoption · `OPEN`
 
@@ -256,3 +258,33 @@ The init of a pid namespace cannot raise a default-action signal on itself, so i
 `128 + n` and the supervisor outside turns an exit code of `128 + n` back into signal `n`. A
 service that itself exits with such a code in a pid namespace is reported as killed by that
 signal.
+
+### D37 — Notice stream · `OPEN`
+
+A client cannot subscribe to node state changes or instance exits: it asks, or it waits on a
+request with a deadline. A watch request that streams notices on a connection is deferred.
+
+### D38 — A pidfd in the launch reply · `OPEN`
+
+`Launch` answers with an instance id and then the exit status; it does not hand the caller a pidfd.
+A pidfd would take the sole control of a stop away from colony, needs `PIDFD_INFO_EXIT` (Linux
+6.15) for the exit status, names the supervisor when the service runs in a pid namespace, and is
+hard to remove once offered. It can be added as an optional field.
+
+### D39 — Launching a full request · `OPEN`
+
+A caller can only start a forager frame that declares a `[launch]` table, adding an argument
+tail, environment keys the frame lists and the standard descriptors it lists. A root-only
+request that carries a whole launch request (arbitrary program, identity and sandbox) is
+deferred as its own record type.
+
+### D40 — Non-root authority beyond status · `OPEN`
+
+Any user may read status and the list; everything else needs user id 0, decided by the one
+`authorized` function. Finer authority (per service, per user) belongs to the privilege authority
+project, which plugs in at that function.
+
+### D41 — A C interface to the client library · `OPEN`
+
+`qinit-client` is a Rust library. Other languages implement the protocol from
+`docs/control-protocol.md`; a C ABI over the client is deferred.

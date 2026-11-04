@@ -31,13 +31,14 @@ use crate::error::{Code, Error, Warning};
 use crate::expand::{Expanded, kind_name};
 use crate::layers::Enable;
 use crate::provenance::{locate, locate_all};
-use crate::schema::{Frame, Output, Ready as SReady};
+use crate::schema::{Frame, LaunchCfg, Output, Ready as SReady};
 use crate::units::{duration_ms, size_kib};
 pub(crate) use cred::{cap_bit, cap_name, ns_name};
 use qinit_db::{
-    Group, GroupKind, Kind, Model, Node, Ready, Restart, RestartPolicy, Route, Stop, StopMode,
+    Group, GroupKind, Kind, Launch, Model, Node, Ready, Reload, Restart, RestartPolicy, Route,
+    Stop, StopMode,
 };
-use qinit_db_core::MAX_NODES;
+use qinit_db_core::{FD_STDERR, FD_STDIN, FD_STDOUT, MAX_NODES};
 use std::collections::BTreeMap;
 
 /// The resolved model and the non-fatal findings.
@@ -387,6 +388,36 @@ fn node(
         cwd: f.cwd.clone().unwrap_or_else(|| "/".to_owned()),
         umask: f.umask.unwrap_or(DEFAULT_UMASK),
         rlimit_nofile: f.rlimits.as_ref().and_then(|r| r.nofile).unwrap_or(0),
+        reload: f.reload.as_deref().map(reload_of),
+        launch: f.launch.as_ref().map(launch_of),
+    }
+}
+
+/// The reload signal named `name`; the schema accepted only the three names.
+fn reload_of(name: &str) -> Reload {
+    match name {
+        "SIGHUP" => Reload::Hup,
+        "SIGUSR1" => Reload::Usr1,
+        _ => Reload::Usr2,
+    }
+}
+
+/// The launch table of a forager: keys sorted, descriptor roles as a mask.
+fn launch_of(l: &LaunchCfg) -> Launch {
+    let mut env = l.env.clone().unwrap_or_default();
+    env.sort();
+    let fds = l.fds.iter().flatten().fold(0, |mask, role| {
+        mask | match role.as_str() {
+            "stdin" => FD_STDIN,
+            "stdout" => FD_STDOUT,
+            _ => FD_STDERR,
+        }
+    });
+    Launch {
+        concurrency: l.concurrency.unwrap_or(0),
+        argv_tail: l.argv_tail.unwrap_or(0),
+        env,
+        fds,
     }
 }
 

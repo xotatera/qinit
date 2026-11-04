@@ -13,6 +13,8 @@ license.workspace = true
 qinit-cell-core = { path = "../qinit-cell-core" }
 qinit-colony-core = { path = "../qinit-colony-core" }
 qinit-db = { path = "../qinit-db" }
+qinit-proto-core = { path = "../qinit-proto-core" }
+qinit-wire = { path = "../qinit-wire" }
 
 [dev-dependencies]
 qinit-frames = { path = "../qinit-frames" }
@@ -22,4 +24,4 @@ workspace = true
 
 [package.metadata.disciplines]
 layer = "runtime"
-allow = ["qinit-cell-core", "qinit-colony-core", "qinit-db"]
+allow = ["qinit-cell-core", "qinit-colony-core", "qinit-db", "qinit-proto-core", "qinit-wire"]

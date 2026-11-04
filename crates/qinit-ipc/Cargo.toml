@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: MPL-2.0
+
+[package]
+name = "qinit-ipc"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license = "MPL-2.0"
+
+[dependencies]
+libc = { workspace = true, features = ["std"] }
+
+# The second crate allowed `unsafe` (plan ruling P1): the MPL client library cannot depend on the
+# GPL `qinit-sys`, so the control socket's calls live here; not `workspace = true` on purpose.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+
+# Layer and allowed direct dependencies, checked by the `layers` gate.
+[package.metadata.disciplines]
+layer = "unsafe"
+allow = ["libc"]

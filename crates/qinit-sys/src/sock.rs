@@ -8,20 +8,7 @@ use std::ffi::CStr;
 use std::os::fd::{AsRawFd, OwnedFd};
 
 fn address(path: &CStr) -> Result<libc::sockaddr_un> {
-    // SAFETY: sockaddr_un is a plain C struct; zeroed is a valid value.
-    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    addr.sun_family =
-        libc::sa_family_t::try_from(libc::AF_UNIX).map_err(|_| Errno(libc::EINVAL))?;
-    let bytes = path.to_bytes_with_nul();
-    if bytes.len() > addr.sun_path.len() {
-        return Err(Errno(libc::ENAMETOOLONG));
-    }
-    for (dst, src) in addr.sun_path.iter_mut().zip(bytes) {
-        #[allow(clippy::cast_possible_wrap)] // the kernel's path field is `c_char`
-        let c = *src as libc::c_char;
-        *dst = c;
-    }
-    Ok(addr)
+    qinit_ipc::unix_address(path).map_err(|e| Errno(e.0))
 }
 
 /// A close-on-exec `AF_UNIX` stream socket bound to `path` and listening with `backlog`.

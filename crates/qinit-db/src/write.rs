@@ -4,8 +4,8 @@
 
 use crate::crc::file_crc;
 use crate::model::{
-    Cred, Edge, GroupKind, Kind, Mode, Model, Node, Ready, RestartOn, RestartPolicy, Route,
-    Seccomp, Securebits, StopMode, Target,
+    Cred, Edge, GroupKind, Kind, Launch, Mode, Model, Node, Ready, Reload, RestartOn,
+    RestartPolicy, Route, Seccomp, Securebits, StopMode, Target,
 };
 use qinit_db_core::{
     HEADER_WORDS, MAGIC, MAX_CREDS, MAX_EDGES, MAX_EDGES_PER_GROUP, MAX_GROUPS,
@@ -104,7 +104,9 @@ fn policy_word(p: RestartPolicy) -> u32 {
     }
 }
 
-fn group_word(k: GroupKind) -> u32 {
+/// The database word of a group kind.
+#[must_use]
+pub fn group_word(k: GroupKind) -> u32 {
     match k {
         GroupKind::RequireAll => 0,
         GroupKind::RequireAny => 1,
@@ -129,7 +131,7 @@ fn node_words(
     pool: &mut Pool,
     group_first: u32,
     limits: (usize, usize),
-) -> Result<[u32; 30], WriteError> {
+) -> Result<[u32; 36], WriteError> {
     let (routes, creds) = limits;
     if n.name.is_empty() || n.name.len() > MAX_NAME_LEN {
         return Err(WriteError::Limit("name"));
@@ -150,6 +152,7 @@ fn node_words(
     let group_count = count(n.groups.len(), MAX_GROUPS_PER_NODE, "groups per node")?;
     let env = pool.intern_list(&n.env)?;
     let cwd = pool.intern(&n.cwd)?;
+    let launch = launch_words(n.launch.as_ref(), pool)?;
     Ok([
         kind_word(n.kind),
         name.0,
@@ -181,7 +184,27 @@ fn node_words(
         cwd.1,
         n.umask,
         n.rlimit_nofile,
+        match n.reload {
+            None => 0,
+            Some(Reload::Hup) => 1,
+            Some(Reload::Usr1) => 2,
+            Some(Reload::Usr2) => 3,
+        },
+        launch[0],
+        launch[1],
+        launch[2],
+        launch[3],
+        launch[4],
     ])
+}
+
+/// The launch words of a node: concurrency, argv tail, env offset and length, descriptor mask.
+fn launch_words(l: Option<&Launch>, pool: &mut Pool) -> Result<[u32; 5], WriteError> {
+    let Some(l) = l else {
+        return Ok([0; 5]);
+    };
+    let env = pool.intern_list(&l.env)?;
+    Ok([l.concurrency, l.argv_tail, env.0, env.1, l.fds])
 }
 
 /// The seccomp mode word and the list as canonical decimals (`n.to_string()` for `n <

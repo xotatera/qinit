@@ -58,6 +58,23 @@ pub struct NodeSpec {
     pub cwd: &'static str,
     /// The file-mode creation mask.
     pub umask: u32,
+    /// 0 none, 1 `SIGHUP`, 2 `SIGUSR1`, 3 `SIGUSR2`.
+    pub reload: u32,
+    /// The forager launch table; all zero for a node that is not launchable.
+    pub launch: LaunchSpec,
+}
+
+/// The launch words of a node record.
+#[derive(Clone, Default)]
+pub struct LaunchSpec {
+    /// 0 for not launchable, else 1..=64.
+    pub concurrency: u32,
+    /// Extra argv elements a caller may append.
+    pub argv_tail: u32,
+    /// The keys a caller may set, raw NUL-joined.
+    pub env: &'static str,
+    /// Bitmask of `FD_STDIN`, `FD_STDOUT`, `FD_STDERR`.
+    pub fds: u32,
 }
 
 /// One credential record.
@@ -116,6 +133,8 @@ pub fn node(name: &str, groups: Vec<GroupSpec>) -> NodeSpec {
         env: "",
         cwd: "/",
         umask: 0o027,
+        reload: 0,
+        launch: LaunchSpec::default(),
     }
 }
 
@@ -179,7 +198,14 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
         };
         let (env_off, env_len) = intern(&mut pool, n.env.as_bytes());
         let (cwd_off, cwd_len) = intern(&mut pool, n.cwd.as_bytes());
-        let mut rec = [0u32; 30];
+        let (launch_env_off, launch_env_len) = intern(&mut pool, n.launch.env.as_bytes());
+        let mut rec = [0u32; 36];
+        rec[N_RELOAD] = n.reload;
+        rec[N_LAUNCH_CONCURRENCY] = n.launch.concurrency;
+        rec[N_LAUNCH_ARGV_TAIL] = n.launch.argv_tail;
+        rec[N_LAUNCH_ENV_OFF] = launch_env_off;
+        rec[N_LAUNCH_ENV_LEN] = launch_env_len;
+        rec[N_LAUNCH_FDS] = n.launch.fds;
         rec[N_ENV_OFF] = env_off;
         rec[N_ENV_LEN] = env_len;
         rec[N_CWD_OFF] = cwd_off;

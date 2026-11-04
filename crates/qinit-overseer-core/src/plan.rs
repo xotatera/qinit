@@ -3,7 +3,6 @@
 //! The launch plan: the step list an accepted request resolves to (spec §4), with the proofs
 //! that it is well ordered (§7.2) and complete and faithful (§7.3). The runner is one loop
 //! over the list; the order lives here, not in the runner.
-
 #[allow(clippy::wildcard_imports)] // the layout constants, used throughout
 use crate::decode::*;
 #[allow(clippy::wildcard_imports)] // the layout constants, used throughout

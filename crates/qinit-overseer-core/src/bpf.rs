@@ -9,7 +9,6 @@
 //! and `unshare`); one `JEQ`/`RET` pair per listed number; and a final `RET`. Jumps are
 //! relative and eight bits wide, so every pair holds its own `RET`; no jump is longer than
 //! four instructions.
-
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only use: Verus erases it
 use crate::layout::*;
 use vstd::prelude::*;

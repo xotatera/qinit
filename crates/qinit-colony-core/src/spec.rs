@@ -3,7 +3,6 @@
 //! The scheduler's specification (spec §4): when an edge, a group and a node are satisfied,
 //! when a node may start, and the invariant over the whole table. The executable code in
 //! `sched` is proved equal to these.
-
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use crate::*;
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
@@ -166,6 +165,7 @@ pub open spec fn params_of(b: Seq<u8>, i: int) -> Params {
         stop_mode: nf(b, i, N_STOP_MODE) as u32,
         grace_ms: nf(b, i, N_STOP_GRACE_MS) as u32,
         start_timeout_ms: nf(b, i, N_START_TIMEOUT_MS) as u32,
+        reload: nf(b, i, N_RELOAD) as u32,
     }
 }
 

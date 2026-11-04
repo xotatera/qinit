@@ -96,6 +96,10 @@ forager mount-var
   cwd = "/"  # default
   umask = 0o027  # default
   rlimits.nofile = "default"  # default
+  launch.concurrency = 2  # vendor
+  launch.argv_tail = 1  # vendor
+  launch.env = ["TARGET"]  # vendor
+  launch.fds = ["stderr"]  # vendor
   credentials.uid = "root"  # vendor
   credentials.caps = []  # default
   credentials.nnp = true  # default
@@ -132,6 +136,7 @@ worker sshd
   cwd = "/"  # default
   umask = 0o027  # default
   rlimits.nofile = "default"  # default
+  reload = "SIGHUP"  # vendor
   credentials.uid = "root"  # vendor
   credentials.caps = ["setgid", "setuid", "net_bind_service", "sys_chroot"]  # vendor
   credentials.nnp = false  # vendor

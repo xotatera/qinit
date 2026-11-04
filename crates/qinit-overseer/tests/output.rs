@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Output routes by file type (spec R7).
-use qinit_overseer::output::open_route;
+use qinit_overseer::output::{open_input, open_route};
 use qinit_sys::Errno;
 use qinit_sys::fd::file_type;
 use std::ffi::CString;
@@ -163,5 +163,49 @@ fn open_route_follows_a_symlinked_directory_on_the_way() {
         std::fs::read_to_string(dir.join("real/out.log")).unwrap(),
         "ok\n"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn open_input_reads_a_regular_file_and_a_char_device() {
+    let dir = scratch("input-reg");
+    let path = dir.join("in.txt");
+    std::fs::write(&path, "hello").unwrap();
+    let mut text = String::new();
+    std::io::Read::read_to_string(
+        &mut std::fs::File::from(open_input(&c(&path)).unwrap()),
+        &mut text,
+    )
+    .unwrap();
+    assert_eq!(text, "hello");
+    let fd = open_input(c"/dev/null").unwrap();
+    assert_eq!(file_type(fd.as_fd()).unwrap(), libc::S_IFCHR);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn open_input_does_not_create_and_refuses_a_symlink_and_a_directory() {
+    let dir = scratch("input-bad");
+    assert_eq!(
+        open_input(&c(&dir.join("absent"))).unwrap_err(),
+        Errno(libc::ENOENT)
+    );
+    assert!(!dir.join("absent").exists());
+    let real = dir.join("real");
+    std::fs::write(&real, "x").unwrap();
+    let link = dir.join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    assert_eq!(open_input(&c(&link)).unwrap_err(), Errno(libc::ELOOP));
+    assert_eq!(open_input(&c(&dir)).unwrap_err(), Errno(libc::ENOTSUP));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn open_input_opens_a_fifo_without_a_writer() {
+    let dir = scratch("input-fifo");
+    let path = dir.join("fifo");
+    mkfifo(&path);
+    let fd = open_input(&c(&path)).unwrap();
+    assert_eq!(file_type(fd.as_fd()).unwrap(), libc::S_IFIFO);
     let _ = std::fs::remove_dir_all(&dir);
 }

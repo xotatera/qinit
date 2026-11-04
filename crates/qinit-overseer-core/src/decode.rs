@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The total decoder: `Ok` only for an [`accepted`] request, and the in-place accessors that
 //! are in bounds for any accepted request.
-
 #[allow(clippy::wildcard_imports)] // the layout constants, used throughout
 use crate::layout::*;
 // Explicit, so these shadow the same names of the database header.
@@ -135,6 +134,9 @@ fn check_refs(b: &[u8]) -> (r: Result<(), LaunchError>)
     pool_ref_ok(b, rword(b, Q_USER_OFF), rword(b, Q_USER_LEN))?;
     list_ref_ok(b, rword(b, Q_SECCOMP_OFF), rword(b, Q_SECCOMP_LEN))?;
     list_ref_ok(b, rword(b, Q_LANDLOCK_OFF), rword(b, Q_LANDLOCK_LEN))?;
+    if rword(b, Q_STDIN_KIND) == STREAM_PATH {
+        pool_ref_ok(b, rword(b, Q_STDIN_A), rword(b, Q_STDIN_B))?;
+    }
     if rword(b, Q_STDOUT_KIND) == STREAM_PATH {
         pool_ref_ok(b, rword(b, Q_STDOUT_A), rword(b, Q_STDOUT_B))?;
     }
@@ -158,11 +160,11 @@ fn check_enums(b: &[u8]) -> (r: Result<(), LaunchError>)
     ) == 0)) {
         return Err(LaunchError::Enum);
     }
-    if rword(b, Q_STDOUT_KIND) > STREAM_FD || rword(b, Q_STDERR_KIND) > STREAM_SAME || rword(
+    if rword(b, Q_STDIN_KIND) > STREAM_FD || rword(b, Q_STDOUT_KIND) > STREAM_FD || rword(
         b,
-        Q_READY_KIND,
-    ) > READY_PIPE || rword(b, Q_FLAGS) > FLAG_DIE_WITH_PARENT || rword(b, Q_RESERVED_0) != 0
-        || rword(b, Q_RESERVED_1) != 0 {
+        Q_STDERR_KIND,
+    ) > STREAM_SAME || rword(b, Q_READY_KIND) > READY_PIPE || rword(b, Q_FLAGS)
+        > FLAG_DIE_WITH_PARENT || rword(b, Q_RESERVED_0) != 0 || rword(b, Q_RESERVED_1) != 0 {
         return Err(LaunchError::Enum);
     }
     Ok(())
@@ -183,12 +185,17 @@ fn check_routes(b: &[u8]) -> (r: Result<(), LaunchError>)
     ensures
         r is Ok ==> routes_ok(b@),
 {
+    let in_kind = rword(b, Q_STDIN_KIND);
+    let in_a = rword(b, Q_STDIN_A);
     let out_kind = rword(b, Q_STDOUT_KIND);
     let out_a = rword(b, Q_STDOUT_A);
     let err_kind = rword(b, Q_STDERR_KIND);
     let err_a = rword(b, Q_STDERR_A);
     let ready_kind = rword(b, Q_READY_KIND);
     let ready_a = rword(b, Q_READY_FD);
+    if in_kind == STREAM_FD && (!fd_ok_exec(in_a) || rword(b, Q_STDIN_B) != 0) {
+        return Err(LaunchError::Consistency);
+    }
     if out_kind == STREAM_FD && (!fd_ok_exec(out_a) || rword(b, Q_STDOUT_B) != 0) {
         return Err(LaunchError::Consistency);
     }
@@ -204,6 +211,11 @@ fn check_routes(b: &[u8]) -> (r: Result<(), LaunchError>)
     if ready_kind == READY_NONE && ready_a != 0 {
         return Err(LaunchError::Consistency);
     }
+    let inp: i64 = if in_kind == STREAM_FD {
+        in_a as i64
+    } else {
+        -1
+    };
     let out: i64 = if out_kind == STREAM_FD {
         out_a as i64
     } else {
@@ -219,6 +231,9 @@ fn check_routes(b: &[u8]) -> (r: Result<(), LaunchError>)
     } else {
         -1
     };
+    if inp >= 0 && (inp == out || inp == err || inp == ready) {
+        return Err(LaunchError::Consistency);
+    }
     if out >= 0 && (out == err || out == ready) {
         return Err(LaunchError::Consistency);
     }

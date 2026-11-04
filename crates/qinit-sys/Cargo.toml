@@ -11,6 +11,7 @@ license.workspace = true
 
 [dependencies]
 libc = { workspace = true, features = ["std"] }
+qinit-ipc = { path = "../qinit-ipc" }
 
 # The one crate allowed `unsafe`; not `workspace = true` on purpose.
 [lints.rust]
@@ -25,4 +26,4 @@ multiple_unsafe_ops_per_block = "deny"
 # Layer and allowed direct dependencies, checked by the `layers` gate.
 [package.metadata.disciplines]
 layer = "unsafe"
-allow = ["libc"]
+allow = ["libc", "qinit-ipc"]

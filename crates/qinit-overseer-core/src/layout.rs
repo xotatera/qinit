@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! The launch request layout: a five-word header, a 32-word record and a string pool. Every
+//! The launch request layout: a five-word header, a 35-word record and a string pool. Every
 //! word is little-endian; pool references are `(offset, length)` into the pool.
-
 use vstd::prelude::*;
 
 verus! {
@@ -17,7 +16,7 @@ pub const LAUNCH_VERSION: u32 = 1;
 pub const HEADER_WORDS: usize = 5;
 
 /// Words in the record, which follows the header.
-pub const REQ_WORDS: usize = 32;
+pub const REQ_WORDS: usize = 35;
 
 /// Bytes of the header and the record together; the pool starts at or after this.
 pub const FIXED_BYTES: usize = 4 * (HEADER_WORDS + REQ_WORDS);
@@ -151,6 +150,15 @@ pub const Q_RESERVED_0: usize = 30;
 
 /// Record word 31: reserved, 0.
 pub const Q_RESERVED_1: usize = 31;
+
+/// Record word 32: `stdin_kind`, `STREAM_PATH` or `STREAM_FD`.
+pub const Q_STDIN_KIND: usize = 32;
+
+/// Record word 33: `stdin_a`, the path offset or the descriptor number.
+pub const Q_STDIN_A: usize = 33;
+
+/// Record word 34: `stdin_b`, the path length; 0 for a descriptor.
+pub const Q_STDIN_B: usize = 34;
 
 /// A stream goes to a path opened by the executor.
 pub const STREAM_PATH: u32 = 0;

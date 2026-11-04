@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! V5-V7: the ordering edges go through `qinit_graph_core::levels`, once for the start
 //! order (every ordering edge) and once for the stop order (parallel edges skipped).
-
 #![allow(clippy::many_single_char_names)] // `b`, `n`, `i`, `g`, `x`, `k` follow the spec names
 
 use super::header::{field, header_word};

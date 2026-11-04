@@ -9,8 +9,8 @@ use qinit_overseer_core::{
     Q_ARGV_OFF, Q_CAPS_HI, Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_DEADLINE_MS, Q_ENV_LEN, Q_ENV_OFF,
     Q_FLAGS, Q_LANDLOCK_LEN, Q_LANDLOCK_OFF, Q_NNP, Q_NOFILE, Q_NS, Q_READY_FD, Q_READY_KIND,
     Q_SECCOMP, Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_SECUREBITS, Q_STDERR_A, Q_STDERR_B, Q_STDERR_KIND,
-    Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND, Q_UMASK, Q_USER_LEN, Q_USER_OFF, READY_NONE, READY_PIPE,
-    REQ_WORDS, STREAM_FD, STREAM_PATH, STREAM_SAME,
+    Q_STDIN_A, Q_STDIN_B, Q_STDIN_KIND, Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND, Q_UMASK, Q_USER_LEN,
+    Q_USER_OFF, READY_NONE, READY_PIPE, REQ_WORDS, STREAM_FD, STREAM_PATH, STREAM_SAME,
 };
 
 /// Where a stream goes.
@@ -39,6 +39,7 @@ pub struct RequestSpec {
     pub ns: u32,
     pub seccomp: Seccomp,
     pub landlock: Vec<String>,
+    pub stdin: Stream,
     pub stdout: Stream,
     pub stderr: Stream,
     pub ready_fd: Option<u32>,
@@ -61,6 +62,7 @@ impl Default for RequestSpec {
             ns: 0,
             seccomp: Seccomp::None,
             landlock: Vec::new(),
+            stdin: Stream::Path("/dev/null".into()),
             stdout: Stream::Path("/dev/null".into()),
             stderr: Stream::Same,
             ready_fd: None,
@@ -79,13 +81,14 @@ pub enum BuildError {
     NoCredentials,
     /// The request is longer than `MAX_REQUEST`.
     TooLarge,
-    /// Standard output was [`Stream::Same`].
+    /// Standard input or output was [`Stream::Same`].
     BadStream,
 }
 
 /// The descriptor numbers the launcher routes in, by role.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Routed {
+    pub stdin: Option<u32>,
     pub stdout: Option<u32>,
     pub stderr: Option<u32>,
     pub ready: Option<u32>,
@@ -112,7 +115,7 @@ impl RequestSpec {
     ///
     /// # Errors
     /// [`BuildError::TooLarge`] past `MAX_REQUEST`, [`BuildError::BadStream`] for a `Same`
-    /// standard output. Nothing else is checked here: `decode` is the judge.
+    /// standard input or output. Nothing else is checked here: `decode` is the judge.
     pub fn bytes(&self) -> Result<Vec<u8>, BuildError> {
         let mut pool = Pool(Vec::new());
         let mut rec = [0u32; REQ_WORDS];
@@ -136,10 +139,11 @@ impl RequestSpec {
         (rec[Q_SECCOMP_OFF], rec[Q_SECCOMP_LEN]) = (o, l);
         let (o, l) = pool.list(&self.landlock)?;
         (rec[Q_LANDLOCK_OFF], rec[Q_LANDLOCK_LEN]) = (o, l);
-        if self.stdout == Stream::Same {
+        if self.stdin == Stream::Same || self.stdout == Stream::Same {
             return Err(BuildError::BadStream);
         }
         for (s, kind, a, b) in [
+            (&self.stdin, Q_STDIN_KIND, Q_STDIN_A, Q_STDIN_B),
             (&self.stdout, Q_STDOUT_KIND, Q_STDOUT_A, Q_STDOUT_B),
             (&self.stderr, Q_STDERR_KIND, Q_STDERR_A, Q_STDERR_B),
         ] {
@@ -204,29 +208,39 @@ fn stream(route: &Route, fd: Option<u32>) -> Result<Stream, BuildError> {
     }
 }
 
-/// The request for `node` of `model`. A pipe route needs its descriptor in `routed`; an
-/// `errors` route equal to the `output` route is standard error following standard output.
-///
-/// # Errors
-/// [`BuildError::NoCredentials`] for a brood, [`BuildError::MissingFd`] for a pipe route or
-/// pipe readiness without its descriptor.
-pub fn from_model(
+/// The standard output and error of `node`: its routes, or the descriptors in `routed`. With
+/// `replace`, a descriptor in `routed` takes the place of the node's route (a caller's stream
+/// for an instance); without it, a descriptor only serves a pipe route.
+fn streams(
+    node: &Node,
+    model: &Model,
+    routed: &Routed,
+    replace: bool,
+) -> Result<(Stream, Stream), BuildError> {
+    let route = |i: u32| &model.routes[i as usize];
+    let stdout = match (replace, routed.stdout, node.output) {
+        (true, Some(fd), _) => Stream::Fd(fd),
+        (_, _, None) => Stream::Path("/dev/null".into()),
+        (_, fd, Some(r)) => stream(route(r), fd)?,
+    };
+    let stderr = match (replace, routed.stderr, node.errors) {
+        (true, Some(fd), _) => Stream::Fd(fd),
+        (_, _, None) => Stream::Same,
+        (_, _, Some(r)) if node.output.is_some_and(|o| route(o) == route(r)) => Stream::Same,
+        (_, fd, Some(r)) => stream(route(r), fd)?,
+    };
+    Ok((stdout, stderr))
+}
+
+fn build(
     node: &Node,
     model: &Model,
     routed: &Routed,
     deadline_ms: u32,
+    replace: bool,
 ) -> Result<RequestSpec, BuildError> {
     let cred = &model.creds[node.cred.ok_or(BuildError::NoCredentials)? as usize];
-    let route = |i: u32| &model.routes[i as usize];
-    let stdout = match node.output {
-        None => Stream::Path("/dev/null".into()),
-        Some(r) => stream(route(r), routed.stdout)?,
-    };
-    let stderr = match node.errors {
-        None => Stream::Same,
-        Some(r) if node.output.is_some_and(|o| route(o) == route(r)) => Stream::Same,
-        Some(r) => stream(route(r), routed.stderr)?,
-    };
+    let (stdout, stderr) = streams(node, model, routed, replace)?;
     let ready_fd = match node.ready {
         Ready::Pipe => Some(routed.ready.ok_or(BuildError::MissingFd)?),
         _ => None,
@@ -244,10 +258,58 @@ pub fn from_model(
         ns: cred.ns,
         seccomp: cred.seccomp.clone(),
         landlock: cred.landlock.clone(),
+        stdin: routed
+            .stdin
+            .map_or_else(|| Stream::Path("/dev/null".into()), Stream::Fd),
         stdout,
         stderr,
         ready_fd,
         die_with_parent: false,
         deadline_ms,
     })
+}
+
+/// The request for `node` of `model`. A pipe route needs its descriptor in `routed`; an
+/// `errors` route equal to the `output` route is standard error following standard output.
+///
+/// # Errors
+/// [`BuildError::NoCredentials`] for a brood, [`BuildError::MissingFd`] for a pipe route or
+/// pipe readiness without its descriptor.
+pub fn from_model(
+    node: &Node,
+    model: &Model,
+    routed: &Routed,
+    deadline_ms: u32,
+) -> Result<RequestSpec, BuildError> {
+    build(node, model, routed, deadline_ms, false)
+}
+
+/// The request for an instance of the launchable forager `node`: [`from_model`] with the
+/// caller's additions. `argv_tail` follows the frame's argv, and `env_add` overrides the
+/// frame's entries of the same key (the result stays sorted by key). A descriptor in `routed`
+/// replaces the frame's route for that stream: stdin from the caller instead of `/dev/null`,
+/// stdout or stderr to the caller instead of a path or the logger.
+///
+/// # Errors
+/// As [`from_model`].
+pub fn from_instance(
+    node: &Node,
+    model: &Model,
+    routed: &Routed,
+    argv_tail: &[String],
+    env_add: &[(String, String)],
+    deadline_ms: u32,
+) -> Result<RequestSpec, BuildError> {
+    let mut spec = build(node, model, routed, deadline_ms, true)?;
+    spec.argv.extend(argv_tail.iter().cloned());
+    let key = |e: &str| {
+        e.split_once('=')
+            .map_or(e.to_owned(), |(k, _)| k.to_owned())
+    };
+    for (k, v) in env_add {
+        spec.env.retain(|e| key(e) != *k);
+        spec.env.push(format!("{k}={v}"));
+    }
+    spec.env.sort_by_key(|e| key(e));
+    Ok(spec)
 }

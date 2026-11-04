@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! V3 and V4: cross-table indices, tiling, enums and name order.
-
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only use: Verus erases it
 use super::pool::*;
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only use: Verus erases it
@@ -90,6 +89,21 @@ pub open spec fn v3(b: Seq<u8>) -> bool {
     &&& tiled(b)
 }
 
+/// Node `i`'s launch environment keys.
+pub open spec fn launch_env(b: Seq<u8>, i: int) -> Seq<u8> {
+    pool_slice(b, nf(b, i, N_LAUNCH_ENV_OFF), nf(b, i, N_LAUNCH_ENV_LEN))
+}
+
+/// Adjacent elements of the NUL-separated list `s` ascend strictly, bytewise.
+pub open spec fn keys_ascending(s: Seq<u8>) -> bool {
+    forall|p1: int, q1: int, p2: int, q2: int|
+        #![trigger is_elem(s, p1, q1), is_elem(s, p2, q2)]
+        is_elem(s, p1, q1) && is_elem(s, p2, q2) && q1 + 1 == p2 ==> lex_lt(
+            s.subrange(p1, q1),
+            s.subrange(p2, q2),
+        )
+}
+
 pub open spec fn node_enum_ok(b: Seq<u8>, i: int) -> bool {
     &&& nf(b, i, N_KIND) <= 2
     &&& nf(b, i, N_READY_KIND) <= 3
@@ -105,6 +119,18 @@ pub open spec fn node_enum_ok(b: Seq<u8>, i: int) -> bool {
     &&& (nf(b, i, N_KIND) == 2 ==> nf(b, i, N_CRED) == NONE)
     &&& cwd_ok(b, nf(b, i, N_CWD_OFF), nf(b, i, N_CWD_LEN))
     &&& env_list_ok(pool_slice(b, nf(b, i, N_ENV_OFF), nf(b, i, N_ENV_LEN)))
+    &&& nf(b, i, N_RELOAD) <= 3
+    &&& nf(b, i, N_LAUNCH_CONCURRENCY) <= MAX_LAUNCH_CONCURRENCY
+    &&& nf(b, i, N_LAUNCH_ARGV_TAIL) <= MAX_ARGV_TAIL
+    &&& nf(b, i, N_LAUNCH_FDS) <= 7
+    &&& (nf(b, i, N_KIND) != 1 ==> nf(b, i, N_LAUNCH_CONCURRENCY) == 0)
+    &&& (nf(b, i, N_LAUNCH_CONCURRENCY) == 0 ==> nf(b, i, N_LAUNCH_ARGV_TAIL) == 0 && nf(
+        b,
+        i,
+        N_LAUNCH_ENV_LEN,
+    ) == 0 && nf(b, i, N_LAUNCH_FDS) == 0)
+    &&& launch_keys_ok(launch_env(b, i))
+    &&& keys_ascending(launch_env(b, i))
 }
 
 pub open spec fn group_enum_ok(b: Seq<u8>, g: int) -> bool {

@@ -44,6 +44,31 @@ pub fn open_route(path: &CStr) -> Result<OwnedFd> {
     }
 }
 
+/// Opens `path` for reading as its file type asks: a regular file or a character device is
+/// opened, and a FIFO is opened non-blocking (so a missing writer does not hold the launch) and
+/// then made blocking. Nothing is created, and the last component is never followed: a symlink
+/// there is `ELOOP`, and the file is opened through the descriptor the type was read from. Any
+/// other type is `ENOTSUP`.
+///
+/// # Errors
+/// The errno of the failing system call, `ELOOP` for a symlink, or `ENOTSUP` for a type with
+/// no input.
+pub fn open_input(path: &CStr) -> Result<OwnedFd> {
+    let probe = open_cloexec(path, libc::O_PATH | libc::O_NOFOLLOW, 0)?;
+    let held = CString::new(format!("/proc/self/fd/{}", probe.as_raw_fd()))
+        .map_err(|_| Errno(libc::EINVAL))?;
+    match file_type(probe.as_fd())? {
+        libc::S_IFLNK => Err(Errno(libc::ELOOP)),
+        libc::S_IFREG | libc::S_IFCHR => open_cloexec(&held, libc::O_RDONLY, 0),
+        libc::S_IFIFO => {
+            let fd = open_cloexec(&held, libc::O_RDONLY | libc::O_NONBLOCK, 0)?;
+            clear_nonblocking(fd.as_fd())?;
+            Ok(fd)
+        }
+        _ => Err(Errno(libc::ENOTSUP)),
+    }
+}
+
 /// Creates the regular file at `path`; whatever was put there since the probe is refused.
 fn create(path: &CStr) -> Result<OwnedFd> {
     let fd = open_cloexec(

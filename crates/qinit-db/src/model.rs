@@ -58,6 +58,35 @@ pub struct Node {
     pub umask: u32,
     /// `RLIMIT_NOFILE`; 0 keeps the kernel default.
     pub rlimit_nofile: u32,
+    /// The signal that makes the process re-read its configuration; workers and foragers.
+    pub reload: Option<Reload>,
+    /// The launch table of a forager that callers may start instances of.
+    pub launch: Option<Launch>,
+}
+
+/// The reload signal of a node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reload {
+    /// `SIGHUP`.
+    Hup,
+    /// `SIGUSR1`.
+    Usr1,
+    /// `SIGUSR2`.
+    Usr2,
+}
+
+/// What a caller may do when it launches instances of a forager.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Launch {
+    /// Instances at once: 1 to 64.
+    pub concurrency: u32,
+    /// Extra argv elements a caller may append: 0 to 64.
+    pub argv_tail: u32,
+    /// The environment keys a caller may set: no `=`, strictly ascending.
+    pub env: Vec<String>,
+    /// The standard descriptors a caller may supply: a mask of `FD_STDIN`, `FD_STDOUT` and
+    /// `FD_STDERR`.
+    pub fds: u32,
 }
 
 /// Node kind.

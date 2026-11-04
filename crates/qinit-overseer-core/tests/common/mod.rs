@@ -30,6 +30,7 @@ pub struct ReqSpec {
     pub seccomp: u32,
     pub seccomp_list: &'static str,
     pub landlock: &'static str,
+    pub stdin: Stream,
     pub stdout: Stream,
     pub stderr: Stream,
     pub ready: Option<u32>,
@@ -54,6 +55,7 @@ pub fn minimal() -> ReqSpec {
         seccomp: 0,
         seccomp_list: "",
         landlock: "",
+        stdin: Stream::Path("/dev/null"),
         stdout: Stream::Path("/dev/null"),
         stderr: Stream::Same,
         ready: None,
@@ -94,6 +96,7 @@ pub fn build(spec: &ReqSpec) -> Vec<u8> {
         }
         Stream::Same => rec[kind] = STREAM_SAME,
     };
+    stream(&spec.stdin, Q_STDIN_KIND, Q_STDIN_A, Q_STDIN_B);
     stream(&spec.stdout, Q_STDOUT_KIND, Q_STDOUT_A, Q_STDOUT_B);
     stream(&spec.stderr, Q_STDERR_KIND, Q_STDERR_A, Q_STDERR_B);
     rec[Q_ARGV_OFF] = argv.0;

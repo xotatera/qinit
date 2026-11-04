@@ -18,9 +18,10 @@ use crate::provenance::{FrameKey, Origin, Provenance, parse_path, set_by};
 use crate::resolve::{Resolved, cap_name, ns_name};
 use crate::syscalls;
 use qinit_db::{
-    Cred, Edge, GroupKind, Kind, Mode, Model, Node, Ready, RestartOn, RestartPolicy, Route,
+    Cred, Edge, GroupKind, Kind, Mode, Model, Node, Ready, Reload, RestartOn, RestartPolicy, Route,
     Seccomp, Securebits, StopMode, Target,
 };
+use qinit_db_core::{FD_STDERR, FD_STDIN, FD_STDOUT};
 use std::fmt::Write as _;
 
 /// Render `resolved` with the origin of each key from `provenance`.
@@ -100,6 +101,33 @@ impl Block<'_> {
         }
     }
 
+    /// The `reload` signal and the `launch` table of a worker or forager.
+    fn reload_and_launch(&mut self, n: &Node) {
+        if let Some(r) = n.reload {
+            let name = match r {
+                Reload::Hup => "SIGHUP",
+                Reload::Usr1 => "SIGUSR1",
+                Reload::Usr2 => "SIGUSR2",
+            };
+            self.line("reload", &quote(name));
+        }
+        if let Some(l) = &n.launch {
+            self.line("launch.concurrency", &l.concurrency.to_string());
+            self.line("launch.argv_tail", &l.argv_tail.to_string());
+            self.line("launch.env", &list(l.env.iter().map(|k| quote(k))));
+            let roles = [
+                (FD_STDIN, "stdin"),
+                (FD_STDOUT, "stdout"),
+                (FD_STDERR, "stderr"),
+            ];
+            let fds = roles
+                .iter()
+                .filter(|(bit, _)| l.fds & bit != 0)
+                .map(|(_, name)| quote(name));
+            self.line("launch.fds", &list(fds));
+        }
+    }
+
     fn node(&mut self, model: &Model, n: &Node) {
         let _ = writeln!(self.out, "{} {}", kind_name(n.kind), n.name);
         if let Some(t) = &n.instance_of {
@@ -155,6 +183,7 @@ impl Block<'_> {
                 n => n.to_string(),
             };
             self.line("rlimits.nofile", &nofile);
+            self.reload_and_launch(n);
         }
         if let Some(c) = n.cred.and_then(|c| model.creds.get(c as usize)) {
             self.cred(c);

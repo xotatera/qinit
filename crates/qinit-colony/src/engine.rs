@@ -7,8 +7,8 @@ use crate::effects::{Effects, Errno, NodeSpec};
 use crate::text;
 use qinit_cell_core::{Failure, Report as CellPhase};
 use qinit_colony_core::{
-    Action, CellReport, Input, Meta, NodeState, Params, Report, Request, State, StopMode,
-    TimerKind, next_action, off, params, step,
+    Action, CellReport, Input, MAX_SLOTS, Meta, NodeState, Params, Report, Request, Slot,
+    SlotState, State, StopMode, TimerKind, free_slot, next_action, off, params, step,
 };
 use qinit_db::{Model, ReadError, Target, open};
 use std::collections::VecDeque;
@@ -17,6 +17,10 @@ use std::collections::VecDeque;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Notice {
     Node(u32, Report),
+    /// An instance (by id) reached this state; `Exited` carries its wait status, -1 if unknown.
+    Instance(u32, SlotState),
+    /// A database refresh finished: the new database is live.
+    Swapped,
 }
 
 /// What went wrong, other than a node failing (that is a [`Notice`]).
@@ -37,23 +41,44 @@ pub enum Error {
 pub struct Outcome {
     pub notices: Vec<Notice>,
     pub errors: Vec<Error>,
+    /// Replies owed to parked waits that this call settled, answered or superseded.
+    pub replies: Vec<(crate::handle::WaitId, crate::handle::OwnedRep)>,
 }
 
 /// Colony: the compiled database, the node table and the scheduler's state.
 pub struct Colony<E: Effects> {
     /// The effects, public so tests can drive a simulation.
     pub effects: E,
-    db: Vec<u8>,
-    model: Model,
-    nodes: Vec<NodeState>,
-    paths: Vec<bool>,
-    late: Vec<bool>,
-    meta: Meta,
+    pub(crate) db: Vec<u8>,
+    pub(crate) model: Model,
+    pub(crate) nodes: Vec<NodeState>,
+    pub(crate) paths: Vec<bool>,
+    pub(crate) late: Vec<bool>,
+    pub(crate) meta: Meta,
     /// Per node, its path edges as `(path, global edge index)`.
-    path_edges: Vec<Vec<(String, u32)>>,
+    pub(crate) path_edges: Vec<Vec<(String, u32)>>,
     /// Per node, whether a cell exists for it: set by a start that succeeded (or an adoption),
     /// cleared when the cell is released.
-    live: Vec<bool>,
+    pub(crate) live: Vec<bool>,
+    /// Per node, the pid of its main process, as the effects layer reported it at the start.
+    pub(crate) pids: Vec<Option<i32>>,
+    /// The instance slot pool (proved in the core) and what the runtime keeps per slot.
+    pub(crate) slots: Vec<Slot>,
+    pub(crate) insts: Vec<Option<crate::instance::Inst>>,
+    /// The id the next launch gets.
+    pub(crate) next_id: u32,
+    /// The last `RING` instance exits, oldest first.
+    pub(crate) ring: std::collections::VecDeque<crate::instance::Exit>,
+    /// A database swap waiting for its first phase to finish.
+    pub(crate) swap: Option<crate::swap::Swap>,
+    /// Per node, how many times it was started since the database was loaded.
+    pub(crate) starts: Vec<u32>,
+    /// The waits parked for protocol requests.
+    pub(crate) waits: Vec<crate::handle::WaitRec>,
+    /// The mode of the shutdown in progress, if any.
+    pub(crate) shutdown_mode: Option<crate::handle::ShutdownMode>,
+    /// The nodes the last refresh restarts or signals, by name.
+    pub(crate) refresh_set: Vec<String>,
 }
 
 /// The state of a worker colony found already running when it started.
@@ -112,18 +137,7 @@ impl<E: Effects> Colony<E> {
     ) -> Result<(Self, Outcome), Error> {
         let model = open(&bytes).map_err(Error::Db)?.decode();
         let n = model.nodes.len();
-        let mut path_edges = Vec::with_capacity(n);
-        let mut edge = 0u32;
-        for node in &model.nodes {
-            let mut here = Vec::new();
-            for e in node.groups.iter().flat_map(|g| &g.edges) {
-                if let Target::Path(p) = &e.target {
-                    here.push((p.clone(), edge));
-                }
-                edge += 1;
-            }
-            path_edges.push(here);
-        }
+        let (path_edges, edge) = Self::path_edges_of(&model);
         let mut nodes = vec![off(); n];
         let mut live = vec![false; n];
         for &(node, ready) in initial {
@@ -143,7 +157,17 @@ impl<E: Effects> Colony<E> {
             db: bytes,
             model,
             path_edges,
+            pids: vec![None; n],
             live,
+            slots: vec![free_slot(); MAX_SLOTS],
+            insts: (0..MAX_SLOTS).map(|_| None).collect(),
+            next_id: 1,
+            ring: std::collections::VecDeque::new(),
+            swap: None,
+            starts: vec![0; n],
+            waits: Vec::new(),
+            shutdown_mode: None,
+            refresh_set: Vec::new(),
         };
         let mut out = Outcome::default();
         let converged = qinit_colony_core::load_from(
@@ -170,6 +194,23 @@ impl<E: Effects> Colony<E> {
         Ok((c, out))
     }
 
+    /// Per node, its path edges as `(path, global edge index)`, and the number of edges.
+    pub(crate) fn path_edges_of(model: &Model) -> (Vec<Vec<(String, u32)>>, u32) {
+        let mut path_edges = Vec::with_capacity(model.nodes.len());
+        let mut edge = 0u32;
+        for node in &model.nodes {
+            let mut here = Vec::new();
+            for e in node.groups.iter().flat_map(|g| &g.edges) {
+                if let Target::Path(p) = &e.target {
+                    here.push((p.clone(), edge));
+                }
+                edge += 1;
+            }
+            path_edges.push(here);
+        }
+        (path_edges, edge)
+    }
+
     /// An administrator's request for `node`.
     pub fn request(&mut self, node: u32, req: Request, now_ms: u64) -> Outcome {
         self.input(node, Input::Request { node, req }, now_ms)
@@ -177,6 +218,8 @@ impl<E: Effects> Colony<E> {
 
     /// Starts the ordered shutdown of the whole graph.
     pub fn shutdown(&mut self, now_ms: u64) -> Outcome {
+        // A swap still stopping nodes is abandoned: the shutdown stops the old graph.
+        self.swap = None;
         let mut out = Outcome::default();
         let mut queue = VecDeque::from([Input::Shutdown]);
         self.run_queue(&mut queue, now_ms, &mut out);
@@ -195,6 +238,7 @@ impl<E: Effects> Colony<E> {
         );
         if gone && self.known(node) && self.live[node as usize] {
             self.live[node as usize] = false;
+            self.pids[node as usize] = None;
             self.effects.release(node);
         }
         self.input(node, Input::Cell { node, report: r }, now_ms)
@@ -232,6 +276,12 @@ impl<E: Effects> Colony<E> {
         u32::try_from(i).ok()
     }
 
+    /// The pid of the node's main process, as the effects layer reported it at the start.
+    #[must_use]
+    pub fn pid(&self, node: u32) -> Option<i32> {
+        self.pids.get(node as usize).copied().flatten()
+    }
+
     /// The decoded database, for callers that want names.
     #[must_use]
     pub fn model(&self) -> &Model {
@@ -248,7 +298,7 @@ impl<E: Effects> Colony<E> {
         (node as usize) < self.nodes.len()
     }
 
-    fn input(&mut self, node: u32, input: Input, now: u64) -> Outcome {
+    pub(crate) fn input(&mut self, node: u32, input: Input, now: u64) -> Outcome {
         let mut out = Outcome::default();
         if !self.known(node) {
             out.errors.push(Error::UnknownNode(node));
@@ -261,7 +311,7 @@ impl<E: Effects> Colony<E> {
 
     /// Feeds each queued input to the core and performs what it asks; effect failures that are
     /// events (a failed start or stop) join the queue.
-    fn run_queue(&mut self, queue: &mut VecDeque<Input>, now: u64, out: &mut Outcome) {
+    pub(crate) fn run_queue(&mut self, queue: &mut VecDeque<Input>, now: u64, out: &mut Outcome) {
         while let Some(input) = queue.pop_front() {
             let converged = step(
                 &self.db,
@@ -277,15 +327,16 @@ impl<E: Effects> Colony<E> {
             }
             self.drain(queue, out);
         }
+        self.after_event(now, out);
     }
 
-    fn drain(&mut self, queue: &mut VecDeque<Input>, out: &mut Outcome) {
+    pub(crate) fn drain(&mut self, queue: &mut VecDeque<Input>, out: &mut Outcome) {
         while let Some(action) = next_action(&self.db, &mut self.nodes, &mut self.meta) {
             self.perform(action, queue, out);
         }
     }
 
-    fn spec(&self, node: u32) -> NodeSpec {
+    pub(crate) fn spec(&self, node: u32) -> NodeSpec {
         let n = &self.model.nodes[node as usize];
         NodeSpec {
             name: n.name.clone(),
@@ -301,12 +352,19 @@ impl<E: Effects> Colony<E> {
         }
     }
 
-    fn perform(&mut self, action: Action, queue: &mut VecDeque<Input>, out: &mut Outcome) {
+    pub(crate) fn perform(
+        &mut self,
+        action: Action,
+        queue: &mut VecDeque<Input>,
+        out: &mut Outcome,
+    ) {
         match action {
             Action::Start(node) => {
                 let spec = self.spec(node);
-                if self.effects.start(node, &spec).is_ok() {
+                if let Ok(pid) = self.effects.start(node, &spec) {
                     self.live[node as usize] = true;
+                    self.pids[node as usize] = Some(pid);
+                    self.starts[node as usize] = self.starts[node as usize].saturating_add(1);
                 } else {
                     queue.push_back(Input::Cell {
                         node,
@@ -347,6 +405,12 @@ impl<E: Effects> Colony<E> {
                         Ok(false) => {}
                         Err(e) => out.errors.push(Error::Effect(node, e)),
                     }
+                }
+            }
+            Action::Signal(node, sig) => {
+                let number = i32::try_from(sig).unwrap_or(i32::MAX);
+                if let Err(e) = self.effects.signal(node, number) {
+                    out.errors.push(Error::Effect(node, e));
                 }
             }
             Action::Report(node, r) => out.notices.push(Notice::Node(node, r)),

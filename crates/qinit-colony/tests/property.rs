@@ -8,7 +8,7 @@
 mod common;
 
 use common::try_database;
-use qinit_colony::sim::{Call, Script, Sim, advance};
+use qinit_colony::sim::{Call, Script, Sim, advance, deliver_next};
 use qinit_colony::text::state_text;
 use qinit_colony::{Colony, Error, Request, State, Why};
 use qinit_db::{GroupKind, Kind, Mode, RestartPolicy, Target};
@@ -53,6 +53,9 @@ fn frames(rng: &mut Rng, n: usize) -> (String, Vec<String>) {
             let _ = writeln!(out, "credentials = {{ uid = \"svc\" }}");
         }
         if kind == "worker" {
+            if rng.chance(30) {
+                let _ = writeln!(out, "reload = \"SIGHUP\"");
+            }
             match rng.below(5) {
                 0 | 1 => {}
                 2 | 3 => {
@@ -82,8 +85,8 @@ fn frames(rng: &mut Rng, n: usize) -> (String, Vec<String>) {
                 let edges: Vec<String> = targets
                     .iter()
                     .map(|&t| {
-                        let on =
-                            ["none", "error", "restart"][usize::try_from(rng.below(3)).unwrap()];
+                        let on = ["none", "error", "restart", "refresh"]
+                            [usize::try_from(rng.below(4)).unwrap()];
                         let cascade = kind == "require_all" && rng.chance(15);
                         let flag = if cascade { ", cascade = true" } else { "" };
                         format!("{{ to = \"{}\", restart_on = \"{on}\"{flag} }}", name(t))
@@ -244,11 +247,21 @@ fn run(seed: u64, reached: &mut BTreeSet<&'static str>) -> bool {
         let now = c.effects.now();
         let (what, out) = match rng.below(10) {
             0..=4 => {
-                let ms = 1 + rng.below(3000);
-                ("advance", {
-                    advance(&mut c, ms);
-                    qinit_colony::Outcome::default()
-                })
+                // One event at a time, so each call is judged against the state it saw.
+                let target = now + 1 + rng.below(3000);
+                loop {
+                    let before = c.effects.calls.len();
+                    let Some(out) = deliver_next(&mut c, target) else {
+                        break;
+                    };
+                    assert!(
+                        !out.errors.contains(&Error::Unconverged),
+                        "seed {seed} step {step}: unconverged after an event\n{text}"
+                    );
+                    check(&c, before, shut, seed, step, "event");
+                }
+                advance(&mut c, target - now);
+                ("advance", qinit_colony::Outcome::default())
             }
             5..=8 => {
                 let node = u32::try_from(rng.below(n as u64)).unwrap();
@@ -258,7 +271,8 @@ fn run(seed: u64, reached: &mut BTreeSet<&'static str>) -> bool {
                     Request::Restart,
                     Request::Clear,
                     Request::Run,
-                ][usize::try_from(rng.below(5)).unwrap()];
+                    Request::Refresh,
+                ][usize::try_from(rng.below(6)).unwrap()];
                 ("request", c.request(node, req, now))
             }
             _ => {
@@ -274,7 +288,11 @@ fn run(seed: u64, reached: &mut BTreeSet<&'static str>) -> bool {
         // Starts after shutdown: judged against the state before this input.
         check(
             &c,
-            calls_before,
+            if what == "advance" {
+                c.effects.calls.len()
+            } else {
+                calls_before
+            },
             shut && what != "shutdown",
             seed,
             step,
@@ -285,7 +303,13 @@ fn run(seed: u64, reached: &mut BTreeSet<&'static str>) -> bool {
         }
         if step % 15 == 14 {
             settle(&mut c);
+            // A graph whose restarts keep cycling never goes quiet inside `settle`'s bound; a node
+            // can then wait on a dependency that has a stop pending, which the displayed state
+            // does not show. The claim is about a settled colony.
             for i in 0..n {
+                if c.effects.pending() {
+                    break;
+                }
                 let st = c.state(u32::try_from(i).unwrap()).unwrap();
                 assert!(
                     !(st == State::Waiting(Why::Deps) && requires_met(&c, i) == Some(true)),
@@ -324,4 +348,74 @@ fn random_graphs_keep_their_invariants() {
             "no random graph reached `{want}`; saw {reached:?}"
         );
     }
+}
+
+/// Two random graphs, swapped at a random moment: the swap always ends, the table has the new
+/// graph's size, and the same checks hold afterwards.
+fn swap_run(seed: u64) -> bool {
+    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    let (n1, n2) = (
+        3 + usize::try_from(rng.below(8)).unwrap(),
+        3 + usize::try_from(rng.below(8)).unwrap(),
+    );
+    let (text1, roots1) = frames(&mut rng, n1);
+    let (text2, roots2) = frames(&mut rng, n2);
+    let roots1: Vec<&str> = roots1.iter().map(String::as_str).collect();
+    let roots2: Vec<&str> = roots2.iter().map(String::as_str).collect();
+    let (Some(first), Some(second)) =
+        (try_database(&text1, &roots1), try_database(&text2, &roots2))
+    else {
+        return false;
+    };
+    let mut sim = Sim::new();
+    for i in 0..n1.max(n2) {
+        sim.scripts
+            .insert(u32::try_from(i).unwrap(), script(&mut rng));
+    }
+    let (mut c, _) = Colony::load(first, &[], sim, 0).expect("loads");
+    advance(&mut c, rng.below(5000));
+    let now = c.effects.now();
+    let out = c.refresh(second, now).expect("a valid database swaps");
+    assert!(
+        !out.errors.contains(&Error::Unconverged),
+        "seed {seed}: unconverged at the swap\n{text1}\n{text2}"
+    );
+    // Phase 1 ends: every stop is bounded by its grace period.
+    for _ in 0..40 {
+        if !c.swapping() {
+            break;
+        }
+        advance(&mut c, 1000);
+    }
+    assert!(
+        !c.swapping(),
+        "seed {seed}: the swap did not finish\n{}\n{text1}\n==== second\n{text2}",
+        c.status(c.effects.now())
+    );
+    assert_eq!(c.model().nodes.len(), n2, "seed {seed}");
+    for step in 0..30 {
+        let target = c.effects.now() + 1 + rng.below(3000);
+        loop {
+            let b = c.effects.calls.len();
+            let Some(out) = deliver_next(&mut c, target) else {
+                break;
+            };
+            assert!(!out.errors.contains(&Error::Unconverged), "seed {seed}");
+            check(&c, b, false, seed, step, "event");
+        }
+        let rest = target - c.effects.now();
+        advance(&mut c, rest);
+    }
+    true
+}
+
+#[test]
+fn random_swaps_settle() {
+    let mut ran = 0;
+    for seed in 0..200 {
+        if swap_run(seed) {
+            ran += 1;
+        }
+    }
+    assert!(ran >= 150, "only {ran} of 200 swaps ran");
 }

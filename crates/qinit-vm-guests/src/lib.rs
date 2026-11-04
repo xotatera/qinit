@@ -756,6 +756,11 @@ fn launch_helper(role: &str, args: &[String]) -> Option<i32> {
             }
             wait_for_term(false, true, None)
         }
+        // `cat`: standard input to standard output, until its end.
+        "cat" => {
+            let copied = std::io::copy(&mut std::io::stdin(), &mut std::io::stdout());
+            if copied.is_ok() { 0 } else { 2 }
+        }
         // `say <words…>`: the words and a newline on standard output.
         "say" => {
             if writeln!(std::io::stdout(), "{}", args.join(" ")).is_ok() {

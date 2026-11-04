@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! V8: the enabled closure and the pre-syslog list.
-
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only use: Verus erases it
 use super::tables::*;
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them

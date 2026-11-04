@@ -67,6 +67,7 @@ pub fn params(db: &[u8], i: usize) -> (p: Params)
         stop_mode: node_word(db, i, N_STOP_MODE),
         grace_ms: node_word(db, i, N_STOP_GRACE_MS),
         start_timeout_ms: node_word(db, i, N_START_TIMEOUT_MS),
+        reload: node_word(db, i, N_RELOAD),
     }
 }
 
@@ -281,6 +282,44 @@ fn node_satisfied(
         k += 1;
     }
     all
+}
+
+/// Whether every dependency group of node `i` is satisfied right now (what a launch of its
+/// instances needs): the groups judged at `now`, with async deadlines counted from `now`.
+#[must_use]
+pub fn deps_satisfied(db: &[u8], ns: &[NodeState], paths: &[bool], i: usize, now: u64) -> (r: bool)
+    requires
+        sized(db@, ns@.len() as int, paths@.len() as int, paths@.len() as int),
+        i < nodes(db@),
+    ensures
+        r == node_ok(db@, ns@, paths@, i as int, now as int, now as int),
+{
+    node_satisfied(db, ns, paths, i, now, now)
+}
+
+/// Whether group `g` is satisfied right now, judged as [`deps_satisfied`] judges a node.
+#[must_use]
+pub fn group_met(db: &[u8], ns: &[NodeState], paths: &[bool], g: usize, now: u64) -> (r: bool)
+    requires
+        sized(db@, ns@.len() as int, paths@.len() as int, paths@.len() as int),
+        g < tcnt(db@, T_GROUPS as int),
+    ensures
+        r == group_ok(db@, ns@, paths@, g as int, now as int, now as int),
+{
+    group_satisfied(db, ns, paths, g, now, now)
+}
+
+/// Whether edge `x` of a group of `kind` is met right now, as [`group_met`] counts it.
+#[must_use]
+pub fn edge_met(db: &[u8], ns: &[NodeState], paths: &[bool], kind: u32, x: usize, now: u64) -> (r:
+    bool)
+    requires
+        sized(db@, ns@.len() as int, paths@.len() as int, paths@.len() as int),
+        x < tcnt(db@, T_EDGES as int),
+    ensures
+        r == edge_pred(db@, ns@, paths@, kind as int, x as int, now as int, now as int),
+{
+    edge_contributes(db, ns, paths, kind, x, now, now)
 }
 
 // ---- scans of one node's edges ----
@@ -984,6 +1023,10 @@ fn scan_running(db: &[u8], tbl: &[NodeState], paths: &[bool], late: &mut [bool],
                         }
                     } else if !ready && (on >= 2 || (on == 1 && matches!(tn.left, Left::Error))) {
                         trig = true;
+                    } else if ready && matches!(tn.left, Left::Refresh) && on == 3 {
+                        // The target was sent its reload signal and stays ready: only a
+                        // `refresh` edge asks its dependent to restart.
+                        trig = true;
                     }
                 }
             }
@@ -1398,6 +1441,41 @@ pub fn reconcile(
     false
 }
 
+/// Puts `Left::Restart` back on every node marked `Left::Refresh`, once the table has settled.
+fn clear_refreshed(tbl: &mut [NodeState])
+    ensures
+        final(tbl)@.len() == old(tbl)@.len(),
+        forall|k: int|
+            0 <= k < old(tbl)@.len() ==> final(tbl)@[k] == (if old(tbl)@[k].left == Left::Refresh {
+                NodeState { left: Left::Restart, ..old(tbl)@[k] }
+            } else {
+                old(tbl)@[k]
+            }),
+{
+    let n = tbl.len();
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            i <= n,
+            n == tbl@.len(),
+            n == old(tbl)@.len(),
+            forall|k: int|
+                0 <= k < i ==> tbl@[k] == (if old(tbl)@[k].left == Left::Refresh {
+                    NodeState { left: Left::Restart, ..old(tbl)@[k] }
+                } else {
+                    old(tbl)@[k]
+                }),
+            forall|k: int| i <= k < n ==> tbl@[k] == old(tbl)@[k],
+        decreases n - i,
+    {
+        let ns = tbl[i];
+        if matches!(ns.left, Left::Refresh) {
+            tbl[i] = NodeState { left: Left::Restart, ..ns };
+        }
+        i += 1;
+    }
+}
+
 // ---- one input ----
 /// Applies `input` to node `i`'s machine.
 fn apply_node(
@@ -1530,7 +1608,22 @@ pub fn step(
         }
     }
     let converged = reconcile(db, tbl, paths, late, meta.shutdown, now);
+    let ghost t2a = tbl@;
+    clear_refreshed(tbl);
     let ghost t2 = tbl@;
+    proof {
+        assert forall|k: int| 0 <= k < t2.len() implies inv_node(
+            #[trigger] t2[k],
+            params_of(db@, k),
+        ) by {
+            assert(inv_node(t2a[k], params_of(db@, k)));
+        }
+        if quiet {
+            lemma_quiet_trans(t2a, t1, t0);
+            assert(quiet_emits(t2, t2a));
+            lemma_quiet_trans(t2, t2a, t0);
+        }
+    }
     report_shutdown(db, tbl, meta);
     proof {
         if quiet {
@@ -1796,6 +1889,19 @@ pub fn next_action(db: &[u8], tbl: &mut [NodeState], meta: &mut Meta) -> (r: Opt
                             Action::Stop(jj, mode, p.grace_ms)
                         },
                         Pending::Start => Action::Start(jj),
+                        Pending::Report(Report::Reload) => {
+                            let p = params(db, j);
+                            Action::Signal(
+                                jj,
+                                if p.reload == 2 {
+                                    10
+                                } else if p.reload == 3 {
+                                    12
+                                } else {
+                                    1
+                                },
+                            )
+                        },
                         Pending::Report(rep) => Action::Report(jj, rep),
                     },
                 );
@@ -1911,6 +2017,136 @@ fn mark_enabled(db: &[u8], tbl: &mut [NodeState])
         let t = enabled(db, k) as usize;
         want(db, tbl, t);
         k += 1;
+    }
+}
+
+// ---- the swap (spec 2026-11-04 §6.2, obligation 6) ----
+/// Whether two nodes' machines read the same words.
+fn params_eq(a: Params, b: Params) -> (r: bool)
+    ensures
+        r == (a == b),
+{
+    a.kind == b.kind && a.ready_kind == b.ready_kind && a.policy == b.policy && a.max == b.max
+        && a.window_ms == b.window_ms && a.delay_ms == b.delay_ms && a.stop_mode == b.stop_mode
+        && a.grace_ms == b.grace_ms && a.start_timeout_ms == b.start_timeout_ms && a.reload
+        == b.reload
+}
+
+/// Entry `i` of the new table: the old entry `j` when that node exists and its machine reads
+/// the same words in both databases, and a node that is off otherwise.
+pub open spec fn remap_entry(
+    old_db: Seq<u8>,
+    new_db: Seq<u8>,
+    from: Seq<NodeState>,
+    j: int,
+    i: int,
+) -> NodeState {
+    if 0 <= j < from.len() && params_of(old_db, j) == params_of(new_db, i) {
+        from[j]
+    } else {
+        off_spec()
+    }
+}
+
+/// One entry of the new table, with the invariant for the new database.
+fn remap_one(old_db: &[u8], new_db: &[u8], from: &[NodeState], j: u32, i: usize) -> (r: NodeState)
+    requires
+        well_formed(old_db@),
+        well_formed(new_db@),
+        from@.len() == nodes(old_db@),
+        i < nodes(new_db@),
+        inv_all(old_db@, from@),
+    ensures
+        r == remap_entry(old_db@, new_db@, from@, j as int, i as int),
+        inv_node(r, params_of(new_db@, i as int)),
+{
+    let j = j as usize;
+    let keep = if j < from.len() {
+        let a = params(old_db, j);
+        let b = params(new_db, i);
+        params_eq(a, b)
+    } else {
+        false
+    };
+    if keep {
+        assert(inv_node(from@[j as int], params_of(old_db@, j as int)));
+        from[j]
+    } else {
+        off()
+    }
+}
+
+/// The new table for a new database: entry `i` is the old entry `map[i]` when that node exists
+/// and its machine reads the same words in both databases, and a node that is off otherwise.
+/// The invariant therefore holds for the new database whatever it says.
+pub fn remap(old_db: &[u8], new_db: &[u8], from: &[NodeState], map: &[u32], out: &mut [NodeState])
+    requires
+        well_formed(old_db@),
+        well_formed(new_db@),
+        from@.len() == nodes(old_db@),
+        old(out)@.len() == nodes(new_db@),
+        map@.len() == old(out)@.len(),
+        inv_all(old_db@, from@),
+    ensures
+        final(out)@.len() == old(out)@.len(),
+        inv_all(new_db@, final(out)@),
+        forall|i: int|
+            0 <= i < final(out)@.len() ==> final(out)@[i] == remap_entry(
+                old_db@,
+                new_db@,
+                from@,
+                map@[i] as int,
+                i,
+            ),
+{
+    let n = out.len();
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            i <= n,
+            n == out@.len(),
+            n == old(out)@.len(),
+            n == map@.len(),
+            well_formed(old_db@),
+            well_formed(new_db@),
+            from@.len() == nodes(old_db@),
+            n == nodes(new_db@),
+            inv_all(old_db@, from@),
+            forall|k: int|
+                0 <= k < i ==> out@[k] == remap_entry(old_db@, new_db@, from@, map@[k] as int, k),
+            forall|k: int| 0 <= k < i ==> inv_node(#[trigger] out@[k], params_of(new_db@, k)),
+        decreases n - i,
+    {
+        out[i] = remap_one(old_db, new_db, from, map[i], i);
+        i += 1;
+    }
+}
+
+/// Marks, for every node that holds a process, the edges whose target is not ready as late,
+/// as starting it would have: the table of a new database starts with no edge late.
+pub fn rebuild_late(db: &[u8], tbl: &[NodeState], paths: &[bool], late: &mut [bool])
+    requires
+        sized(db@, tbl@.len() as int, paths@.len() as int, old(late)@.len() as int),
+    ensures
+        final(late)@.len() == old(late)@.len(),
+{
+    let n = tbl.len();
+    proof {
+        assert(table_ok(db@, T_NODES as int));
+    }
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            i <= n,
+            n == tbl@.len(),
+            sized(db@, tbl@.len() as int, paths@.len() as int, late@.len() as int),
+            late@.len() == old(late)@.len(),
+        decreases n - i,
+    {
+        if matches!(tbl[i].state, State::Starting | State::Ready) {
+            set_late(db, tbl, paths, late, i);
+        }
+        i += 1;
     }
 }
 

@@ -10,10 +10,12 @@
 
 mod node;
 mod sched;
+mod slots;
 mod spec;
 
 pub use node::*;
 pub use sched::*;
+pub use slots::*;
 #[allow(unused_imports)] // the specification is erased outside verification
 pub use spec::*;
 
@@ -70,6 +72,9 @@ pub enum Left {
     Error,
     /// Anything else: a request, a clean exit, propagation.
     Restart,
+    /// The node was sent its reload signal and stayed ready: its `restart_on = "refresh"`
+    /// dependents restart. The scheduler puts `Restart` back once it has settled.
+    Refresh,
 }
 
 /// The timers a node can have armed. At most one at a time.
@@ -108,6 +113,9 @@ pub enum Request {
     Restart,
     Clear,
     Run,
+    /// Re-read the configuration: the reload signal if the node declares one, else a restart.
+    /// Dependents whose edge says `restart_on = "refresh"` restart either way.
+    Refresh,
 }
 
 /// What colony tells its caller happened to a node.
@@ -123,6 +131,9 @@ pub enum Report {
     ShutdownComplete { still_populated: u32 },
     /// Both report slots of the node were full: an earlier report was dropped.
     Lost,
+    /// The node is to be sent its reload signal. It rides a report slot and `next_action`
+    /// turns it into [`Action::Signal`]; it never reaches a caller as a report.
+    Reload,
 }
 
 /// One input to the whole colony.
@@ -144,6 +155,8 @@ pub enum Action {
     Cancel(u32, TimerKind),
     WatchPath(u32),
     Report(u32, Report),
+    /// Send the node's main process the signal (a Linux signal number).
+    Signal(u32, u32),
 }
 
 /// The input to one node's machine.
@@ -172,6 +185,8 @@ pub struct Params {
     pub grace_ms: u32,
     /// 0 for none.
     pub start_timeout_ms: u32,
+    /// The reload signal: 0 none, 1 `SIGHUP`, 2 `SIGUSR1`, 3 `SIGUSR2`.
+    pub reload: u32,
 }
 
 /// One node's state: the machine plus the actions it has pending.
@@ -239,6 +254,7 @@ pub fn meta() -> (r: Meta)
 #[must_use]
 pub fn off() -> (r: NodeState)
     ensures
+        r == off_spec(),
         r.state == State::Off,
         !r.wanted && !r.to_stop && !r.restart_after,
         r.timer is None,

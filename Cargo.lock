@@ -138,6 +138,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "qinit-client"
+version = "0.1.0"
+dependencies = [
+ "qinit-colony",
+ "qinit-frames",
+ "qinit-ipc",
+ "qinit-proto",
+ "qinit-proto-core",
+ "qinit-sys",
+ "qinit-wire",
+]
+
+[[package]]
 name = "qinit-colony"
 version = "0.1.0"
 dependencies = [
@@ -145,6 +158,8 @@ dependencies = [
  "qinit-colony-core",
  "qinit-db",
  "qinit-frames",
+ "qinit-proto-core",
+ "qinit-wire",
 ]
 
 [[package]]
@@ -208,6 +223,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "qinit-ipc"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "qinit-overseer"
 version = "0.1.0"
 dependencies = [
@@ -226,10 +248,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "qinit-proto"
+version = "0.1.0"
+dependencies = [
+ "qinit-colony",
+ "qinit-event",
+ "qinit-frames",
+ "qinit-ipc",
+ "qinit-proto-core",
+ "qinit-sys",
+ "qinit-wire",
+]
+
+[[package]]
+name = "qinit-proto-core"
+version = "0.1.0"
+dependencies = [
+ "vstd",
+]
+
+[[package]]
 name = "qinit-sys"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "qinit-ipc",
 ]
 
 [[package]]
@@ -249,10 +292,22 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "qinit-cell",
+ "qinit-client",
+ "qinit-colony",
+ "qinit-db",
  "qinit-event",
  "qinit-frames",
+ "qinit-ipc",
  "qinit-overseer",
+ "qinit-proto",
  "qinit-sys",
+]
+
+[[package]]
+name = "qinit-wire"
+version = "0.1.0"
+dependencies = [
+ "qinit-proto-core",
 ]
 
 [[package]]

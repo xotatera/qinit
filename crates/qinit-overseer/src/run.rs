@@ -4,16 +4,16 @@
 //! plan one step at a time (spec §4). A failing step writes its `(step, errno)` record on
 //! fd 4 and ends the process with 127.
 use crate::identity::{self, Identity, IdentityError};
-use crate::output::open_route;
+use crate::output::{open_input, open_route};
 use crate::request::RequestSpec;
 use crate::status::{STEP_DECODE, STEP_IDENTITY, Status};
 use crate::supervisor::supervise;
 use qinit_overseer_core::{
     DEFAULT_DENY, Insn, MAX_BPF, MAX_REQUEST, MAX_STEPS, Q_ARGV_LEN, Q_ARGV_OFF, Q_CAPS_HI,
     Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_ENV_LEN, Q_ENV_OFF, Q_LANDLOCK_LEN, Q_LANDLOCK_OFF,
-    Q_SECCOMP, Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_STDERR_A, Q_STDERR_B, Q_STDERR_KIND, Q_STDOUT_A,
-    Q_STDOUT_B, Q_STDOUT_KIND, Q_UMASK, Q_USER_LEN, Q_USER_OFF, STREAM_FD, STREAM_PATH, Step,
-    decode, plan, pool, program, req,
+    Q_SECCOMP, Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_STDERR_A, Q_STDERR_B, Q_STDERR_KIND, Q_STDIN_A,
+    Q_STDIN_B, Q_STDIN_KIND, Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND, Q_UMASK, Q_USER_LEN,
+    Q_USER_OFF, STREAM_FD, STREAM_PATH, Step, decode, plan, pool, program, req,
 };
 use qinit_sys::landlock::{
     LANDLOCK_ACCESS_FS_ALL_V3, LANDLOCK_ACCESS_FS_READ, add_path_rule, restrict_self, ruleset,
@@ -223,10 +223,13 @@ impl<'a> Run<'a> {
             Step::LoopbackUp => ns::loopback_up(),
             Step::Fork => Err(Errno(libc::EINVAL)),
             Step::ArmDeadline(ms) => timer::arm_alarm(ms),
-            Step::OpenStdin => {
-                let null = fd::open_cloexec(c"/dev/null", libc::O_RDONLY, 0)?;
-                fd::place(null, 0)
-            }
+            Step::OpenStdin => match req(self.b, Q_STDIN_KIND) {
+                STREAM_PATH => {
+                    let opened = open_input(&cstring(self.text(Q_STDIN_A, Q_STDIN_B)?)?);
+                    fd::place(opened?, 0)
+                }
+                _ => fd::dup2_raw(fd_number(req(self.b, Q_STDIN_A))?, 0),
+            },
             Step::OpenStdout => self.stream(Q_STDOUT_KIND, Q_STDOUT_A, Q_STDOUT_B, 1),
             Step::OpenStderr => self.stream(Q_STDERR_KIND, Q_STDERR_A, Q_STDERR_B, 2),
             Step::RouteReady(n) => fd::dup2_raw(fd_number(n)?, READY_FD),

@@ -12,6 +12,23 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The control protocol (sub-project 6), `docs/control-protocol.md`: one `SOCK_SEQPACKET` socket,
+  peer identity from `SO_PEERCRED` and `SO_PEERPIDFD`, status and list for every user and
+  change, forager launch, refresh and shutdown for root, with settled waits that always end.
+  - `qinit-proto-core` (MPL-2.0): the QCP1 message format with a Verus-proved total decoder, an
+    encoder that only returns messages the decoder accepts, and the one `authorized` function.
+  - `qinit-wire` (MPL-2.0): messages as borrowed values, and the encoder over them.
+  - `qinit-ipc` (MPL-2.0): seqpacket sockets, `SCM_RIGHTS`, peer credentials and pidfd.
+  - `qinit-client` (MPL-2.0): a blocking Rust client, one method per operation.
+  - `qinit-proto`: the server (connections, limits, framing, dispatch into colony) and a small
+    event-loop driver for tests.
+  - Colony: `restart_on = "refresh"` edges with the SMF meaning and the reload signal
+    (`Request::Refresh`), forager instance slots (a proved pool) and launches, the two-phase
+    database swap (the proved `remap`), `Colony::handle`, settled waits, shutdown mode and status
+    queries, and the VM suite `control` with root and a user other than root.
+  - Frames: the `reload` key (workers only; a forager or brood refuses it) and the forager `[launch]` table (`concurrency`, `argv_tail`,
+    `env`, `fds`); the node record of the database grows to 36 words.
+  - The overseer launch request has a stdin route (the record grows to 35 words).
 - `docs/design-principles.md`: the rules that decide whether a feature belongs in qinit and
   which part owns it, with a tie-break order and the patterns qinit does not use.
 - `qinit-graph-core`: the dependency graph model, Verus-proved: cycle detection
