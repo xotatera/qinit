@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 use qinit_ipc::{connect_seqpacket, recv, send};
+use qinit_launch::RequestSpec;
 use qinit_proto_core::{DecodeError, MAX_MESSAGE};
 use qinit_wire::{Msg, Rep, Req, decode, encode};
 use std::ffi::CString;
@@ -142,6 +143,23 @@ pub enum LaunchOutcome {
     Failed { step: u32, errno: u32 },
 }
 
+/// A launch the server started: the instance's id, and a pidfd of its main process when the
+/// launch asked for one and the server could open it.
+#[derive(Debug)]
+pub struct Started {
+    pub id: u32,
+    pub pidfd: Option<OwnedFd>,
+}
+
+/// What `begin_launch` returns: the first reply of a launch.
+#[derive(Debug)]
+pub enum Begun {
+    /// The instance runs; `finish` reads how it ends.
+    Started(Started),
+    /// The instance could not be started; nothing more comes.
+    Failed { step: u32, errno: u32 },
+}
+
 /// What a launch adds to the frame's own definition.
 #[derive(Default)]
 pub struct LaunchArgs<'a> {
@@ -150,6 +168,45 @@ pub struct LaunchArgs<'a> {
     pub stdin: Option<BorrowedFd<'a>>,
     pub stdout: Option<BorrowedFd<'a>>,
     pub stderr: Option<BorrowedFd<'a>>,
+}
+
+/// What a `run` sets besides the request: the streams, the cell limits and how the instance
+/// stops.
+pub struct RunArgs<'a> {
+    pub stdin: Option<BorrowedFd<'a>>,
+    pub stdout: Option<BorrowedFd<'a>>,
+    pub stderr: Option<BorrowedFd<'a>>,
+    /// The cell's memory ceiling in KiB, 0 for none.
+    pub memory_max_kib: u32,
+    /// The cell's process ceiling, 0 for none.
+    pub pids_max: u32,
+    /// How the instance stops: the main process only, or the whole cell.
+    pub stop_mode: StopMode,
+    /// The grace before the kill, in milliseconds, at least 100.
+    pub stop_grace_ms: u32,
+}
+
+impl Default for RunArgs<'_> {
+    fn default() -> Self {
+        RunArgs {
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            memory_max_kib: 0,
+            pids_max: 0,
+            stop_mode: StopMode::Main,
+            stop_grace_ms: 10_000,
+        }
+    }
+}
+
+/// How a launched instance is stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopMode {
+    /// Signal the main process.
+    Main,
+    /// Signal every process of the cell.
+    Cell,
 }
 
 /// A connection to colony.
@@ -240,8 +297,9 @@ impl Client {
         Ok(())
     }
 
-    /// Reads the next reply; a server error is returned as an error.
-    fn reply(&mut self) -> Result<Reply, ClientError> {
+    /// Reads the next reply and the descriptors that came with it; a server error is returned
+    /// as an error.
+    fn reply_with_fds(&mut self) -> Result<(Reply, Vec<OwnedFd>), ClientError> {
         let got = recv(self.fd.as_fd(), &mut self.buf)?;
         if got.len == 0 {
             return Err(ClientError::Unexpected);
@@ -249,10 +307,15 @@ impl Client {
         match decode(&self.buf[..got.len], got.fds.len()).map_err(ClientError::Protocol)? {
             Msg::Rep(rep) => match own(rep) {
                 Reply::Error(code, detail) => Err(ClientError::Server(code, detail)),
-                other => Ok(other),
+                other => Ok((other, got.fds)),
             },
             Msg::Req(_) => Err(ClientError::Unexpected),
         }
+    }
+
+    /// Reads the next reply, which carries no descriptor.
+    fn reply(&mut self) -> Result<Reply, ClientError> {
+        self.reply_with_fds().map(|(rep, _)| rep)
     }
 
     /// The status of a node, or of an instance (`<frame>#<id>`).
@@ -328,7 +391,7 @@ impl Client {
     }
 
     /// Launches an instance of the forager `frame` (root only) and waits for it to end for at
-    /// most `wait`.
+    /// most `wait`. No pidfd: see [`Client::begin_launch`].
     ///
     /// # Errors
     /// [`ClientError`].
@@ -338,6 +401,26 @@ impl Client {
         args: &LaunchArgs<'_>,
         wait: Duration,
     ) -> Result<LaunchOutcome, ClientError> {
+        match self.begin_launch(frame, args, false, wait)? {
+            Begun::Failed { step, errno } => Ok(LaunchOutcome::Failed { step, errno }),
+            Begun::Started(Started { id, .. }) => self.finish(id),
+        }
+    }
+
+    /// Sends a launch of the forager `frame` (root only) and reads its first reply. With
+    /// `pidfd`, the reply to a started instance carries a pidfd of its main process when the
+    /// server could open one; [`Client::finish`] then reads how the instance ends, within
+    /// `wait`.
+    ///
+    /// # Errors
+    /// [`ClientError`].
+    pub fn begin_launch(
+        &mut self,
+        frame: &str,
+        args: &LaunchArgs<'_>,
+        pidfd: bool,
+        wait: Duration,
+    ) -> Result<Begun, ClientError> {
         let tail = args.argv_tail.join("\0");
         let env: Vec<String> = args.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let env = env.join("\0");
@@ -357,19 +440,98 @@ impl Client {
                 env_add: qinit_wire::StrList::new(env.as_bytes()),
                 fd_roles: roles,
                 wait_ms,
+                flags: u32::from(pidfd) * qinit_proto_core::FLAG_PIDFD,
             },
             &fds,
         )?;
-        let id = match self.reply()? {
-            Reply::Launched(id) => id,
-            Reply::LaunchFailed(step, errno) => return Ok(LaunchOutcome::Failed { step, errno }),
-            _ => return Err(ClientError::Unexpected),
-        };
+        self.started()
+    }
+
+    /// Reads the reply to a launch or a run.
+    fn started(&mut self) -> Result<Begun, ClientError> {
+        match self.reply_with_fds()? {
+            (Reply::Launched(id), mut got) => Ok(Begun::Started(Started {
+                id,
+                pidfd: if got.is_empty() {
+                    None
+                } else {
+                    Some(got.remove(0))
+                },
+            })),
+            (Reply::LaunchFailed(step, errno), _) => Ok(Begun::Failed { step, errno }),
+            _ => Err(ClientError::Unexpected),
+        }
+    }
+
+    /// Reads the end of the launch `id` that [`Client::begin_launch`] started.
+    ///
+    /// # Errors
+    /// [`ClientError`].
+    pub fn finish(&mut self, id: u32) -> Result<LaunchOutcome, ClientError> {
         match self.reply()? {
             Reply::Exited(status) => Ok(LaunchOutcome::Exited { id, status }),
             Reply::Pending(state) => Ok(LaunchOutcome::Pending { id, state }),
             _ => Err(ClientError::Unexpected),
         }
+    }
+
+    /// Launches `request` as an instance named `~<name>#<id>` (root only) and waits for it to
+    /// end for at most `wait`. No pidfd: see [`Client::begin_run`].
+    ///
+    /// # Errors
+    /// [`ClientError`]; `Server(Denied, clause)` when the policy refuses the request.
+    pub fn run(
+        &mut self,
+        name: &str,
+        request: &RequestSpec,
+        args: &RunArgs<'_>,
+        wait: Duration,
+    ) -> Result<LaunchOutcome, ClientError> {
+        match self.begin_run(name, request, args, false, wait)? {
+            Begun::Failed { step, errno } => Ok(LaunchOutcome::Failed { step, errno }),
+            Begun::Started(Started { id, .. }) => self.finish(id),
+        }
+    }
+
+    /// Sends a `Run` of `request`: its bytes in a sealed memfd, sent first, then the streams of
+    /// `args`. With `pidfd` the reply to a started instance carries a pidfd of its main
+    /// process. [`Client::finish`] reads how the instance ends, within `wait`.
+    ///
+    /// # Errors
+    /// [`ClientError`]; `Io(EINVAL)` for a request that does not encode.
+    pub fn begin_run(
+        &mut self,
+        name: &str,
+        request: &RequestSpec,
+        args: &RunArgs<'_>,
+        pidfd: bool,
+        wait: Duration,
+    ) -> Result<Begun, ClientError> {
+        let bytes = request.bytes().map_err(|_| ClientError::Io(22))?;
+        let memfd = qinit_ipc::memfd::sealed(c"qinit-run", &bytes)?;
+        let mut roles = 0u32;
+        let mut fds: Vec<BorrowedFd<'_>> = vec![memfd.as_fd()];
+        for (bit, fd) in [(1, args.stdin), (2, args.stdout), (4, args.stderr)] {
+            if let Some(fd) = fd {
+                roles |= bit;
+                fds.push(fd);
+            }
+        }
+        let (_, wait_ms) = Wait::Settled(wait).words();
+        self.ask(
+            Req::Run {
+                name,
+                fd_roles: roles,
+                flags: u32::from(pidfd) * qinit_proto_core::FLAG_PIDFD,
+                memory_max_kib: args.memory_max_kib,
+                pids_max: args.pids_max,
+                stop_mode: u32::from(args.stop_mode == StopMode::Cell),
+                stop_grace_ms: args.stop_grace_ms,
+                wait_ms,
+            },
+            &fds,
+        )?;
+        self.started()
     }
 
     /// Swaps in the compiled database in `db` (a regular file or a memfd; root only).

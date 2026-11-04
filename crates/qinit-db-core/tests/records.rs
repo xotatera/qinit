@@ -92,9 +92,9 @@ fn nnp_above_1_is_an_enum_error() {
 }
 
 #[test]
-fn namespace_bits_above_0x1f_are_an_enum_error() {
+fn namespace_bits_above_0x3f_are_an_enum_error() {
     assert_eq!(check(&patched(T_CREDS, 0, C_NS, 0x1f)), Ok(()));
-    assert_eq!(check(&patched(T_CREDS, 0, C_NS, 0x20)), enum_error(T_CREDS));
+    assert_eq!(check(&patched(T_CREDS, 0, C_NS, 0x40)), enum_error(T_CREDS));
 }
 
 #[test]

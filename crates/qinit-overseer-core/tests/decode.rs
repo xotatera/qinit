@@ -72,7 +72,7 @@ fn enums_are_bounded() {
     for (w, v) in [
         (Q_SECUREBITS, 3),
         (Q_NNP, 2),
-        (Q_NS, 0x20),
+        (Q_NS, 0x40),
         (Q_SECCOMP, 4),
         (Q_STDOUT_KIND, 2),
         (Q_STDERR_KIND, 3),
@@ -80,7 +80,7 @@ fn enums_are_bounded() {
         (Q_FLAGS, 2),
         (Q_UMASK, 0o1000),
         (Q_CAPS_HI, 0x200),
-        (Q_RESERVED_0, 1),
+        (Q_USER_MAP, 2),
         (Q_RESERVED_1, 1),
     ] {
         let db = with(&valid(), |x| x[at(w)] = v);
@@ -160,10 +160,12 @@ fn the_seccomp_list_matches_its_mode() {
 #[test]
 fn landlock_entries_are_ro_or_rw_paths() {
     let mut spec = minimal();
-    spec.landlock = "ro:/etc\0rw:/run/x";
+    spec.ns = 1;
+    spec.argv = "/etc/x";
+    spec.paths = "ro:/etc\0rw:/run/x";
     assert_eq!(decode(&build(&spec)), Ok(()));
     for bad in ["/etc", "rx:/etc", "ro:etc", "ro:"] {
-        spec.landlock = bad;
+        spec.paths = bad;
         assert_eq!(
             decode(&build(&spec)),
             Err(LaunchError::Consistency),
@@ -173,17 +175,156 @@ fn landlock_entries_are_ro_or_rw_paths() {
 }
 
 #[test]
+fn non_canonical_entries_and_cwd_are_refused() {
+    for bad in ["ro:/a/..", "rw:/tmp/", "ro://x", "rw:/dev/.", "ro:/a//b"] {
+        let mut spec = minimal();
+        spec.paths = bad;
+        assert_eq!(
+            decode(&build(&spec)),
+            Err(LaunchError::Consistency),
+            "{bad:?}"
+        );
+    }
+    for bad in ["/a/..", "/a/", "//a", "/a/./b"] {
+        let mut spec = minimal();
+        spec.cwd = bad;
+        assert_eq!(
+            decode(&build(&spec)),
+            Err(LaunchError::Consistency),
+            "{bad:?}"
+        );
+    }
+}
+
+fn with_paths(paths: &'static str, ns: u32) -> ReqSpec {
+    ReqSpec {
+        paths,
+        ns,
+        argv: "/etc/x",
+        ..minimal()
+    }
+}
+
+#[test]
+fn user_map_2_is_enum() {
+    let mut spec = minimal();
+    spec.ns = 32;
+    spec.user_map = 2;
+    assert_eq!(decode(&build(&spec)), Err(LaunchError::Enum));
+    spec.user_map = 1;
+    assert_eq!(decode(&build(&spec)), Ok(()));
+    spec.user_map = 0;
+    assert_eq!(decode(&build(&spec)), Ok(()));
+}
+
+#[test]
+fn user_map_1_without_the_bit_is_consistency() {
+    let mut spec = minimal();
+    spec.user_map = 1;
+    for ns in [0, 0b11111] {
+        spec.ns = ns;
+        assert_eq!(
+            decode(&build(&spec)),
+            Err(LaunchError::Consistency),
+            "ns {ns:#b}"
+        );
+    }
+}
+
+#[test]
+fn root_with_the_user_bit_is_consistency() {
+    let mut spec = minimal();
+    spec.user = "root";
+    spec.ns = 32;
+    assert_eq!(decode(&build(&spec)), Err(LaunchError::Consistency));
+    spec.ns = 0;
+    assert_eq!(decode(&build(&spec)), Ok(()));
+    spec.user = "roots";
+    spec.ns = 32;
+    assert_eq!(decode(&build(&spec)), Ok(()));
+}
+
+#[test]
+fn ns_bit_6_is_enum() {
+    let mut spec = minimal();
+    spec.ns = 64;
+    assert_eq!(decode(&build(&spec)), Err(LaunchError::Enum));
+    spec.ns = 63;
+    assert_eq!(decode(&build(&spec)), Ok(()));
+}
+
+#[test]
+fn an_unsorted_list_is_consistency() {
+    for bad in [
+        "ro:/etc/b\0ro:/etc/a",
+        "ro:/etc\0rw:/etc",
+        "ro:/etc/a\0ro:/etc",
+    ] {
+        assert_eq!(
+            decode(&build(&with_paths(bad, 1))),
+            Err(LaunchError::Consistency),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn a_list_without_the_mount_bit_is_consistency() {
+    assert_eq!(
+        decode(&build(&with_paths("ro:/etc", 0))),
+        Err(LaunchError::Consistency)
+    );
+    assert_eq!(decode(&build(&with_paths("ro:/etc", 1))), Ok(()));
+}
+
+#[test]
+fn a_forbidden_entry_is_consistency() {
+    for bad in ["ro:/", "rw:/dev", "ro:/tmp", "rw:/proc"] {
+        assert_eq!(
+            decode(&build(&with_paths(bad, 1))),
+            Err(LaunchError::Consistency),
+            "{bad:?}"
+        );
+    }
+    assert_eq!(
+        decode(&build(&with_paths("ro:/dev/null\0ro:/etc\0ro:/proc", 1))),
+        Ok(())
+    );
+}
+
+#[test]
+fn exec_outside_the_list_is_consistency() {
+    let mut spec = with_paths("ro:/opt", 1);
+    assert_eq!(decode(&build(&spec)), Err(LaunchError::Consistency));
+    spec.argv = "x";
+    spec.paths = "ro:/x";
+    assert_eq!(decode(&build(&spec)), Err(LaunchError::Consistency));
+    spec = with_paths("ro:/etc", 1);
+    spec.cwd = "/srv";
+    assert_eq!(decode(&build(&spec)), Err(LaunchError::Consistency));
+    spec.cwd = "/etc/work";
+    assert_eq!(decode(&build(&spec)), Ok(()));
+    spec.argv = "/etc/x\0--flag";
+    assert_eq!(decode(&build(&spec)), Ok(()));
+}
+
+#[test]
 fn too_many_list_entries_is_a_consistency_error() {
-    let landlock: &'static str = Box::leak(
+    let paths: &'static str = Box::leak(
         (0..65)
-            .map(|i| format!("ro:/p{i}"))
+            .map(|i| format!("ro:/p{i:02}"))
             .collect::<Vec<_>>()
             .join("\0")
             .into_boxed_str(),
     );
     let mut spec = minimal();
-    spec.landlock = landlock;
+    spec.paths = paths;
+    spec.ns = 1;
+    spec.argv = "/p00/x";
     assert_eq!(decode(&build(&spec)), Err(LaunchError::Consistency));
+    // Sixty-four entries are the limit.
+    spec.paths = &paths[..paths.len() - "\0ro:/p64".len()];
+    assert_eq!(decode(&build(&spec)), Ok(()));
     let env: &'static str = Box::leak(
         (0..257)
             .map(|i| format!("K{i}=v"))
@@ -218,7 +359,7 @@ fn nnp_off_with_a_sandbox_needs_sys_admin() {
     assert_eq!(decode(&build(&spec)), Ok(()));
     spec.caps = 0;
     spec.seccomp = 0;
-    spec.landlock = "ro:/etc";
+    spec.paths = "ro:/etc";
     assert_eq!(decode(&build(&spec)), Err(LaunchError::Consistency));
 }
 

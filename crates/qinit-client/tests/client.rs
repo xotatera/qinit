@@ -6,7 +6,8 @@ mod common;
 
 use common::*;
 use qinit_client::{
-    Action, Client, ClientError, ErrorCode, LaunchArgs, LaunchOutcome, Mode, Outcome, Status, Wait,
+    Action, Begun, Client, ClientError, ErrorCode, LaunchArgs, LaunchOutcome, Mode, Outcome,
+    Started, Status, Wait,
 };
 use qinit_colony::sim::{Script, Sim, advance_outcome};
 use qinit_colony::{Colony, Peer};
@@ -40,6 +41,11 @@ struct Served {
 
 impl Served {
     fn start(enable: &[&str], root: bool, instance: Script) -> Served {
+        Served::start_with(enable, root, instance, Vec::new())
+    }
+
+    /// As [`Served::start`], with the pidfds the simulated effects hand out.
+    fn start_with(enable: &[&str], root: bool, instance: Script, pidfds: Vec<OwnedFd>) -> Served {
         let dir = std::env::temp_dir().join(format!(
             "qinit-client-{}-{}",
             std::process::id(),
@@ -55,6 +61,7 @@ impl Served {
         let listener = listen_seqpacket(&c, 16).unwrap();
         let (mut colony, _) = boot(&frames(), enable, Sim::new());
         colony.effects.instance_script = instance;
+        colony.effects.pidfds.extend(pidfds);
         let mut driver = Driver::new(listener, Limits::default()).unwrap();
         if root {
             driver.identity = Some(Peer {
@@ -238,4 +245,95 @@ fn server_errors_surface_as_client_errors() {
     );
     // Reading still works on the same connection.
     assert!(matches!(c.status("db").unwrap(), Status::Node(_)));
+}
+
+#[test]
+fn begin_launch_returns_the_pidfd_and_finish_the_end() {
+    // The sim stands a pipe in for the pidfd: its read end is what the client receives.
+    let (pipe_r, pipe_w) = qinit_sys::fd::pipe(0o2_000_000).unwrap();
+    let s = Served::start_with(&[], true, instant(Some(5)), vec![pipe_r]);
+    let mut c = s.client();
+    let args = LaunchArgs::default();
+    let Begun::Started(Started { id, pidfd }) = c
+        .begin_launch("backup", &args, true, Duration::from_secs(5))
+        .unwrap()
+    else {
+        panic!("the launch failed");
+    };
+    let pidfd = pidfd.expect("a pidfd came with Launched");
+    let mut w = std::fs::File::from(pipe_w);
+    std::io::Write::write_all(&mut w, b"y").unwrap();
+    let mut one = [0u8; 1];
+    assert_eq!(std::fs::File::from(pidfd).read(&mut one).unwrap(), 1);
+    assert_eq!(
+        c.finish(id).unwrap(),
+        LaunchOutcome::Exited { id, status: 5 }
+    );
+}
+
+#[test]
+fn begin_launch_without_the_flag_has_no_pidfd_and_a_failed_launch_none() {
+    let s = Served::start(&[], true, instant(Some(0)));
+    let mut c = s.client();
+    let Begun::Started(started) = c
+        .begin_launch(
+            "backup",
+            &LaunchArgs::default(),
+            false,
+            Duration::from_secs(5),
+        )
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert!(started.pidfd.is_none());
+    c.finish(started.id).unwrap();
+    let (pipe_r, _pipe_w) = qinit_sys::fd::pipe(0o2_000_000).unwrap();
+    let failing = Script {
+        spawn_fails: true,
+        ..Script::default()
+    };
+    let s = Served::start_with(&[], true, failing, vec![pipe_r]);
+    let mut c = s.client();
+    let got = c
+        .begin_launch(
+            "backup",
+            &LaunchArgs::default(),
+            true,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert!(matches!(got, Begun::Failed { errno: 2, .. }), "{got:?}");
+}
+
+#[test]
+fn begin_run_sends_the_sealed_request_first() {
+    use qinit_client::RunArgs;
+    use qinit_launch::RequestSpec;
+    let s = Served::start(&[], true, instant(Some(0)));
+    let mut c = s.client();
+    let request = RequestSpec {
+        argv: vec!["/bin/job".into()],
+        user: "svc".into(),
+        ..RequestSpec::default()
+    };
+    // The server read the memfd and the decoder accepted it; the colony has no policy, so the
+    // policy refuses (clause 1, no policy): the request travelled intact and first.
+    let got = c.begin_run(
+        "job",
+        &request,
+        &RunArgs::default(),
+        false,
+        Duration::from_secs(5),
+    );
+    assert_eq!(got.err(), Some(ClientError::Server(ErrorCode::Denied, 1)));
+    // A stream descriptor the request does not name is refused before the policy: detail 0.
+    let (_r, w) = qinit_sys::fd::pipe(0o2_000_000).unwrap();
+    let mut c = s.client();
+    let args = RunArgs {
+        stdout: Some(w.as_fd()),
+        ..RunArgs::default()
+    };
+    let got = c.run("job", &request, &args, Duration::from_secs(5));
+    assert_eq!(got.err(), Some(ClientError::Server(ErrorCode::Denied, 0)));
 }

@@ -4,8 +4,8 @@ mod common;
 
 use common::{node, sample, svc};
 use qinit_db::{
-    Kind, Launch, Model, ReadError, Reload, Seccomp, Stop, StopMode, Target, WriteError, crc32,
-    open, write,
+    Kind, Launch, Model, ReadError, Reload, Seccomp, Stop, StopMode, Target, UserMap, WriteError,
+    crc32, open, write,
 };
 use qinit_db_core::{N_RLIMIT_BASE, N_RLIMIT_MASK, RLIMIT_COUNT, T_NODES, T_POOL, WORDS, word};
 
@@ -93,7 +93,7 @@ fn with_node(f: impl FnOnce(&mut qinit_db::Node)) -> Model {
 fn with_landlock(entries: &[&str]) -> Model {
     let mut m = Model::default();
     m.creds.push(sample().creds.remove(0));
-    m.creds[0].landlock = entries.iter().map(|s| (*s).to_owned()).collect();
+    m.creds[0].paths = entries.iter().map(|s| (*s).to_owned()).collect();
     m
 }
 
@@ -293,4 +293,90 @@ fn a_limit_the_validator_refuses_is_not_written() {
             "{r}={v}"
         );
     }
+}
+
+#[test]
+fn user_map_round_trips() {
+    for (map, ns) in [
+        (UserMap::Own, 32 | 1),
+        (UserMap::Range, 32 | 1),
+        (UserMap::Own, 1),
+    ] {
+        let mut m = sample();
+        m.creds[0].ns = ns;
+        m.creds[0].user_map = map;
+        // The sample's first credential is `sshd`, not root.
+        let bytes = write(&m).expect("writes");
+        assert_eq!(open(&bytes).expect("opens").decode(), m);
+    }
+}
+
+#[test]
+fn a_range_map_without_the_user_namespace_does_not_open() {
+    let mut m = sample();
+    m.creds[0].ns = 1;
+    m.creds[0].user_map = UserMap::Range;
+    let bytes = write(&m).expect("writes");
+    assert!(open(&bytes).is_err());
+}
+
+#[test]
+fn a_policy_round_trips() {
+    use qinit_db::{Policy, PolicyRule, Userns};
+    let mut m = sample();
+    let mut ceiling = [None; 16];
+    ceiling[7] = Some(2048);
+    ceiling[0] = Some(u64::MAX);
+    let mut own = [None; 16];
+    own[13] = Some(5);
+    own[9] = Some(1 << 40);
+    m.policy = Some(Policy {
+        allow_by_default: true,
+        ceiling,
+        rules: vec![
+            PolicyRule {
+                pattern: "sshd".into(),
+                users: Some(vec!["sshd".into(), "svc".into()]),
+                caps_max: (1 << 40) | 1,
+                require_nnp: true,
+                require_seccomp: true,
+                allow_userns: Userns::Range,
+                rlimits: own,
+            },
+            PolicyRule {
+                pattern: "~*".into(),
+                users: None,
+                caps_max: 0,
+                require_nnp: false,
+                require_seccomp: false,
+                allow_userns: Userns::Own,
+                rlimits: [None; 16],
+            },
+        ],
+    });
+    let bytes = write(&m).expect("writes");
+    assert_eq!(open(&bytes).expect("opens").decode(), m);
+    // Without a policy there is no table, and a policy with no rules still has its header.
+    m.policy = None;
+    assert_eq!(open(&write(&m).unwrap()).unwrap().decode().policy, None);
+    m.policy = Some(Policy {
+        allow_by_default: false,
+        ceiling: [None; 16],
+        rules: vec![],
+    });
+    assert_eq!(open(&write(&m).unwrap()).unwrap().decode(), m);
+}
+
+#[test]
+fn the_writer_refuses_a_policy_limit_the_validator_refuses() {
+    use qinit_db::Policy;
+    let mut m = sample();
+    let mut ceiling = [None; 16];
+    ceiling[7] = Some(0);
+    m.policy = Some(Policy {
+        allow_by_default: false,
+        ceiling,
+        rules: vec![],
+    });
+    assert_eq!(write(&m), Err(WriteError::Limit("rlimit")));
 }

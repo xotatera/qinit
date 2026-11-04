@@ -239,15 +239,24 @@ the edge scans; add it if a real graph makes this visible.
 node record carries them; writing them when the cell is created belongs to the colony daemon
 sub-project (SP7).
 
-### D32 — Bind-built empty-root mount view · `OPEN`
+### D32 — Bind-built empty-root mount view · `RESOLVED`
 
-A `mount` namespace is a private copy of the host tree with a private `/tmp`; Landlock is the
-restriction. A view built from bind mounts of only what a service needs is deferred.
+A credential or launch request with a `paths` list gets a view: an empty `tmpfs` root with a
+fixed `/dev` (`null zero full random urandom`) and a private `/tmp`, a recursive bind of every
+listed path (read-only or writable, `nosuid`, and `nodev` except below `/dev`; every mount of the view is made private, so a mount the host makes later does not appear in it), a `pivot_root` into it and a read-only
+seal, then Landlock on the same paths. The list is the old `sandbox.landlock` renamed
+`sandbox.paths`; it is sorted, canonical, refuses `/`, `/dev`, `/tmp` and a writable `/proc`, and
+needs the `mount` namespace. The plan has one proved step per phase of the view. What the view
+does not do is in D43 and D47.
 
-### D33 — User namespaces · `OPEN`
+### D33 — User namespaces · `RESOLVED`
 
-The overseer starts services as the uid they declare and offers no `user` namespace. A service
-that wants to be root in a namespace only needs a sandbox design of its own.
+A credential or request with the `user` namespace bit unshares a user namespace after the view
+is locked. `user_map` `own` maps inside 0 onto the service's user and group; `range` also maps
+inside 1.. onto its `/etc/subuid` and `/etc/subgid` ranges, written by a forked map writer that
+stays in the host namespace. A user namespace needs a user other than `root`, and a policy
+rule's `allow_userns` (0 none, 1 own, 2 own or range). The initrd and the kernel config of the VM
+suites carry `CONFIG_USER_NS` and subordinate ranges. The inside user is always 0 (D44).
 
 ### D34 — Other rlimits · `RESOLVED`
 
@@ -277,19 +286,21 @@ signal.
 A client cannot subscribe to node state changes or instance exits: it asks, or it waits on a
 request with a deadline. A watch request that streams notices on a connection is deferred.
 
-### D38 — A pidfd in the launch reply · `OPEN`
+### D38 — A pidfd in the launch reply · `RESOLVED`
 
-`Launch` answers with an instance id and then the exit status; it does not hand the caller a pidfd.
-A pidfd would take the sole control of a stop away from colony, needs `PIDFD_INFO_EXIT` (Linux
-6.15) for the exit status, names the supervisor when the service runs in a pid namespace, and is
-hard to remove once offered. It can be added as an optional field.
+`Launch` and `Run` take `flags` bit 0 `pidfd`; the `Launched` reply then carries a pidfd of the
+instance as its descriptor, and colony keeps stopping it itself. The exit status still comes from
+colony, not from the pidfd (D45 for `PIDFD_INFO_EXIT`). With a `pid` namespace the pidfd names the
+supervisor.
 
-### D39 — Launching a full request · `OPEN`
+### D39 — Launching a full request · `RESOLVED`
 
-A caller can only start a forager frame that declares a `[launch]` table, adding an argument
-tail, environment keys the frame lists and the standard descriptors it lists. A root-only
-request that carries a whole launch request (arbitrary program, identity and sandbox) is
-deferred as its own record type.
+`Run` (type 7, user id 0) takes a sealed memfd holding a whole launch request
+(`docs/launch-request.md`) and starts it as an instance named `~<name>#<id>`. Colony decodes it,
+checks it against the policy compiled into the database (`T_POLICY`, `T_POLICY_HEAD`; the proved
+`qinit_overseer_core::check_policy`, which the frames compiler's check must agree with) and runs
+it with the record's stop mode and grace. The credential policy is part of the database; a
+database with no policy refuses every `Run`. `MAX_FDS` is 4.
 
 ### D40 — Non-root authority beyond status · `OPEN`
 
@@ -301,3 +312,47 @@ project, which plugs in at that function.
 
 `qinit-client` is a Rust library. Other languages implement the protocol from
 `docs/control-protocol.md`; a C ABI over the client is deferred.
+
+### D43 — Idmapped mounts in the view · `OPEN`
+
+The view binds host paths with the host's ids, so a user namespace with a `range` map sees files
+owned by ids it does not map as `nobody`. Idmapped binds (`mount_setattr` with a user namespace
+fd) would give the service ownership of its own tree.
+
+### D44 — An inside user other than root · `OPEN`
+
+Inside a user namespace the service is always id 0. Choosing another inside id, and mapping a
+group other than the service's own, needs a request field and a policy clause.
+
+### D45 — `PIDFD_INFO_EXIT` for the pidfd reply · `OPEN`
+
+When the kernel floor is Linux 6.15 a client holding the pidfd can read the exit status from it
+without asking colony. Until then the pidfd only signals and polls.
+
+### D46 — Readiness for instances · `OPEN`
+
+`Run` refuses a request with a readiness pipe, and a forager launch has none: an instance is
+running when its `execve` succeeds. Waiting for a readiness signal needs an instance-level wait
+state.
+
+### D47 — Host mount propagation into views · `OPEN`
+
+Every mount of a view is private, so a mount the host makes after the view was built (a removable
+drive under a bound path) is not seen inside. Offering a listed path whose later mounts do follow
+the host (a `slave` entry) is deferred; it belongs to queen (SP8).
+
+### D48 — A listed path below a directory the service can write · `OPEN`
+
+Host paths and view targets are resolved with symlinks followed, as root, before the pivot. A
+service that can write below a listed `rw:` directory can plant a relative symlink in it
+(`s -> ../../etc`), so a listed child path (`ro:/var/lib/app/s/data`) resolves to a different host
+file than the one the view puts it under, and the next start binds that file into the view. The
+last component stays fixed and file permissions still apply. Until paths are resolved without
+following symlinks (`openat2` with `RESOLVE_NO_SYMLINKS` and `open_tree`), do not list a child path
+below a directory the service can write.
+
+### D49 — The view is built on the host root · `OPEN`
+
+The view's root is `/.qinit-view` on the host's root filesystem, so a launch with a path list
+needs a writable root directory (`EROFS` at `view-root` otherwise), and an empty `/.qinit-view`
+stays behind. Building the view on a detached `tmpfs` (`fsopen`, `fsmount`) removes both.

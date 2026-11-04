@@ -28,7 +28,11 @@ fn word_reads_the_last_whole_word() {
 fn the_magic_spells_qdb1() {
     assert_eq!(&MAGIC.to_le_bytes(), b"QDB1");
     assert_eq!(VERSION, 1);
-    assert_eq!(HEADER_WORDS, 20);
+}
+
+#[test]
+fn header_words_are_24() {
+    assert_eq!(HEADER_WORDS, 24);
 }
 
 #[test]
@@ -42,15 +46,18 @@ fn the_record_sizes_match_the_word_indices() {
     assert_eq!(N_RLIMIT_BASE + 2 * RLIMIT_COUNT, WORDS[T_NODES]);
     assert_eq!(G_EDGE_COUNT + 1, WORDS[T_GROUPS]);
     assert_eq!(E_FLAGS + 1, WORDS[T_EDGES]);
-    assert_eq!(C_SECCOMP_LEN + 1, WORDS[T_CREDS]);
+    assert_eq!(C_USER_MAP + 1, WORDS[T_CREDS]);
     assert_eq!(R_B + 1, WORDS[T_ROUTES]);
     assert_eq!(WORDS[T_ENABLED], 1);
     assert_eq!(WORDS[T_PRESYSLOG], 1);
+    assert_eq!(P_RLIMIT_BASE + 2 * RLIMIT_COUNT, WORDS[T_POLICY]);
+    assert_eq!(PH_RLIMIT_BASE + 2 * RLIMIT_COUNT, WORDS[T_POLICY_HEAD]);
+    assert_eq!((WORDS[T_POLICY], WORDS[T_POLICY_HEAD]), (43, 34));
 }
 
 #[test]
 fn the_tables_fill_the_header() {
-    assert_eq!(4 + 2 * 8, HEADER_WORDS);
+    assert_eq!(4 + 2 * 10, HEADER_WORDS);
     assert_eq!(
         [
             T_NODES,
@@ -60,8 +67,10 @@ fn the_tables_fill_the_header() {
             T_ROUTES,
             T_ENABLED,
             T_PRESYSLOG,
+            T_POLICY,
+            T_POLICY_HEAD,
             T_POOL
         ],
-        [0, 1, 2, 3, 4, 5, 6, 7]
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
     );
 }

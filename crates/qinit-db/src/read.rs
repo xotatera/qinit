@@ -4,13 +4,17 @@
 
 use crate::crc::file_crc;
 use crate::model::{
-    Cred, Edge, Group, GroupKind, Kind, Launch, Mode, Model, Node, Ready, Reload, Restart,
-    RestartOn, RestartPolicy, Route, Seccomp, Securebits, Stop, StopMode, Target,
+    Cred, Edge, Group, GroupKind, Kind, Launch, Mode, Model, Node, Policy, PolicyRule, Ready,
+    Reload, Restart, RestartOn, RestartPolicy, Route, Seccomp, Securebits, Stop, StopMode, Target,
+    UserMap, Userns,
 };
 use qinit_db_core::{
-    DbError, H_CRC32, HEADER_WORDS, MAX_EDGES, MAX_NODES, N_RLIMIT_BASE, NONE, SECCOMP_DEFAULT,
-    SECCOMP_DENY, SECCOMP_NONE, T_CREDS, T_EDGES, T_ENABLED, T_GROUPS, T_NODES, T_POOL,
-    T_PRESYSLOG, T_ROUTES, WORDS, validate, word,
+    DbError, H_CRC32, HEADER_WORDS, MAX_EDGES, MAX_NODES, N_RLIMIT_BASE, NONE, P_ALLOW_USERNS,
+    P_CAPS_HI, P_CAPS_LO, P_PATTERN_LEN, P_PATTERN_OFF, P_REQUIRE_NNP, P_REQUIRE_SECCOMP,
+    P_RLIMIT_BASE, P_RLIMIT_MASK, P_USERS_ANY, P_USERS_LEN, P_USERS_OFF, PH_ALLOW, PH_RLIMIT_BASE,
+    PH_RLIMIT_MASK, RLIMIT_COUNT, SECCOMP_DEFAULT, SECCOMP_DENY, SECCOMP_NONE, T_CREDS, T_EDGES,
+    T_ENABLED, T_GROUPS, T_NODES, T_POLICY, T_POLICY_HEAD, T_POOL, T_PRESYSLOG, T_ROUTES, WORDS,
+    validate, word,
 };
 use qinit_graph_core::GEdge;
 
@@ -104,6 +108,7 @@ impl Reader<'_> {
             presyslog: (0..self.count(T_PRESYSLOG))
                 .map(|k| self.field(T_PRESYSLOG, k, 0))
                 .collect(),
+            policy: (self.count(T_POLICY_HEAD) == 1).then(|| self.policy()),
         }
     }
 
@@ -241,7 +246,47 @@ impl Reader<'_> {
                 SECCOMP_DENY => Seccomp::Deny(self.syscalls(f(10), f(11))),
                 _ => Seccomp::Allow(self.syscalls(f(10), f(11))),
             },
-            landlock: self.list(f(8), f(9)),
+            paths: self.list(f(8), f(9)),
+            user_map: if f(12) == 1 {
+                UserMap::Range
+            } else {
+                UserMap::Own
+            },
+        }
+    }
+
+    fn limits(mask: u32, pairs: impl Fn(usize) -> u64) -> [Option<u64>; RLIMIT_COUNT] {
+        std::array::from_fn(|r| (mask >> r & 1 != 0).then(|| pairs(r)))
+    }
+
+    fn policy(&self) -> Policy {
+        let h = |w| self.field(T_POLICY_HEAD, 0, w);
+        Policy {
+            allow_by_default: h(PH_ALLOW) == 1,
+            ceiling: Self::limits(h(PH_RLIMIT_MASK), |r| {
+                u64::from(h(PH_RLIMIT_BASE + 2 * r))
+                    | u64::from(h(PH_RLIMIT_BASE + 2 * r + 1)) << 32
+            }),
+            rules: (0..self.count(T_POLICY)).map(|p| self.rule(p)).collect(),
+        }
+    }
+
+    fn rule(&self, p: usize) -> PolicyRule {
+        let f = |w| self.field(T_POLICY, p, w);
+        PolicyRule {
+            pattern: self.string(f(P_PATTERN_OFF), f(P_PATTERN_LEN)).to_owned(),
+            users: (f(P_USERS_ANY) == 0).then(|| self.list(f(P_USERS_OFF), f(P_USERS_LEN))),
+            caps_max: u64::from(f(P_CAPS_LO)) | u64::from(f(P_CAPS_HI)) << 32,
+            require_nnp: f(P_REQUIRE_NNP) == 1,
+            require_seccomp: f(P_REQUIRE_SECCOMP) == 1,
+            allow_userns: match f(P_ALLOW_USERNS) {
+                0 => Userns::No,
+                1 => Userns::Own,
+                _ => Userns::Range,
+            },
+            rlimits: Self::limits(f(P_RLIMIT_MASK), |r| {
+                u64::from(f(P_RLIMIT_BASE + 2 * r)) | u64::from(f(P_RLIMIT_BASE + 2 * r + 1)) << 32
+            }),
         }
     }
 

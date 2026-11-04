@@ -10,7 +10,7 @@ use qinit_colony_core::{
 };
 use qinit_db::{
     Cred, Edge, Group, GroupKind, Kind, Mode, Model, Node, Ready, Restart, RestartOn,
-    RestartPolicy, Seccomp, Securebits, Stop, StopMode, Target, open, write,
+    RestartPolicy, Seccomp, Securebits, Stop, StopMode, Target, UserMap, open, write,
 };
 
 /// The one credential every worker and forager runs under: user `svc`, nothing else.
@@ -22,7 +22,8 @@ pub fn svc() -> Cred {
         nnp: true,
         ns: 0,
         seccomp: Seccomp::None,
-        landlock: Vec::new(),
+        paths: Vec::new(),
+        user_map: UserMap::Own,
     }
 }
 
@@ -138,6 +139,7 @@ pub fn model(nodes: Vec<Node>, enabled: &[u32]) -> Model {
         routes: Vec::new(),
         enabled: enabled.to_vec(),
         presyslog: Vec::new(),
+        policy: None,
     }
 }
 

@@ -39,6 +39,14 @@ fn unknown_user() -> Result<(), String> {
     )
 }
 
+fn missing_subuid_entry() -> Result<(), String> {
+    // `nobody` has a passwd line but no `/etc/subuid` line.
+    let mut request = spec("nobody", "exit-0", &[]);
+    request.ns = 1 << 5;
+    request.user_map = qinit_overseer::request::UserMap::Range;
+    at("f9", request, "identity", libc::ENOENT)
+}
+
 fn root_alias() -> Result<(), String> {
     at("f2", spec("toor", "exit-0", &[]), "identity", libc::EPERM)
 }
@@ -62,10 +70,11 @@ fn e_dir(path: &str) -> Result<(), String> {
         .map_err(|x| x.to_string())
 }
 
-fn missing_landlock_path() -> Result<(), String> {
+fn missing_listed_path() -> Result<(), String> {
     let mut request = spec("svc", "exit-0", &[]);
-    request.landlock = vec!["ro:/nonexistent".into()];
-    at("f5", request, "landlock-rule", libc::ENOENT)
+    request.ns = 1;
+    request.paths = vec!["ro:/init".into(), "ro:/nonexistent".into()];
+    at("f5", request, "view-entry", libc::ENOENT)
 }
 
 fn unpassed_fd() -> Result<(), String> {
@@ -79,7 +88,8 @@ fn nnp_off_without_sys_admin() -> Result<(), String> {
         argv: vec!["/init".into()],
         user: "root".into(),
         nnp: false,
-        landlock: vec!["ro:/etc".into()],
+        ns: 1,
+        paths: vec!["ro:/init".into()],
         ..RequestSpec::default()
     };
     let o = run_to_end("f7", request, false)?;
@@ -98,7 +108,8 @@ fn tiny_nofile() -> Result<(), String> {
     // With three descriptors allowed, creating the Landlock ruleset (a new descriptor) fails.
     let mut request = spec("svc", "exit-0", &[]);
     request.rlimits[7] = Some(3);
-    request.landlock = vec!["ro:/etc".into()];
+    request.ns = 1;
+    request.paths = vec!["ro:/init".into()];
     let (got, step) = failed("f8", request)?;
     if step != "rlimit-nofile"
         && step != "decode"
@@ -122,12 +133,16 @@ fn main() {
             ("uid_zero_under_another_name_fails_at_identity", root_alias),
             ("a_missing_executable_fails_at_exec", missing_executable),
             (
+                "a_missing_subuid_entry_fails_at_identity",
+                missing_subuid_entry,
+            ),
+            (
                 "a_cwd_the_user_cannot_enter_fails_at_chdir",
                 cwd_not_enterable,
             ),
             (
-                "a_missing_landlock_path_fails_the_launch",
-                missing_landlock_path,
+                "a_missing_listed_path_fails_at_its_view_step",
+                missing_listed_path,
             ),
             ("an_unpassed_routed_fd_fails_the_launch", unpassed_fd),
             ("a_tiny_nofile_fails_after_its_step", tiny_nofile),

@@ -133,7 +133,7 @@ fn check_refs(b: &[u8]) -> (r: Result<(), LaunchError>)
     pool_ref_ok(b, rword(b, Q_CWD_OFF), rword(b, Q_CWD_LEN))?;
     pool_ref_ok(b, rword(b, Q_USER_OFF), rword(b, Q_USER_LEN))?;
     list_ref_ok(b, rword(b, Q_SECCOMP_OFF), rword(b, Q_SECCOMP_LEN))?;
-    list_ref_ok(b, rword(b, Q_LANDLOCK_OFF), rword(b, Q_LANDLOCK_LEN))?;
+    list_ref_ok(b, rword(b, Q_PATHS_OFF), rword(b, Q_PATHS_LEN))?;
     if rword(b, Q_STDIN_KIND) == STREAM_PATH {
         pool_ref_ok(b, rword(b, Q_STDIN_A), rword(b, Q_STDIN_B))?;
     }
@@ -154,7 +154,7 @@ fn check_enums(b: &[u8]) -> (r: Result<(), LaunchError>)
 {
     let seccomp = rword(b, Q_SECCOMP);
     if rword(b, Q_UMASK) > MAX_UMASK || rword(b, Q_CAPS_HI) > 0x1ff || rword(b, Q_SECUREBITS) > 2
-        || rword(b, Q_NNP) > 1 || rword(b, Q_NS) > 0x1f || seccomp > 3 || ((seccomp <= 1) != (rword(
+        || rword(b, Q_NNP) > 1 || rword(b, Q_NS) > 0x3f || seccomp > 3 || ((seccomp <= 1) != (rword(
         b,
         Q_SECCOMP_LEN,
     ) == 0)) {
@@ -164,8 +164,10 @@ fn check_enums(b: &[u8]) -> (r: Result<(), LaunchError>)
         b,
         Q_STDERR_KIND,
     ) > STREAM_SAME || rword(b, Q_READY_KIND) > READY_PIPE || rword(b, Q_FLAGS)
-        > FLAG_DIE_WITH_PARENT || rword(b, Q_RESERVED_0) != 0 || rword(b, Q_RESERVED_1) != 0
-        || rword(b, Q_RLIMIT_MASK) & !RLIMIT_MASK_ALLOWED != 0 {
+        > FLAG_DIE_WITH_PARENT || rword(b, Q_USER_MAP) > 1 || rword(b, Q_RESERVED_1) != 0 || rword(
+        b,
+        Q_RLIMIT_MASK,
+    ) & !RLIMIT_MASK_ALLOWED != 0 {
         return Err(LaunchError::Enum);
     }
     Ok(())
@@ -294,13 +296,12 @@ fn check_content(b: &[u8]) -> (r: Result<(), LaunchError>)
     if user_len == 0 || user_len as usize > MAX_NAME_LEN {
         return Err(LaunchError::Consistency);
     }
-    let cwd_off = rword(b, Q_CWD_OFF);
-    if rword(b, Q_CWD_LEN) == 0 {
+    let cwd = field(b, rword(b, Q_CWD_OFF), rword(b, Q_CWD_LEN));
+    if !canonical_exec(cwd, 0, cwd.len()) {
         return Err(LaunchError::Consistency);
     }
-    let pool_off = hword(b, H_POOL_OFF) as usize;
-    if b[pool_off + cwd_off as usize] != 0x2f {
-        return Err(LaunchError::Consistency);
+    proof {
+        assert(cwd@.subrange(0, cwd@.len() as int) =~= cwd@);
     }
     let env = field(b, rword(b, Q_ENV_OFF), rword(b, Q_ENV_LEN));
     if !elements_ok(env, 0) || count_elements(env) > MAX_ENV_ENTRIES {
@@ -310,11 +311,43 @@ fn check_content(b: &[u8]) -> (r: Result<(), LaunchError>)
     if !elements_ok(seccomp, 1) || count_elements(seccomp) > MAX_SECCOMP_LIST {
         return Err(LaunchError::Consistency);
     }
-    let landlock = field(b, rword(b, Q_LANDLOCK_OFF), rword(b, Q_LANDLOCK_LEN));
-    if !elements_ok(landlock, 2) || count_elements(landlock) > MAX_LANDLOCK_ENTRIES {
+    let paths = field(b, rword(b, Q_PATHS_OFF), rword(b, Q_PATHS_LEN));
+    if !elements_ok(paths, 2) || count_elements(paths) > MAX_PATH_ENTRIES {
         return Err(LaunchError::Consistency);
     }
-    if rword(b, Q_NNP) == 0 && (rword(b, Q_LANDLOCK_LEN) > 0 || rword(b, Q_SECCOMP) != 0) && rword(
+    let ns = rword(b, Q_NS);
+    if rword(b, Q_USER_MAP) == 1 && ns & 32 == 0 {
+        return Err(LaunchError::Consistency);
+    }
+    let user = field(b, rword(b, Q_USER_OFF), rword(b, Q_USER_LEN));
+    if ns & 32 != 0 && is_root_exec(user) {
+        return Err(LaunchError::Consistency);
+    }
+    if !paths_shape_exec(paths, ns) {
+        return Err(LaunchError::Consistency);
+    }
+    let argv = field(b, rword(b, Q_ARGV_OFF), rword(b, Q_ARGV_LEN));
+    let m = first_elem_len(argv);
+    let argv0 = vstd::slice::slice_subrange(argv, 0, m);
+    if !paths_cover_exec(paths, argv0, cwd) {
+        return Err(LaunchError::Consistency);
+    }
+    proof {
+        assert forall|e: Seq<u8>| is_first(argv@, e) implies paths_cover_ok(paths@, e, cwd@) by {
+            if is_first(argv@, e) {
+                if e.len() < m {
+                    assert(argv@[e.len() as int] != 0);
+                }
+                if e.len() > m {
+                    assert(e[m as int] != 0);
+                    assert(e[m as int] == argv@[m as int]);
+                }
+                assert(e.len() == m);
+                assert(e =~= argv0@);
+            }
+        }
+    }
+    if rword(b, Q_NNP) == 0 && (rword(b, Q_PATHS_LEN) > 0 || rword(b, Q_SECCOMP) != 0) && rword(
         b,
         Q_CAPS_LO,
     ) & CAP_SYS_ADMIN_MASK == 0 {

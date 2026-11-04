@@ -10,6 +10,7 @@
 #[cfg(not(target_arch = "x86_64"))]
 compile_error!("qinit-ipc's socket structures are written for x86_64");
 
+pub mod memfd;
 mod msg;
 mod peer;
 mod sock;

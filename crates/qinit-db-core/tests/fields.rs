@@ -355,13 +355,14 @@ fn the_cascade_flag_is_accepted_and_bit_2_is_not() {
 }
 
 #[test]
-fn a_node_record_has_68_words_and_a_credential_12() {
+fn a_node_record_has_68_words_and_a_credential_13() {
     assert_eq!(WORDS[T_NODES], 68);
     assert_eq!(N_RLIMIT_BASE, N_LAUNCH_FDS + 1);
     assert_eq!(N_RLIMIT_BASE + 2 * RLIMIT_COUNT, WORDS[T_NODES]);
     assert_eq!(N_RELOAD, N_RLIMIT_MASK + 1);
-    assert_eq!(WORDS[T_CREDS], 12);
-    assert_eq!(C_SECCOMP_LEN + 1, WORDS[T_CREDS]);
+    assert_eq!(WORDS[T_CREDS], 13);
+    assert_eq!(C_USER_MAP, 12);
+    assert_eq!(C_USER_MAP + 1, WORDS[T_CREDS]);
 }
 
 #[test]
@@ -430,6 +431,174 @@ fn a_relative_or_empty_cwd_is_a_consistency_error() {
             "{bad:?}"
         );
     }
+}
+
+fn user_ns(user_map: u32, ns: u32, user: &'static str) -> DbSpec {
+    let mut spec = minimal_spec();
+    spec.creds[0].user = user;
+    spec.creds[0].ns = ns;
+    spec.creds[0].user_map = user_map;
+    spec
+}
+
+fn cred_enum() -> Result<(), DbError> {
+    Err(DbError::Enum {
+        table: tid(T_CREDS),
+        record: 0,
+    })
+}
+
+#[test]
+fn user_map_2_is_enum() {
+    assert_eq!(check(&build(&user_ns(2, 32, "svc"))), cred_enum());
+    assert_eq!(check(&build(&user_ns(1, 32, "svc"))), Ok(()));
+    assert_eq!(check(&build(&user_ns(0, 32, "svc"))), Ok(()));
+}
+
+#[test]
+fn user_map_1_without_the_bit_is_consistency() {
+    assert_eq!(check(&build(&user_ns(1, 0, "svc"))), cred_consistency());
+    assert_eq!(
+        check(&build(&user_ns(1, 0b11111, "svc"))),
+        cred_consistency()
+    );
+}
+
+#[test]
+fn root_with_the_user_bit_is_consistency() {
+    assert_eq!(check(&build(&user_ns(0, 32, "root"))), cred_consistency());
+    assert_eq!(check(&build(&user_ns(0, 0, "root"))), Ok(()));
+    assert_eq!(check(&build(&user_ns(0, 32, "roots"))), Ok(()));
+}
+
+#[test]
+fn ns_bit_6_is_enum() {
+    assert_eq!(check(&build(&user_ns(0, 64, "svc"))), cred_enum());
+    assert_eq!(check(&build(&user_ns(0, 63, "svc"))), Ok(()));
+}
+
+#[test]
+fn a_path_entry_without_its_prefix_is_consistency() {
+    for bad in ["xx:/a", "/a", "ro:", "ro:a"] {
+        let mut spec = minimal_spec();
+        spec.creds[0].paths = bad;
+        assert_eq!(
+            check(&build(&spec)),
+            Err(DbError::Consistency {
+                table: tid(T_CREDS),
+                record: 0
+            }),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn a_non_canonical_path_entry_is_consistency() {
+    for bad in [
+        "ro:/a/..",
+        "rw:/tmp/",
+        "ro://x",
+        "rw:/dev/.",
+        "ro:/a//b",
+        "ro:/a/./b",
+        "ro:/a/../b",
+    ] {
+        let mut spec = minimal_spec();
+        spec.creds[0].paths = bad;
+        assert_eq!(
+            check(&build(&spec)),
+            Err(DbError::Consistency {
+                table: tid(T_CREDS),
+                record: 0
+            }),
+            "{bad:?}"
+        );
+    }
+    let spec = with_paths("ro:/a/b\0ro:/bin\0rw:/c/.d/..e/f.", 1);
+    assert_eq!(check(&build(&spec)), Ok(()));
+}
+
+fn with_paths(paths: &'static str, ns: u32) -> DbSpec {
+    let mut spec = minimal_spec();
+    spec.creds[0].paths = paths;
+    spec.creds[0].ns = ns;
+    spec
+}
+
+fn cred_consistency() -> Result<(), DbError> {
+    Err(DbError::Consistency {
+        table: tid(T_CREDS),
+        record: 0,
+    })
+}
+
+#[test]
+fn an_unsorted_list_is_consistency() {
+    for bad in [
+        "ro:/b\0ro:/a",
+        "ro:/a\0rw:/a",
+        "ro:/a/b\0ro:/a",
+        "ro:/b\0ro:/b",
+    ] {
+        assert_eq!(
+            check(&build(&with_paths(bad, 1))),
+            cred_consistency(),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn a_list_without_the_mount_bit_is_consistency() {
+    assert_eq!(check(&build(&with_paths("ro:/bin", 0))), cred_consistency());
+    assert_eq!(check(&build(&with_paths("ro:/bin", 1))), Ok(()));
+}
+
+#[test]
+fn a_forbidden_entry_is_consistency() {
+    for bad in [
+        "ro:/",
+        "rw:/dev",
+        "ro:/tmp",
+        "rw:/proc",
+        "ro:/bin\0rw:/proc",
+    ] {
+        assert_eq!(
+            check(&build(&with_paths(bad, 1))),
+            cred_consistency(),
+            "{bad:?}"
+        );
+    }
+    assert_eq!(
+        check(&build(&with_paths("ro:/bin\0ro:/dev/null\0ro:/proc", 1))),
+        Ok(())
+    );
+}
+
+#[test]
+fn exec_outside_the_list_is_consistency() {
+    let mut spec = with_paths("ro:/opt", 1);
+    // The minimal node runs `/bin/true`.
+    assert_eq!(check(&build(&spec)), consistency());
+    spec = with_paths("ro:/bin", 1);
+    assert_eq!(check(&build(&spec)), Ok(()));
+    spec.nodes[0].cwd = "/srv";
+    assert_eq!(check(&build(&spec)), consistency());
+    spec.creds[0].paths = "ro:/bin\0ro:/srv";
+    assert_eq!(check(&build(&spec)), Ok(()));
+}
+
+#[test]
+fn a_non_canonical_cwd_is_consistency() {
+    for bad in ["/a/..", "/a/", "//a", "/a/./b", "/a//b", "/.."] {
+        let mut spec = minimal_spec();
+        spec.nodes[0].cwd = bad;
+        assert_eq!(check(&build(&spec)), consistency(), "{bad:?}");
+    }
+    let mut spec = minimal_spec();
+    spec.nodes[0].cwd = "/a/.b/..c";
+    assert_eq!(check(&build(&spec)), Ok(()));
 }
 
 #[test]

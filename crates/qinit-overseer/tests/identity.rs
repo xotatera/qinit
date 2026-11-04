@@ -86,3 +86,101 @@ fn a_non_root_user_in_group_zero_is_refused() {
     // root itself may be in group zero
     assert!(parse("root", PASSWD, &member).is_ok());
 }
+
+mod subids {
+    use qinit_overseer::identity::{IdentityError, parse_subids};
+
+    const TAKEN: &[u32] = &[0, 1000, 1001, 65534];
+
+    #[test]
+    fn subids_parse_one_line() {
+        assert_eq!(
+            parse_subids("svc", "svc:100000:65536\nother:200000:65536\n", TAKEN),
+            Ok((100_000, 65_536))
+        );
+    }
+
+    #[test]
+    fn a_missing_subid_line_is_refused() {
+        assert_eq!(
+            parse_subids("svc", "other:200000:65536\n", TAKEN),
+            Err(IdentityError::SubidMissing)
+        );
+        assert_eq!(
+            parse_subids("svc", "", TAKEN),
+            Err(IdentityError::SubidMissing)
+        );
+    }
+
+    #[test]
+    fn a_duplicate_line_is_ambiguous() {
+        assert_eq!(
+            parse_subids("svc", "svc:100000:10\nsvc:200000:10\n", TAKEN),
+            Err(IdentityError::SubidAmbiguous)
+        );
+    }
+
+    #[test]
+    fn a_numeric_name_is_malformed() {
+        assert_eq!(
+            parse_subids("svc", "svc:100000:10\n1000:200000:10\n", TAKEN),
+            Err(IdentityError::SubidMalformed(2))
+        );
+    }
+
+    #[test]
+    fn a_leading_zero_or_sign_is_malformed() {
+        for bad in [
+            "svc:0100000:65536",
+            "svc:+100000:65536",
+            "svc:100000:065536",
+            "svc:-1:5",
+            "svc:100000:",
+            "svc::5",
+            "svc:100000:5:",
+            "svc:100000",
+            "svc:0:5",
+            "svc:5:0",
+            "svc:1 :5",
+        ] {
+            assert_eq!(
+                parse_subids("svc", bad, TAKEN),
+                Err(IdentityError::SubidMalformed(1)),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn first_plus_count_overflow_is_malformed() {
+        assert_eq!(
+            parse_subids("svc", "svc:4294967000:1000", TAKEN),
+            Err(IdentityError::SubidMalformed(1))
+        );
+        assert_eq!(
+            parse_subids("svc", "svc:4294967295:1", TAKEN),
+            Err(IdentityError::SubidMalformed(1))
+        );
+        assert_eq!(
+            parse_subids("svc", "svc:4294967294:1", TAKEN),
+            Ok((4_294_967_294, 1))
+        );
+        assert_eq!(
+            parse_subids("svc", "svc:1:99999999999", TAKEN),
+            Err(IdentityError::SubidMalformed(1))
+        );
+    }
+
+    #[test]
+    fn a_range_over_a_passwd_uid_overlaps() {
+        assert_eq!(
+            parse_subids("svc", "svc:900:200", TAKEN),
+            Err(IdentityError::SubidOverlap)
+        );
+        assert_eq!(
+            parse_subids("svc", "svc:1001:1", TAKEN),
+            Err(IdentityError::SubidOverlap)
+        );
+        assert_eq!(parse_subids("svc", "svc:1002:100", TAKEN), Ok((1002, 100)));
+    }
+}

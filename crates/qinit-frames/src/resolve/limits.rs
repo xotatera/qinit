@@ -42,7 +42,7 @@ fn pool_bytes(m: &Model) -> usize {
     }
     for c in &m.creds {
         seen.insert(c.user.clone());
-        seen.insert(c.landlock.join("\0"));
+        seen.insert(c.paths.join("\0"));
         if let Seccomp::Deny(l) | Seccomp::Allow(l) = &c.seccomp {
             let text: Vec<String> = l.iter().map(u32::to_string).collect();
             seen.insert(text.join("\0"));
@@ -133,21 +133,21 @@ mod tests {
     #[test]
     fn the_estimate_equals_the_written_pool_with_shared_strings() {
         // Shared strings: equal exec lists, one path used by a socket, a ready path and an
-        // edge, and a repeated landlock list.
+        // edge, and a repeated path list.
         let src = r#"
             [worker.a]
             exec = ["/bin/a"]
             ready = { socket = "/run/s" }
             output = "/var/log/shared"
             credentials = { uid = "u" }
-            sandbox = { landlock = ["ro:/etc"] }
+            sandbox = { paths = ["ro:/bin", "ro:/etc"] }
             [worker.b]
             exec = ["/bin/a"]
             ready = { path = "/run/s" }
             output = "/var/log/shared"
             errors = "/var/log/shared"
             credentials = { uid = "u" }
-            sandbox = { landlock = ["ro:/etc"] }
+            sandbox = { paths = ["ro:/bin", "ro:/etc"] }
             deps = [{ group = "require_all", edges = [{ path = "/run/s" }] }]
             [worker.c]
             exec = ["/x"]

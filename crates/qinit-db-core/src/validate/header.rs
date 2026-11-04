@@ -13,7 +13,7 @@ verus! {
 /// Words per record of table `t`.
 pub(crate) fn words_of(t: usize) -> (w: usize)
     requires
-        t < 7,
+        t < T_POOL,
     ensures
         w as int == spec_words(t as int),
         w == WORDS[t as int],
@@ -25,9 +25,13 @@ pub(crate) fn words_of(t: usize) -> (w: usize)
     } else if t == 2 {
         7
     } else if t == 3 {
-        12
+        13
     } else if t == 4 {
         3
+    } else if t == T_POLICY {
+        43
+    } else if t == T_POLICY_HEAD {
+        34
     } else {
         1
     }
@@ -36,7 +40,7 @@ pub(crate) fn words_of(t: usize) -> (w: usize)
 /// Record limit of table `t`.
 fn limit_of(t: usize) -> (l: u64)
     requires
-        t < 8,
+        t <= T_POOL,
     ensures
         l as int == spec_limit(t as int),
 {
@@ -52,6 +56,10 @@ fn limit_of(t: usize) -> (l: u64)
         MAX_ROUTES as u64
     } else if t == 5 || t == 6 {
         MAX_NODES as u64
+    } else if t == T_POLICY {
+        MAX_POLICY_RULES as u64
+    } else if t == T_POLICY_HEAD {
+        1
     } else {
         MAX_POOL as u64
     }
@@ -72,7 +80,7 @@ pub(crate) fn header_word(b: &[u8], i: usize) -> (v: u32)
 pub proof fn lemma_widx(b: Seq<u8>, t: int, r: int, w: int)
     requires
         v1(b),
-        0 <= t < 7,
+        0 <= t < T_POOL,
         0 <= r < tcnt(b, t),
         0 <= w < spec_words(t),
     ensures
@@ -101,7 +109,7 @@ pub proof fn lemma_widx(b: Seq<u8>, t: int, r: int, w: int)
 pub(crate) fn field(b: &[u8], t: usize, r: usize, w: usize) -> (v: u32)
     requires
         v1(b@),
-        t < 7,
+        t < T_POOL,
         r < tcnt(b@, t as int),
         w < spec_words(t as int),
     ensures
@@ -135,16 +143,16 @@ pub(crate) fn check_header(b: &[u8]) -> (r: Result<(), DbError>)
 /// Bytes a table of `cnt` records of table `t` occupies.
 fn table_bytes(t: usize, cnt: u64) -> (n: u64)
     requires
-        t < 8,
+        t <= T_POOL,
         cnt <= spec_limit(t as int),
     ensures
-        n == (if t == 7 {
+        n == (if t == T_POOL {
             cnt as int
         } else {
             cnt * spec_words(t as int) * 4
         }),
 {
-    if t == 7 {
+    if t == T_POOL {
         cnt
     } else {
         cnt * (words_of(t) as u64) * 4
@@ -163,15 +171,15 @@ pub(crate) fn check_tables(b: &[u8]) -> (r: Result<(), DbError>)
     let len = b.len() as u64;
     let mut end: u64 = (4 * HEADER_WORDS) as u64;
     let mut t: usize = 0;
-    while t < 8
+    while t <= T_POOL
         invariant
             header_ok(b@),
             len == b@.len(),
-            t <= 8,
+            t <= T_POOL + 1,
             end <= len,
             end as int == tmin(b@, t as int),
             forall|u: int| 0 <= u < t ==> #[trigger] table_ok(b@, u),
-        decreases 8 - t,
+        decreases T_POOL + 1 - t,
     {
         let off = header_word(b, 4 + 2 * t) as u64;
         let cnt = header_word(b, 5 + 2 * t) as u64;
@@ -179,7 +187,7 @@ pub(crate) fn check_tables(b: &[u8]) -> (r: Result<(), DbError>)
             return Err(DbError::Count(tid(t)));
         }
         let size = table_bytes(t, cnt);
-        if off > len || size > len - off || (t < 7 && off % 4 != 0) {
+        if off > len || size > len - off || (t < T_POOL && off % 4 != 0) {
             return Err(DbError::Table(tid(t)));
         }
         if off < end {

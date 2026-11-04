@@ -15,6 +15,7 @@ pub mod cgroup;
 pub mod cred;
 pub mod event;
 pub mod fd;
+pub mod fs;
 pub mod landlock;
 pub mod limits;
 pub mod memfd;

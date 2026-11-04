@@ -53,6 +53,7 @@ fn every_request_round_trips() {
             env_add: StrList::new(b"TARGET=/data\0V="),
             fd_roles: 7,
             wait_ms: 1,
+            flags: 0,
         }),
         Msg::Req(Req::Launch {
             frame: "backup",
@@ -60,6 +61,7 @@ fn every_request_round_trips() {
             env_add: StrList::new(b""),
             fd_roles: 0,
             wait_ms: 30_000,
+            flags: 0,
         }),
         Msg::Req(Req::Refresh {
             settled: true,
@@ -69,6 +71,16 @@ fn every_request_round_trips() {
             mode: Mode::Halt,
             settled: false,
             wait_ms: 0,
+        }),
+        Msg::Req(Req::Run {
+            name: "job",
+            fd_roles: 6,
+            flags: 1,
+            memory_max_kib: 1024,
+            pids_max: 8,
+            stop_mode: 1,
+            stop_grace_ms: 100,
+            wait_ms: 60_000,
         }),
     ];
     for m in &msgs {
@@ -166,6 +178,7 @@ fn lists_of_0_1_and_64_elements_round_trip() {
             env_add: StrList::new(env.as_bytes()),
             fd_roles: 0,
             wait_ms: 1000,
+            flags: 0,
         }));
     }
 }
@@ -200,6 +213,7 @@ fn an_overlong_name_is_invalid() {
         env_add: StrList::new(b""),
         fd_roles: 0,
         wait_ms: 1000,
+        flags: 0,
     });
     assert_eq!(encoded(&m, 0), Err(EncodeError::Invalid));
     let empty = Msg::Req(Req::Status { target: "" });
@@ -226,6 +240,7 @@ fn an_invalid_value_is_refused_not_encoded() {
         env_add: StrList::new(b""),
         fd_roles: 8,
         wait_ms: 1000,
+        flags: 0,
     });
     assert_eq!(encoded(&bad_roles, 0), Err(EncodeError::Invalid));
     let bad_state = Msg::Rep(Rep::Settled(StateWord {
@@ -243,6 +258,7 @@ fn the_declared_fd_count_must_be_the_required_one() {
         env_add: StrList::new(b""),
         fd_roles: 3,
         wait_ms: 1000,
+        flags: 0,
     });
     assert!(encoded(&launch, 2).is_ok());
     assert_eq!(encoded(&launch, 1), Err(EncodeError::Invalid));
@@ -259,6 +275,7 @@ fn a_message_over_65536_bytes_is_too_large() {
         env_add: StrList::new(b""),
         fd_roles: 0,
         wait_ms: 1000,
+        flags: 0,
     });
     assert!(encoded(&m, 0).is_ok(), "64000 bytes of arguments fit");
     let tail = "t".repeat(1100);
@@ -269,6 +286,7 @@ fn a_message_over_65536_bytes_is_too_large() {
         env_add: StrList::new(b""),
         fd_roles: 0,
         wait_ms: 1000,
+        flags: 0,
     });
     assert_eq!(encoded(&m, 0), Err(EncodeError::TooLarge));
 }
@@ -303,4 +321,27 @@ fn op_of_names_the_operation() {
         }),
         Op::Refresh
     );
+}
+
+#[test]
+fn a_run_requires_its_request_fd_and_its_roles() {
+    let named = |name, fd_roles| Req::Run {
+        name,
+        fd_roles,
+        flags: 0,
+        memory_max_kib: 0,
+        pids_max: 0,
+        stop_mode: 0,
+        stop_grace_ms: 100,
+        wait_ms: 1,
+    };
+    let run = |fd_roles| named("job", fd_roles);
+    assert_eq!(required_fds(&Msg::Req(run(0))), 1);
+    assert_eq!(required_fds(&Msg::Req(run(7))), 4);
+    assert_eq!(
+        encoded(&Msg::Req(run(7)), 3).unwrap_err(),
+        EncodeError::Invalid
+    );
+    let long = "a".repeat(96);
+    assert!(encoded(&Msg::Req(named(&long, 0)), 1).is_err());
 }

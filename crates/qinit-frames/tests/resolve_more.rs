@@ -11,9 +11,9 @@ use qinit_frames::error::Code;
 fn credentials_and_sandbox_merge_into_one_cred() {
     let r = ok(r#"
         [worker.a]
-        exec = ["/a"]
+        exec = ["/etc/a"]
         credentials = { uid = "sshd", caps = ["chown", "net_bind_service", "checkpoint_restore"], nnp = true, securebits = "noroot-locked" }
-        sandbox = { namespaces = ["mount", "net"], landlock = ["ro:/etc", "rw:/run/a"], seccomp = "default" }
+        sandbox = { namespaces = ["mount", "net"], paths = ["ro:/etc", "rw:/run/a"], seccomp = "default" }
         [worker.b]
 credentials = { uid = "svc" }
         exec = ["/b"]
@@ -30,7 +30,7 @@ credentials = { uid = "svc" }
     assert_eq!(a.securebits, Securebits::NorootLocked);
     assert_eq!(a.ns, 0b1_0001);
     assert_eq!(a.seccomp, Seccomp::Default);
-    assert_eq!(a.landlock, ["ro:/etc", "rw:/run/a"]);
+    assert_eq!(a.paths, ["ro:/etc", "rw:/run/a"]);
     // A sandbox next to a bare user: the identity's defaults (no caps, no-new-privileges on)
     // and the sandbox in one record.
     let b = &m.creds[node(m, "b").cred.expect("cred") as usize];
@@ -67,7 +67,7 @@ fn bad_credential_strings_are_bad_values() {
         [worker.c]
 credentials = { uid = "svc" }
         exec = ["/c"]
-        sandbox = { landlock = ["/etc"], seccomp = "strict" }
+        sandbox = { paths = ["/etc"], seccomp = "strict" }
     "#,
     );
     let keys: Vec<_> = es.iter().map(|e| (e.code, e.key.as_str())).collect();
@@ -76,7 +76,7 @@ credentials = { uid = "svc" }
         [
             (Code::BadValue, "worker.a.credentials.uid"),
             (Code::BadValue, "worker.b.credentials.securebits"),
-            (Code::BadValue, "worker.c.sandbox.landlock"),
+            (Code::BadValue, "worker.c.sandbox.paths"),
             (Code::BadValue, "worker.c.sandbox.seccomp"),
         ]
     );
@@ -180,7 +180,7 @@ credentials = { uid = "svc" }
         errors = "/dev/console"
         cell = { memory_max = "512M", pids_max = 256 }
         credentials = { uid = "sshd", caps = ["net_bind_service"], securebits = "noroot-locked" }
-        sandbox = { namespaces = ["mount", "pid"], landlock = ["ro:/etc/ssh"], seccomp = "default" }
+        sandbox = { namespaces = ["mount", "pid"], paths = ["ro:/etc/ssh", "ro:/usr/bin"], seccomp = "default" }
         deps = [
           { group = "require_all", edges = [
               { to = "firewall", mode = "sync" },
@@ -330,4 +330,195 @@ fn an_allow_list_may_name_them() {
         sandbox = { seccomp = { allow = ["clone", "read"] } }
     "#);
     assert_eq!(r.model.creds.len(), 1);
+}
+
+fn paths_src(sandbox: &str) -> String {
+    format!(
+        "[worker.a]\nexec = [\"/a\"]\ncredentials = {{ uid = \"svc\" }}\nsandbox = {{ {sandbox} }}\n"
+    )
+}
+
+#[test]
+fn non_canonical_paths_are_refused() {
+    for bad in [
+        "ro:/x/..",
+        "rw:/tmp/",
+        "ro://x",
+        "rw:/dev/.",
+        "ro:x",
+        "ro:/a//b",
+        "ro:/a/./b",
+        "ro:/a/../b",
+    ] {
+        let es = errs(&paths_src(&format!("paths = [\"{bad}\"]")));
+        assert_eq!(es.len(), 1, "{bad}: {es:?}");
+        assert_eq!(
+            (es[0].code, es[0].key.as_str()),
+            (Code::BadValue, "worker.a.sandbox.paths"),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn a_non_canonical_cwd_is_refused() {
+    let es =
+        errs("[worker.a]\nexec = [\"/a\"]\ncwd = \"/a/../b\"\ncredentials = { uid = \"svc\" }\n");
+    assert_eq!(
+        es.iter()
+            .map(|e| (e.code, e.key.as_str()))
+            .collect::<Vec<_>>(),
+        [(Code::BadValue, "worker.a.cwd")]
+    );
+}
+
+fn worker_with(exec: &str, cwd: &str, paths: &str) -> String {
+    format!(
+        "[worker.a]\nexec = [\"{exec}\"]\ncwd = \"{cwd}\"\ncredentials = {{ uid = \"svc\" }}\nsandbox = {{ paths = [{paths}] }}\n"
+    )
+}
+
+fn one_error(src: &str) -> (Code, String) {
+    let es = errs(src);
+    assert_eq!(es.len(), 1, "{es:?}");
+    (es[0].code, es[0].key.clone())
+}
+
+#[test]
+fn forbidden_entries_are_refused() {
+    for bad in ["ro:/", "rw:/dev", "ro:/tmp", "rw:/proc"] {
+        let src = worker_with("/a", "/", &format!("\"{bad}\", \"ro:/a\""));
+        assert_eq!(
+            one_error(&src),
+            (Code::BadValue, "worker.a.sandbox.paths".to_owned()),
+            "{bad}"
+        );
+    }
+    // Read-only /proc is a view entry like any other.
+    ok(&worker_with("/a", "/", "\"ro:/a\", \"ro:/proc\""));
+}
+
+#[test]
+fn a_duplicate_path_is_refused() {
+    let src = worker_with("/a", "/", "\"ro:/a\", \"rw:/a\"");
+    assert_eq!(
+        one_error(&src),
+        (Code::BadValue, "worker.a.sandbox.paths".to_owned())
+    );
+}
+
+#[test]
+fn exec_outside_the_list_is_refused() {
+    let src = worker_with("/usr/bin/x", "/", "\"ro:/opt\"");
+    assert_eq!(
+        one_error(&src),
+        (Code::BadValue, "worker.a.exec".to_owned())
+    );
+    // At and below an entry is fine; a longer sibling name is not below it.
+    ok(&worker_with("/opt/x", "/", "\"ro:/opt\""));
+    ok(&worker_with("/opt", "/", "\"ro:/opt\""));
+    let src = worker_with("/optical/x", "/", "\"ro:/opt\"");
+    assert_eq!(
+        one_error(&src),
+        (Code::BadValue, "worker.a.exec".to_owned())
+    );
+}
+
+#[test]
+fn a_relative_exec_with_a_list_is_refused() {
+    let src = worker_with("bin/x", "/", "\"ro:/opt\"");
+    assert_eq!(
+        one_error(&src),
+        (Code::BadValue, "worker.a.exec".to_owned())
+    );
+    // Without a list a bare name stays fine (it is found on the host path).
+    ok("[worker.a]\nexec = [\"x\"]\ncredentials = { uid = \"svc\" }\n");
+}
+
+#[test]
+fn cwd_outside_the_list_is_refused() {
+    let src = worker_with("/opt/x", "/srv", "\"ro:/opt\"");
+    assert_eq!(one_error(&src), (Code::BadValue, "worker.a.cwd".to_owned()));
+    ok(&worker_with("/opt/x", "/opt/work", "\"ro:/opt\""));
+    ok(&worker_with("/opt/x", "/", "\"ro:/opt\""));
+}
+
+#[test]
+fn a_list_implies_the_mount_namespace() {
+    let r = ok(&worker_with("/opt/x", "/", "\"ro:/opt\""));
+    let n = node(&r.model, "a");
+    let c = &r.model.creds[n.cred.unwrap() as usize];
+    assert_eq!(c.ns & 1, 1);
+    // Without a list nothing is added.
+    let r = ok("[worker.a]\nexec = [\"/a\"]\ncredentials = { uid = \"svc\" }\n");
+    let n = node(&r.model, "a");
+    assert_eq!(r.model.creds[n.cred.unwrap() as usize].ns, 0);
+}
+
+#[test]
+fn entries_are_stored_sorted() {
+    let r = ok(&worker_with(
+        "/opt/x",
+        "/",
+        "\"rw:/var/b\", \"ro:/opt\", \"ro:/etc/z\", \"rw:/etc/a\"",
+    ));
+    let n = node(&r.model, "a");
+    let c = &r.model.creds[n.cred.unwrap() as usize];
+    assert_eq!(c.paths, ["rw:/etc/a", "ro:/etc/z", "ro:/opt", "rw:/var/b"]);
+}
+
+fn userns(uid: &str, sandbox: &str) -> String {
+    format!(
+        "[worker.a]\nexec = [\"/a\"]\ncredentials = {{ uid = \"{uid}\" }}\nsandbox = {{ {sandbox} }}\n"
+    )
+}
+
+#[test]
+fn user_map_without_user_is_refused() {
+    for sb in [
+        "user_map = \"own\"",
+        "namespaces = [\"net\"], user_map = \"range\"",
+    ] {
+        assert_eq!(
+            one_error(&userns("svc", sb)),
+            (Code::BadValue, "worker.a.sandbox.user_map".to_owned()),
+            "{sb}"
+        );
+    }
+    // An unknown map word is a bad value too.
+    assert_eq!(
+        one_error(&userns(
+            "svc",
+            "namespaces = [\"user\"], user_map = \"all\""
+        )),
+        (Code::BadValue, "worker.a.sandbox.user_map".to_owned())
+    );
+}
+
+#[test]
+fn root_with_a_user_namespace_is_refused() {
+    assert_eq!(
+        one_error(&userns("root", "namespaces = [\"user\"]")),
+        (Code::BadValue, "worker.a.credentials.uid".to_owned())
+    );
+}
+
+#[test]
+fn user_sets_bit_5_and_range_sets_the_map() {
+    use qinit_db::UserMap;
+    let r = ok(&userns("svc", "namespaces = [\"user\", \"net\"]"));
+    let c = &r.model.creds[node(&r.model, "a").cred.unwrap() as usize];
+    assert_eq!((c.ns, c.user_map), (32 | 16, UserMap::Own));
+    let r = ok(&userns(
+        "svc",
+        "namespaces = [\"user\"], user_map = \"range\"",
+    ));
+    let c = &r.model.creds[node(&r.model, "a").cred.unwrap() as usize];
+    assert_eq!((c.ns, c.user_map), (32, UserMap::Range));
+    let r = ok(&userns(
+        "svc",
+        "namespaces = [\"user\"], user_map = \"own\"",
+    ));
+    let c = &r.model.creds[node(&r.model, "a").cred.unwrap() as usize];
+    assert_eq!(c.user_map, UserMap::Own);
 }

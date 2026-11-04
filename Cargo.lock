@@ -142,8 +142,10 @@ name = "qinit-client"
 version = "0.1.0"
 dependencies = [
  "qinit-colony",
+ "qinit-colony-core",
  "qinit-frames",
  "qinit-ipc",
+ "qinit-launch",
  "qinit-proto",
  "qinit-proto-core",
  "qinit-sys",
@@ -158,7 +160,10 @@ dependencies = [
  "qinit-colony-core",
  "qinit-db",
  "qinit-frames",
+ "qinit-launch",
+ "qinit-overseer-core",
  "qinit-proto-core",
+ "qinit-sys",
  "qinit-wire",
 ]
 
@@ -210,6 +215,7 @@ dependencies = [
  "qinit-db",
  "qinit-db-core",
  "qinit-graph-core",
+ "qinit-overseer",
  "qinit-overseer-core",
  "serde",
  "toml",
@@ -230,11 +236,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "qinit-launch"
+version = "0.1.0"
+dependencies = [
+ "qinit-overseer-core",
+ "qinit-proto-core",
+]
+
+[[package]]
 name = "qinit-overseer"
 version = "0.1.0"
 dependencies = [
  "libc",
  "qinit-db",
+ "qinit-launch",
  "qinit-overseer-core",
  "qinit-sys",
 ]
@@ -244,6 +259,7 @@ name = "qinit-overseer-core"
 version = "0.1.0"
 dependencies = [
  "qinit-db-core",
+ "qinit-proto-core",
  "vstd",
 ]
 

@@ -4,14 +4,16 @@
 
 use crate::crc::file_crc;
 use crate::model::{
-    Cred, Edge, GroupKind, Kind, Launch, Mode, Model, Node, Ready, Reload, RestartOn,
-    RestartPolicy, Route, Seccomp, Securebits, StopMode, Target,
+    Cred, Edge, GroupKind, Kind, Launch, Mode, Model, Node, Policy, PolicyRule, Ready, Reload,
+    RestartOn, RestartPolicy, Route, Seccomp, Securebits, StopMode, Target, UserMap, Userns,
 };
 use qinit_db_core::{
     HEADER_WORDS, MAGIC, MAX_CREDS, MAX_EDGES, MAX_EDGES_PER_GROUP, MAX_GROUPS,
-    MAX_GROUPS_PER_NODE, MAX_NAME_LEN, MAX_NODES, MAX_POOL, MAX_ROUTES, MAX_SYSCALL, N_RLIMIT_BASE,
-    NONE, RLIMIT_COUNT, SECCOMP_ALLOW, SECCOMP_DEFAULT, SECCOMP_DENY, SECCOMP_NONE, T_POOL,
-    VERSION, WORDS,
+    MAX_GROUPS_PER_NODE, MAX_NAME_LEN, MAX_NODES, MAX_POLICY_RULES, MAX_POOL, MAX_ROUTES,
+    MAX_SYSCALL, N_RLIMIT_BASE, NONE, P_ALLOW_USERNS, P_CAPS_HI, P_CAPS_LO, P_PATTERN_LEN,
+    P_PATTERN_OFF, P_REQUIRE_NNP, P_REQUIRE_SECCOMP, P_RLIMIT_BASE, P_RLIMIT_MASK, P_USERS_ANY,
+    P_USERS_LEN, P_USERS_OFF, PH_ALLOW, PH_RLIMIT_BASE, PH_RLIMIT_MASK, RLIMIT_COUNT,
+    SECCOMP_ALLOW, SECCOMP_DEFAULT, SECCOMP_DENY, SECCOMP_NONE, T_POOL, VERSION, WORDS,
 };
 use std::collections::BTreeMap;
 
@@ -285,9 +287,9 @@ fn edge_words(e: &Edge, pool: &mut Pool, nodes: usize) -> Result<[u32; 7], Write
     ])
 }
 
-fn cred_words(c: &Cred, pool: &mut Pool) -> Result<[u32; 12], WriteError> {
+fn cred_words(c: &Cred, pool: &mut Pool) -> Result<[u32; 13], WriteError> {
     let user = pool.intern(&c.user)?;
-    let landlock = pool.intern_list(&c.landlock)?;
+    let paths = pool.intern_list(&c.paths)?;
     let (seccomp, list) = seccomp_words(&c.seccomp, pool)?;
     Ok([
         user.0,
@@ -302,11 +304,68 @@ fn cred_words(c: &Cred, pool: &mut Pool) -> Result<[u32; 12], WriteError> {
         u32::from(c.nnp),
         c.ns,
         seccomp,
-        landlock.0,
-        landlock.1,
+        paths.0,
+        paths.1,
         list.0,
         list.1,
+        u32::from(c.user_map == UserMap::Range),
     ])
+}
+
+/// The 16 low/high limit pairs of `limits` and the mask of the ones set, refusing what the
+/// validator would.
+fn limit_pairs(limits: &[Option<u64>; 16]) -> Result<(u32, [u32; 32]), WriteError> {
+    let mut words = [0u32; 32];
+    for (r, limit) in limits.iter().enumerate() {
+        if let Some(v) = *limit
+            && !rlimit_writable(r, v)
+        {
+            return Err(WriteError::Limit("rlimit"));
+        }
+        let v = limit.unwrap_or(0);
+        #[allow(clippy::cast_possible_truncation)] // the low word, then the high word
+        {
+            words[2 * r] = v as u32;
+            words[2 * r + 1] = (v >> 32) as u32;
+        }
+    }
+    Ok((rlimit_mask(limits), words))
+}
+
+fn rule_words(r: &PolicyRule, pool: &mut Pool) -> Result<[u32; 43], WriteError> {
+    let pattern = pool.intern(&r.pattern)?;
+    let users = match &r.users {
+        Some(u) => pool.intern_list(u)?,
+        None => (0, 0),
+    };
+    let (mask, pairs) = limit_pairs(&r.rlimits)?;
+    let mut words = [0u32; 43];
+    words[P_PATTERN_OFF] = pattern.0;
+    words[P_PATTERN_LEN] = pattern.1;
+    words[P_USERS_OFF] = users.0;
+    words[P_USERS_LEN] = users.1;
+    words[P_USERS_ANY] = u32::from(r.users.is_none());
+    words[P_CAPS_LO] = u32::try_from(r.caps_max & 0xFFFF_FFFF).unwrap_or(0);
+    words[P_CAPS_HI] = u32::try_from(r.caps_max >> 32).unwrap_or(0);
+    words[P_REQUIRE_NNP] = u32::from(r.require_nnp);
+    words[P_REQUIRE_SECCOMP] = u32::from(r.require_seccomp);
+    words[P_ALLOW_USERNS] = match r.allow_userns {
+        Userns::No => 0,
+        Userns::Own => 1,
+        Userns::Range => 2,
+    };
+    words[P_RLIMIT_MASK] = mask;
+    words[P_RLIMIT_BASE..].copy_from_slice(&pairs);
+    Ok(words)
+}
+
+fn head_words(p: &Policy) -> Result<[u32; 34], WriteError> {
+    let (mask, pairs) = limit_pairs(&p.ceiling)?;
+    let mut words = [0u32; 34];
+    words[PH_ALLOW] = u32::from(p.allow_by_default);
+    words[PH_RLIMIT_MASK] = mask;
+    words[PH_RLIMIT_BASE..].copy_from_slice(&pairs);
+    Ok(words)
 }
 
 fn route_words(r: &Route, pool: &mut Pool, nodes: usize) -> Result<[u32; 3], WriteError> {
@@ -355,8 +414,9 @@ pub fn write(model: &Model) -> Result<Vec<u8>, WriteError> {
         return Err(WriteError::Unsorted);
     }
     let mut pool = Pool::default();
-    // Tables in header order: nodes, groups, edges, creds, routes, enabled, presyslog.
-    let mut tables: [Vec<u32>; 7] = Default::default();
+    // Tables in header order: nodes, groups, edges, creds, routes, enabled, presyslog, policy
+    // rules, policy header.
+    let mut tables: [Vec<u32>; 9] = Default::default();
     let mut group_total = 0usize;
     let mut edge_total = 0usize;
     for n in &model.nodes {
@@ -384,6 +444,13 @@ pub fn write(model: &Model) -> Result<Vec<u8>, WriteError> {
     }
     tables[5] = list_words(&model.enabled, nodes)?;
     tables[6] = list_words(&model.presyslog, nodes)?;
+    if let Some(p) = &model.policy {
+        count(p.rules.len(), MAX_POLICY_RULES, "policy rules")?;
+        for r in &p.rules {
+            tables[7].extend_from_slice(&rule_words(r, &mut pool)?);
+        }
+        tables[8].extend_from_slice(&head_words(p)?);
+    }
 
     let size = |n: usize| u32::try_from(n).map_err(|_| WriteError::Limit("size"));
     let mut header = [0u32; HEADER_WORDS];

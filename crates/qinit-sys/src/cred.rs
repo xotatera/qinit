@@ -167,3 +167,17 @@ pub fn set_dumpable(on: bool) -> Result<()> {
     prctl(PR_SET_DUMPABLE, libc::c_ulong::from(on), 0)?;
     Ok(())
 }
+
+/// The real user id of this process.
+#[must_use]
+pub fn getuid() -> u32 {
+    // SAFETY: getuid takes no arguments and cannot fail.
+    unsafe { libc::getuid() }
+}
+
+/// The real group id of this process.
+#[must_use]
+pub fn getgid() -> u32 {
+    // SAFETY: getgid takes no arguments and cannot fail.
+    unsafe { libc::getgid() }
+}

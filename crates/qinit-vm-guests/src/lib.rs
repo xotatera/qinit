@@ -38,7 +38,7 @@ pub fn run(suite: &'static str, cases: &[Case]) -> ! {
         std::process::exit(helper(&role, &args.collect::<Vec<String>>()));
     }
     let setup = if qinit_sys::proc::pid() == 1 {
-        setup()
+        enter_tmpfs_root().and_then(|()| setup())
     } else {
         Ok(())
     };
@@ -70,6 +70,53 @@ fn console(line: &str) {
     if let Ok(mut c) = std::fs::OpenOptions::new().write(true).open("/dev/console") {
         let _ = writeln!(c, "{line}");
     }
+}
+
+/// Copies the directory `from` into `to`, leaving out the entries named in `skip`.
+fn copy_tree(from: &Path, to: &Path, skip: &[&Path]) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let path = entry.path();
+        if skip.contains(&path.as_path()) {
+            continue;
+        }
+        let target = to.join(entry.file_name());
+        let meta = std::fs::symlink_metadata(&path)?;
+        if meta.is_dir() {
+            std::fs::create_dir(&target)?;
+            std::fs::set_permissions(&target, meta.permissions())?;
+            copy_tree(&path, &target, skip)?;
+        } else if meta.file_type().is_symlink() {
+            std::os::unix::fs::symlink(std::fs::read_link(&path)?, &target)?;
+        } else {
+            std::fs::copy(&path, &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Moves the guest from the initramfs root onto a tmpfs root (what `switch_root` does):
+/// `pivot_root`, which the executor's path view needs, refuses to run when the root is the
+/// initramfs itself.
+fn enter_tmpfs_root() -> Result<(), String> {
+    use qinit_sys::mount::{chroot, mkdir, mount, mount_move};
+    let new = Path::new("/.root");
+    mkdir(new, 0o755).map_err(|x| format!("mkdir /.root: {x}"))?;
+    mount("tmpfs", new, "tmpfs", 0).map_err(|x| format!("mount the new root: {x}"))?;
+    let skip = [
+        new,
+        Path::new("/proc"),
+        Path::new("/sys"),
+        Path::new("/dev"),
+    ];
+    copy_tree(Path::new("/"), new, &skip).map_err(|x| format!("copy the root: {x}"))?;
+    for d in ["dev", "proc", "sys"] {
+        mkdir(&new.join(d), 0o755).map_err(|x| format!("mkdir /{d}: {x}"))?;
+    }
+    std::env::set_current_dir(new).map_err(|x| format!("enter the new root: {x}"))?;
+    mount_move(Path::new("."), Path::new("/")).map_err(|x| format!("move the new root: {x}"))?;
+    chroot(Path::new(".")).map_err(|x| format!("chroot: {x}"))?;
+    std::env::set_current_dir("/").map_err(|x| format!("chdir /: {x}"))
 }
 
 fn setup() -> Result<(), String> {
@@ -146,6 +193,17 @@ pub fn launch(
 ) -> Result<Launched, String> {
     let bytes = e(spec.bytes().map_err(|x| format!("{x:?}")))?;
     let request = sys(qinit_sys::memfd::sealed(c"req", &bytes), "seal the request")?;
+    launch_fd(cells, name, request, extra, ready)
+}
+
+/// As [`launch`], with the sealed request already in a memfd (what a `Run` passes on).
+pub fn launch_fd(
+    cells: &mut Cells,
+    name: &str,
+    request: OwnedFd,
+    extra: Vec<(OwnedFd, RawFd)>,
+    ready: ReadyMode,
+) -> Result<Launched, String> {
     let (status_r, status_w) = sys(qinit_sys::fd::pipe(libc::O_CLOEXEC), "status pipe")?;
     let id = e(cells.create(name))?;
     let mut fds = vec![(request, 3), (status_w, 4)];
@@ -340,6 +398,31 @@ pub fn run_to_end(
         exit,
         failure,
         request: e(request.bytes().map_err(|x| format!("{x:?}")))?,
+    })
+}
+
+/// Runs the request in the sealed memfd `request` through the executor in a new cell `name`
+/// and waits for the cell to empty: the main's status and the executor's record.
+pub fn run_fd_to_end(name: &str, request: OwnedFd) -> Result<Outcome, String> {
+    let bytes = sys(
+        qinit_sys::memfd::read_all(request.as_fd(), 65536),
+        "read the request",
+    )?;
+    let mut cells = cells()?;
+    let l = launch_fd(&mut cells, name, request, Vec::new(), ReadyMode::Exit)?;
+    let seen = expect(&mut cells, l.id, Report::Empty)?;
+    let exit = reports_of(&seen, l.id).iter().find_map(|r| match r {
+        Report::MainExited(st) => *st,
+        Report::Ready => Some(0),
+        _ => None,
+    });
+    let failure = status_of(&l);
+    remove(&mut cells, l.id)?;
+    Ok(Outcome {
+        out: String::new(),
+        exit,
+        failure,
+        request: bytes,
     })
 }
 
@@ -743,6 +826,7 @@ fn helper(role: &str, args: &[String]) -> i32 {
 
 /// The helpers of the executor suites: they report what a launch gave them on standard output
 /// or by exit code. `None` for a role this function does not know.
+#[allow(clippy::too_many_lines)] // one arm per helper role
 fn launch_helper(role: &str, args: &[String]) -> Option<i32> {
     let a0 = args.first().map(String::as_str);
     Some(match role {
@@ -783,6 +867,69 @@ fn launch_helper(role: &str, args: &[String]) -> Option<i32> {
             }
             _ => 2,
         },
+        // `probe-statvfs <path>`: 0 when the mount holding the path is read-only, 1 when not,
+        // the errno when the path cannot be examined.
+        "probe-statvfs" => a0.map_or(2, |p| match qinit_sys::fs::is_readonly(Path::new(p)) {
+            Ok(true) => 0,
+            Ok(false) => 1,
+            Err(e) => e.0,
+        }),
+        // `probe-kind <path>`: 10 for a symlink, 11 for a directory, 12 for a regular file,
+        // 13 for anything else, the errno when the path cannot be examined (no link followed).
+        "probe-kind" => a0.map_or(2, |p| match qinit_sys::fs::lstat_kind(Path::new(p)) {
+            Ok(qinit_sys::fs::Kind::Symlink) => 10,
+            Ok(qinit_sys::fs::Kind::Dir) => 11,
+            Ok(qinit_sys::fs::Kind::File) => 12,
+            Ok(qinit_sys::fs::Kind::Other) => 13,
+            Err(e) => e.0,
+        }),
+        // `probe-propagation`: `0` when no mount in `/proc/self/mountinfo` takes part in a peer
+        // group (a `shared:` or `master:` optional field), else those lines joined by ` | `.
+        "probe-propagation" => {
+            let lines = std::fs::read_to_string("/proc/self/mountinfo").map_or_else(
+                |_| vec!["unreadable".to_string()],
+                |t| {
+                    t.lines()
+                        .filter(|l| {
+                            l.split(" - ").next().is_some_and(|head| {
+                                head.split(' ')
+                                    .skip(6)
+                                    .any(|f| f.starts_with("shared:") || f.starts_with("master:"))
+                            })
+                        })
+                        .map(ToString::to_string)
+                        .collect()
+                },
+            );
+            let text = if lines.is_empty() {
+                "0".to_string()
+            } else {
+                lines.join(" | ")
+            };
+            if writeln!(std::io::stdout(), "{text}").is_ok() {
+                0
+            } else {
+                2
+            }
+        }
+        // `probe-procs`: the number of process directories in `/proc`, on standard output.
+        "probe-procs" => {
+            let n = std::fs::read_dir("/proc").map_or(0, |d| {
+                d.filter_map(Result::ok)
+                    .filter(|e| {
+                        e.file_name()
+                            .to_string_lossy()
+                            .bytes()
+                            .all(|b| b.is_ascii_digit())
+                    })
+                    .count()
+            });
+            if writeln!(std::io::stdout(), "{n}").is_ok() {
+                0
+            } else {
+                2
+            }
+        }
         // `probe-syscall <getppid|ptrace|unshare-net|clone3>`: `ok` or the errno, on stdout.
         "probe-syscall" => {
             let r: qinit_sys::Result<()> = match a0 {
@@ -790,6 +937,7 @@ fn launch_helper(role: &str, args: &[String]) -> Option<i32> {
                 Some("ptrace") => qinit_sys::proc::ptrace_probe(),
                 Some("unshare-net") => qinit_sys::ns::unshare(libc::CLONE_NEWNET),
                 Some("clone3") => qinit_sys::proc::clone3_probe(),
+                Some("mount") => qinit_sys::mount::mount("tmpfs", Path::new("/tmp"), "tmpfs", 0),
                 _ => return Some(2),
             };
             let line = r.map_or_else(|x| x.0.to_string(), |()| "ok".to_string());
@@ -833,6 +981,63 @@ fn launch_helper(role: &str, args: &[String]) -> Option<i32> {
                 2
             }
         }
+        // `userns-show`: this process's uid and gid, then `uid_map`, `gid_map` and `setgroups`
+        // of its user namespace, on standard output.
+        "userns-show" => {
+            let read =
+                |f: &str| std::fs::read_to_string(format!("/proc/self/{f}")).unwrap_or_default();
+            let words = |t: String| t.split_whitespace().collect::<Vec<_>>().join(" ");
+            let out = format!(
+                "ids {} {}\nuid_map {}\ngid_map {}\nsetgroups {}\n",
+                qinit_sys::cred::getuid(),
+                qinit_sys::cred::getgid(),
+                words(read("uid_map")),
+                words(read("gid_map")),
+                read("setgroups").trim()
+            );
+            if write!(std::io::stdout(), "{out}").is_ok() {
+                0
+            } else {
+                2
+            }
+        }
+        // `setuid-1`: `setresuid(1, 1, 1)`: `ok` or the errno, on standard output.
+        "setuid-1" => {
+            let line = qinit_sys::cred::setresuid(1)
+                .map_or_else(|x| x.0.to_string(), |()| "ok".to_string());
+            if writeln!(std::io::stdout(), "{line}").is_ok() {
+                0
+            } else {
+                2
+            }
+        }
+        // `loosen <dir>`: tries to remount `<dir>` writable and to unmount it, on standard
+        // output as `remount <errno|ok> umount <errno|ok>`.
+        "loosen" => a0.map_or(2, |dir| {
+            let path = Path::new(dir);
+            let word =
+                |r: qinit_sys::Result<()>| r.map_or_else(|x| x.0.to_string(), |()| "ok".into());
+            let remount = qinit_sys::mount::mount_data(
+                "none",
+                path,
+                "",
+                libc::MS_REMOUNT | libc::MS_BIND,
+                None,
+            );
+            let umount = qinit_sys::mount::umount_detach(path);
+            if writeln!(
+                std::io::stdout(),
+                "remount {} umount {}",
+                word(remount),
+                word(umount)
+            )
+            .is_ok()
+            {
+                0
+            } else {
+                2
+            }
+        }),
         "raise-usr1" => {
             let _ = qinit_sys::proc::kill(qinit_sys::proc::pid(), libc::SIGUSR1);
             2

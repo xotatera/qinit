@@ -11,11 +11,13 @@ mod bpf;
 mod decode;
 mod layout;
 mod plan;
+mod policy;
 mod spec;
 
 pub use bpf::*;
 pub use decode::*;
 pub use layout::*;
 pub use plan::*;
+pub use policy::*;
 #[allow(unused_imports)] // the specification is erased outside verification
 pub use spec::*;

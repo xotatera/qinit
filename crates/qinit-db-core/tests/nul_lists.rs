@@ -28,21 +28,25 @@ fn argv_db() -> (Vec<u8>, Range<usize>) {
     (db, r)
 }
 
-/// A database whose credential 0 has the Landlock list `ro:/etc/x` (shared with its user name,
+/// A database whose credential 0 has the path list `ro:/ro:/a` (shared with its user name,
 /// which is a plain string), and the pool bytes of that list.
 fn landlock_db() -> (Vec<u8>, Range<usize>) {
     let mut spec = minimal_spec();
-    spec.creds[0].user = "ro:/etc/x";
+    spec.creds[0].user = "ro:/ro:/a";
+    spec.creds[0].ns = 1;
+    for n in &mut spec.nodes {
+        n.exec = "/ro:/a";
+    }
     let db = with(&build(&spec), |w| {
         let (uo, ul) = (at(w, T_CREDS, 0, C_USER_OFF), at(w, T_CREDS, 0, C_USER_LEN));
         let (lo, ll) = (
-            at(w, T_CREDS, 0, C_LANDLOCK_OFF),
-            at(w, T_CREDS, 0, C_LANDLOCK_LEN),
+            at(w, T_CREDS, 0, C_PATHS_OFF),
+            at(w, T_CREDS, 0, C_PATHS_LEN),
         );
         w[lo] = w[uo];
         w[ll] = w[ul];
     });
-    let r = string_range(&db, T_CREDS, 0, C_LANDLOCK_OFF, C_LANDLOCK_LEN);
+    let r = string_range(&db, T_CREDS, 0, C_PATHS_OFF, C_PATHS_LEN);
     (db, r)
 }
 
@@ -137,11 +141,12 @@ fn a_double_nul_in_landlock_is_a_pool_error() {
 
 #[test]
 fn one_and_two_element_lists_and_the_empty_list_are_valid() {
-    for (db, r) in [argv_db(), landlock_db()] {
-        // One element as built; two elements split by one NUL.
-        assert_eq!(check(&db), Ok(()));
-        assert_eq!(check(&nul_at(&db, &r, &[4])), Ok(()));
-    }
+    // One element as built; two elements split by one NUL (a path list's second element would
+    // be `o:/a`, which is not a path entry, so only argv splits).
+    let (db, r) = argv_db();
+    assert_eq!(check(&db), Ok(()));
+    assert_eq!(check(&nul_at(&db, &r, &[4])), Ok(()));
+    assert_eq!(check(&landlock_db().0), Ok(()));
     // The empty list: a brood has no argv and a credential without Landlock has length 0.
     let mut spec = minimal_spec();
     spec.nodes[1].kind = 2;

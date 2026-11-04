@@ -25,7 +25,8 @@ worker getty@tty1
   credentials.securebits = "none"  # default
   sandbox.namespaces = []  # default
   sandbox.seccomp = "none"  # default
-  sandbox.landlock = []  # default
+  sandbox.paths = []  # default
+  sandbox.user_map = "own"  # default
   deps[0].group = "require_all"  # template tty-login
   deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "none" }  # template tty-login
 
@@ -52,7 +53,8 @@ worker getty@tty2
   credentials.securebits = "none"  # default
   sandbox.namespaces = []  # default
   sandbox.seccomp = "none"  # default
-  sandbox.landlock = []  # default
+  sandbox.paths = []  # default
+  sandbox.user_map = "own"  # default
   deps[0].group = "require_all"  # template tty-login
   deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "none" }  # template tty-login
 
@@ -77,9 +79,10 @@ worker logd
   credentials.caps = []  # default
   credentials.nnp = true  # default
   credentials.securebits = "none"  # default
-  sandbox.namespaces = ["ipc", "uts"]  # vendor
+  sandbox.namespaces = ["mount", "ipc", "uts"]  # vendor
   sandbox.seccomp = "default"  # vendor
-  sandbox.landlock = ["ro:/etc/logd", "rw:/var/log/qinit"]  # vendor
+  sandbox.paths = ["ro:/etc/logd", "ro:/usr/lib/qinit", "rw:/var/log/qinit"]  # vendor
+  sandbox.user_map = "own"  # default
   deps[0].group = "require_all"  # vendor
   deps[0].edges[0] = { to = "syslog-ng", mode = "sync", restart_on = "restart" }  # vendor
 
@@ -103,7 +106,8 @@ forager mount-var
   credentials.securebits = "none"  # default
   sandbox.namespaces = []  # default
   sandbox.seccomp = "none"  # default
-  sandbox.landlock = []  # default
+  sandbox.paths = []  # default
+  sandbox.user_map = "own"  # default
   deps[0].group = "require_all"  # vendor
   deps[0].edges[0] = { path = "/dev/disk/by-label/var", mode = "sync", restart_on = "none" }  # vendor
 
@@ -139,7 +143,8 @@ worker sshd
   credentials.securebits = "noroot"  # vendor
   sandbox.namespaces = []  # default
   sandbox.seccomp = "none"  # default
-  sandbox.landlock = []  # default
+  sandbox.paths = []  # default
+  sandbox.user_map = "own"  # default
   deps[0].group = "require_all"  # vendor
   deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "error" }  # vendor
   deps[0].edges[1] = { path = "/etc/ssh/sshd_config", mode = "sync", restart_on = "none" }  # vendor
@@ -172,7 +177,8 @@ worker syslog-ng
   credentials.securebits = "none"  # default
   sandbox.namespaces = []  # default
   sandbox.seccomp = "none"  # default
-  sandbox.landlock = []  # default
+  sandbox.paths = []  # default
+  sandbox.user_map = "own"  # default
   deps[0].group = "require_all"  # vendor
   deps[0].edges[0] = { to = "mount-var", mode = "sync", restart_on = "none" }  # vendor
 

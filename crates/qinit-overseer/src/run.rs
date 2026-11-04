@@ -8,20 +8,25 @@ use crate::output::{open_input, open_route};
 use crate::request::RequestSpec;
 use crate::status::{STEP_DECODE, STEP_IDENTITY, Status};
 use crate::supervisor::supervise;
+use crate::userns;
+use crate::view;
 use qinit_overseer_core::{
     DEFAULT_DENY, Insn, MAX_BPF, MAX_REQUEST, MAX_STEPS, Q_ARGV_LEN, Q_ARGV_OFF, Q_CAPS_HI,
-    Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_ENV_LEN, Q_ENV_OFF, Q_LANDLOCK_LEN, Q_LANDLOCK_OFF,
+    Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_ENV_LEN, Q_ENV_OFF, Q_NS, Q_PATHS_LEN, Q_PATHS_OFF,
     Q_SECCOMP, Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_STDERR_A, Q_STDERR_B, Q_STDERR_KIND, Q_STDIN_A,
     Q_STDIN_B, Q_STDIN_KIND, Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND, Q_UMASK, Q_USER_LEN,
-    Q_USER_OFF, STREAM_FD, STREAM_PATH, Step, decode, plan, pool, program, req,
+    Q_USER_MAP, Q_USER_OFF, STREAM_FD, STREAM_PATH, Step, decode, plan, pool, program, req,
 };
+use qinit_sys::fs::{Kind, lstat_kind};
 use qinit_sys::landlock::{
     LANDLOCK_ACCESS_FS_ALL_V3, LANDLOCK_ACCESS_FS_READ, add_path_rule, restrict_self, ruleset,
 };
 use qinit_sys::limits::{RLIMIT_CORE, chdir, set_rlimit, umask};
-use qinit_sys::{Errno, Result, cred, fd, memfd, ns, proc, seccomp, spawn, timer};
+use qinit_sys::timer::{Alarm, arm_alarm_at, now_monotonic_ns};
+use qinit_sys::{Errno, Result, cred, fd, memfd, ns, proc, seccomp, spawn};
 use std::ffi::{CStr, CString};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
+use std::path::Path;
 
 /// The sealed request.
 pub const REQUEST_FD: RawFd = 3;
@@ -89,6 +94,13 @@ struct Run<'a> {
     prepared: Option<(Vec<CString>, Vec<CString>)>,
     /// Whether the capabilities above `CAP_LAST` of a newer kernel are out of the bounding set.
     extra_dropped: bool,
+    /// The deadline as an absolute `CLOCK_MONOTONIC` instant, kept so that the process after a
+    /// pid-namespace fork can arm the same instant again.
+    deadline_ns: u64,
+    /// The armed deadline timer; a pid-namespace fork leaves it with the supervisor outside.
+    alarm: Option<Alarm>,
+    /// The host's `/proc/self`, for the map writer, from `ProcSelf` until the user namespace.
+    proc_self: Option<OwnedFd>,
 }
 
 impl<'a> Run<'a> {
@@ -99,6 +111,20 @@ impl<'a> Run<'a> {
 
     fn list(&self, off: usize, len: usize) -> Result<Vec<&'a str>> {
         Ok(items(self.text(off, len)?))
+    }
+
+    /// Runs `f` with the mask cleared: the view's directories and mount points are made with
+    /// the modes the view wants, not the service's mask.
+    fn unmasked<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+        let old = umask(0);
+        let r = f();
+        let _ = umask(old);
+        r
+    }
+
+    /// The service runs in a user namespace of its own: its ids are the inside ones.
+    fn in_user_namespace(&self) -> bool {
+        req(self.b, Q_NS) & 32 != 0
     }
 
     fn caps(&self) -> u64 {
@@ -156,15 +182,19 @@ impl<'a> Run<'a> {
     }
 
     fn landlock_rule(&self, i: u32) -> Result<()> {
-        let list = self.list(Q_LANDLOCK_OFF, Q_LANDLOCK_LEN)?;
+        let list = self.list(Q_PATHS_OFF, Q_PATHS_LEN)?;
         let entry = list.get(i as usize).ok_or(Errno(libc::EINVAL))?;
-        let (access, path) = if let Some(p) = entry.strip_prefix("ro:") {
-            (LANDLOCK_ACCESS_FS_READ, p)
-        } else if let Some(p) = entry.strip_prefix("rw:") {
-            (LANDLOCK_ACCESS_FS_ALL_V3, p)
+        let (ro, path) = view::split(entry)?;
+        let access = if ro {
+            LANDLOCK_ACCESS_FS_READ
         } else {
-            return Err(Errno(libc::EINVAL));
+            LANDLOCK_ACCESS_FS_ALL_V3
         };
+        // A symlink entry is a link in the view: what it points to is reachable only if that
+        // is listed too, so it gets no rule (`O_PATH` would follow it).
+        if lstat_kind(Path::new(path))? == Kind::Symlink {
+            return Ok(());
+        }
         let rs = self.ruleset.as_ref().ok_or(Errno(libc::EBADF))?;
         add_path_rule(rs.as_fd(), &cstring(path)?, access)
     }
@@ -212,6 +242,7 @@ impl<'a> Run<'a> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)] // one arm per plan step
     fn perform(&mut self, step: Step) -> Result<()> {
         match step {
             Step::Setsid => proc::setsid(),
@@ -222,7 +253,26 @@ impl<'a> Run<'a> {
             Step::MountTmp => ns::mount_private_tmp(),
             Step::LoopbackUp => ns::loopback_up(),
             Step::Fork => Err(Errno(libc::EINVAL)),
-            Step::ArmDeadline(ms) => timer::arm_alarm(ms),
+            Step::ViewRoot => Self::unmasked(view::root),
+            Step::ViewDev => Self::unmasked(view::dev),
+            Step::ViewTmp => Self::unmasked(view::tmp),
+            Step::ViewEntry(i) => {
+                let list = self.list(Q_PATHS_OFF, Q_PATHS_LEN)?;
+                let entry = list.get(i as usize).ok_or(Errno(libc::EINVAL))?;
+                Self::unmasked(|| view::entry(entry, req(self.b, Q_NS) & 2 != 0))
+            }
+            Step::ViewPivot => Self::unmasked(view::pivot),
+            Step::ViewSeal => view::seal(),
+            Step::ArmDeadline(ms) => {
+                self.deadline_ns = now_monotonic_ns().saturating_add(u64::from(ms) * 1_000_000);
+                self.alarm = Some(arm_alarm_at(self.deadline_ns)?);
+                Ok(())
+            }
+            Step::RearmDeadline => {
+                // Timers are not inherited across a fork: this is a new one at the same instant.
+                self.alarm = Some(arm_alarm_at(self.deadline_ns)?);
+                Ok(())
+            }
             Step::OpenStdin => match req(self.b, Q_STDIN_KIND) {
                 STREAM_PATH => {
                     let opened = open_input(&cstring(self.text(Q_STDIN_A, Q_STDIN_B)?)?);
@@ -244,7 +294,11 @@ impl<'a> Run<'a> {
             ),
             Step::RlimitCore0 => set_rlimit(RLIMIT_CORE, 0, 0),
             Step::Setgroups => cred::setgroups(&self.id.groups),
-            Step::Setgid => cred::setresgid(self.id.gid),
+            Step::Setgid => cred::setresgid(if self.in_user_namespace() {
+                0
+            } else {
+                self.id.gid
+            }),
             Step::Securebits(bits) => cred::set_securebits(bits),
             Step::DropBounding(cap) => {
                 self.drop_newer_capabilities()?;
@@ -254,7 +308,11 @@ impl<'a> Run<'a> {
                     r => r,
                 }
             }
-            Step::Setuid => cred::setresuid(self.id.uid),
+            Step::Setuid => cred::setresuid(if self.in_user_namespace() {
+                0
+            } else {
+                self.id.uid
+            }),
             Step::Capset => {
                 let caps = self.caps();
                 cred::capset(caps, caps, caps)
@@ -267,10 +325,26 @@ impl<'a> Run<'a> {
                 self.ruleset = Some(ruleset(LANDLOCK_ACCESS_FS_ALL_V3)?);
                 Ok(())
             }
+            Step::LandlockViewRules => {
+                let rs = self.ruleset.as_ref().ok_or(Errno(libc::EBADF))?;
+                view::landlock_rules(rs.as_fd())
+            }
             Step::LandlockRule(i) => self.landlock_rule(i),
             Step::LandlockRestrict => {
                 let rs = self.ruleset.take().ok_or(Errno(libc::EBADF))?;
                 restrict_self(rs.as_fd())
+            }
+            Step::ProcSelf => {
+                self.proc_self = Some(userns::proc_self()?);
+                Ok(())
+            }
+            Step::ClearGroups => cred::setgroups(&[]),
+            Step::UserNamespace => {
+                let dir = self.proc_self.take().ok_or(Errno(libc::EBADF))?;
+                userns::enter(&dir, self.id, req(self.b, Q_USER_MAP) == 1)
+            }
+            Step::UnshareOwned(flags) => {
+                ns::unshare(libc::c_int::try_from(flags).map_err(|_| Errno(libc::EINVAL))?)
             }
             Step::Seccomp => self.seccomp(),
             Step::CloseRange => fd::close_from(5),
@@ -281,12 +355,16 @@ impl<'a> Run<'a> {
 
 fn identity_errno(e: IdentityError) -> i32 {
     match e {
-        IdentityError::Unknown => libc::ENOENT,
-        IdentityError::RootAlias | IdentityError::RootGroup => libc::EPERM,
-        IdentityError::Io(Errno(n)) => n,
-        IdentityError::BadName | IdentityError::Ambiguous | IdentityError::Malformed(_) => {
-            libc::EINVAL
+        IdentityError::Unknown | IdentityError::SubidMissing => libc::ENOENT,
+        IdentityError::RootAlias | IdentityError::RootGroup | IdentityError::SubidOverlap => {
+            libc::EPERM
         }
+        IdentityError::Io(Errno(n)) => n,
+        IdentityError::BadName
+        | IdentityError::Ambiguous
+        | IdentityError::Malformed(_)
+        | IdentityError::SubidAmbiguous
+        | IdentityError::SubidMalformed(_) => libc::EINVAL,
     }
 }
 
@@ -294,12 +372,17 @@ fn identity_errno(e: IdentityError) -> i32 {
 /// second its only child, which goes on to run the service. The original process and the init
 /// each become a supervisor of the child they forked, so a signal reaches the service from a
 /// process inside its namespace and the init reaps what the service orphans.
-fn fork_supervised(id: &Identity, status: &mut Option<OwnedFd>, step: u32) -> Result<()> {
+fn fork_supervised(
+    id: &Identity,
+    status: &mut Option<OwnedFd>,
+    step: u32,
+    alarm: &mut Option<Alarm>,
+) -> Result<()> {
     for outside in [true, false] {
         match proc::fork()? {
             0 => {}
             child => match status.take() {
-                Some(pipe) => supervise(child, id, pipe, step, outside),
+                Some(pipe) => supervise(child, id, pipe, step, outside, alarm.take()),
                 None => proc::exit_now(127),
             },
         }
@@ -341,17 +424,22 @@ pub fn launch() -> ! {
             gid: 0,
             groups: Vec::new(),
             home: String::new(),
+            subuid: None,
+            subgid: None,
         },
         user: "",
         ruleset: None,
         prepared: None,
         extra_dropped: false,
+        deadline_ns: 0,
+        alarm: None,
+        proc_self: None,
     };
     let user = match run.text(Q_USER_OFF, Q_USER_LEN) {
         Ok(u) => u,
         Err(e) => die(&status, STEP_DECODE, e.0),
     };
-    let id = match identity::resolve(user) {
+    let id = match identity::resolve(user, req(&bytes, Q_USER_MAP) == 1) {
         Ok(i) => i,
         Err(e) => die(&status, STEP_IDENTITY, identity_errno(e)),
     };
@@ -363,7 +451,7 @@ pub fn launch() -> ! {
     for (i, step) in steps[..n].iter().enumerate() {
         let index = u32::try_from(i).unwrap_or(u32::MAX);
         let result = if *step == Step::Fork {
-            fork_supervised(&id, &mut status, index)
+            fork_supervised(&id, &mut status, index, &mut run.alarm)
         } else {
             run.perform(*step)
         };

@@ -158,6 +158,22 @@ pub fn reap_pid(pid: libc::pid_t) -> Result<Option<i32>> {
     Ok(reap(libc::P_PID, id)?.map(|(_, status)| status))
 }
 
+/// Waits for child `pid` to end: its wait status.
+pub fn wait_pid(pid: libc::pid_t) -> Result<i32> {
+    loop {
+        let mut status = 0;
+        // SAFETY: a writable status slot.
+        let r = unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        if r >= 0 {
+            return Ok(status);
+        }
+        match Errno::last() {
+            Errno(libc::EINTR) => {}
+            e => return Err(e),
+        }
+    }
+}
+
 /// `struct pidfd_info`, `PIDFD_INFO_SIZE_VER0` (64 bytes).
 #[allow(dead_code)] // the kernel's layout: every field is part of the ABI
 #[repr(C)]

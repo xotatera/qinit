@@ -97,3 +97,34 @@ pub fn start_order(c: &Colony<Sim>) -> Vec<String> {
 pub fn pass(c: &mut Colony<Sim>, ms: u64) -> Vec<Notice> {
     advance(c, ms)
 }
+
+/// As [`database`], with the policy file `policy` (inline TOML) compiled in.
+pub fn database_with_policy(frames: &str, enable: &[&str], policy: &str) -> Vec<u8> {
+    let tmp = TempDir::new();
+    let vendor = tmp.0.join("vendor");
+    std::fs::create_dir_all(&vendor).expect("layer dir");
+    std::fs::write(vendor.join("frames.toml"), frames).expect("frames");
+    let list: Vec<String> = enable.iter().map(|e| format!("\"{e}\"")).collect();
+    std::fs::write(
+        vendor.join("enable.toml"),
+        format!("enable = [{}]\n", list.join(", ")),
+    )
+    .expect("enable");
+    let path = tmp.0.join("policy.toml");
+    std::fs::write(&path, policy).expect("policy");
+    let input = CompileInput {
+        layers: vec![LayerInput {
+            name: "vendor".to_owned(),
+            dir: vendor,
+        }],
+        policy: Some(path),
+    };
+    compile(&input).expect("compiles").bytes
+}
+
+/// A colony over `frames` with `policy` compiled in, loaded at time 0.
+pub fn boot_with_policy(frames: &str, enable: &[&str], policy: &str, sim: Sim) -> Colony<Sim> {
+    Colony::load(database_with_policy(frames, enable, policy), &[], sim, 0)
+        .expect("loads")
+        .0
+}

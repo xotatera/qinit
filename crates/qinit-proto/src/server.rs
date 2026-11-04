@@ -4,6 +4,7 @@
 
 use qinit_colony::{Attached, Colony, Effects, Outcome, OwnedRep, Peer, WaitId};
 use qinit_ipc::{PeerCred, Received, peer_cred, peer_pidfd, recv, send_nowait};
+use qinit_proto_core::launch::MAX_REQUEST;
 use qinit_proto_core::{DecodeError, MAX_MESSAGE, authorized};
 use qinit_wire::{ErrorCode, Msg, Req, decode, op_of};
 use std::collections::HashMap;
@@ -19,6 +20,12 @@ const REASON_TOO_LARGE: u32 = 19;
 
 /// The wire number of a database that cannot be read.
 const REASON_UNREADABLE: u32 = 20;
+
+/// `EFBIG`: the file is longer than the reader's maximum.
+const EFBIG: i32 = 27;
+
+/// The wire number of a `Run` request descriptor that is not a fully sealed memfd.
+const REASON_UNSEALED: u32 = 21;
 
 /// Connection limits (spec R5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,6 +125,21 @@ fn read_database(fd: OwnedFd) -> Result<Vec<u8>, u32> {
     Ok(bytes)
 }
 
+/// Reads the launch request a `Run` passed: a memfd carrying at least the four seals, at most
+/// `MAX_REQUEST` bytes. Returns the bytes and the descriptor, which the executor receives.
+fn read_request(fd: OwnedFd) -> Result<(Vec<u8>, OwnedFd), u32> {
+    match qinit_ipc::memfd::seals(fd.as_fd()) {
+        // At least these four: a further seal (`F_SEAL_EXEC` of a `MFD_NOEXEC_SEAL` file) only restricts.
+        Ok(s) if s & qinit_ipc::memfd::ALL_SEALS == qinit_ipc::memfd::ALL_SEALS => {}
+        _ => return Err(REASON_UNSEALED),
+    }
+    match qinit_ipc::memfd::read_all(fd.as_fd(), MAX_REQUEST) {
+        Ok(bytes) => Ok((bytes, fd)),
+        Err(qinit_ipc::Errno(EFBIG)) => Err(REASON_TOO_LARGE),
+        Err(_) => Err(REASON_UNREADABLE),
+    }
+}
+
 impl Server {
     /// A server with no connections.
     #[must_use]
@@ -198,14 +220,18 @@ impl Server {
 
     /// Sends `rep` on `conn` without ever blocking; `false` when it could not be sent (the
     /// reply did not encode, or the client's queue is full because it does not read).
-    fn reply(&mut self, conn: ConnId, rep: &OwnedRep) -> bool {
+    fn reply(&mut self, conn: ConnId, rep: &OwnedRep, fds: &[OwnedFd]) -> bool {
         let Some(c) = self.conns.get(&conn) else {
             return false;
         };
-        let Ok(n) = rep.encode(&mut self.out) else {
+        let Ok(count) = u32::try_from(fds.len()) else {
             return false;
         };
-        send_nowait(c.fd.as_fd(), &self.out[..n], &[]).is_ok()
+        let Ok(n) = rep.encode_with(count, &mut self.out) else {
+            return false;
+        };
+        let borrowed: Vec<BorrowedFd<'_>> = fds.iter().map(AsFd::as_fd).collect();
+        send_nowait(c.fd.as_fd(), &self.out[..n], &borrowed).is_ok()
     }
 
     /// Answers a malformed or unwanted message with one error and closes the connection.
@@ -216,7 +242,7 @@ impl Server {
         detail: u32,
         colony: &mut Colony<E>,
     ) {
-        let _ = self.reply(conn, &OwnedRep::Error { code, detail });
+        let _ = self.reply(conn, &OwnedRep::Error { code, detail }, &[]);
         self.close(conn, colony);
     }
 
@@ -348,12 +374,20 @@ impl Server {
                     attached.database = fds.into_iter().next().map(read_database);
                 }
             }
+            Req::Run { .. } => {
+                // Only a peer that may run gets its request descriptor read.
+                if authorized(op_of(req), qinit_proto_core::PeerId { uid: peer.uid }) {
+                    let mut rest = fds.into_iter();
+                    attached.request = rest.next().map(read_request);
+                    attached.fds = rest.collect();
+                }
+            }
             _ => attached.fds = fds,
         }
         let wait = WaitId(self.next_wait);
         self.next_wait += 1;
         let handled = colony.handle(peer, req, attached, wait, now);
-        let sent = self.reply(conn, &handled.reply);
+        let sent = self.reply(conn, &handled.reply, &handled.reply_fds);
         // A second reply is owed when the wait was parked, or when the same call already
         // settled it (it then goes out with the outcome below).
         let owed = handled.waiting || handled.outcome.replies.iter().any(|(w, _)| *w == wait);
@@ -382,7 +416,7 @@ impl Server {
             if let Some(c) = self.conns.get_mut(&conn) {
                 c.state = State::Idle;
             }
-            if !self.reply(conn, rep) {
+            if !self.reply(conn, rep, &[]) {
                 self.close(conn, colony);
                 closed.push(conn);
             }

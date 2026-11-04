@@ -54,6 +54,8 @@ pub struct NodeSpec {
     pub cred: u32,
     /// The environment, raw NUL-joined `KEY=VALUE` entries.
     pub env: &'static str,
+    /// The program (the first element of the argument list).
+    pub exec: &'static str,
     /// The working directory.
     pub cwd: &'static str,
     /// The file-mode creation mask.
@@ -90,6 +92,12 @@ pub struct CredSpec {
     pub seccomp: u32,
     /// The seccomp list, raw NUL-joined decimals.
     pub seccomp_list: &'static str,
+    /// The path list, raw NUL-joined `ro:`/`rw:` entries.
+    pub paths: &'static str,
+    /// Namespace bits.
+    pub ns: u32,
+    /// 0 own map, 1 range map.
+    pub user_map: u32,
 }
 
 /// A credential for `user`: no caps, `no_new_privs` on, no seccomp.
@@ -100,6 +108,9 @@ pub fn cred(user: &'static str) -> CredSpec {
         nnp: 1,
         seccomp: 0,
         seccomp_list: "",
+        paths: "",
+        ns: 0,
+        user_map: 0,
     }
 }
 
@@ -112,9 +123,60 @@ pub enum RouteSpec {
     Pipe(u32),
 }
 
+/// One policy rule.
+#[derive(Clone)]
+pub struct RuleSpec {
+    /// The glob.
+    pub pattern: &'static str,
+    /// The users, raw NUL-joined names; empty with `users_any`.
+    pub users: &'static str,
+    /// 1 when the rule names no users.
+    pub users_any: u32,
+    /// The capability ceiling, bits 0..=40.
+    pub caps: u64,
+    pub require_nnp: u32,
+    pub require_seccomp: u32,
+    /// 0 none, 1 own, 2 own or range.
+    pub allow_userns: u32,
+    /// The ceilings, by kernel resource number; `u64::MAX` is infinity.
+    pub rlimits: [Option<u64>; 16],
+}
+
+/// A rule matching `pattern` for any user: no capabilities, nothing required or allowed.
+pub fn rule(pattern: &'static str) -> RuleSpec {
+    RuleSpec {
+        pattern,
+        users: "",
+        users_any: 1,
+        caps: 0,
+        require_nnp: 0,
+        require_seccomp: 0,
+        allow_userns: 0,
+        rlimits: [None; 16],
+    }
+}
+
+/// The policy header: the default and the top-level ceilings.
+#[derive(Clone)]
+pub struct HeadSpec {
+    /// 1 when the default is to allow.
+    pub allow: u32,
+    pub rlimits: [Option<u64>; 16],
+}
+
+/// A header with default deny and no ceilings.
+pub fn head() -> HeadSpec {
+    HeadSpec {
+        allow: 0,
+        rlimits: [None; 16],
+    }
+}
+
 /// The whole database.
 #[derive(Clone, Default)]
 pub struct DbSpec {
+    pub policy: Vec<RuleSpec>,
+    pub policy_head: Option<HeadSpec>,
     pub nodes: Vec<NodeSpec>,
     pub creds: Vec<CredSpec>,
     pub routes: Vec<RouteSpec>,
@@ -131,6 +193,7 @@ pub fn node(name: &str, groups: Vec<GroupSpec>) -> NodeSpec {
         output: NONE,
         cred: 0,
         env: "",
+        exec: "/bin/true",
         cwd: "/",
         umask: 0o027,
         reload: 0,
@@ -194,7 +257,7 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
         let (exec_off, exec_len) = if n.kind == 2 {
             (0, 0)
         } else {
-            intern(&mut pool, b"/bin/true")
+            intern(&mut pool, n.exec.as_bytes())
         };
         let (env_off, env_len) = intern(&mut pool, n.env.as_bytes());
         let (cwd_off, cwd_len) = intern(&mut pool, n.cwd.as_bytes());
@@ -252,16 +315,59 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
     for c in &spec.creds {
         let (uo, ul) = intern(&mut pool, c.user.as_bytes());
         let (so, sl) = intern(&mut pool, c.seccomp_list.as_bytes());
-        let mut rec = [0u32; 12];
+        let (po, pl) = intern(&mut pool, c.paths.as_bytes());
+        let mut rec = [0u32; 13];
         rec[C_USER_OFF] = uo;
         rec[C_USER_LEN] = ul;
         rec[C_NNP] = c.nnp;
         rec[C_SECCOMP] = c.seccomp;
         rec[C_SECCOMP_OFF] = so;
         rec[C_SECCOMP_LEN] = sl;
+        rec[C_NS] = c.ns;
+        rec[C_USER_MAP] = c.user_map;
+        rec[C_PATHS_OFF] = po;
+        rec[C_PATHS_LEN] = pl;
         rec[C_CAPS_LO] = n32(usize::try_from(c.caps & 0xffff_ffff).unwrap());
         rec[C_CAPS_HI] = n32(usize::try_from(c.caps >> 32).unwrap());
         creds.extend_from_slice(&rec);
+    }
+    let limit_words = |limits: &[Option<u64>; 16], mask: &mut u32, words: &mut [u32]| {
+        for (r, l) in limits.iter().enumerate() {
+            if let Some(v) = l {
+                *mask |= 1 << r;
+                words[2 * r] = n32(usize::try_from(*v & 0xffff_ffff).unwrap());
+                words[2 * r + 1] = n32(usize::try_from(*v >> 32).unwrap());
+            }
+        }
+    };
+    let mut policy_words: Vec<u32> = Vec::new();
+    for r in &spec.policy {
+        let (po, pl) = intern(&mut pool, r.pattern.as_bytes());
+        let (uo, ul) = intern(&mut pool, r.users.as_bytes());
+        let mut rec = [0u32; 43];
+        rec[P_PATTERN_OFF] = po;
+        rec[P_PATTERN_LEN] = pl;
+        rec[P_USERS_OFF] = uo;
+        rec[P_USERS_LEN] = ul;
+        rec[P_USERS_ANY] = r.users_any;
+        rec[P_CAPS_LO] = n32(usize::try_from(r.caps & 0xffff_ffff).unwrap());
+        rec[P_CAPS_HI] = n32(usize::try_from(r.caps >> 32).unwrap());
+        rec[P_REQUIRE_NNP] = r.require_nnp;
+        rec[P_REQUIRE_SECCOMP] = r.require_seccomp;
+        rec[P_ALLOW_USERNS] = r.allow_userns;
+        let mut mask = 0;
+        limit_words(&r.rlimits, &mut mask, &mut rec[P_RLIMIT_BASE..]);
+        rec[P_RLIMIT_MASK] = mask;
+        policy_words.extend_from_slice(&rec);
+    }
+    let mut head_words: Vec<u32> = Vec::new();
+    if let Some(h) = &spec.policy_head {
+        let mut rec = [0u32; 34];
+        rec[PH_ALLOW] = h.allow;
+        let mut mask = 0;
+        limit_words(&h.rlimits, &mut mask, &mut rec[PH_RLIMIT_BASE..]);
+        rec[PH_RLIMIT_MASK] = mask;
+        head_words.extend_from_slice(&rec);
     }
     let mut routes: Vec<u32> = Vec::new();
     for r in &spec.routes {
@@ -273,7 +379,7 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
             RouteSpec::Pipe(i) => routes.extend_from_slice(&[1, *i, 0]),
         }
     }
-    let tables: [(&[u32], usize); 7] = [
+    let tables: [(&[u32], usize); 9] = [
         (&nodes, spec.nodes.len()),
         (&groups, gcount),
         (&edges, ecount),
@@ -281,6 +387,8 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
         (&routes, spec.routes.len()),
         (&spec.enabled, spec.enabled.len()),
         (&spec.presyslog, spec.presyslog.len()),
+        (&policy_words, spec.policy.len()),
+        (&head_words, usize::from(spec.policy_head.is_some())),
     ];
     let mut header = [0u32; HEADER_WORDS];
     header[H_MAGIC] = MAGIC;

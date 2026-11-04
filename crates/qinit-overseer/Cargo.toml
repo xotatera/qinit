@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 libc = { workspace = true, features = ["std"] }
 qinit-db = { path = "../qinit-db" }
+qinit-launch = { path = "../qinit-launch" }
 qinit-overseer-core = { path = "../qinit-overseer-core" }
 qinit-sys = { path = "../qinit-sys" }
 
@@ -24,4 +25,4 @@ workspace = true
 
 [package.metadata.disciplines]
 layer = "runtime"
-allow = ["libc", "qinit-db", "qinit-overseer-core", "qinit-sys"]
+allow = ["libc", "qinit-db", "qinit-launch", "qinit-overseer-core", "qinit-sys"]

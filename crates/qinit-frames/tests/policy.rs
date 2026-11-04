@@ -573,3 +573,156 @@ fn a_limit_of_the_wrong_shape_is_not_reported_as_an_enum() {
     assert!(!es[0].detail.contains("untagged enum"), "{es:?}");
     assert!(es[0].detail.contains("limit"), "{es:?}");
 }
+
+const BOX: &str = r#"
+    [worker.box]
+    exec = ["/box"]
+    credentials = { uid = "svc" }
+    sandbox = { namespaces = ["user"] }
+"#;
+
+const BOX_RANGE: &str = r#"
+    [worker.box]
+    exec = ["/box"]
+    credentials = { uid = "svc" }
+    sandbox = { namespaces = ["user"], user_map = "range" }
+"#;
+
+fn box_rule(userns: &str) -> String {
+    format!("default = \"deny\"\n[[rule]]\nmatch = \"box\"\n{userns}\n")
+}
+
+#[test]
+fn a_user_namespace_needs_a_rule_under_deny() {
+    let es = check(&pol("un-none", "default = \"deny\"\n"), &model(BOX)).expect_err("refused");
+    assert_eq!(es.len(), 1);
+    assert_eq!(
+        (es[0].code, es[0].key.as_str()),
+        (Code::Policy, "worker.box.credentials")
+    );
+    // A matching rule that does not allow the map is a violation keyed by the rule.
+    let es = check(&pol("un-rule", &box_rule("")), &model(BOX)).expect_err("refused");
+    assert_eq!(es.len(), 1);
+    assert_eq!(es[0].key, "rule[0].allow_userns");
+    assert!(es[0].detail.contains("worker `box`"), "{}", es[0].detail);
+    assert!(es[0].detail.contains("user namespace"), "{}", es[0].detail);
+    assert!(es[0].file.is_some());
+    let es = check(
+        &pol("un-false", &box_rule("allow_userns = false")),
+        &model(BOX),
+    )
+    .expect_err("refused");
+    assert_eq!(es[0].key, "rule[0].allow_userns");
+}
+
+#[test]
+fn allow_userns_true_allows_own_not_range() {
+    let p = pol("un-true", &box_rule("allow_userns = true"));
+    assert_eq!(check(&p, &model(BOX)), Ok(()));
+    let es = check(&p, &model(BOX_RANGE)).expect_err("refused");
+    assert_eq!(es[0].key, "rule[0].allow_userns");
+}
+
+#[test]
+fn allow_userns_range_allows_both() {
+    let p = pol("un-range", &box_rule("allow_userns = \"range\""));
+    assert_eq!(check(&p, &model(BOX)), Ok(()));
+    assert_eq!(check(&p, &model(BOX_RANGE)), Ok(()));
+}
+
+#[test]
+fn an_unmatched_user_namespace_passes_under_allow() {
+    let p = pol("un-allow", "default = \"allow\"\n");
+    assert_eq!(check(&p, &model(BOX)), Ok(()));
+}
+
+#[test]
+fn a_bad_allow_userns_is_a_bad_value() {
+    for bad in [
+        "allow_userns = \"all\"",
+        "allow_userns = 1",
+        "allow_userns = [true]",
+    ] {
+        let es = policy("un-bad", &box_rule(bad)).expect_err("refused");
+        assert_eq!(es.len(), 1, "{bad}: {es:?}");
+        assert_eq!(
+            (es[0].code, es[0].key.as_str()),
+            (Code::BadValue, "rule[0].allow_userns"),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn a_pattern_outside_the_name_alphabet_is_refused() {
+    for bad in ["a/b", "", "a b", "a?", &"a".repeat(129)] {
+        let es = policy(
+            "pat-bad",
+            &format!("default = \"deny\"\n[[rule]]\nmatch = \"{bad}\"\n"),
+        )
+        .expect_err("refused");
+        assert_eq!(es.len(), 1, "{bad:?}: {es:?}");
+        assert_eq!(
+            (es[0].code, es[0].key.as_str()),
+            (Code::BadValue, "rule[0].match"),
+            "{bad:?}"
+        );
+    }
+    for ok in ["~backup", "ssh@tty1:x+y.z-w_1", "*", "a*", &"a".repeat(128)] {
+        pol(
+            "pat-ok",
+            &format!("default = \"deny\"\n[[rule]]\nmatch = \"{ok}\"\n"),
+        );
+    }
+}
+
+#[test]
+fn a_user_name_outside_the_grammar_is_refused() {
+    for bad in ["Root", "0day", "a b", "x1234567890123456789012345678901234"] {
+        let es = policy(
+            "usr-bad",
+            &format!("default = \"deny\"\n[[rule]]\nmatch = \"a\"\nusers = [\"svc\", \"{bad}\"]\n"),
+        )
+        .expect_err("refused");
+        assert_eq!(es.len(), 1, "{bad:?}: {es:?}");
+        assert_eq!(
+            (es[0].code, es[0].key.as_str()),
+            (Code::BadValue, "rule[0].users"),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn a_policy_compiles_into_the_database() {
+    use qinit_db::Userns;
+    let p = pol(
+        "to-model",
+        r#"
+        default = "allow"
+        rlimits_max = { nofile = 2048 }
+        [[rule]]
+        match = "sshd"
+        users = ["sshd"]
+        caps_max = ["net_bind_service"]
+        require_nnp = true
+        allow_userns = "range"
+        rlimits_max = { nice = 5 }
+        [[rule]]
+        match = "~*"
+        "#,
+    );
+    let m = qinit_frames::policy::to_model(&p);
+    assert!(m.allow_by_default);
+    assert_eq!(m.ceiling[7], Some(2048));
+    assert_eq!(m.ceiling[0], Some(u64::MAX));
+    assert_eq!(m.rules.len(), 2);
+    assert_eq!(m.rules[0].pattern, "sshd");
+    assert_eq!(m.rules[0].users, Some(vec!["sshd".to_owned()]));
+    assert_eq!(m.rules[0].caps_max, 1 << 10);
+    assert!(m.rules[0].require_nnp && !m.rules[0].require_seccomp);
+    assert_eq!(m.rules[0].allow_userns, Userns::Range);
+    assert_eq!(m.rules[0].rlimits[13], Some(5));
+    assert_eq!(m.rules[1].users, None);
+    assert_eq!(m.rules[1].allow_userns, Userns::No);
+}

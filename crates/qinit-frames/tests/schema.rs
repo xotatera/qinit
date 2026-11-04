@@ -18,7 +18,7 @@ output      = "/dev/log"
 errors      = "/dev/console"
 cell        = { memory_max = "512M", pids_max = 256 }
 credentials = { uid = "sshd", caps = ["net_bind_service"], nnp = false, securebits = "noroot-locked" }
-sandbox     = { namespaces = ["mount", "pid"], landlock = [], seccomp = "default" }
+sandbox     = { namespaces = ["mount", "pid"], paths = [], seccomp = "default" }
 deps = [
   { group = "require_all", edges = [
       { to = "firewall", mode = "sync" },
@@ -164,7 +164,7 @@ fn credentials_no_longer_carry_sandbox_keys() {
     for k in [
         "namespaces = [\"mount\"]",
         "seccomp = \"default\"",
-        "landlock = []",
+        "paths = []",
     ] {
         let src = format!("credentials = {{ uid = \"x\", {k} }}");
         let e = parse("worker", &src).unwrap_err();
@@ -176,7 +176,7 @@ fn credentials_no_longer_carry_sandbox_keys() {
 fn sandbox_keys_parse_and_unknown_sandbox_keys_are_unknown_keys() {
     let f = parse(
         "worker",
-        "sandbox = { namespaces = [\"net\"], seccomp = \"default\", landlock = [\"ro:/etc\"] }",
+        "sandbox = { namespaces = [\"net\"], seccomp = \"default\", paths = [\"ro:/etc\"] }",
     )
     .unwrap();
     assert!(f.sandbox.is_some());
@@ -334,4 +334,10 @@ fn core_is_an_unknown_rlimit_key() {
         (e.code, e.key.as_str()),
         (Code::UnknownKey, "worker.t.rlimits.core")
     );
+}
+
+#[test]
+fn landlock_is_an_unknown_key() {
+    let e = parse("worker", "sandbox = { landlock = [\"ro:/etc\"] }").unwrap_err();
+    assert_eq!(e.code, Code::UnknownKey);
 }

@@ -12,3 +12,5 @@ pub mod request;
 pub mod run;
 pub mod status;
 pub mod supervisor;
+pub mod userns;
+pub mod view;

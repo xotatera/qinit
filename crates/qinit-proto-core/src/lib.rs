@@ -9,6 +9,7 @@
 mod authz;
 mod decode;
 mod encode;
+pub mod launch;
 mod layout;
 mod lists;
 mod spec;

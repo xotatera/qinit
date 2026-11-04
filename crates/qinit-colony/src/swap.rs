@@ -9,6 +9,7 @@
 
 use crate::effects::Effects;
 use crate::engine::{Colony, Notice, Outcome};
+use crate::instance::FRAMELESS;
 use qinit_colony_core::{
     Action, Input, Request, State, off, params, rebuild_late, reconcile, remap, slot_of,
 };
@@ -417,12 +418,16 @@ impl<E: Effects> Colony<E> {
         let moved = |frame: u32| frame_of.get(frame as usize).copied().unwrap_or(NEW_NODE);
         for (slot, rec) in self.insts.iter_mut().enumerate() {
             if let Some(rec) = rec {
-                rec.frame = moved(rec.frame);
+                if rec.frame != FRAMELESS {
+                    rec.frame = moved(rec.frame);
+                }
                 self.slots[slot].frame = rec.frame;
             }
         }
         for e in &mut self.ring {
-            e.frame = moved(e.frame);
+            if e.frame != FRAMELESS {
+                e.frame = moved(e.frame);
+            }
         }
         self.db = std::mem::take(&mut sw.db);
         self.model = std::mem::take(&mut sw.model);

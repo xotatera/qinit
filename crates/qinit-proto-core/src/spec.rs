@@ -104,6 +104,8 @@ pub open spec fn refs_ok(b: Seq<u8>) -> bool {
         &&& sref(b, rw(b, LA_FRAME_OFF as int), rw(b, LA_FRAME_LEN as int))
         &&& lref(b, rw(b, LA_ARGV_OFF as int), rw(b, LA_ARGV_LEN as int))
         &&& lref(b, rw(b, LA_ENV_OFF as int), rw(b, LA_ENV_LEN as int))
+    } else if t == T_RUN {
+        sref(b, rw(b, RU_NAME_OFF as int), rw(b, RU_NAME_LEN as int))
     } else if t == T_NODE_STATUS {
         &&& sref(b, rw(b, NS_NAME_OFF as int), rw(b, NS_NAME_LEN as int))
         &&& sref(b, rw(b, NS_TARGET_OFF as int), rw(b, NS_TARGET_LEN as int))
@@ -136,12 +138,17 @@ pub open spec fn enums_ok(b: Seq<u8>) -> bool {
         &&& rw(b, CH_ACTION as int) <= 5
         &&& rw(b, CH_SETTLED as int) <= 1
     } else if t == T_LAUNCH {
-        rw(b, LA_FD_ROLES as int) <= 7
+        &&& rw(b, LA_FD_ROLES as int) <= 7
+        &&& rw(b, LA_FLAGS as int) <= FLAG_PIDFD as int
     } else if t == T_REFRESH {
         rw(b, RF_SETTLED as int) <= 1
     } else if t == T_SHUTDOWN {
         &&& rw(b, SH_MODE as int) <= 2
         &&& rw(b, SH_SETTLED as int) <= 1
+    } else if t == T_RUN {
+        &&& rw(b, RU_FD_ROLES as int) <= 7
+        &&& rw(b, RU_FLAGS as int) <= FLAG_PIDFD as int
+        &&& rw(b, RU_STOP_MODE as int) <= 1
     } else if t == T_ERROR {
         1 <= rw(b, ER_CODE as int) <= 12
     } else if t == T_NODE_STATUS {
@@ -200,6 +207,10 @@ pub open spec fn content_ok(b: Seq<u8>) -> bool {
         &&& env_list_ok(env)
         &&& elems(env) <= MAX_ENV_ADD
         &&& wait_ok(1, rw(b, LA_WAIT_MS as int))
+    } else if t == T_RUN {
+        &&& 1 <= rw(b, RU_NAME_LEN as int) < MAX_NAME_LEN
+        &&& rw(b, RU_STOP_GRACE_MS as int) >= MIN_GRACE_MS as int
+        &&& wait_ok(1, rw(b, RU_WAIT_MS as int))
     } else if t == T_REFRESH {
         wait_ok(rw(b, RF_SETTLED as int), rw(b, RF_WAIT_MS as int))
     } else if t == T_SHUTDOWN {
@@ -240,15 +251,22 @@ pub open spec fn required_fds(b: Seq<u8>) -> int {
         spec_roles_count(rw(b, LA_FD_ROLES as int))
     } else if t == T_REFRESH {
         1
+    } else if t == T_RUN {
+        1 + spec_roles_count(rw(b, RU_FD_ROLES as int))
     } else {
         0
     }
 }
 
-/// The header's descriptor count is the number received and the number the record requires.
+/// The header's descriptor count is the number received and the number the record requires. A
+/// `Launched` reply carries a pidfd or none, so for it the count is 0 or 1.
 pub open spec fn fds_ok(b: Seq<u8>, received: int) -> bool {
     &&& hw(b, H_FD_COUNT as int) == received
-    &&& hw(b, H_FD_COUNT as int) == required_fds(b)
+    &&& if mtype(b) == T_LAUNCHED {
+        hw(b, H_FD_COUNT as int) <= 1
+    } else {
+        hw(b, H_FD_COUNT as int) == required_fds(b)
+    }
 }
 
 /// The shape of a message: the header, a known type, and the whole record region inside it.

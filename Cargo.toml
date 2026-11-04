@@ -3,7 +3,7 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/qinit-cell", "crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-client", "crates/qinit-colony", "crates/qinit-colony-core", "crates/qinit-db", "crates/qinit-db-core", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-frames", "crates/qinit-graph-core", "crates/qinit-ipc", "crates/qinit-overseer", "crates/qinit-overseer-core", "crates/qinit-proto", "crates/qinit-proto-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests", "crates/qinit-wire"]
+members = ["crates/qinit-cell", "crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-client", "crates/qinit-colony", "crates/qinit-colony-core", "crates/qinit-db", "crates/qinit-db-core", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-frames", "crates/qinit-graph-core", "crates/qinit-ipc", "crates/qinit-launch", "crates/qinit-overseer", "crates/qinit-overseer-core", "crates/qinit-proto", "crates/qinit-proto-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests", "crates/qinit-wire"]
 
 [workspace.package]
 edition = "2024"
@@ -77,6 +77,9 @@ timeout = "45s"
 # 60s covers 2x the slowest measured 29.6s CPU.
 # Group 1 (2026-11-04, one graph labelling, pool UTF-8 once, rlimit words): 223 verified, 14-16 s
 # (21.6 s CPU) after a source change, warm 4.1 s; the timeout stands.
+# Group 2 (2026-11-04, paths rules, user map, policy tables): 278 verified, three runs 8.8, 9.5 and
+# 8.6 s CPU (9.3-10.1 s wall, 0.39 GB peak). The build directory was warm; a cold build adds
+# 15-20 s CPU (inferred), so 60s stands at about 2x the cold total.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-db-core"
 kind = "verus"
@@ -88,26 +91,34 @@ timeout = "60s"
 # build (vstd included, as in a container) adds the 15-20 s the other crates show. 90s covers
 # about 2.5x the expected cold CPU. SP6 gate run 2026-11-04: warm 16.4 s (16.0 s CPU), so cold is
 # about 36 s CPU; 90s still covers 2.5x.
+# Group 2 (2026-11-04, `Run` and the instance table): 161 verified, three runs 27.0, 30.6 and 27.9 s
+# CPU (28-31 s wall, 0.40 GB peak), warm build directory. 100s covers about 3x the slowest and
+# about 2x a cold build (inferred, +15-20 s CPU).
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-colony-core"
 kind = "verus"
 package = "qinit-colony-core"
 memory = "4G"
-timeout = "90s"
+timeout = "100s"
 
 # Measured 2026-11-04: 134 verified, 5.0-5.3 s (4.8-5.1 s CPU), 308 MB peak; 6.9 s (6.6 s CPU) in
 # the SP6 gate run, where it once took 20 s under load. All warm: a cold build adds 15-20 s CPU
 # (inferred), so 45s.
 # Group 1 (2026-11-04, one step per rlimit): 139 verified, 6.0 s (5.8 s CPU) warm; 45s stands.
+# Group 2 (2026-11-04, the view, user namespaces, the proved policy check): 112 verified, three runs
+# 19.4, 29.2 and 20.4 s CPU (21-30 s wall, 0.38 GB peak), warm build directory; it was 5.8 s before
+# group 2. 90s covers 3x the slowest warm run and about 1.8x a cold build (inferred, +15-20 s CPU).
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-overseer-core"
 kind = "verus"
 package = "qinit-overseer-core"
 memory = "4G"
-timeout = "45s"
+timeout = "90s"
 
 # Measured 2026-11-04: 169 verified, warm 1.4-1.5 s (1.2 s CPU). A cold build (vstd included)
 # adds the 15-20 s the other crates show (inferred, not measured cold); 45s covers about 2x that.
+# Group 2 (2026-11-04, `Run`, the QLR1 layout, fds): 240 verified, three runs 2.8, 2.4 and 2.4 s CPU
+# (3.4-3.9 s wall, 0.33 GB peak), warm build directory. 45s stands.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-proto-core"
 kind = "verus"

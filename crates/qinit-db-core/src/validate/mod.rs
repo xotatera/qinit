@@ -5,11 +5,17 @@ mod graph;
 mod header;
 mod keys;
 mod lists;
+mod paths;
+mod policy;
 mod pool;
 mod records;
 mod spec;
 mod utf8;
 
+pub use paths::{
+    canonical_exec, first_elem_len, path_entry_ok_exec, paths_cover_exec, paths_shape_exec,
+};
+pub(crate) use pool::pool_bytes;
 pub use pool::{count_elements, elements_ok, nul_list_ok};
 #[allow(unused_imports)] // the specs only; Verus erases them outside verification
 pub use spec::*;
@@ -24,6 +30,7 @@ use lists::check_lists;
 use pool::check_pool_refs;
 use qinit_graph_core::GEdge;
 use records::check_records;
+pub use records::is_root_exec;
 use vstd::prelude::*;
 
 verus! {
@@ -71,10 +78,10 @@ pub enum DbError {
 }
 
 /// Table id `t` as a [`DbError`] field.
-#[allow(clippy::cast_possible_truncation)]  // `t < 8`, so the cast is exact
+#[allow(clippy::cast_possible_truncation)]  // `t <= T_POOL`, so the cast is exact
 pub(crate) fn tid(t: usize) -> (r: u8)
     requires
-        t < 8,
+        t <= T_POOL,
     ensures
         r as int == t as int,
 {
@@ -147,7 +154,7 @@ pub open spec fn edge_string_readable(b: Seq<u8>, x: int) -> bool {
 /// Credential `c`'s strings are readable.
 pub open spec fn cred_strings_readable(b: Seq<u8>, c: int) -> bool {
     &&& slice_readable(b, cf(b, c, C_USER_OFF), cf(b, c, C_USER_LEN))
-    &&& slice_readable(b, cf(b, c, C_LANDLOCK_OFF), cf(b, c, C_LANDLOCK_LEN))
+    &&& slice_readable(b, cf(b, c, C_PATHS_OFF), cf(b, c, C_PATHS_LEN))
     &&& slice_readable(b, cf(b, c, C_SECCOMP_OFF), cf(b, c, C_SECCOMP_LEN))
 }
 
@@ -176,7 +183,7 @@ pub proof fn lemma_accessors_in_bounds(b: Seq<u8>)
     ensures
         forall|i: int| 0 <= i < HEADER_WORDS ==> #[trigger] word_readable(b, i),
         forall|t: int, r: int, w: int|
-            0 <= t < 7 && 0 <= r < tcnt(b, t) && 0 <= w < spec_words(t)
+            0 <= t < T_POOL && 0 <= r < tcnt(b, t) && 0 <= w < spec_words(t)
                 ==> #[trigger] word_readable(b, widx(b, t, r, w)),
         forall|i: int| 0 <= i < nodes(b) ==> #[trigger] node_strings_readable(b, i),
         forall|x: int| 0 <= x < tcnt(b, T_EDGES as int) ==> #[trigger] edge_string_readable(b, x),
@@ -187,7 +194,7 @@ pub proof fn lemma_accessors_in_bounds(b: Seq<u8>)
 {
     assert(table_ok(b, T_POOL as int));
     assert forall|t: int, r: int, w: int|
-        0 <= t < 7 && 0 <= r < tcnt(b, t) && 0 <= w < spec_words(
+        0 <= t < T_POOL && 0 <= r < tcnt(b, t) && 0 <= w < spec_words(
             t,
         ) implies #[trigger] word_readable(b, widx(b, t, r, w)) by {
         header::lemma_widx(b, t, r, w);

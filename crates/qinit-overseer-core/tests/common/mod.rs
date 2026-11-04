@@ -28,9 +28,10 @@ pub struct ReqSpec {
     pub securebits: u32,
     pub nnp: u32,
     pub ns: u32,
+    pub user_map: u32,
     pub seccomp: u32,
     pub seccomp_list: &'static str,
-    pub landlock: &'static str,
+    pub paths: &'static str,
     pub stdin: Stream,
     pub stdout: Stream,
     pub stderr: Stream,
@@ -53,9 +54,10 @@ pub fn minimal() -> ReqSpec {
         securebits: 0,
         nnp: 1,
         ns: 0,
+        user_map: 0,
         seccomp: 0,
         seccomp_list: "",
-        landlock: "",
+        paths: "",
         stdin: Stream::Path("/dev/null"),
         stdout: Stream::Path("/dev/null"),
         stderr: Stream::Same,
@@ -84,7 +86,7 @@ pub fn build(spec: &ReqSpec) -> Vec<u8> {
     let cwd = intern(spec.cwd);
     let user = intern(spec.user);
     let seccomp = intern(spec.seccomp_list);
-    let landlock = intern(spec.landlock);
+    let paths = intern(spec.paths);
     let mut stream = |s: &Stream, kind: usize, a: usize, b: usize| match s {
         Stream::Path(p) => {
             let (o, l) = intern(p);
@@ -122,11 +124,12 @@ pub fn build(spec: &ReqSpec) -> Vec<u8> {
     rec[Q_SECUREBITS] = spec.securebits;
     rec[Q_NNP] = spec.nnp;
     rec[Q_NS] = spec.ns;
+    rec[Q_USER_MAP] = spec.user_map;
     rec[Q_SECCOMP] = spec.seccomp;
     rec[Q_SECCOMP_OFF] = seccomp.0;
     rec[Q_SECCOMP_LEN] = seccomp.1;
-    rec[Q_LANDLOCK_OFF] = landlock.0;
-    rec[Q_LANDLOCK_LEN] = landlock.1;
+    rec[Q_PATHS_OFF] = paths.0;
+    rec[Q_PATHS_LEN] = paths.1;
     match spec.ready {
         None => rec[Q_READY_KIND] = READY_NONE,
         Some(fd) => {

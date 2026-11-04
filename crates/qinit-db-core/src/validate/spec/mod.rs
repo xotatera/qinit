@@ -6,12 +6,16 @@
 
 mod graph;
 mod lists;
+mod paths;
+mod policy;
 mod pool;
 mod records;
 mod tables;
 
 pub use graph::*;
 pub use lists::*;
+pub use paths::*;
+pub use policy::*;
 pub use pool::*;
 pub use records::*;
 pub use tables::*;

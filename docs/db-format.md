@@ -11,7 +11,7 @@ number of 32-bit words, and every cross-reference is a `u32` index. `NONE` (`0xF
 
 ## Header
 
-The header is `HEADER_WORDS` = 20 words:
+The header is `HEADER_WORDS` = 24 words:
 
 | Word | Meaning |
 | --- | --- |
@@ -28,14 +28,16 @@ Table ids, in header order, with the words per record (`WORDS`):
 
 | Id | Table | Words |
 | --- | --- | --- |
-| 0 `T_NODES` | nodes | 36 |
+| 0 `T_NODES` | nodes | 68 |
 | 1 `T_GROUPS` | dependency groups | 3 |
 | 2 `T_EDGES` | edges | 7 |
-| 3 `T_CREDS` | credentials | 12 |
+| 3 `T_CREDS` | credentials | 13 |
 | 4 `T_ROUTES` | output routes | 3 |
 | 5 `T_ENABLED` | enabled closure | 1 |
 | 6 `T_PRESYSLOG` | pre-syslog list | 1 |
-| 7 `T_POOL` | string pool | bytes |
+| 7 `T_POLICY` | policy rules | 43 |
+| 8 `T_POLICY_HEAD` | the policy's defaults | 34 |
+| 9 `T_POOL` | string pool | bytes |
 
 Strings (names, argv, paths) live in the pool and are referenced by (offset, length).
 
@@ -43,7 +45,7 @@ Strings (names, argv, paths) live in the pool and are referenced by (offset, len
 
 `MAX_NODES` 4096, `MAX_GROUPS` 16384, `MAX_EDGES` 32768, `MAX_EDGES_PER_GROUP` 64,
 `MAX_GROUPS_PER_NODE` 16, `MAX_CREDS` 4096, `MAX_ROUTES` 8192, `MAX_POOL` 1 MiB,
-`MAX_NAME_LEN` 96, `MAX_UMASK` `0o777`, `MAX_SYSCALL` 512. `MAX_NODES` and `MAX_EDGES` equal the
+`MAX_POLICY_RULES` 1024, `MAX_PATTERN_LEN` 128, `MAX_NAME_LEN` 96, `MAX_UMASK` `0o777`, `MAX_SYSCALL` 512. `MAX_NODES` and `MAX_EDGES` equal the
 limits of `qinit-graph-core`.
 
 ## Records
@@ -113,7 +115,7 @@ later step, not at the limit's own.
 | 5 | `E_RESTART_ON` | 0 none, 1 error, 2 restart, 3 refresh |
 | 6 | `E_FLAGS` | bit 0 = `stop = "parallel"`, bit 1 = cascade (a quarantined `require_all` target quarantines the dependent); all other bits zero |
 
-### Credential (12 words)
+### Credential (13 words)
 
 | Word | Name | Meaning |
 | --- | --- | --- |
@@ -121,10 +123,11 @@ later step, not at the limit's own.
 | 2, 3 | `C_CAPS_LO`, `C_CAPS_HI` | capability set as 64 bits; only bits 0..=40 may be set |
 | 4 | `C_SECUREBITS` | 0 none, 1 noroot, 2 noroot-locked |
 | 5 | `C_NNP` | no_new_privs, 0 or 1 |
-| 6 | `C_NS` | namespaces, bits 0..=4: mount, pid, ipc, uts, net |
+| 6 | `C_NS` | namespaces, bits 0..=5: mount, pid, ipc, uts, net, user |
 | 7 | `C_SECCOMP` | 0 none, 1 default, 2 deny-list, 3 allow-list |
-| 8, 9 | `C_LANDLOCK_OFF`, `C_LANDLOCK_LEN` | entries `ro:/path` or `rw:/path`, NUL-separated |
+| 8, 9 | `C_PATHS_OFF`, `C_PATHS_LEN` | the sandbox path list: entries `ro:<path>` or `rw:<path>` with a canonical absolute path (starts `/`, no empty, `.` or `..` component, no trailing `/`), NUL-separated |
 | 10, 11 | `C_SECCOMP_OFF`, `C_SECCOMP_LEN` | syscall numbers of the deny- or allow-list, NUL-separated canonical decimals; length 0 exactly when `C_SECCOMP` is 0 or 1 |
+| 12 | `C_USER_MAP` | the user namespace's id map: 0 own, 1 range; 1 only with the `user` bit of `C_NS` |
 
 The default program answers `clone`, `unshare`, `clone3` and `setns` itself (`clone` and
 `unshare` by their namespace flags, `setns` always, `clone3` with `ENOSYS`), so a deny-list
@@ -134,6 +137,40 @@ allow-list that names `clone` or `unshare` permits creating namespaces.
 A canonical decimal is 1 to 3 ASCII digits with no leading zero (the single digit `0` is the
 only entry starting with `0`), and its value is below `MAX_SYSCALL`. The compiler emits exactly
 this form and the validator accepts only it.
+
+### Policy rule (43 words)
+
+A rule says what a request launched under a matching name may ask for. Rules are in file order
+and the first match decides.
+
+| Word | Name | Meaning |
+| --- | --- | --- |
+| 0, 1 | `P_PATTERN_OFF`, `P_PATTERN_LEN` | a glob over the launch name, 1 to `MAX_PATTERN_LEN` bytes of node-name bytes, `*` (any run of bytes) and `~` |
+| 2, 3 | `P_USERS_OFF`, `P_USERS_LEN` | the users the rule applies to, NUL-separated names (1 to 32 bytes: a lowercase letter or `_`, then lowercase letters, digits, `_` or `-`) |
+| 4 | `P_USERS_ANY` | 1 when the rule names no users and any user matches; then `P_USERS_LEN` is 0 |
+| 5, 6 | `P_CAPS_LO`, `P_CAPS_HI` | the capability ceiling, bits 0..=40 |
+| 7 | `P_REQUIRE_NNP` | 1 when the request must set `no_new_privs` |
+| 8 | `P_REQUIRE_SECCOMP` | 1 when the request must carry a seccomp filter |
+| 9 | `P_ALLOW_USERNS` | 0 no user namespace, 1 its own map, 2 its own or the range map |
+| 10 | `P_RLIMIT_MASK` | the limits the rule sets a ceiling for (the node record's encoding) |
+| 11 + 2r, 12 + 2r | `P_RLIMIT_BASE` | the ceiling of resource `r`, low and high word |
+
+### Policy header (34 words)
+
+The one record of `T_POLICY_HEAD`, when a policy exists: word 0 `PH_ALLOW` (1 when a request no rule
+matches is allowed), word 1 `PH_RLIMIT_MASK` and words 2.. `PH_RLIMIT_BASE` the top-level
+ceilings, which hold under every rule (the boot ceilings are merged in by the compiler).
+
+A database with no `T_POLICY_HEAD` record has no policy and `Run` refuses every request with the
+detail "no policy"; one with rules has the header record. The check itself is
+`qinit_overseer_core::check_policy`, proved equal to its specification: a request that does not
+raise any ceiling and meets the first matching rule's requirements is allowed. The first failing
+clause is reported in the order user, capabilities, `no_new_privs`, seccomp, user namespace,
+limits.
+
+A request that holds no privilege (not `root`, no capabilities, `no_new_privs`, no user
+namespace, every limit within the top-level ceilings) needs no rule and is allowed whenever a
+policy exists.
 
 ### Route (3 words)
 
@@ -154,8 +191,8 @@ and every credential record names a non-empty user; the overseer resolves that n
 `/etc/passwd` and `/etc/group` of the booted system. A brood runs nothing and has `N_CRED`
 `NONE`. There is no default identity: a database whose worker has no credential, or whose
 credential has an empty user, is refused. The sandbox fields of a credential (`C_NS`,
-`C_SECCOMP`, the Landlock and seccomp lists) go with the identity in the same record. A
-credential with `C_NNP` 0 and a Landlock list or a seccomp filter needs `CAP_SYS_ADMIN` (bit
+`C_SECCOMP`, the path and seccomp lists) go with the identity in the same record. A
+credential with `C_NNP` 0 and a path list or a seccomp filter needs `CAP_SYS_ADMIN` (bit
 `CAP_SYS_ADMIN_BIT` = 21 of `C_CAPS_LO`), because installing those without `no_new_privs`
 requires it.
 
@@ -164,9 +201,9 @@ requires it.
 The validator is total and never panics. It accepts a database only if all of the following hold:
 
 1. **V1** Header fields, offsets and counts are in bounds and within the limits, and tables do not overlap.
-2. **V2** The pool is valid UTF-8, and every pool reference is an in-bounds slice between two character boundaries, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, environment entries, Landlock entries, seccomp lists) holds no empty element. `N_INSTANCE_OF` may be empty, but at most `MAX_NAME_LEN` bytes.
+2. **V2** The pool is valid UTF-8, and every pool reference is an in-bounds slice between two character boundaries, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, environment entries, path entries, seccomp lists) holds no empty element. `N_INSTANCE_OF` may be empty, but at most `MAX_NAME_LEN` bytes.
 3. **V3** Every cross-table index is `NONE` or in range of its table.
-4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline). A node's `stop_mode` is 0 or 1, its `restart_delay_ms` and `stop_grace_ms` are at least 100, `restart_max > 0` implies `restart_window_ms > 0`, and its `umask` is at most `MAX_UMASK`. A worker or forager has a credential and a brood has none; the working directory is non-empty and starts with `/`; every environment entry has a non-empty key before its first `=`. A credential's user is non-empty, `seccomp` is at most 3 and its list is non-empty exactly when `seccomp` is 2 or 3; every list entry is a canonical decimal below `MAX_SYSCALL`; `nnp` 0 with a Landlock list or a seccomp filter requires `CAP_SYS_ADMIN` in `caps_lo`.
+4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline). A node's `stop_mode` is 0 or 1, its `restart_delay_ms` and `stop_grace_ms` are at least 100, `restart_max > 0` implies `restart_window_ms > 0`, and its `umask` is at most `MAX_UMASK`. A worker or forager has a credential and a brood has none; the working directory is a canonical absolute path; every path entry is `ro:` or `rw:` and a canonical absolute path; every environment entry has a non-empty key before its first `=`. A credential's user is non-empty, `seccomp` is at most 3 and its list is non-empty exactly when `seccomp` is 2 or 3; every list entry is a canonical decimal below `MAX_SYSCALL`; `nnp` 0 with a path list or a seccomp filter requires `CAP_SYS_ADMIN` in `caps_lo`. A credential's path list is strictly ascending by path (so no path repeats), holds no `/`, `/dev` or `/tmp` and no writable `/proc`, and needs the `mount` bit of `C_NS`; a node with a non-empty list has an absolute program (the first element of its `exec`) at or below an entry, and a working directory that is `/` or at or below an entry. A policy rule's flags and enums are in range (`users_any` and `require_*` 0 or 1, `allow_userns` at most 2, `caps_hi` at most `0x1ff`), its pattern is 1 to `MAX_PATTERN_LEN` bytes of node-name bytes, `*` and `~`, its users are valid names, `users_any` 1 goes with an empty users list, its limits are node-record limits, there is a header record whenever there is a rule, and the header record's flags and limits are in range. `C_NS` is at most `0x3f`, `C_USER_MAP` at most 1, `C_USER_MAP` 1 needs the `user` bit, and a credential with the `user` bit does not name `root`.
 5. **V5** The ordering-edge graph is acyclic.
 6. **V6** The stop order derived by `qinit-graph-core` places every hard dependent before its dependency, whatever the opt-outs.
 7. **V7** `stop = "parallel"` appears on no hard edge.
@@ -180,12 +217,12 @@ functions `v1` to `v8` in `crates/qinit-db-core/src/validate/spec/`, and
 - Tables appear in header order, each starting at or after the end of the one before (the
   first after the header). Every table but the pool starts on a 4-byte boundary.
 - Every pool reference (names, argv, readiness arguments, instanced-frame names, environment
-  entries, working directories, path targets, users, Landlock entries, seccomp lists, launch keys, route
+  entries, working directories, path targets, users, path entries, seccomp lists, launch keys, route
   paths) is in the pool and starts and ends on a character boundary of the pool, which as a whole
   is valid UTF-8 as `core::str::from_utf8` defines it (`DbError::Utf8 { offset }` names the first
   bad pool offset; `DbError::Pool { table, record }` names the record whose reference leaves the
   pool or splits a character). Node names are 1 to `MAX_NAME_LEN` bytes and strictly ascending, bytewise.
-- The argv, environment, Landlock and seccomp lists are either empty (length 0) or have no NUL
+- The argv, environment, path and seccomp lists are either empty (length 0) or have no NUL
   as their first or last byte and no two NULs in a row, so every element is non-empty
   (`DbError::Pool { table, record }` otherwise). The content of environment and seccomp entries and of the working
   directory is a V4 rule (`DbError::Consistency`), checked after V2 has placed the bytes in the

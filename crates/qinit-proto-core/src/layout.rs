@@ -19,7 +19,7 @@ pub const HEADER_WORDS: usize = 5;
 pub const MAX_MESSAGE: usize = 65536;
 
 /// Descriptors one message carries at most.
-pub const MAX_FDS: usize = 3;
+pub const MAX_FDS: usize = 4;
 
 /// Extra argv elements a launch may append at most.
 pub const MAX_ARGV_TAIL: usize = 64;
@@ -74,6 +74,9 @@ pub const T_REFRESH: u32 = 5;
 
 /// Request: shut down.
 pub const T_SHUTDOWN: u32 = 6;
+
+/// Request: launch a whole request, root only.
+pub const T_RUN: u32 = 7;
 
 /// Reply: an error.
 pub const T_ERROR: u32 = 64;
@@ -159,11 +162,47 @@ pub const LA_FD_ROLES: usize = 6;
 /// Launch request word 7: `wait_ms`, 1 to `MAX_WAIT_MS`.
 pub const LA_WAIT_MS: usize = 7;
 
+/// Launch request word 8: `flags`, bit 0 `FLAG_PIDFD`.
+pub const LA_FLAGS: usize = 8;
+
+/// `Launch` flag: reply to `Launched` with a pidfd of the instance's main process.
+pub const FLAG_PIDFD: u32 = 1;
+
 /// Refresh request word 0: `settled`, 0 or 1.
 pub const RF_SETTLED: usize = 0;
 
 /// Refresh request word 1: `wait_ms`, 1 to `MAX_WAIT_MS` when settled, else 0.
 pub const RF_WAIT_MS: usize = 1;
+
+/// Run request word 0: `name_off`, the launch name: 1 to `MAX_NAME_LEN - 1` bytes.
+pub const RU_NAME_OFF: usize = 0;
+
+/// Run request word 1: `name_len`.
+pub const RU_NAME_LEN: usize = 1;
+
+/// Run request word 2: `fd_roles`, a mask of 1 stdin, 2 stdout, 4 stderr.
+pub const RU_FD_ROLES: usize = 2;
+
+/// Run request word 3: `flags`, bit 0 `FLAG_PIDFD`.
+pub const RU_FLAGS: usize = 3;
+
+/// Run request word 4: `memory_max_kib`, 0 for none.
+pub const RU_MEMORY_MAX_KIB: usize = 4;
+
+/// Run request word 5: `pids_max`, 0 for none.
+pub const RU_PIDS_MAX: usize = 5;
+
+/// Run request word 6: `stop_mode`, 0 main, 1 cell.
+pub const RU_STOP_MODE: usize = 6;
+
+/// Run request word 7: `stop_grace_ms`, at least `MIN_GRACE_MS`.
+pub const RU_STOP_GRACE_MS: usize = 7;
+
+/// Run request word 8: `wait_ms`, 1 to `MAX_WAIT_MS`.
+pub const RU_WAIT_MS: usize = 8;
+
+/// The shortest stop grace, milliseconds.
+pub const MIN_GRACE_MS: u32 = 100;
 
 /// Shutdown request word 0: `mode`, 0 poweroff, 1 reboot, 2 halt.
 pub const SH_MODE: usize = 0;
@@ -325,13 +364,14 @@ pub const LF_ERRNO: usize = 1;
 pub const EX_STATUS: usize = 0;
 
 /// Every message type with the words in its fixed record.
-pub const RECORD_WORDS: [(u32, usize); 17] = [
+pub const RECORD_WORDS: [(u32, usize); 18] = [
     (T_STATUS, 2),
     (T_LIST, 2),
     (T_CHANGE, 5),
-    (T_LAUNCH, 8),
+    (T_LAUNCH, 9),
     (T_REFRESH, 2),
     (T_SHUTDOWN, 3),
+    (T_RUN, 9),
     (T_ERROR, 3),
     (T_NODE_STATUS, 13),
     (T_INSTANCE_STATUS, 7),
@@ -355,11 +395,13 @@ pub open spec fn spec_record_words(t: int) -> int {
     } else if t == 3 {
         5
     } else if t == 4 {
-        8
+        9
     } else if t == 5 {
         2
     } else if t == 6 {
         3
+    } else if t == 7 {
+        9
     } else if t == 64 {
         3
     } else if t == 65 {
@@ -385,7 +427,7 @@ pub open spec fn spec_record_words(t: int) -> int {
 
 /// `t` is a message type of the format.
 pub open spec fn spec_known_type(t: int) -> bool {
-    (1 <= t <= 6) || (64 <= t <= 74)
+    (1 <= t <= 7) || (64 <= t <= 74)
 }
 
 /// Words in the fixed record of message type `t`; `record_words` for an unknown type is 0.
@@ -400,9 +442,11 @@ pub fn record_words(t: u32) -> (n: usize)
     } else if t == T_CHANGE {
         5
     } else if t == T_LAUNCH {
-        8
+        9
     } else if t == T_SHUTDOWN {
         3
+    } else if t == T_RUN {
+        9
     } else if t == T_ERROR {
         3
     } else if t == T_NODE_STATUS {
@@ -427,7 +471,7 @@ pub fn known_type(t: u32) -> (r: bool)
     ensures
         r == spec_known_type(t as int),
 {
-    (1 <= t && t <= 6) || (64 <= t && t <= 74)
+    (1 <= t && t <= 7) || (64 <= t && t <= 74)
 }
 
 } // verus!

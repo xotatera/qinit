@@ -41,6 +41,12 @@ pub struct InstanceSpec {
     pub env_add: Vec<(String, String)>,
     /// The descriptors the caller supplied: stdin, stdout, stderr.
     pub fds: [Option<OwnedFd>; 3],
+    /// The sealed launch request to hand the executor as its descriptor 3, for an instance of a
+    /// `Run`; `None` for a frame's instance, whose request the effects layer builds.
+    pub request: Option<OwnedFd>,
+    /// The cell's memory ceiling in KiB and its process ceiling, 0 for none.
+    pub memory_max_kib: u32,
+    pub pids_max: u32,
 }
 
 /// Effects per node. Every error is an errno; colony turns a failed `start` into a spawn
@@ -52,6 +58,9 @@ pub trait Effects {
     fn start(&mut self, node: u32, spec: &NodeSpec) -> Result<i32, Errno>;
     /// Creates the cell of instance slot `slot` and starts its main process; returns the pid.
     fn start_instance(&mut self, slot: u32, spec: InstanceSpec) -> Result<i32, Errno>;
+    /// A pidfd of the main process of the instance in `slot`, for a caller that asked for one.
+    /// The instance runs on without one when this fails.
+    fn instance_pidfd(&mut self, slot: u32) -> Result<OwnedFd, Errno>;
     /// Begins the stop of the instance in `slot`, as `stop` does for a node.
     fn stop_instance(&mut self, slot: u32, mode: StopMode, grace_ms: u32) -> Result<(), Errno>;
     /// The instance's cell is empty, or its creation failed: remove it. Called once per cell.

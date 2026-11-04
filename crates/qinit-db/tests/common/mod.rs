@@ -5,7 +5,7 @@
 
 use qinit_db::{
     Cred, Edge, Group, GroupKind, Kind, Mode, Model, Node, Ready, Restart, RestartOn,
-    RestartPolicy, Route, Seccomp, Securebits, Stop, StopMode, Target,
+    RestartPolicy, Route, Seccomp, Securebits, Stop, StopMode, Target, UserMap,
 };
 
 /// The plain service credential: user `svc`, no caps, `no_new_privs`, no sandbox.
@@ -17,7 +17,8 @@ pub fn svc() -> Cred {
         nnp: true,
         ns: 0,
         seccomp: Seccomp::None,
-        landlock: Vec::new(),
+        paths: Vec::new(),
+        user_map: UserMap::Own,
     }
 }
 
@@ -132,12 +133,14 @@ pub fn sample() -> Model {
                 nnp: true,
                 ns: 0b10101,
                 seccomp: Seccomp::Deny(vec![101, 310]),
-                landlock: vec!["ro:/etc".into(), "rw:/run/sshd".into()],
+                paths: vec!["ro:/bin".into(), "ro:/etc".into(), "rw:/run/sshd".into()],
+                user_map: UserMap::Own,
             },
             svc(),
         ],
         routes: vec![Route::Path("/var/log/sshd.log".into()), Route::Pipe(1)],
         enabled: vec![0, 1, 3],
         presyslog: vec![1],
+        policy: None,
     }
 }

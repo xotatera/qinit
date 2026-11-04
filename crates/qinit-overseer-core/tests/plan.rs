@@ -54,24 +54,108 @@ fn the_plan_of_a_minimal_request_is_the_fixed_skeleton() {
 }
 
 #[test]
-fn a_pid_namespace_puts_fork_before_the_deadline_and_outputs() {
+fn a_pid_namespace_rearms_after_the_fork() {
     let mut spec = minimal();
     spec.ns = 0b00011; // mount + pid
     let s = steps(&spec);
     let flags = 0x0002_0000 | 0x2000_0000;
     assert_eq!(
-        &s[..5],
+        &s[..12],
         &[
             Step::Setsid,
+            Step::ArmDeadline(1000),
+            Step::OpenStdin,
+            Step::OpenStdout,
+            Step::OpenStderr,
+            Step::Umask(0o27),
+            Step::RlimitCore0,
             Step::Unshare(flags),
             Step::MountSlaveRoot,
             Step::MountTmp,
             Step::Fork,
+            Step::RearmDeadline,
         ]
     );
-    assert!(pos(&s, Step::Fork) < pos(&s, Step::ArmDeadline(1000)));
-    assert!(pos(&s, Step::ArmDeadline(1000)) < pos(&s, Step::OpenStdout));
     assert!(!s.contains(&Step::LoopbackUp));
+}
+
+#[test]
+fn no_pid_namespace_means_no_rearm() {
+    let mut spec = minimal();
+    spec.ns = 0b00100;
+    assert!(!steps(&spec).contains(&Step::RearmDeadline));
+}
+
+#[test]
+fn the_deadline_precedes_every_output() {
+    let mut spec = minimal();
+    spec.ns = 0b11111;
+    spec.ready = Some(7);
+    let s = steps(&spec);
+    let arm = pos(&s, Step::ArmDeadline(1000));
+    assert!(arm < pos(&s, Step::OpenStdin));
+    assert!(arm < pos(&s, Step::OpenStdout));
+    assert!(arm < pos(&s, Step::OpenStderr));
+    assert!(arm < pos(&s, Step::RouteReady(7)));
+    assert_eq!(arm, 1, "only setsid comes before the deadline");
+}
+
+#[test]
+fn outputs_and_rlimits_precede_every_unshare() {
+    let mut spec = minimal();
+    spec.ns = 0b11111;
+    spec.rlimits[7] = Some(64);
+    let s = steps(&spec);
+    let unshare = s
+        .iter()
+        .position(|x| matches!(x, Step::Unshare(_)))
+        .expect("an unshare");
+    for early in [
+        Step::OpenStdin,
+        Step::OpenStdout,
+        Step::OpenStderr,
+        Step::Umask(0o27),
+        Step::Rlimit(7, 64),
+        Step::RlimitCore0,
+    ] {
+        assert!(pos(&s, early) < unshare, "{early:?}");
+    }
+}
+
+#[test]
+fn mount_without_paths_keeps_the_host_copy() {
+    let mut spec = minimal();
+    spec.ns = 1;
+    let s = steps(&spec);
+    assert!(pos(&s, Step::MountSlaveRoot) < pos(&s, Step::MountTmp));
+    // With a list the view builds /tmp itself.
+    spec.paths = "ro:/bin";
+    spec.argv = "/bin/true";
+    let s = steps(&spec);
+    assert!(s.contains(&Step::MountSlaveRoot) && !s.contains(&Step::MountTmp));
+}
+
+#[test]
+fn loopback_follows_every_namespace_step() {
+    let mut spec = minimal();
+    spec.ns = 0b11111;
+    let s = steps(&spec);
+    let lo = pos(&s, Step::LoopbackUp);
+    for x in [
+        Step::MountSlaveRoot,
+        Step::MountTmp,
+        Step::Fork,
+        Step::RearmDeadline,
+    ] {
+        assert!(pos(&s, x) < lo, "{x:?}");
+    }
+    assert!(
+        s.iter()
+            .position(|x| matches!(x, Step::Unshare(_)))
+            .unwrap()
+            < lo
+    );
+    assert!(lo < pos(&s, Step::Setgid));
 }
 
 #[test]
@@ -114,14 +198,17 @@ fn a_high_capability_comes_from_the_second_word() {
 #[test]
 fn landlock_entries_follow_nnp_and_precede_seccomp() {
     let mut spec = minimal();
-    spec.landlock = "ro:/etc\0rw:/run/x\0ro:/usr";
+    spec.paths = "ro:/etc\0rw:/run/x\0ro:/usr";
+    spec.argv = "/etc/x";
+    spec.ns = 1;
     spec.seccomp = 1;
     let s = steps(&spec);
     let i = pos(&s, Step::LandlockRuleset);
     assert_eq!(
-        &s[i..i + 5],
+        &s[i..i + 6],
         &[
             Step::LandlockRuleset,
+            Step::LandlockViewRules,
             Step::LandlockRule(0),
             Step::LandlockRule(1),
             Step::LandlockRule(2),
@@ -141,6 +228,7 @@ fn landlock_entries_follow_nnp_and_precede_seccomp() {
 fn no_landlock_list_means_no_landlock_steps() {
     let s = steps(&minimal());
     assert!(!s.contains(&Step::LandlockRuleset) && !s.contains(&Step::LandlockRestrict));
+    assert!(!s.contains(&Step::LandlockViewRules));
     assert!(!s.contains(&Step::Seccomp));
 }
 
@@ -194,7 +282,8 @@ fn rlimits_umask_ready_and_deadline_come_from_the_request() {
 #[test]
 fn exec_is_last_and_occurs_once() {
     let mut spec = minimal();
-    spec.landlock = "ro:/etc";
+    spec.paths = "ro:/etc";
+    spec.argv = "/etc/x";
     spec.seccomp = 1;
     spec.ns = 0b11111;
     let s = steps(&spec);
@@ -205,16 +294,17 @@ fn exec_is_last_and_occurs_once() {
 
 #[test]
 fn the_plan_never_exceeds_max_steps() {
-    let landlock: &'static str = Box::leak(
+    let paths: &'static str = Box::leak(
         (0..64)
-            .map(|i| format!("ro:/p{i}"))
+            .map(|i| format!("ro:/p{i:02}"))
             .collect::<Vec<_>>()
             .join("\0")
             .into_boxed_str(),
     );
     let mut spec = minimal();
     spec.caps = (1u64 << 41) - 1;
-    spec.landlock = landlock;
+    spec.paths = paths;
+    spec.argv = "/p00/x";
     spec.seccomp = 1;
     spec.ns = 0b11111;
     spec.flags = FLAG_DIE_WITH_PARENT;
@@ -270,4 +360,180 @@ fn plan_without_limits_has_only_core0() {
     let s = steps(&minimal());
     assert!(!s.iter().any(|x| matches!(x, Step::Rlimit(..))));
     assert!(s.contains(&Step::RlimitCore0));
+}
+
+fn listed() -> ReqSpec {
+    ReqSpec {
+        ns: 0b00011,
+        argv: "/etc/x",
+        paths: "ro:/etc\0rw:/run/x\0ro:/usr",
+        ..minimal()
+    }
+}
+
+fn is_view(x: &Step) -> bool {
+    matches!(
+        x,
+        Step::ViewRoot
+            | Step::ViewDev
+            | Step::ViewTmp
+            | Step::ViewEntry(_)
+            | Step::ViewPivot
+            | Step::ViewSeal
+    )
+}
+
+#[test]
+fn view_steps_follow_the_fork_and_precede_the_credentials() {
+    let s = steps(&listed());
+    let first = s.iter().position(is_view).unwrap();
+    let last = s.iter().rposition(is_view).unwrap();
+    assert!(pos(&s, Step::RearmDeadline) < first);
+    assert!(last < pos(&s, Step::Setgroups));
+    assert!(last < pos(&s, Step::LandlockRuleset));
+    assert_eq!(s[first], Step::ViewRoot);
+    assert_eq!(
+        &s[first..first + 3],
+        &[Step::ViewRoot, Step::ViewDev, Step::ViewTmp]
+    );
+}
+
+#[test]
+fn the_pivot_follows_every_entry_and_precedes_the_seal() {
+    let s = steps(&listed());
+    for i in 0..3 {
+        assert!(pos(&s, Step::ViewEntry(i)) < pos(&s, Step::ViewPivot));
+    }
+    assert!(pos(&s, Step::ViewPivot) < pos(&s, Step::ViewSeal));
+    assert!(pos(&s, Step::ViewTmp) < pos(&s, Step::ViewEntry(0)));
+    assert!(pos(&s, Step::ViewEntry(0)) < pos(&s, Step::ViewEntry(1)));
+}
+
+#[test]
+fn one_view_entry_per_path() {
+    let s = steps(&listed());
+    let entries: Vec<_> = s
+        .iter()
+        .filter(|x| matches!(x, Step::ViewEntry(_)))
+        .collect();
+    assert_eq!(
+        entries,
+        [
+            &Step::ViewEntry(0),
+            &Step::ViewEntry(1),
+            &Step::ViewEntry(2)
+        ]
+    );
+    // Landlock follows the pivot, one rule per entry.
+    assert!(pos(&s, Step::ViewSeal) < pos(&s, Step::LandlockRuleset));
+}
+
+#[test]
+fn no_view_without_a_list() {
+    for ns in [0, 1, 0b00011, 0b11111] {
+        let mut spec = minimal();
+        spec.ns = ns;
+        assert!(!steps(&spec).iter().any(is_view), "ns {ns:#b}");
+    }
+}
+
+#[test]
+fn landlock_view_rules_iff_a_list() {
+    let s = steps(&listed());
+    assert!(pos(&s, Step::LandlockRuleset) < pos(&s, Step::LandlockViewRules));
+    assert!(pos(&s, Step::LandlockViewRules) < pos(&s, Step::LandlockRule(0)));
+    assert!(pos(&s, Step::LandlockRule(2)) < pos(&s, Step::LandlockRestrict));
+    assert!(!steps(&minimal()).contains(&Step::LandlockViewRules));
+}
+
+fn userns() -> ReqSpec {
+    ReqSpec {
+        ns: 0b11_1111,
+        user: "svc",
+        ..minimal()
+    }
+}
+
+fn is_user_step(x: &Step) -> bool {
+    matches!(
+        x,
+        Step::ProcSelf | Step::ClearGroups | Step::UserNamespace | Step::UnshareOwned(_)
+    )
+}
+
+#[test]
+fn user_steps_iff_the_bit() {
+    assert!(!steps(&minimal()).iter().any(is_user_step));
+    let mut spec = minimal();
+    spec.ns = 0b01_1111;
+    assert!(!steps(&spec).iter().any(is_user_step));
+    for ns in [32, 0b11_1111, 32 | 1, 32 | 16] {
+        spec.ns = ns;
+        let s = steps(&spec);
+        for want in [Step::ProcSelf, Step::ClearGroups, Step::UserNamespace] {
+            assert_eq!(s.iter().filter(|x| **x == want).count(), 1, "{want:?}");
+        }
+        assert_eq!(
+            s.iter()
+                .filter(|x| matches!(x, Step::UnshareOwned(_)))
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn clear_groups_precedes_the_user_namespace_which_precedes_the_owned_unshare() {
+    let s = steps(&userns());
+    let owned = s
+        .iter()
+        .position(|x| matches!(x, Step::UnshareOwned(_)))
+        .unwrap();
+    assert!(pos(&s, Step::ClearGroups) < pos(&s, Step::UserNamespace));
+    assert!(pos(&s, Step::UserNamespace) < owned);
+    // Every view step and the host-owned unshare precede the user namespace.
+    assert!(pos(&s, Step::RearmDeadline) < pos(&s, Step::ClearGroups));
+    assert!(owned < pos(&s, Step::LoopbackUp));
+    assert!(owned < pos(&s, Step::Setgid));
+    // No setgroups: the groups were cleared in the host.
+    assert!(!s.contains(&Step::Setgroups));
+}
+
+#[test]
+fn net_uts_ipc_move_to_the_owned_unshare() {
+    let (ns, uts, ipc, net) = (
+        0x0002_0000_u32,
+        0x0400_0000_u32,
+        0x0800_0000_u32,
+        0x4000_0000_u32,
+    );
+    let pid = 0x2000_0000_u32;
+    let s = steps(&userns());
+    assert!(s.contains(&Step::Unshare(ns | pid)));
+    assert!(s.contains(&Step::UnshareOwned(ns | uts | ipc | net)));
+    // Without the mount and pid bits there is no host-owned unshare at all.
+    let mut spec = minimal();
+    spec.ns = 32 | 16;
+    let s = steps(&spec);
+    assert!(!s.iter().any(|x| matches!(x, Step::Unshare(_))));
+    assert!(s.contains(&Step::UnshareOwned(net)));
+    // Without the user bit the old arrangement stands.
+    spec.ns = 16 | 8;
+    let s = steps(&spec);
+    assert!(s.contains(&Step::Unshare(net | uts)));
+    assert!(!s.iter().any(|x| matches!(x, Step::UnshareOwned(_))));
+}
+
+#[test]
+fn proc_self_precedes_the_pivot() {
+    let mut spec = userns();
+    spec.argv = "/etc/x";
+    spec.paths = "ro:/etc";
+    let s = steps(&spec);
+    assert!(pos(&s, Step::ProcSelf) < pos(&s, Step::ViewPivot));
+    assert!(pos(&s, Step::ViewEntry(0)) < pos(&s, Step::ProcSelf));
+    assert!(pos(&s, Step::ViewSeal) < pos(&s, Step::ClearGroups));
+    // Without a view the descriptor is still opened, before the user namespace.
+    let s = steps(&userns());
+    assert!(pos(&s, Step::ProcSelf) < pos(&s, Step::ClearGroups));
 }

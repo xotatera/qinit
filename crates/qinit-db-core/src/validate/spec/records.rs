@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! V3 and V4: cross-table indices, tiling, enums and name order.
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only use: Verus erases it
+use super::paths::*;
+#[allow(unused_imports, clippy::wildcard_imports)] // spec-only use: Verus erases it
 use super::pool::*;
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only use: Verus erases it
 use super::tables::*;
@@ -107,16 +109,7 @@ pub open spec fn keys_ascending(s: Seq<u8>) -> bool {
 /// One resource limit of a node: both words 0 when unset; `nofile` at least 1 and finite;
 /// `nice` and `rtprio` within their ceilings.
 pub open spec fn rlimit_ok(b: Seq<u8>, i: int, r: usize) -> bool {
-    let lo = nf(b, i, (N_RLIMIT_BASE + 2 * r) as usize);
-    let hi = nf(b, i, (N_RLIMIT_BASE + 2 * r + 1) as usize);
-    if ((nf(b, i, N_RLIMIT_MASK) as u32) >> (r as u32)) & 1 == 0 {
-        lo == 0 && hi == 0
-    } else {
-        &&& (r == RLIMIT_NOFILE as usize ==> !(lo == 0 && hi == 0) && !(lo == u32::MAX as int && hi
-            == u32::MAX as int))
-        &&& (r == RLIMIT_NICE as usize ==> hi == 0 && lo <= MAX_RLIMIT_NICE as int)
-        &&& (r == RLIMIT_RTPRIO as usize ==> hi == 0 && lo <= MAX_RLIMIT_RTPRIO as int)
-    }
+    super::policy::limit_ok(b, T_NODES as int, i, N_RLIMIT_MASK, N_RLIMIT_BASE, r)
 }
 
 /// The limit mask holds no bit but `RLIMIT_MASK_ALLOWED`'s and every limit is [`rlimit_ok`].
@@ -178,12 +171,51 @@ pub open spec fn cred_enum_ok(b: Seq<u8>, c: int) -> bool {
     &&& cf(b, c, C_CAPS_HI) <= 0x1ff
     &&& cf(b, c, C_SECUREBITS) <= 2
     &&& cf(b, c, C_NNP) <= 1
-    &&& cf(b, c, C_NS) <= 0x1f
+    &&& cf(b, c, C_NS) <= 0x3f
+    &&& cf(b, c, C_USER_MAP) <= 1
     &&& cf(b, c, C_SECCOMP) <= 3
     &&& (cf(b, c, C_SECCOMP) <= 1) == (cf(b, c, C_SECCOMP_LEN) == 0)
-    &&& (cf(b, c, C_NNP) == 0 && (cf(b, c, C_LANDLOCK_LEN) > 0 || cf(b, c, C_SECCOMP) != 0)
+    &&& (cf(b, c, C_NNP) == 0 && (cf(b, c, C_PATHS_LEN) > 0 || cf(b, c, C_SECCOMP) != 0)
         ==> has_sys_admin(b, c))
     &&& seccomp_list_ok(pool_slice(b, cf(b, c, C_SECCOMP_OFF), cf(b, c, C_SECCOMP_LEN)))
+    &&& (cf(b, c, C_USER_MAP) == 1 ==> (cf(b, c, C_NS) as u32) & 32u32 != 0u32)
+    &&& ((cf(b, c, C_NS) as u32) & 32u32 != 0u32 ==> !is_root(
+        pool_slice(b, cf(b, c, C_USER_OFF), cf(b, c, C_USER_LEN)),
+    ))
+    &&& paths_list_ok(pool_slice(b, cf(b, c, C_PATHS_OFF), cf(b, c, C_PATHS_LEN)))
+    &&& paths_shape_ok(
+        pool_slice(b, cf(b, c, C_PATHS_OFF), cf(b, c, C_PATHS_LEN)),
+        cf(b, c, C_NS) as u32,
+    )
+}
+
+/// `s` is the user name `root`.
+pub open spec fn is_root(s: Seq<u8>) -> bool {
+    s.len() == 4 && s[0] == 0x72 && s[1] == 0x6f && s[2] == 0x6f && s[3] == 0x74
+}
+
+/// `e` is the first element of the NUL-separated list `s`: its bytes up to the first NUL.
+pub open spec fn is_first(s: Seq<u8>, e: Seq<u8>) -> bool {
+    &&& e.len() <= s.len()
+    &&& e == s.subrange(0, e.len() as int)
+    &&& (e.len() == s.len() || s[e.len() as int] == 0)
+    &&& forall|k: int| 0 <= k < e.len() ==> #[trigger] e[k] != 0
+}
+
+/// A node with credentials runs inside its credential's path list: the program and the
+/// working directory are covered.
+pub open spec fn node_paths_ok(b: Seq<u8>, i: int) -> bool {
+    nf(b, i, N_CRED) != NONE ==> forall|e: Seq<u8>|
+        #![trigger is_first(pool_slice(b, nf(b, i, N_EXEC_OFF), nf(b, i, N_EXEC_LEN)), e)]
+        is_first(pool_slice(b, nf(b, i, N_EXEC_OFF), nf(b, i, N_EXEC_LEN)), e) ==> paths_cover_ok(
+            pool_slice(
+                b,
+                cf(b, nf(b, i, N_CRED) as int, C_PATHS_OFF),
+                cf(b, nf(b, i, N_CRED) as int, C_PATHS_LEN),
+            ),
+            e,
+            pool_slice(b, nf(b, i, N_CWD_OFF), nf(b, i, N_CWD_LEN)),
+        )
 }
 
 pub open spec fn route_enum_ok(b: Seq<u8>, r: int) -> bool {
@@ -216,8 +248,14 @@ pub open spec fn v4(b: Seq<u8>) -> bool {
     &&& forall|g: int| 0 <= g < tcnt(b, T_GROUPS as int) ==> #[trigger] group_enum_ok(b, g)
     &&& forall|x: int| 0 <= x < tcnt(b, T_EDGES as int) ==> #[trigger] edge_enum_ok(b, x)
     &&& forall|c: int| 0 <= c < tcnt(b, T_CREDS as int) ==> #[trigger] cred_enum_ok(b, c)
+    &&& forall|i: int| 0 <= i < nodes(b) ==> #[trigger] node_paths_ok(b, i)
     &&& forall|r: int| 0 <= r < tcnt(b, T_ROUTES as int) ==> #[trigger] route_enum_ok(b, r)
     &&& forall|i: int| 0 < i < nodes(b) ==> #[trigger] name_sorted(b, i)
+    &&& forall|p: int|
+        0 <= p < tcnt(b, T_POLICY as int) ==> #[trigger] super::policy::policy_rule_ok(b, p)
+    &&& forall|h: int|
+        0 <= h < tcnt(b, T_POLICY_HEAD as int) ==> #[trigger] super::policy::policy_head_ok(b, h)
+    &&& super::policy::policy_tables_ok(b)
 }
 
 } // verus!

@@ -7,11 +7,11 @@
 
 use crate::effects::Effects;
 use crate::engine::{Colony, Error, Notice, Outcome};
-use crate::instance::{LaunchArgs, LaunchError};
+use crate::instance::{LaunchArgs, LaunchError, RunArgs, RunError};
 use crate::swap::SwapError;
-use qinit_colony_core::{Reason, Report, Request, SlotState, State, Why};
+use qinit_colony_core::{Reason, Report, Request, SlotState, State, Why, slot_of};
 use qinit_db::ReadError;
-use qinit_proto_core::{DecodeError, EncodeError, MAX_MESSAGE, PeerId, authorized};
+use qinit_proto_core::{DecodeError, EncodeError, FLAG_PIDFD, MAX_MESSAGE, PeerId, authorized};
 use qinit_wire::{
     Action, Entries, ErrorCode, InstanceStatus, ListEntry, Mode, Msg, NodeStatus, Rep, Req,
     StateWord, encode, op_of,
@@ -36,6 +36,9 @@ pub struct WaitId(pub u64);
 pub struct Attached {
     pub fds: Vec<OwnedFd>,
     pub database: Option<Result<Vec<u8>, u32>>,
+    /// For a `Run`: the launch request the server read from its sealed memfd, with the memfd
+    /// itself, or the reason it could not (19 too large, 20 unreadable, 21 not fully sealed).
+    pub request: Option<Result<(Vec<u8>, OwnedFd), u32>>,
 }
 
 /// What a shutdown ends in, once colony's part is done.
@@ -54,6 +57,18 @@ impl From<Mode> for ShutdownMode {
             Mode::Halt => ShutdownMode::Halt,
         }
     }
+}
+
+/// The words of a `Run` request.
+struct RunWire<'a> {
+    name: &'a str,
+    fd_roles: u32,
+    pidfd: bool,
+    memory_max_kib: u32,
+    pids_max: u32,
+    stop_mode: u32,
+    stop_grace_ms: u32,
+    wait_ms: u32,
 }
 
 /// A node as `Status` shows it. It carries state and nothing about how the service is run.
@@ -120,11 +135,24 @@ pub enum OwnedRep {
 }
 
 impl OwnedRep {
-    /// Encodes the reply (no descriptors travel with a reply) and returns its length.
+    /// Encodes the reply with no descriptor and returns its length.
     ///
     /// # Errors
     /// As `qinit_wire::encode`.
     pub fn encode(&self, out: &mut [u8; MAX_MESSAGE]) -> Result<usize, EncodeError> {
+        self.encode_with(0, out)
+    }
+
+    /// Encodes the reply declaring `fd_count` descriptors (a `Launched` reply may carry a
+    /// pidfd) and returns its length.
+    ///
+    /// # Errors
+    /// As `qinit_wire::encode`.
+    pub fn encode_with(
+        &self,
+        fd_count: u32,
+        out: &mut [u8; MAX_MESSAGE],
+    ) -> Result<usize, EncodeError> {
         let list: Vec<ListEntry<'_>> = match self {
             OwnedRep::ListPage { entries, .. } => entries
                 .iter()
@@ -174,7 +202,7 @@ impl OwnedRep {
             },
             OwnedRep::Exited { status } => Rep::Exited { status: *status },
         };
-        encode(&Msg::Rep(rep), 0, out)
+        encode(&Msg::Rep(rep), fd_count, out)
     }
 }
 
@@ -183,6 +211,8 @@ impl OwnedRep {
 #[derive(Debug)]
 pub struct Handled {
     pub reply: OwnedRep,
+    /// The descriptors that travel with `reply`: a pidfd with `Launched`, none otherwise.
+    pub reply_fds: Vec<OwnedFd>,
     pub waiting: bool,
     pub outcome: Outcome,
 }
@@ -296,6 +326,7 @@ impl<E: Effects> Colony<E> {
     ) -> Handled {
         let mut h = Handled {
             reply: OwnedRep::Accepted,
+            reply_fds: Vec::new(),
             waiting: false,
             outcome: Outcome::default(),
         };
@@ -337,6 +368,7 @@ impl<E: Effects> Colony<E> {
                 env_add,
                 fd_roles,
                 wait_ms,
+                flags,
             } => {
                 let argv: Vec<String> = argv_tail.iter().map(str::to_owned).collect();
                 let env: Vec<(String, String)> = env_add
@@ -345,9 +377,42 @@ impl<E: Effects> Colony<E> {
                     .map(|(k, v)| (k.to_owned(), v.to_owned()))
                     .collect();
                 self.launch_request(
-                    frame, argv, env, fd_roles, wait_ms, attached, wait, now, &mut h,
+                    frame,
+                    argv,
+                    env,
+                    (fd_roles, flags & FLAG_PIDFD != 0),
+                    wait_ms,
+                    attached,
+                    wait,
+                    now,
+                    &mut h,
                 );
             }
+            Req::Run {
+                name,
+                fd_roles,
+                flags,
+                memory_max_kib,
+                pids_max,
+                stop_mode,
+                stop_grace_ms,
+                wait_ms,
+            } => self.run_handler(
+                &RunWire {
+                    name,
+                    fd_roles,
+                    pidfd: flags & FLAG_PIDFD != 0,
+                    memory_max_kib,
+                    pids_max,
+                    stop_mode,
+                    stop_grace_ms,
+                    wait_ms,
+                },
+                attached,
+                wait,
+                now,
+                &mut h,
+            ),
             Req::Refresh { settled, wait_ms } => {
                 self.refresh_request(settled.then_some(wait_ms), attached, wait, now, &mut h);
             }
@@ -545,7 +610,7 @@ impl<E: Effects> Colony<E> {
         frame: &str,
         argv_tail: Vec<String>,
         env_add: Vec<(String, String)>,
-        fd_roles: u32,
+        (fd_roles, pidfd): (u32, bool),
         wait_ms: u32,
         attached: Attached,
         wait: WaitId,
@@ -570,6 +635,14 @@ impl<E: Effects> Colony<E> {
                 h.outcome.notices.extend(out.notices);
                 h.outcome.errors.extend(out.errors);
                 h.reply = OwnedRep::Launched { id };
+                if pidfd
+                    && let Some(slot) = slot_of(&self.slots, id)
+                    && let Ok(fd) = self
+                        .effects
+                        .instance_pidfd(u32::try_from(slot).unwrap_or(u32::MAX))
+                {
+                    h.reply_fds.push(fd);
+                }
                 self.park(wait, What::Instance(id), wait_ms, h);
             }
             Err(LaunchError::Spawn(e)) => {
@@ -589,6 +662,74 @@ impl<E: Effects> Colony<E> {
                 };
                 h.reply = error(code, 0);
             }
+        }
+    }
+
+    fn run_handler(
+        &mut self,
+        w: &RunWire<'_>,
+        attached: Attached,
+        wait: WaitId,
+        now: u64,
+        h: &mut Handled,
+    ) {
+        let (request, request_fd) = match attached.request {
+            Some(Ok(r)) => r,
+            Some(Err(reason)) => {
+                h.reply = error(ErrorCode::Invalid, reason);
+                return;
+            }
+            None => {
+                h.reply = error(ErrorCode::Invalid, 20);
+                return;
+            }
+        };
+        let mut fds: [Option<OwnedFd>; 3] = [None, None, None];
+        let mut given = attached.fds.into_iter();
+        for (slot, bit) in fds.iter_mut().zip([1u32, 2, 4]) {
+            if w.fd_roles & bit != 0 {
+                *slot = given.next();
+            }
+        }
+        let args = RunArgs {
+            name: w.name.to_owned(),
+            request,
+            request_fd,
+            fds,
+            memory_max_kib: w.memory_max_kib,
+            pids_max: w.pids_max,
+            stop: if w.stop_mode == 1 {
+                qinit_colony_core::StopMode::Cell
+            } else {
+                qinit_colony_core::StopMode::Main
+            },
+            grace_ms: w.stop_grace_ms,
+        };
+        match self.run_request(args, now) {
+            Ok((id, out)) => {
+                h.outcome.notices.extend(out.notices);
+                h.outcome.errors.extend(out.errors);
+                h.reply = OwnedRep::Launched { id };
+                if w.pidfd
+                    && let Some(slot) = slot_of(&self.slots, id)
+                    && let Ok(fd) = self
+                        .effects
+                        .instance_pidfd(u32::try_from(slot).unwrap_or(u32::MAX))
+                {
+                    h.reply_fds.push(fd);
+                }
+                self.park(wait, What::Instance(id), w.wait_ms, h);
+            }
+            Err(RunError::Spawn(e)) => {
+                h.reply = OwnedRep::LaunchFailed {
+                    step: 0,
+                    errno: u32::try_from(e.0).unwrap_or(0),
+                };
+            }
+            Err(RunError::Invalid(d)) => h.reply = error(ErrorCode::Invalid, d),
+            Err(RunError::Denied(d)) => h.reply = error(ErrorCode::Denied, d),
+            Err(RunError::NoSlot) => h.reply = error(ErrorCode::NoSlot, 0),
+            Err(RunError::ShuttingDown) => h.reply = error(ErrorCode::ShuttingDown, 0),
         }
     }
 

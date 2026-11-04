@@ -35,11 +35,12 @@ fn accessors_read_what_was_laid_out() {
         env_add,
         fd_roles,
         wait_ms,
+        flags,
     }) = decode(&b, fds).unwrap()
     else {
         panic!("not a launch");
     };
-    assert_eq!((frame, fd_roles, wait_ms), ("backup", 5, 5000));
+    assert_eq!((frame, fd_roles, wait_ms, flags), ("backup", 5, 5000, 0));
     assert_eq!(argv_tail.iter().collect::<Vec<_>>(), ["--full", "/data"]);
     assert_eq!(env_add.iter().collect::<Vec<_>>(), ["TARGET=/data"]);
     let (b, fds) = valid(T_LIST_PAGE);

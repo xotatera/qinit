@@ -16,11 +16,85 @@ verus! {
 fn count(b: &[u8], t: usize) -> (n: usize)
     requires
         well_formed(b@),
-        t < 8,
+        t <= T_POOL,
     ensures
         n as int == tcnt(b@, t as int),
 {
     header_word(b, 5 + 2 * t) as usize
+}
+
+/// The number of policy rules.
+#[must_use]
+pub fn policy_rule_count(b: &[u8]) -> (n: usize)
+    requires
+        well_formed(b@),
+    ensures
+        n as int == tcnt(b@, T_POLICY as int),
+{
+    count(b, T_POLICY)
+}
+
+/// The number of policy header records: 0 or 1.
+#[must_use]
+pub fn policy_head_count(b: &[u8]) -> (n: usize)
+    requires
+        well_formed(b@),
+    ensures
+        n as int == tcnt(b@, T_POLICY_HEAD as int),
+{
+    count(b, T_POLICY_HEAD)
+}
+
+/// Word `w` of policy rule `p`.
+#[must_use]
+pub fn policy_word(b: &[u8], p: usize, w: usize) -> (v: u32)
+    requires
+        well_formed(b@),
+        p < tcnt(b@, T_POLICY as int),
+        w < spec_words(T_POLICY as int),
+    ensures
+        v as int == pf(b@, p as int, w),
+{
+    field(b, T_POLICY, p, w)
+}
+
+/// Word `w` of the policy header record.
+#[must_use]
+pub fn policy_head_word(b: &[u8], w: usize) -> (v: u32)
+    requires
+        well_formed(b@),
+        0 < tcnt(b@, T_POLICY_HEAD as int),
+        w < spec_words(T_POLICY_HEAD as int),
+    ensures
+        v as int == hf(b@, 0, w),
+{
+    field(b, T_POLICY_HEAD, 0, w)
+}
+
+/// The pattern of policy rule `p`.
+#[must_use]
+pub fn policy_pattern(b: &[u8], p: usize) -> (s: &[u8])
+    requires
+        well_formed(b@),
+        p < tcnt(b@, T_POLICY as int),
+    ensures
+        s@ == pool_slice(b@, pf(b@, p as int, P_PATTERN_OFF), pf(b@, p as int, P_PATTERN_LEN)),
+{
+    assert(policy_pool_ok(b@, p as int));
+    pool_bytes(b, field(b, T_POLICY, p, P_PATTERN_OFF), field(b, T_POLICY, p, P_PATTERN_LEN))
+}
+
+/// The NUL-separated users of policy rule `p`.
+#[must_use]
+pub fn policy_users(b: &[u8], p: usize) -> (s: &[u8])
+    requires
+        well_formed(b@),
+        p < tcnt(b@, T_POLICY as int),
+    ensures
+        s@ == pool_slice(b@, pf(b@, p as int, P_USERS_OFF), pf(b@, p as int, P_USERS_LEN)),
+{
+    assert(policy_pool_ok(b@, p as int));
+    pool_bytes(b, field(b, T_POLICY, p, P_USERS_OFF), field(b, T_POLICY, p, P_USERS_LEN))
 }
 
 /// The number of nodes.
