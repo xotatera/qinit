@@ -82,6 +82,18 @@ limits of `qinit-graph-core`.
 | 35 | `N_LAUNCH_FDS` | the standard descriptors a caller may supply: a mask of `FD_STDIN` (1), `FD_STDOUT` (2) and `FD_STDERR` (4); at most 7, and 0 when `N_LAUNCH_CONCURRENCY` is 0 |
 | 36–67 | `N_RLIMIT_BASE` + 2`r`, + 2`r` + 1 | the low and high word of resource `r`'s limit (soft and hard are both set to it); both 0 when bit `r` of `N_RLIMIT_MASK` is clear; all ones is infinity; `nofile` is at least 1 and finite, `nice` at most 40, `rtprio` at most 99 |
 
+#### Resource limits at launch
+
+The overseer sets each limit with soft equal to hard, in resource order, and `core` to 0 always.
+Three kernel facts decide what a value means:
+
+- `nice` is the kernel's ceiling value, `20 - nice`: the limit 40 allows a nice of -20, 0 allows 20.
+- `rss` is accepted and ignored by the kernel.
+- `nofile` above `fs.nr_open` fails at launch, at the step `rlimit-nofile`.
+
+A limit that stops the executor's own later steps (a small `nofile`, `as` or `nproc`) fails at that
+later step, not at the limit's own.
+
 ### Group (3 words)
 
 | Word | Name | Meaning |

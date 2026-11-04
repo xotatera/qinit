@@ -200,6 +200,11 @@ fn node_words(
     let mut words = [0u32; WORDS[0]];
     words[..head.len()].copy_from_slice(&head);
     for (r, limit) in n.rlimits.iter().enumerate() {
+        if let Some(v) = *limit
+            && !rlimit_writable(r, v)
+        {
+            return Err(WriteError::Limit("rlimit"));
+        }
         let v = limit.unwrap_or(0);
         #[allow(clippy::cast_possible_truncation)] // the low word, then the high word
         {
@@ -208,6 +213,18 @@ fn node_words(
         }
     }
     Ok(words)
+}
+
+/// Whether the validator would take limit `v` of resource `r`: not `core`, `nofile` finite and
+/// at least 1, `nice` at most 40, `rtprio` at most 99.
+fn rlimit_writable(r: usize, v: u64) -> bool {
+    match r {
+        4 => false,
+        7 => (1..u64::MAX).contains(&v),
+        13 => v <= 40,
+        14 => v <= 99,
+        _ => true,
+    }
 }
 
 /// The `rlimit_mask` word: bit `r` is set when resource `r` has a limit.

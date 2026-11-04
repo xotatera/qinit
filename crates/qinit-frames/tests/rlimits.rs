@@ -166,3 +166,21 @@ fn dump_prints_every_set_limit() {
     }
     assert!(!c.dump.contains("rlimits.nofile"), "{}", c.dump);
 }
+
+#[test]
+fn a_size_beyond_four_tib_is_accepted_for_a_byte_limit() {
+    let r = ok(&worker("memlock = \"5000G\""));
+    assert_eq!(node(&r.model, "a").rlimits[8], Some(5000 << 30));
+}
+
+#[test]
+fn a_limit_of_the_wrong_shape_does_not_name_an_internal_type() {
+    for v in ["-1", "1.5"] {
+        let es = errs(&worker(&format!("nice = {v}")));
+        assert!(!es.is_empty(), "{v}");
+        assert!(
+            es.iter().all(|e| !e.detail.contains("untagged enum")),
+            "{es:?}"
+        );
+    }
+}

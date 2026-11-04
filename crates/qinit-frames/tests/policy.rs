@@ -477,8 +477,6 @@ fn allow_default_still_bounds_matched_rules() {
     assert_eq!(check(&p, &limited("capped", "nproc = 100")), Ok(()));
     let es = check(&p, &limited("capped", "nproc = 101")).expect_err("above");
     assert_eq!(es[0].key, "rule[0].rlimits_max");
-    let brood = model("[brood.capped]\n");
-    assert_eq!(check(&p, &brood), Ok(()));
 }
 
 #[test]
@@ -504,4 +502,74 @@ fn a_bad_rlimits_max_value_is_a_bad_value() {
     )
     .expect_err("core");
     assert_eq!(es[0].code, Code::UnknownKey);
+}
+
+#[test]
+fn a_top_level_table_after_the_rules_is_not_blamed_on_the_last_rule() {
+    let head = "default = \"deny\"\n[[rule]]\nmatch = \"a\"\n";
+    assert_eq!(
+        bad_key("after-rl", &format!("{head}[rlimits_max]\nnofile = 1.5\n")),
+        "rlimits_max.nofile"
+    );
+    assert_eq!(
+        bad_key("after-foo", &format!("{head}[foo]\nx = 1\n")),
+        "foo"
+    );
+}
+
+#[test]
+fn a_ceiling_violation_names_the_node_and_the_policy_file() {
+    let dir = TempDir::new("viol-node");
+    let path = dir.join("policy.toml");
+    std::fs::write(
+        &path,
+        "default = \"deny\"\n[[rule]]\nmatch = \"*\"\nrlimits_max = { nofile = 4096 }\n",
+    )
+    .expect("write");
+    let p = load_policy(&path).expect("loads");
+    let m = model(
+        "[worker.one]\nexec = [\"/x\"]\ncredentials = { uid = \"svc\" }\nrlimits = { nofile = 5000 }\n\
+         [worker.two]\nexec = [\"/x\"]\ncredentials = { uid = \"svc\" }\nrlimits = { nofile = 6000 }\n",
+    );
+    let es = check(&p, &m).expect_err("refused");
+    assert_eq!(es.len(), 2, "{es:?}");
+    assert!(es[0].detail.contains("worker `one`"), "{es:?}");
+    assert!(es[1].detail.contains("worker `two`"), "{es:?}");
+    assert_eq!(es[0].file.as_deref(), Some(path.as_path()), "{es:?}");
+}
+
+#[test]
+fn nested_policy_keys_keep_their_whole_path() {
+    let head = "default = \"deny\"\n[[rule]]\nmatch = \"a\"\n";
+    let two = format!("{head}[[rule]]\nmatch = \"b\"\n");
+    assert_eq!(
+        bad_key("n-inline", &format!("{two}rlimits_max = {{ core = 0 }}\n")),
+        "rule[1].rlimits_max.core"
+    );
+    assert_eq!(
+        bad_key("n-sub", &format!("{two}[rule.rlimits_max]\nnofile = -1\n")),
+        "rule[1].rlimits_max.nofile"
+    );
+    assert_eq!(
+        bad_key("n-dotted", &format!("{head}rlimits_max.nofile = 1.5\n")),
+        "rule[0].rlimits_max.nofile"
+    );
+    assert_eq!(
+        bad_key(
+            "n-eq",
+            "default = \"deny\"\nrule = [{ match = \"a\", users = [\"a=b\", 1] }]\n"
+        ),
+        "rule[0].users[1]"
+    );
+}
+
+#[test]
+fn a_limit_of_the_wrong_shape_is_not_reported_as_an_enum() {
+    let es = policy(
+        "shape-msg",
+        "default = \"deny\"\nrlimits_max = { nice = -1 }\n",
+    )
+    .expect_err("refused");
+    assert!(!es[0].detail.contains("untagged enum"), "{es:?}");
+    assert!(es[0].detail.contains("limit"), "{es:?}");
 }

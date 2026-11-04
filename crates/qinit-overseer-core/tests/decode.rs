@@ -341,6 +341,10 @@ fn rlimit_rules_match_the_database() {
     let w = 4 * (HEADER_WORDS + Q_RLIMIT_BASE + 2 * 6);
     b[w..w + 4].copy_from_slice(&5u32.to_le_bytes());
     assert_eq!(decode(&b), Err(LaunchError::Consistency));
+    // ... and in its high word.
+    let mut b = build(&minimal());
+    b[w + 4..w + 8].copy_from_slice(&1u32.to_le_bytes());
+    assert_eq!(decode(&b), Err(LaunchError::Consistency));
     for bad in [
         limited(|l| l[7] = Some(0)),
         limited(|l| l[7] = Some(u64::MAX)),

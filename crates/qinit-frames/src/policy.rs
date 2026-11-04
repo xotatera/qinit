@@ -32,7 +32,8 @@ use crate::resolve::{cap_bit, cap_name};
 use crate::schema::{Rlimits, rlimit_value};
 use qinit_db::{Cred, Model, Node, RLIMIT_COUNT, RLIMIT_KEYS, Seccomp};
 use serde::Deserialize;
-use std::path::Path;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,6 +90,7 @@ struct Rule {
 /// A parsed policy.
 #[derive(Clone, Debug)]
 pub struct Policy {
+    path: PathBuf,
     ceiling: [Option<u64>; RLIMIT_COUNT],
     allow_by_default: bool,
     rules: Vec<Rule>,
@@ -125,47 +127,67 @@ pub fn glob_match(pattern: &str, name: &str) -> bool {
     p[pi..].iter().all(|c| *c == b'*')
 }
 
-/// The bare key of the `key = ` prefix of the line at the end of `before`, else `None`. In an
-/// inline table (`{ a = 1, b = `) it is the key just before the last `=`.
-fn key_before_value(before: &str) -> Option<&str> {
-    let bare = |b: &u8| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-';
-    let line = before.rsplit('\n').next()?;
-    let key = if line.contains('{') {
-        let (left, _) = line.rsplit_once('=')?;
-        let left = left.trim_end();
-        let start = left.bytes().rposition(|b| !bare(&b)).map_or(0, |i| i + 1);
-        &left[start..]
-    } else {
-        line.split_once('=')?.0.trim()
-    };
-    (!key.is_empty() && key.bytes().all(|b| bare(&b))).then_some(key)
-}
-
 /// The text between the first pair of backticks of `msg` after `prefix`.
 fn quoted<'a>(msg: &'a str, prefix: &str) -> Option<&'a str> {
     let rest = msg.strip_prefix(prefix)?;
     rest.split_once('`').map(|(f, _)| f)
 }
 
-/// The index of the `rule` array element that contains byte `at`, from a TOML parse of `text`
-/// (so inline arrays, spaced headers and header-like lines in strings are all handled). An
-/// inline table owns its braces; a `[[rule]]` header owns the text up to the next element (the
-/// parser spans only the header). `None` when `rule` is missing or not an array, or no element
-/// contains `at`.
-fn rule_at(text: &str, at: usize) -> Option<usize> {
-    let table = toml::de::DeTable::parse(text).ok()?;
-    let toml::de::DeValue::Array(rules) = table.get_ref().get("rule")?.get_ref() else {
-        return None;
-    };
-    rules.iter().enumerate().position(|(i, r)| {
-        let span = r.span();
-        let end = if text.get(span.clone()).is_some_and(|t| t.starts_with('{')) {
-            span.end
-        } else {
-            rules.get(i + 1).map_or(text.len(), |n| n.span().start)
+/// The key path of the entry of `text` that contains byte `at`, from a TOML parse: `rule[i]`
+/// for the `i`-th `[[rule]]` element, then the keys below it (`rule[1].rlimits_max.core`,
+/// `rlimits_max.nofile`), and whether the walk reached a leaf value (`false`: it stopped at a
+/// table or element, so a missing field belongs under it). An inline table owns its braces; a
+/// header table owns the text up to the next entry that starts after it (the parser spans only
+/// the header). `None` when `text` does not parse or `at` precedes every key.
+fn path_at(text: &str, at: usize) -> Option<(String, bool)> {
+    use toml::de::DeValue;
+    type Table<'a> = toml::de::DeTable<'a>;
+    /// The entry of `t` whose text holds `at`: the last key starting at or before it.
+    fn entry<'t, 'i>(
+        t: &'t Table<'i>,
+        at: usize,
+    ) -> Option<(&'t str, &'t toml::Spanned<DeValue<'i>>)> {
+        // A header entry starts at its first element's `[[`, before its key.
+        let start = |k: &toml::Spanned<_>, v: &toml::Spanned<DeValue<'_>>| {
+            k.span().start.min(v.span().start)
         };
-        (span.start..end).contains(&at)
-    })
+        t.iter()
+            .filter(|(k, v)| start(k, v) <= at)
+            .max_by_key(|(k, v)| start(k, v))
+            .map(|(k, v)| (k.get_ref().as_ref(), v))
+    }
+    fn walk(t: &Table<'_>, at: usize, out: &mut String) -> bool {
+        let Some((key, value)) = entry(t, at) else {
+            return false;
+        };
+        if !out.is_empty() {
+            out.push('.');
+        }
+        out.push_str(key);
+        match value.get_ref() {
+            DeValue::Table(sub) => walk(sub, at, out),
+            DeValue::Array(items) => {
+                // Elements are ordered; the one holding `at` is the last starting at or before it.
+                let Some((i, item)) = items
+                    .iter()
+                    .enumerate()
+                    .rfind(|(_, v)| v.span().start <= at)
+                else {
+                    return false;
+                };
+                let _ = write!(out, "[{i}]");
+                match item.get_ref() {
+                    DeValue::Table(sub) => walk(sub, at, out),
+                    _ => true,
+                }
+            }
+            _ => true,
+        }
+    }
+    let table = toml::de::DeTable::parse(text).ok()?;
+    let mut out = String::new();
+    let leaf = walk(table.get_ref(), at, &mut out);
+    (!out.is_empty()).then_some((out, leaf))
 }
 
 /// The error for a policy whose TOML is valid but whose shape is not.
@@ -178,14 +200,14 @@ fn rule_at(text: &str, at: usize) -> Option<usize> {
 fn serde_error(path: &Path, text: &str, e: &toml::de::Error) -> Error {
     let msg = e.message();
     let unknown = quoted(msg, "unknown field `");
+    let missing = quoted(msg, "missing field `");
     let start = e.span().map(|s| s.start.min(text.len()));
-    let field = unknown
-        .or_else(|| quoted(msg, "missing field `"))
-        .or_else(|| key_before_value(text.get(..start?)?));
-    let rule = start.and_then(|at| rule_at(text, at));
-    let key = match (rule, field) {
-        (Some(i), Some(f)) => format!("rule[{i}].{f}"),
-        (Some(i), None) => format!("rule[{i}]"),
+    let at = start.and_then(|at| path_at(text, at));
+    let key = match (at, unknown.or(missing)) {
+        // An unknown field is spanned at its own key, so the path already ends in it.
+        (Some((p, _)), Some(_)) if unknown.is_some() => p,
+        (Some((p, false)), Some(f)) => format!("{p}.{f}"),
+        (Some((p, _)), _) => p,
         (None, Some(f)) => f.to_string(),
         (None, None) => "policy".to_string(),
     };
@@ -284,6 +306,7 @@ pub fn load_policy(path: &Path) -> Result<Policy, Vec<Error>> {
     let ceiling = std::array::from_fn(|r| listed[r].or(BOOT_CEILING[r]));
     if errs.is_empty() {
         Ok(Policy {
+            path: path.to_path_buf(),
             ceiling,
             allow_by_default,
             rules,
@@ -344,12 +367,14 @@ fn check_rule(
     let over = raised(node, &policy.ceiling, Some(&rule.rlimits));
     if !over.is_empty() {
         let why = format!(
-            "limits above the ceiling of rule `{}`: {}",
+            "{} `{}` sets limits above the ceiling of rule `{}`: {}",
+            kind_name(node.kind),
+            node.name,
             rule.pattern,
             over.join(", ")
         );
         let key = format!("rule[{ri}].rlimits_max");
-        errs.push((i, Error::new(Code::Policy, key, why)));
+        errs.push((i, Error::new(Code::Policy, key, why).in_file(&policy.path)));
     }
 }
 

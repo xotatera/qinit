@@ -3,7 +3,7 @@
 //! The strict frame schema (spec §5). Unknown keys are errors; per-kind rules and value checks
 //! live in `parse_frame`.
 use crate::error::{Code, Error};
-use crate::units::{duration_ms, size_kib};
+use crate::units::{duration_ms, size_bytes, size_kib};
 use qinit_db::RLIMIT_KEYS;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -95,11 +95,35 @@ impl Rlimits {
 }
 
 /// One limit as written: a number or a string (`"infinity"` or a size).
-#[derive(Clone, Debug, Deserialize)]
-#[serde(untagged)]
+#[derive(Clone, Debug)]
 pub enum RlimitValue {
     Number(u64),
     Text(String),
+}
+
+impl<'de> Deserialize<'de> for RlimitValue {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::{Error, Unexpected, Visitor};
+        struct V;
+        impl Visitor<'_> for V {
+            type Value = RlimitValue;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a limit: a whole number, a size like \"64M\" or \"infinity\"")
+            }
+            fn visit_u64<E: Error>(self, n: u64) -> Result<RlimitValue, E> {
+                Ok(RlimitValue::Number(n))
+            }
+            fn visit_i64<E: Error>(self, n: i64) -> Result<RlimitValue, E> {
+                u64::try_from(n)
+                    .map(RlimitValue::Number)
+                    .map_err(|_| E::invalid_value(Unexpected::Signed(n), &self))
+            }
+            fn visit_str<E: Error>(self, t: &str) -> Result<RlimitValue, E> {
+                Ok(RlimitValue::Text(t.to_owned()))
+            }
+        }
+        d.deserialize_any(V)
+    }
 }
 
 /// The limits that count bytes and so take a size string.
@@ -115,9 +139,9 @@ pub fn rlimit_value(key: &str, v: &RlimitValue) -> Result<u64, String> {
     let n = match v {
         RlimitValue::Number(n) => *n,
         RlimitValue::Text(t) if t == "infinity" => u64::MAX,
-        RlimitValue::Text(t) if BYTE_LIMITS.contains(&key) => size_kib(t)
-            .map(|k| u64::from(k) * 1024)
-            .ok_or_else(|| format!("`{t}` is not a size like 64M or \"infinity\""))?,
+        RlimitValue::Text(t) if BYTE_LIMITS.contains(&key) => {
+            size_bytes(t).ok_or_else(|| format!("`{t}` is not a size like 64M or \"infinity\""))?
+        }
         RlimitValue::Text(t) => {
             return Err(format!("`{t}` is not a number or \"infinity\""));
         }

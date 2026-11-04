@@ -15,8 +15,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Every kernel resource limit but `core` is a frame key under `rlimits` (`cpu fsize data stack rss
   nproc nofile memlock as locks sigpending msgqueue nice rtprio rttime`): a number, `"infinity"`
   or, for the byte limits, a size such as `"64M"`. The policy bounds them at the kernel's boot hard
-  limits; a rule or the top level raises a ceiling with `rlimits_max`. `rlimits.nofile = 0` and
-  `"infinity"` are now refused.
+  limits; a rule or the top level raises a ceiling with `rlimits_max`. `rlimits.nofile =
+  "infinity"` is now refused (0 already was).
 - Validator: `DbError::Pool { table, record }` and `DbError::Utf8 { offset }` carry their position.
 
 - The control protocol (sub-project 6), `docs/control-protocol.md`: one `SOCK_SEQPACKET` socket,

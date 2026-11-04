@@ -281,3 +281,16 @@ fn a_set_limit_sets_its_bit_and_words() {
     assert_eq!(node_word(&bytes, 0, N_RLIMIT_BASE + 6), 6);
     assert_eq!(node_word(&bytes, 0, N_RLIMIT_BASE + 7), 5);
 }
+
+#[test]
+fn a_limit_the_validator_refuses_is_not_written() {
+    for (r, v) in [(4, 0), (7, 0), (7, u64::MAX), (13, 41), (14, 100)] {
+        let mut model = sample();
+        model.nodes[0].rlimits[r] = Some(v);
+        assert_eq!(
+            write(&model),
+            Err(qinit_db::WriteError::Limit("rlimit")),
+            "{r}={v}"
+        );
+    }
+}

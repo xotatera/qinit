@@ -63,3 +63,12 @@ fn bad_sizes_are_none() {
 fn the_largest_representable_size_parses() {
     assert_eq!(size_kib("4294967295K"), Some(u32::MAX));
 }
+
+#[test]
+fn byte_sizes_go_beyond_the_kib_range() {
+    use qinit_frames::units::size_bytes;
+    assert_eq!(size_bytes("4K"), Some(4096));
+    assert_eq!(size_bytes("5000G"), Some(5000 << 30));
+    assert_eq!(size_bytes("17179869184G"), None);
+    assert_eq!(size_bytes("5T"), None);
+}
