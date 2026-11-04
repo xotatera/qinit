@@ -12,10 +12,23 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Group 2 (path views, user namespaces, launch pidfd, full-request launch), in progress: `qinit-sys`
-  gains `mount_setattr`, `pivot_root`, recursive binds, `lstat`/`readlink`/`symlink` helpers and
-  absolute `CLOCK_MONOTONIC` alarms; the QLR1 layout moves to `qinit_proto_core::launch` and its
-  encoder to the new `qinit-launch` crate (both MPL-2.0).
+- Group 2, sandbox and launch (D32, D33, D38, D39):
+  - The path view: a credential or request with `sandbox.paths` runs in an empty `tmpfs` root with
+    a fixed `/dev` and a private `/tmp`, a recursive bind of each listed path, a `pivot_root` and a
+    read-only seal, then Landlock on the same paths. One proved plan step per phase.
+  - User namespaces: the `user` namespace bit with `user_map` `own` or `range` (a forked map writer
+    writes `/etc/subuid` and `/etc/subgid` ranges), refused for `root`.
+  - The credential policy compiled into the database (`T_POLICY`, `T_POLICY_HEAD`; a rule's
+    `allow_userns`) and the proved `check_policy`, which the frames compiler's check must agree
+    with.
+  - `Run` (control protocol type 7, root only): launches a whole launch request from a sealed
+    memfd as the instance `~<name>#<id>`, checked against the policy. `docs/launch-request.md`
+    specifies the format; its examples are decoded and re-encoded by a test.
+  - `Launch` and `Run` take a `pidfd` flag and hand the instance's pidfd back in the reply;
+    `MAX_FDS` is 4.
+  - `qinit-sys` gains `mount_setattr`, `pivot_root`, recursive binds, `lstat`/`readlink`/`symlink`
+    helpers, sealed memfds and absolute `CLOCK_MONOTONIC` alarms; the QLR1 layout moves to
+    `qinit_proto_core::launch` and its encoder to the new `qinit-launch` crate (both MPL-2.0).
 - Every kernel resource limit but `core` is a frame key under `rlimits` (`cpu fsize data stack rss
   nproc nofile memlock as locks sigpending msgqueue nice rtprio rttime`): a number, `"infinity"`
   or, for the byte limits, a size such as `"64M"`. The policy bounds them at the kernel's boot hard
@@ -164,6 +177,14 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `sandbox.landlock` is renamed `sandbox.paths` (database `C_PATHS_*`, request `paths`). The list
+  is sorted and canonical, refuses `/`, `/dev`, `/tmp` and a writable `/proc`, needs the `mount`
+  namespace, and must cover the program and the working directory.
+- The credential record is 13 words (`C_USER_MAP`), the database header 24 words, and the launch
+  sequence is reordered (view, then user namespace, then identity, then Landlock): the plan
+  has 25 phases and at most 320 steps, with a `RearmDeadline` step after the view.
+- The proof timeouts of `qinit-overseer-core` (90s) and `qinit-colony-core` (100s) are raised to
+  about three times their measured CPU time.
 - The database node record is 68 words (a limit mask and 32 limit words) and the launch request
   67; the overseer plan has one `Rlimit` step per set limit instead of `RlimitNofile`.
 - The validator checks the pool's UTF-8 once and each reference only for character boundaries, and

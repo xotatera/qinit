@@ -4,6 +4,7 @@
 //! request each one describes.
 use qinit_launch::{RequestSpec, Seccomp, Securebits, Stream, UserMap};
 use qinit_overseer_core::decode;
+use std::fmt::Write as _;
 
 /// The bytes of every ```` ```qlr1 ```` block of the document, in order.
 fn examples() -> Vec<Vec<u8>> {
@@ -75,12 +76,10 @@ fn every_example_decodes_and_round_trips() {
 #[ignore = "a generator for the document, not a check"]
 fn print_the_examples() {
     for spec in described() {
-        let hex: String = spec
-            .bytes()
-            .unwrap()
-            .iter()
-            .map(|x| format!("{x:02x}"))
-            .collect();
+        let mut hex = String::new();
+        for x in spec.bytes().unwrap() {
+            write!(hex, "{x:02x}").unwrap();
+        }
         println!("HEX {hex}");
     }
 }
