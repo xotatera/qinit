@@ -18,6 +18,40 @@ pub struct Model {
     pub enabled: Vec<u32>,
     /// The nodes that start before the logger, ascending node indices.
     pub presyslog: Vec<u32>,
+    /// The credential policy compiled in, if the compiler was given one.
+    pub policy: Option<Policy>,
+}
+
+/// The credential policy of the database (sandbox design §6.3): what the control protocol's
+/// `Run` is judged against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Policy {
+    /// The default for a request no rule matches and that holds privilege.
+    pub allow_by_default: bool,
+    /// The top-level limit ceilings by kernel resource number, `u64::MAX` being infinity; `None`
+    /// is no ceiling set (a boot ceiling applies).
+    pub ceiling: [Option<u64>; RLIMIT_COUNT],
+    /// The rules, in file order; the first whose pattern fits decides.
+    pub rules: Vec<PolicyRule>,
+}
+
+/// One rule of the policy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PolicyRule {
+    /// The glob over the name: `*` matches any run; 1 to 128 bytes of node-name bytes, `*` and `~`.
+    pub pattern: String,
+    /// The users the rule covers; `None` for any.
+    pub users: Option<Vec<String>>,
+    /// The capability ceiling, bits 0..=40.
+    pub caps_max: u64,
+    /// The credential must keep `no_new_privs`.
+    pub require_nnp: bool,
+    /// The credential must have a seccomp filter.
+    pub require_seccomp: bool,
+    /// Which user namespace maps the rule allows.
+    pub allow_userns: Userns,
+    /// The rule's own limit ceilings, by kernel resource number.
+    pub rlimits: [Option<u64>; RLIMIT_COUNT],
 }
 
 /// One node.

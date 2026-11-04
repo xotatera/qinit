@@ -652,3 +652,77 @@ fn a_bad_allow_userns_is_a_bad_value() {
         );
     }
 }
+
+#[test]
+fn a_pattern_outside_the_name_alphabet_is_refused() {
+    for bad in ["a/b", "", "a b", "a?", &"a".repeat(129)] {
+        let es = policy(
+            "pat-bad",
+            &format!("default = \"deny\"\n[[rule]]\nmatch = \"{bad}\"\n"),
+        )
+        .expect_err("refused");
+        assert_eq!(es.len(), 1, "{bad:?}: {es:?}");
+        assert_eq!(
+            (es[0].code, es[0].key.as_str()),
+            (Code::BadValue, "rule[0].match"),
+            "{bad:?}"
+        );
+    }
+    for ok in ["~backup", "ssh@tty1:x+y.z-w_1", "*", "a*", &"a".repeat(128)] {
+        pol(
+            "pat-ok",
+            &format!("default = \"deny\"\n[[rule]]\nmatch = \"{ok}\"\n"),
+        );
+    }
+}
+
+#[test]
+fn a_user_name_outside_the_grammar_is_refused() {
+    for bad in ["Root", "0day", "a b", "x1234567890123456789012345678901234"] {
+        let es = policy(
+            "usr-bad",
+            &format!("default = \"deny\"\n[[rule]]\nmatch = \"a\"\nusers = [\"svc\", \"{bad}\"]\n"),
+        )
+        .expect_err("refused");
+        assert_eq!(es.len(), 1, "{bad:?}: {es:?}");
+        assert_eq!(
+            (es[0].code, es[0].key.as_str()),
+            (Code::BadValue, "rule[0].users"),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn a_policy_compiles_into_the_database() {
+    use qinit_db::Userns;
+    let p = pol(
+        "to-model",
+        r#"
+        default = "allow"
+        rlimits_max = { nofile = 2048 }
+        [[rule]]
+        match = "sshd"
+        users = ["sshd"]
+        caps_max = ["net_bind_service"]
+        require_nnp = true
+        allow_userns = "range"
+        rlimits_max = { nice = 5 }
+        [[rule]]
+        match = "~*"
+        "#,
+    );
+    let m = qinit_frames::policy::to_model(&p);
+    assert!(m.allow_by_default);
+    assert_eq!(m.ceiling[7], Some(2048));
+    assert_eq!(m.ceiling[0], Some(u64::MAX));
+    assert_eq!(m.rules.len(), 2);
+    assert_eq!(m.rules[0].pattern, "sshd");
+    assert_eq!(m.rules[0].users, Some(vec!["sshd".to_owned()]));
+    assert_eq!(m.rules[0].caps_max, 1 << 10);
+    assert!(m.rules[0].require_nnp && !m.rules[0].require_seccomp);
+    assert_eq!(m.rules[0].allow_userns, Userns::Range);
+    assert_eq!(m.rules[0].rlimits[13], Some(5));
+    assert_eq!(m.rules[1].users, None);
+    assert_eq!(m.rules[1].allow_userns, Userns::No);
+}

@@ -135,7 +135,10 @@ pub fn nul_list_ok(b: &[u8], start: usize, end: usize) -> (ok: bool)
 }
 
 /// Checks a list: a pool reference whose bytes are NUL-separated non-empty elements.
-fn list_ok(b: &[u8], off: u32, len: u32, table: u8, record: u32) -> (r: Result<(), DbError>)
+pub(crate) fn list_ok(b: &[u8], off: u32, len: u32, table: u8, record: u32) -> (r: Result<
+    (),
+    DbError,
+>)
     requires
         v1(b@),
         pool_valid(b@),
@@ -329,7 +332,7 @@ pub(crate) proof fn lemma_elem_start(s: Seq<u8>, es: int, i: int, p: int)
 }
 
 /// The element rule of `kind`: [`env_entry_ok`] for 0, [`decimal_ok`] for 1,
-/// [`path_entry_ok`] for 2, [`launch_key_ok`] for 3.
+/// [`path_entry_ok`] for 2, [`launch_key_ok`] for 3, [`user_name_ok`] for 4.
 pub open spec fn elem_ok(e: Seq<u8>, kind: u32) -> bool {
     if kind == 0 {
         env_entry_ok(e)
@@ -337,8 +340,10 @@ pub open spec fn elem_ok(e: Seq<u8>, kind: u32) -> bool {
         decimal_ok(e)
     } else if kind == 2 {
         path_entry_ok(e)
-    } else {
+    } else if kind == 3 {
         launch_key_ok(e)
+    } else {
+        user_name_ok(e)
     }
 }
 
@@ -374,7 +379,7 @@ pub(crate) fn launch_key_ok_exec(s: &[u8], p: usize, q: usize) -> (ok: bool)
 fn elem_ok_exec(s: &[u8], p: usize, q: usize, kind: u32) -> (ok: bool)
     requires
         p <= q <= s@.len(),
-        kind <= 3,
+        kind <= 4,
     ensures
         ok ==> elem_ok(s@.subrange(p as int, q as int), kind),
 {
@@ -384,23 +389,27 @@ fn elem_ok_exec(s: &[u8], p: usize, q: usize, kind: u32) -> (ok: bool)
         decimal_ok_exec(s, p, q)
     } else if kind == 2 {
         path_entry_ok_exec(s, p, q)
-    } else {
+    } else if kind == 3 {
         launch_key_ok_exec(s, p, q)
+    } else {
+        super::policy::user_name_exec(s, p, q)
     }
 }
 
 /// Every element of the NUL-separated list `s` passes the check of `kind`: [`env_entry_ok`]
-/// for 0, [`decimal_ok`] for 1, [`path_entry_ok`] for 2, [`launch_key_ok`] for 3.
+/// for 0, [`decimal_ok`] for 1, [`path_entry_ok`] for 2, [`launch_key_ok`] for 3,
+/// [`user_name_ok`] for 4.
 #[must_use]
 pub fn elements_ok(s: &[u8], kind: u32) -> (ok: bool)
     requires
         nul_list(s@),
-        kind <= 3,
+        kind <= 4,
     ensures
         ok && kind == 0 ==> env_list_ok(s@),
         ok && kind == 1 ==> seccomp_list_ok(s@),
         ok && kind == 2 ==> paths_list_ok(s@),
         ok && kind == 3 ==> launch_keys_ok(s@),
+        ok && kind == 4 ==> users_list_ok(s@),
 {
     let n = s.len();
     if n == 0 {
@@ -413,7 +422,7 @@ pub fn elements_ok(s: &[u8], kind: u32) -> (ok: bool)
             n == s@.len(),
             0 < n,
             nul_list(s@),
-            kind <= 3,
+            kind <= 4,
             es <= i <= n,
             es == 0 || s@[es - 1] == 0,
             forall|k: int| es <= k < i ==> #[trigger] s@[k] != 0,
@@ -629,6 +638,20 @@ pub(crate) fn check_pool_refs(b: &[u8]) -> (r: Result<(), DbError>)
         decreases n - i,
     {
         check_route_pool(b, i)?;
+        i += 1;
+    }
+    let n = header_word(b, 5 + 2 * T_POLICY) as usize;
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            v1(b@),
+            pool_valid(b@),
+            n == tcnt(b@, T_POLICY as int),
+            i <= n,
+            forall|j: int| 0 <= j < i ==> #[trigger] policy_pool_ok(b@, j),
+        decreases n - i,
+    {
+        super::policy::check_policy_pool(b, i)?;
         i += 1;
     }
     Ok(())

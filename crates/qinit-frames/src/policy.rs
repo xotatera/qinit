@@ -31,6 +31,7 @@ use crate::expand::kind_name;
 use crate::resolve::{cap_bit, cap_name};
 use crate::schema::{Rlimits, rlimit_value};
 use qinit_db::{Cred, Model, Node, RLIMIT_COUNT, RLIMIT_KEYS, Seccomp, UserMap, Userns};
+use qinit_db_core::MAX_PATTERN_LEN;
 use serde::Deserialize;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -96,6 +97,29 @@ pub struct Policy {
     ceiling: [Option<u64>; RLIMIT_COUNT],
     allow_by_default: bool,
     rules: Vec<Rule>,
+}
+
+/// The policy as the database stores it: the rules, the default and the top-level ceilings
+/// (the boot ceilings already merged in).
+#[must_use]
+pub fn to_model(p: &Policy) -> qinit_db::Policy {
+    qinit_db::Policy {
+        allow_by_default: p.allow_by_default,
+        ceiling: p.ceiling,
+        rules: p
+            .rules
+            .iter()
+            .map(|r| qinit_db::PolicyRule {
+                pattern: r.pattern.clone(),
+                users: r.users.clone(),
+                caps_max: r.ceiling,
+                require_nnp: r.require_nnp,
+                require_seccomp: r.require_seccomp,
+                allow_userns: r.allow_userns,
+                rlimits: r.rlimits,
+            })
+            .collect(),
+    }
 }
 
 /// Whether `name` matches `pattern`, where `*` matches any run of characters (possibly empty)
@@ -241,7 +265,48 @@ fn ceilings(
     })
 }
 
+/// A byte of a node name, or `*`, or `~`: what the database's pattern field holds.
+fn pattern_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || b"._@:+-*~".contains(&c)
+}
+
+/// A user name by the overseer's grammar `^[a-z_][a-z0-9_-]{0,31}$`.
+fn user_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    (1..=32).contains(&b.len())
+        && (b[0].is_ascii_lowercase() || b[0] == b'_')
+        && b[1..]
+            .iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_' || *c == b'-')
+}
+
 fn build_rule(path: &Path, i: usize, r: RawRule, errs: &mut Vec<Error>) -> Rule {
+    if r.pattern.is_empty()
+        || r.pattern.len() > MAX_PATTERN_LEN
+        || !r.pattern.bytes().all(pattern_byte)
+    {
+        errs.push(
+            Error::new(
+                Code::BadValue,
+                format!("rule[{i}].match"),
+                format!(
+                    "`{}` is not 1 to {MAX_PATTERN_LEN} bytes of a node name, `*` and `~`",
+                    r.pattern
+                ),
+            )
+            .in_file(path),
+        );
+    }
+    if let Some(bad) = r.users.iter().flatten().find(|u| !user_name(u)) {
+        errs.push(
+            Error::new(
+                Code::BadValue,
+                format!("rule[{i}].users"),
+                format!("`{bad}` is not a user name"),
+            )
+            .in_file(path),
+        );
+    }
     let mut ceiling = 0u64;
     for name in r.caps_max.as_deref().unwrap_or_default() {
         match cap_bit(name) {

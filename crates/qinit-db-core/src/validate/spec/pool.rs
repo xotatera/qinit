@@ -183,6 +183,8 @@ pub open spec fn v2(b: Seq<u8>) -> bool {
     &&& forall|x: int| 0 <= x < tcnt(b, T_EDGES as int) ==> #[trigger] edge_pool_ok(b, x)
     &&& forall|c: int| 0 <= c < tcnt(b, T_CREDS as int) ==> #[trigger] cred_pool_ok(b, c)
     &&& forall|r: int| 0 <= r < tcnt(b, T_ROUTES as int) ==> #[trigger] route_pool_ok(b, r)
+    &&& forall|p: int|
+        0 <= p < tcnt(b, T_POLICY as int) ==> #[trigger] super::policy::policy_pool_ok(b, p)
 }
 
 } // verus!

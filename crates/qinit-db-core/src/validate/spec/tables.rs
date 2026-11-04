@@ -34,6 +34,10 @@ pub open spec fn spec_words(t: int) -> int {
         13
     } else if t == 4 {
         3
+    } else if t == T_POLICY as int {
+        43
+    } else if t == T_POLICY_HEAD as int {
+        34
     } else {
         1
     }
@@ -53,6 +57,10 @@ pub open spec fn spec_limit(t: int) -> int {
         MAX_ROUTES as int
     } else if t == 5 || t == 6 {
         MAX_NODES as int
+    } else if t == T_POLICY as int {
+        MAX_POLICY_RULES as int
+    } else if t == T_POLICY_HEAD as int {
+        1
     } else {
         MAX_POOL as int
     }
@@ -60,7 +68,7 @@ pub open spec fn spec_limit(t: int) -> int {
 
 /// Bytes table `t` occupies.
 pub open spec fn tlen(b: Seq<u8>, t: int) -> int {
-    if t == 7 {
+    if t == T_POOL as int {
         tcnt(b, t)
     } else {
         tcnt(b, t) * spec_words(t) * 4
@@ -89,14 +97,14 @@ pub open spec fn header_ok(b: Seq<u8>) -> bool {
 pub open spec fn table_ok(b: Seq<u8>, t: int) -> bool {
     &&& tcnt(b, t) <= spec_limit(t)
     &&& toff(b, t) + tlen(b, t) <= b.len()
-    &&& (t < 7 ==> toff(b, t) % 4 == 0)
+    &&& (t < T_POOL as int ==> toff(b, t) % 4 == 0)
     &&& toff(b, t) >= tmin(b, t)
 }
 
-/// V1: the header and all eight tables.
+/// V1: the header and all ten tables.
 pub open spec fn v1(b: Seq<u8>) -> bool {
     &&& header_ok(b)
-    &&& forall|t: int| 0 <= t < 8 ==> #[trigger] table_ok(b, t)
+    &&& forall|t: int| 0 <= t <= T_POOL as int ==> #[trigger] table_ok(b, t)
 }
 
 /// Word index of word `w` of record `r` in table `t`.

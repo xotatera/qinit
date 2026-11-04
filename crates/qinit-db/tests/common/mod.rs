@@ -141,5 +141,6 @@ pub fn sample() -> Model {
         routes: vec![Route::Path("/var/log/sshd.log".into()), Route::Pipe(1)],
         enabled: vec![0, 1, 3],
         presyslog: vec![1],
+        policy: None,
     }
 }

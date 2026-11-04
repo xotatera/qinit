@@ -43,7 +43,7 @@ pub const MAX_POOL: usize = 1 << 20;
 pub const MAX_NAME_LEN: usize = 96;
 
 /// Words in the header.
-pub const HEADER_WORDS: usize = 20;
+pub const HEADER_WORDS: usize = 24;
 
 /// Table id `T_NODES` (header order).
 pub const T_NODES: usize = 0;
@@ -66,11 +66,71 @@ pub const T_ENABLED: usize = 5;
 /// Table id `T_PRESYSLOG` (header order).
 pub const T_PRESYSLOG: usize = 6;
 
-/// Table id `T_POOL` (header order).
-pub const T_POOL: usize = 7;
+/// Table id `T_POLICY` (header order): one record per policy rule, in file order.
+pub const T_POLICY: usize = 7;
 
-/// Words per record, tables 0..=6.
-pub const WORDS: [usize; 7] = [68, 3, 7, 13, 3, 1, 1];
+/// Table id `T_POLICY_HEAD` (header order): none, or the one record of the policy's defaults.
+pub const T_POLICY_HEAD: usize = 8;
+
+/// Table id `T_POOL` (header order); the last table.
+pub const T_POOL: usize = 9;
+
+/// Words per record, tables 0..=8.
+pub const WORDS: [usize; 9] = [68, 3, 7, 13, 3, 1, 1, 43, 34];
+
+/// Policy rules.
+pub const MAX_POLICY_RULES: usize = 1024;
+
+/// Bytes in a policy rule's pattern.
+pub const MAX_PATTERN_LEN: usize = 128;
+
+/// Policy rule record word 0: `pattern_off`, a glob over `~name` or a frame name.
+pub const P_PATTERN_OFF: usize = 0;
+
+/// Policy rule record word 1: `pattern_len`, 1 to `MAX_PATTERN_LEN`.
+pub const P_PATTERN_LEN: usize = 1;
+
+/// Policy rule record word 2: `users_off`, NUL-separated user names.
+pub const P_USERS_OFF: usize = 2;
+
+/// Policy rule record word 3: `users_len`.
+pub const P_USERS_LEN: usize = 3;
+
+/// Policy rule record word 4: `users_any`, 1 when the rule names no users (any user matches);
+/// then `users_len` is 0.
+pub const P_USERS_ANY: usize = 4;
+
+/// Policy rule record word 5: `caps_lo`, the capability ceiling's bits 0..=31.
+pub const P_CAPS_LO: usize = 5;
+
+/// Policy rule record word 6: `caps_hi`, bits 32..=40 in its bits 0..=8.
+pub const P_CAPS_HI: usize = 6;
+
+/// Policy rule record word 7: `require_nnp`, 0 or 1.
+pub const P_REQUIRE_NNP: usize = 7;
+
+/// Policy rule record word 8: `require_seccomp`, 0 or 1.
+pub const P_REQUIRE_SECCOMP: usize = 8;
+
+/// Policy rule record word 9: `allow_userns`, 0 none, 1 own map, 2 own or range.
+pub const P_ALLOW_USERNS: usize = 9;
+
+/// Policy rule record word 10: `rlimit_mask`, the limits the rule sets a ceiling for (the
+/// node record's encoding).
+pub const P_RLIMIT_MASK: usize = 10;
+
+/// Policy rule record word 11: the first of 16 ceiling pairs (low word, high word), as the
+/// node record's limits.
+pub const P_RLIMIT_BASE: usize = 11;
+
+/// Policy header record word 0: `allow`, 1 when the default is to allow.
+pub const PH_ALLOW: usize = 0;
+
+/// Policy header record word 1: `rlimit_mask`, the limits with a top-level ceiling.
+pub const PH_RLIMIT_MASK: usize = 1;
+
+/// Policy header record word 2: the first of 16 ceiling pairs.
+pub const PH_RLIMIT_BASE: usize = 2;
 
 /// Header word: magic.
 pub const H_MAGIC: usize = 0;

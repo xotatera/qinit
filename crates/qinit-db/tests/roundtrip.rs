@@ -319,3 +319,64 @@ fn a_range_map_without_the_user_namespace_does_not_open() {
     let bytes = write(&m).expect("writes");
     assert!(open(&bytes).is_err());
 }
+
+#[test]
+fn a_policy_round_trips() {
+    use qinit_db::{Policy, PolicyRule, Userns};
+    let mut m = sample();
+    let mut ceiling = [None; 16];
+    ceiling[7] = Some(2048);
+    ceiling[0] = Some(u64::MAX);
+    let mut own = [None; 16];
+    own[13] = Some(5);
+    own[9] = Some(1 << 40);
+    m.policy = Some(Policy {
+        allow_by_default: true,
+        ceiling,
+        rules: vec![
+            PolicyRule {
+                pattern: "sshd".into(),
+                users: Some(vec!["sshd".into(), "svc".into()]),
+                caps_max: (1 << 40) | 1,
+                require_nnp: true,
+                require_seccomp: true,
+                allow_userns: Userns::Range,
+                rlimits: own,
+            },
+            PolicyRule {
+                pattern: "~*".into(),
+                users: None,
+                caps_max: 0,
+                require_nnp: false,
+                require_seccomp: false,
+                allow_userns: Userns::Own,
+                rlimits: [None; 16],
+            },
+        ],
+    });
+    let bytes = write(&m).expect("writes");
+    assert_eq!(open(&bytes).expect("opens").decode(), m);
+    // Without a policy there is no table, and a policy with no rules still has its header.
+    m.policy = None;
+    assert_eq!(open(&write(&m).unwrap()).unwrap().decode().policy, None);
+    m.policy = Some(Policy {
+        allow_by_default: false,
+        ceiling: [None; 16],
+        rules: vec![],
+    });
+    assert_eq!(open(&write(&m).unwrap()).unwrap().decode(), m);
+}
+
+#[test]
+fn the_writer_refuses_a_policy_limit_the_validator_refuses() {
+    use qinit_db::Policy;
+    let mut m = sample();
+    let mut ceiling = [None; 16];
+    ceiling[7] = Some(0);
+    m.policy = Some(Policy {
+        allow_by_default: false,
+        ceiling,
+        rules: vec![],
+    });
+    assert_eq!(write(&m), Err(WriteError::Limit("rlimit")));
+}

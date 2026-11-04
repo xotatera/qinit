@@ -14,9 +14,9 @@ mod write;
 
 pub use crc::crc32;
 pub use model::{
-    Cred, Edge, Group, GroupKind, Kind, Launch, Mode, Model, Node, RLIMIT_KEYS, Ready, Reload,
-    Restart, RestartOn, RestartPolicy, Route, Seccomp, Securebits, Stop, StopMode, Target, UserMap,
-    Userns, ordering_edges,
+    Cred, Edge, Group, GroupKind, Kind, Launch, Mode, Model, Node, Policy, PolicyRule, RLIMIT_KEYS,
+    Ready, Reload, Restart, RestartOn, RestartPolicy, Route, Seccomp, Securebits, Stop, StopMode,
+    Target, UserMap, Userns, ordering_edges,
 };
 pub use qinit_db_core::{DbError, FD_STDERR, FD_STDIN, FD_STDOUT, RLIMIT_COUNT};
 pub use read::{ReadError, Reader, open};

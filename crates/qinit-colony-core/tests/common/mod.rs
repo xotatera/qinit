@@ -139,6 +139,7 @@ pub fn model(nodes: Vec<Node>, enabled: &[u32]) -> Model {
         routes: Vec::new(),
         enabled: enabled.to_vec(),
         presyslog: Vec::new(),
+        policy: None,
     }
 }
 

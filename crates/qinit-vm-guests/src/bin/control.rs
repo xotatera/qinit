@@ -72,6 +72,7 @@ fn world() -> Result<Colony<Sim>, String> {
         routes: Vec::new(),
         enabled: vec![0],
         presyslog: Vec::new(),
+        policy: None,
     };
     let bytes = write(&model).map_err(|e| format!("{e:?}"))?;
     let (colony, _) =

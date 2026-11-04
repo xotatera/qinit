@@ -54,7 +54,13 @@ pub fn compile(input: &CompileInput) -> Result<Compiled, Vec<Error>> {
         }
     };
     let expanded = expand(&merged)?;
-    let resolved = resolve(&expanded, &enable)?;
+    let mut resolved = resolve(&expanded, &enable)?;
+    let policy = input
+        .policy
+        .as_deref()
+        .map(policy::load_policy)
+        .transpose()?;
+    resolved.model.policy = policy.as_ref().map(policy::to_model);
     let prov = &expanded.provenance;
     let model = &resolved.model;
     let located = |node: Option<usize>, mut e: Error| -> Error {
@@ -63,9 +69,8 @@ pub fn compile(input: &CompileInput) -> Result<Compiled, Vec<Error>> {
         }
         e
     };
-    if let Some(path) = &input.policy {
-        let p = policy::load_policy(path)?;
-        let errs: Vec<Error> = policy::violations(&p, model)
+    if let Some(p) = &policy {
+        let errs: Vec<Error> = policy::violations(p, model)
             .into_iter()
             .map(|(i, e)| located(Some(i), e))
             .collect();

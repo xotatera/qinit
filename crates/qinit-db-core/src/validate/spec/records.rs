@@ -109,16 +109,7 @@ pub open spec fn keys_ascending(s: Seq<u8>) -> bool {
 /// One resource limit of a node: both words 0 when unset; `nofile` at least 1 and finite;
 /// `nice` and `rtprio` within their ceilings.
 pub open spec fn rlimit_ok(b: Seq<u8>, i: int, r: usize) -> bool {
-    let lo = nf(b, i, (N_RLIMIT_BASE + 2 * r) as usize);
-    let hi = nf(b, i, (N_RLIMIT_BASE + 2 * r + 1) as usize);
-    if ((nf(b, i, N_RLIMIT_MASK) as u32) >> (r as u32)) & 1 == 0 {
-        lo == 0 && hi == 0
-    } else {
-        &&& (r == RLIMIT_NOFILE as usize ==> !(lo == 0 && hi == 0) && !(lo == u32::MAX as int && hi
-            == u32::MAX as int))
-        &&& (r == RLIMIT_NICE as usize ==> hi == 0 && lo <= MAX_RLIMIT_NICE as int)
-        &&& (r == RLIMIT_RTPRIO as usize ==> hi == 0 && lo <= MAX_RLIMIT_RTPRIO as int)
-    }
+    super::policy::limit_ok(b, T_NODES as int, i, N_RLIMIT_MASK, N_RLIMIT_BASE, r)
 }
 
 /// The limit mask holds no bit but `RLIMIT_MASK_ALLOWED`'s and every limit is [`rlimit_ok`].
@@ -260,6 +251,11 @@ pub open spec fn v4(b: Seq<u8>) -> bool {
     &&& forall|i: int| 0 <= i < nodes(b) ==> #[trigger] node_paths_ok(b, i)
     &&& forall|r: int| 0 <= r < tcnt(b, T_ROUTES as int) ==> #[trigger] route_enum_ok(b, r)
     &&& forall|i: int| 0 < i < nodes(b) ==> #[trigger] name_sorted(b, i)
+    &&& forall|p: int|
+        0 <= p < tcnt(b, T_POLICY as int) ==> #[trigger] super::policy::policy_rule_ok(b, p)
+    &&& forall|h: int|
+        0 <= h < tcnt(b, T_POLICY_HEAD as int) ==> #[trigger] super::policy::policy_head_ok(b, h)
+    &&& super::policy::policy_tables_ok(b)
 }
 
 } // verus!

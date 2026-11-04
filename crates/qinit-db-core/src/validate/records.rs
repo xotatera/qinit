@@ -26,30 +26,44 @@ fn index_or_none_ok(v: u32, n: u32) -> (r: bool)
     v == NONE || v < n
 }
 
-/// Every limit of node `i` is [`rlimit_ok`] (`mask` is its `rlimit_mask`).
+/// Every limit of record `i` of table `t` is [`limit_ok`] (`mask` is its limit mask word).
 #[allow(clippy::cast_possible_truncation)]  // `k < RLIMIT_COUNT`, so the shift count fits
-fn check_rlimits(b: &[u8], i: usize, mask: u32) -> (r: Result<(), DbError>)
+#[allow(unused_variables)]  // `mask_w` appears only in the contract
+pub(crate) fn check_limits(
+    b: &[u8],
+    t: usize,
+    i: usize,
+    mask_w: usize,
+    base_w: usize,
+    mask: u32,
+) -> (r: Result<(), DbError>)
     requires
         v1(b@),
-        i < nodes(b@),
-        mask == nf(b@, i as int, N_RLIMIT_MASK) as u32,
+        t < T_POOL,
+        i < tcnt(b@, t as int),
+        mask_w < spec_words(t as int),
+        base_w + 2 * RLIMIT_COUNT <= spec_words(t as int),
+        mask == rw(b@, t as int, i as int, mask_w as int) as u32,
     ensures
-        r is Ok ==> forall|k: usize| k < RLIMIT_COUNT ==> #[trigger] rlimit_ok(b@, i as int, k),
+        r is Ok ==> forall|k: usize|
+            k < RLIMIT_COUNT ==> #[trigger] limit_ok(b@, t as int, i as int, mask_w, base_w, k),
 {
-    let t = T_NODES;
     let mut k: usize = 0;
     while k < RLIMIT_COUNT
         invariant
             v1(b@),
-            i < nodes(b@),
-            mask == nf(b@, i as int, N_RLIMIT_MASK) as u32,
+            t < T_POOL,
+            i < tcnt(b@, t as int),
+            mask_w < spec_words(t as int),
+            base_w + 2 * RLIMIT_COUNT <= spec_words(t as int),
+            mask == rw(b@, t as int, i as int, mask_w as int) as u32,
             k <= RLIMIT_COUNT,
-            t == T_NODES,
-            forall|j: usize| j < k ==> #[trigger] rlimit_ok(b@, i as int, j),
+            forall|j: usize|
+                j < k ==> #[trigger] limit_ok(b@, t as int, i as int, mask_w, base_w, j),
         decreases RLIMIT_COUNT - k,
     {
-        let lo = field(b, t, i, N_RLIMIT_BASE + 2 * k);
-        let hi = field(b, t, i, N_RLIMIT_BASE + 2 * k + 1);
+        let lo = field(b, t, i, base_w + 2 * k);
+        let hi = field(b, t, i, base_w + 2 * k + 1);
         let bad = if (mask >> (k as u32)) & 1 == 0 {
             lo != 0 || hi != 0
         } else {
@@ -104,7 +118,7 @@ fn check_node(b: &[u8], i: usize) -> (r: Result<(), DbError>)
     if mask & !RLIMIT_MASK_ALLOWED != 0 {
         return Err(DbError::Enum { table: tid(t), record: rid(i) });
     }
-    check_rlimits(b, i, mask)?;
+    check_limits(b, T_NODES, i, N_RLIMIT_MASK, N_RLIMIT_BASE, mask)?;
     let cred = field(b, t, i, N_CRED);
     if (kind <= 1 && cred == NONE) || (kind == 2 && cred != NONE) {
         return Err(DbError::Consistency { table: tid(t), record: rid(i) });
@@ -503,6 +517,36 @@ pub(crate) fn check_records(b: &[u8]) -> (r: Result<(), DbError>)
         r += 1;
     }
     check_names(b)?;
+    let rules = header_word(b, 5 + 2 * T_POLICY) as usize;
+    let heads = header_word(b, 5 + 2 * T_POLICY_HEAD) as usize;
+    if rules > 0 && heads != 1 {
+        return Err(DbError::Consistency { table: tid(T_POLICY), record: 0 });
+    }
+    let mut p: usize = 0;
+    while p < rules
+        invariant
+            v1(b@),
+            v2(b@),
+            rules == tcnt(b@, T_POLICY as int),
+            p <= rules,
+            forall|j: int| 0 <= j < p ==> #[trigger] policy_rule_ok(b@, j),
+        decreases rules - p,
+    {
+        super::policy::check_policy_rule(b, p)?;
+        p += 1;
+    }
+    let mut h: usize = 0;
+    while h < heads
+        invariant
+            v1(b@),
+            heads == tcnt(b@, T_POLICY_HEAD as int),
+            h <= heads,
+            forall|j: int| 0 <= j < h ==> #[trigger] policy_head_ok(b@, j),
+        decreases heads - h,
+    {
+        super::policy::check_policy_head(b, h)?;
+        h += 1;
+    }
     Ok(())
 }
 
