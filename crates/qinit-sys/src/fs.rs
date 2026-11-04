@@ -137,3 +137,26 @@ pub fn open_beneath(dir: BorrowedFd<'_>, rel: &Path) -> Result<OwnedFd> {
     // SAFETY: openat2 returned a new descriptor that nothing else owns.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
+
+/// `mkdirat(dir, name, mode)`.
+pub fn mkdirat(dir: BorrowedFd<'_>, name: &std::ffi::CStr, mode: u32) -> Result<()> {
+    // SAFETY: a valid descriptor and a NUL-terminated name that outlives the call.
+    check(unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), mode) })?;
+    Ok(())
+}
+
+/// Creates the regular file `name` below `dir` (`O_CREAT | O_EXCL | O_NOFOLLOW`) and closes it.
+pub fn create_at(dir: BorrowedFd<'_>, name: &std::ffi::CStr, mode: u32) -> Result<()> {
+    // SAFETY: a valid descriptor, a NUL-terminated name and an integer mode.
+    let fd = check(unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            mode,
+        )
+    })?;
+    // SAFETY: openat returned a new descriptor that nothing else owns.
+    drop(unsafe { OwnedFd::from_raw_fd(fd) });
+    Ok(())
+}

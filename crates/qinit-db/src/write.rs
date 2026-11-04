@@ -10,10 +10,11 @@ use crate::model::{
 use qinit_db_core::{
     HEADER_WORDS, MAGIC, MAX_CREDS, MAX_EDGES, MAX_EDGES_PER_GROUP, MAX_GROUPS,
     MAX_GROUPS_PER_NODE, MAX_NAME_LEN, MAX_NODES, MAX_POLICY_RULES, MAX_POOL, MAX_ROUTES,
-    MAX_SYSCALL, N_RLIMIT_BASE, NONE, P_ALLOW_INSIDE_IDS, P_ALLOW_USERNS, P_CAPS_HI, P_CAPS_LO,
-    P_PATTERN_LEN, P_PATTERN_OFF, P_REQUIRE_NNP, P_REQUIRE_SECCOMP, P_RLIMIT_BASE, P_RLIMIT_MASK,
-    P_USERS_ANY, P_USERS_LEN, P_USERS_OFF, PH_ALLOW, PH_RLIMIT_BASE, PH_RLIMIT_MASK, RLIMIT_COUNT,
-    SECCOMP_ALLOW, SECCOMP_DEFAULT, SECCOMP_DENY, SECCOMP_NONE, T_POOL, VERSION, WORDS,
+    MAX_SYSCALL, N_RLIMIT_BASE, NONE, P_ALLOW_IDMAP, P_ALLOW_INSIDE_IDS, P_ALLOW_USERNS, P_CAPS_HI,
+    P_CAPS_LO, P_PATTERN_LEN, P_PATTERN_OFF, P_REQUIRE_NNP, P_REQUIRE_SECCOMP, P_RLIMIT_BASE,
+    P_RLIMIT_MASK, P_USERS_ANY, P_USERS_LEN, P_USERS_OFF, PH_ALLOW, PH_RLIMIT_BASE, PH_RLIMIT_MASK,
+    RLIMIT_COUNT, SECCOMP_ALLOW, SECCOMP_DEFAULT, SECCOMP_DENY, SECCOMP_NONE, T_POOL, VERSION,
+    WORDS,
 };
 use std::collections::BTreeMap;
 
@@ -334,14 +335,14 @@ fn limit_pairs(limits: &[Option<u64>; 16]) -> Result<(u32, [u32; 32]), WriteErro
     Ok((rlimit_mask(limits), words))
 }
 
-fn rule_words(r: &PolicyRule, pool: &mut Pool) -> Result<[u32; 44], WriteError> {
+fn rule_words(r: &PolicyRule, pool: &mut Pool) -> Result<[u32; 45], WriteError> {
     let pattern = pool.intern(&r.pattern)?;
     let users = match &r.users {
         Some(u) => pool.intern_list(u)?,
         None => (0, 0),
     };
     let (mask, pairs) = limit_pairs(&r.rlimits)?;
-    let mut words = [0u32; 44];
+    let mut words = [0u32; 45];
     words[P_PATTERN_OFF] = pattern.0;
     words[P_PATTERN_LEN] = pattern.1;
     words[P_USERS_OFF] = users.0;
@@ -357,6 +358,7 @@ fn rule_words(r: &PolicyRule, pool: &mut Pool) -> Result<[u32; 44], WriteError> 
         Userns::Range => 2,
     };
     words[P_ALLOW_INSIDE_IDS] = u32::from(r.allow_inside_ids);
+    words[P_ALLOW_IDMAP] = u32::from(r.allow_idmap);
     words[P_RLIMIT_MASK] = mask;
     words[P_RLIMIT_BASE..P_RLIMIT_BASE + 32].copy_from_slice(&pairs);
     Ok(words)

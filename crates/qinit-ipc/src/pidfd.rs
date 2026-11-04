@@ -63,11 +63,16 @@ type Request = libc::c_ulong;
 /// the `PIDFD_GET_INFO` result, the exit code when the kernel returned `PIDFD_INFO_EXIT`. A
 /// kernel that refuses the ioctl is `Unsupported` too; every other failure is an error.
 pub fn decide_exit(supported: bool, outcome: Result<Option<i32>>) -> Result<PidfdExit> {
-    match outcome {
-        Ok(Some(status)) => Ok(PidfdExit::Exited(status)),
-        Ok(None) if supported => Ok(PidfdExit::Running),
-        Ok(None) | Err(Errno(libc::EINVAL | libc::ENOTTY)) => Ok(PidfdExit::Unsupported),
-        Err(e) => Err(e),
+    match (supported, outcome) {
+        (_, Ok(Some(status))) => Ok(PidfdExit::Exited(status)),
+        (true, Ok(None)) => Ok(PidfdExit::Running),
+        (false, Ok(None)) => Ok(PidfdExit::Unsupported),
+        // An unknown request, or (before 6.15, when the ioctl only knew live tasks) a reaped
+        // process: not a failure of the caller.
+        (_, Err(Errno(libc::EINVAL | libc::ENOTTY))) | (false, Err(Errno(libc::ESRCH))) => {
+            Ok(PidfdExit::Unsupported)
+        }
+        (_, Err(e)) => Err(e),
     }
 }
 

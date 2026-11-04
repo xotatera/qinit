@@ -35,7 +35,7 @@ pub open spec fn spec_words(t: int) -> int {
     } else if t == 4 {
         3
     } else if t == T_POLICY as int {
-        44
+        45
     } else if t == T_POLICY_HEAD as int {
         34
     } else {

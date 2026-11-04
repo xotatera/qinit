@@ -255,7 +255,7 @@ decodes (`Error(Invalid)`, detail 1 header, 2 pool, 3 enum, 4 consistency of the
 roles sent (stdin, stdout and stderr arrive as descriptors 5, 6 and 7; a stream `fd n` names a
 sent role's number and every role sent is used) and it names a readiness pipe exactly when `wait_ready` is set (`Error(Denied)`, detail 0; a pipe routed to a stream's descriptor number is a request that does not decode); the policy allows it under the name `~<name>` (`Error(Denied)`, the detail the
 first failing clause: 1 no policy, 2 user, 3 capabilities, 4 `no_new_privs`, 5 seccomp, 6 user
-namespace, 7 limits, 8 default); a slot is free (`Error(NoSlot)`). Then it runs as an instance
+namespace, 7 limits, 8 default, 9 non-zero inside id, 10 idmapped path entry); a slot is free (`Error(NoSlot)`). Then it runs as an instance
 and replies, waits, and ends as `Launch` does, with the record's stop mode and grace. It
 has no frame, so a refresh never touches it; a shutdown stops it with the other instances.
 
@@ -266,7 +266,8 @@ pipe (`ready_fd`, a routed number from 5 to 37 that no stream uses): the instanc
 readiness by pipe, and the second reply is `Settled` with the state *running* (3) when the
 service writes its byte, `Exited` with the wait status if it ends first (no `Settled` then), or
 `Pending` at `wait_ms` (state *starting*, 2, while no byte has come: the process runs but is
-not ready). After `Settled` the call is over and the instance runs on; the caller learns of its
+not ready; `Status` on the instance reports *running*, 3, from the moment the process is
+spawned, because the slot keeps no readiness). After `Settled` the call is over and the instance runs on; the caller learns of its
 exit from the pidfd or from `Status` on `~<name>#<id>`. A caller that disconnects while waiting
 leaves the instance running. Nothing bounds a service that never writes the byte except
 `wait_ms` and an explicit stop.

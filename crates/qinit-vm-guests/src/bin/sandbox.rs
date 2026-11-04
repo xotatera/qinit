@@ -289,25 +289,40 @@ fn the_view_builds_with_a_read_only_root() -> Result<(), String> {
     want(r?.0, 0, "open of a listed path with a read-only host root")
 }
 
+/// Runs `probe-path` over the view `paths` and returns the name of the step that failed and its
+/// errno.
+fn view_failure(name: &str, paths: &[&str]) -> Result<(String, i32), String> {
+    let mut request = spec("svc", "probe-path", &["/etc/passwd", "r"]);
+    request.ns = NS_MOUNT;
+    let mut list: Vec<String> = paths.iter().map(ToString::to_string).collect();
+    list.push("ro:/init".into());
+    list.sort_by(|a, b| a[3..].cmp(&b[3..]));
+    request.paths = list;
+    let o = run_to_end(name, request, true)?;
+    let f = o.failure.ok_or("the launch did not fail")?;
+    Ok((
+        qinit_overseer::status::step_name(&o.request, f.step).to_string(),
+        f.errno,
+    ))
+}
+
 fn a_planted_symlink_below_a_writable_entry_is_refused() -> Result<(), String> {
-    // D48: with `rw:/tmp/w` listed, `ro:/tmp/w/s` is opened below it without following symlinks,
-    // so a link the service planted there cannot redirect the entry to a host path.
+    // D48: with `rw:/tmp/w` listed, an entry below it is opened without following symlinks, so a
+    // link the service planted there cannot redirect the entry to a host path: as the entry
+    // itself, or as a directory on the way to it.
     let _ = std::fs::remove_dir_all("/tmp/w");
     e(std::fs::create_dir_all("/tmp/w"))?;
     e(std::os::unix::fs::symlink("/etc", "/tmp/w/s"))?;
-    match viewed(
-        "vw",
-        "probe-path",
-        &["/tmp/w/s/passwd", "r"],
-        &["rw:/tmp/w", "ro:/tmp/w/s"],
-        0,
-    ) {
-        // Only the entry's open can fail with ELOOP in a launch that lists plain directories.
-        Err(m) if m.contains(&format!("errno: {}", libc::ELOOP)) => Ok(()),
-        other => Err(format!(
-            "a planted symlink: {other:?}, want a view-entry ELOOP"
-        )),
-    }
+    want(
+        view_failure("vw", &["rw:/tmp/w", "ro:/tmp/w/s"])?,
+        ("view-entry".to_string(), libc::ELOOP),
+        "a symlink as the entry",
+    )?;
+    want(
+        view_failure("vw2", &["rw:/tmp/w", "ro:/tmp/w/s/passwd"])?,
+        ("view-entry".to_string(), libc::ELOOP),
+        "a symlink on the way to the entry",
+    )
 }
 
 fn a_symlink_entry_beside_a_writable_one_still_works() -> Result<(), String> {

@@ -324,7 +324,9 @@ inode whose disk owner the map does not cover cannot be written (the kernel refu
 needs the `user` namespace bit (frames, the validator and the decoder alike) and fails the launch
 at the entry (`EINVAL`) when a filesystem below cannot be idmapped; it never falls back to a
 plain bind. An idmapped entry should lie on one filesystem: the clone is recursive and fails
-whole.
+whole. A rule's `allow_idmap = true` is needed for a request with an idmapped entry (proved
+clause, denial code 10, after the inside-ids clause), because the mount gives the service the
+ownership of disk ids.
 
 ### D44 — An inside user other than root · `RESOLVED`
 

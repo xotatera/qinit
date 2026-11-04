@@ -37,6 +37,7 @@ pub struct Policy {
 
 /// One rule of the policy.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // one flag per clause of the rule
 pub struct PolicyRule {
     /// The glob over the name: `*` matches any run; 1 to 128 bytes of node-name bytes, `*` and `~`.
     pub pattern: String,
@@ -52,6 +53,8 @@ pub struct PolicyRule {
     pub allow_userns: Userns,
     /// Whether a request may run as a non-zero id inside its user namespace.
     pub allow_inside_ids: bool,
+    /// Whether a request may have an idmapped path entry (`ri:`, `wi:`).
+    pub allow_idmap: bool,
     /// The rule's own limit ceilings, by kernel resource number.
     pub rlimits: [Option<u64>; RLIMIT_COUNT],
 }

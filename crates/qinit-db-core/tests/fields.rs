@@ -363,8 +363,8 @@ fn a_node_record_has_68_words_and_a_credential_15() {
     assert_eq!(WORDS[T_CREDS], 15);
     assert_eq!((C_USER_MAP, C_INSIDE_UID, C_INSIDE_GID), (12, 13, 14));
     assert_eq!(C_INSIDE_GID + 1, WORDS[T_CREDS]);
-    assert_eq!(WORDS[T_POLICY], 44);
-    assert_eq!(P_RLIMIT_BASE + 2 * RLIMIT_COUNT + 1, WORDS[T_POLICY]);
+    assert_eq!(WORDS[T_POLICY], 45);
+    assert_eq!(P_RLIMIT_BASE + 2 * RLIMIT_COUNT + 2, WORDS[T_POLICY]);
 }
 
 #[test]

@@ -4,17 +4,21 @@
 //! and a bind of each listed path, pivoted into before the credentials are changed. Every
 //! function performs one plan step.
 #![allow(clippy::missing_errors_doc)] // each step returns the errno of the call that failed
+use qinit_sys::fd::file_type;
 use qinit_sys::fs::{
-    Kind, create_file, lstat_kind, mkdir_all, open_beneath, open_path, readlink, symlink,
+    Kind, create_at, create_file, lstat_kind, mkdir_all, mkdirat, open_beneath, open_path,
+    readlink, symlink,
 };
 use qinit_sys::landlock::{LANDLOCK_ACCESS_FS_ALL_V3, add_path_rule};
 use qinit_sys::mount::{
-    MOUNT_ATTR_IDMAP, MOUNT_ATTR_NODEV, MOUNT_ATTR_NOSUID, MOUNT_ATTR_RDONLY, mount_data,
-    move_mount_to, open_tree, pivot_root, private_rec, rmdir, setattr, setattr_fd, umount_detach,
+    MOUNT_ATTR_IDMAP, MOUNT_ATTR_NODEV, MOUNT_ATTR_NOSUID, MOUNT_ATTR_RDONLY, PROPAGATION_PRIVATE,
+    mount_data, move_mount_to, move_mount_to_fd, open_tree, pivot_root, private_rec, rmdir,
+    setattr, setattr_fd, umount_detach,
 };
 use qinit_sys::{Errno, Result};
 use std::ffi::CString;
-use std::os::fd::{AsFd, BorrowedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 /// Where the view's root is built: below `/run`, which is a writable `tmpfs` even when the host's
@@ -37,6 +41,8 @@ fn tmpfs(target: &Path, flags: libc::c_ulong, data: &str) -> Result<()> {
 /// `ViewRoot`: the root's `tmpfs`.
 pub fn root() -> Result<()> {
     let root = Path::new(VIEW_ROOT);
+    // The directory of the colony's socket too: only the view itself is private.
+    mkdir_all(Path::new("/run/qinit"), 0o755)?;
     mkdir_all(root, 0o700)?;
     tmpfs(root, libc::MS_NOSUID | libc::MS_NODEV, "mode=0755")
 }
@@ -49,13 +55,14 @@ pub fn dev() -> Result<()> {
     for node in DEV_NODES {
         let target = dev.join(node);
         create_file(&target, 0o644)?;
-        attach_fd(
+        let clone = clone_of(
             open_path(&Path::new("/dev").join(node))?.as_fd(),
-            &target,
             0,
-            false,
+            Mode::Rw,
             None,
         )?;
+        move_mount_to(clone.as_fd(), &target)?;
+        private_rec(&target)?;
     }
     let shm = dev.join("shm");
     mkdir_all(&shm, 0o755)?;
@@ -170,16 +177,34 @@ pub fn entry(
     idmap: Option<BorrowedFd<'_>>,
 ) -> Result<()> {
     let (mode, path) = split(entry)?;
-    let ro = mode.read_only();
     let host = Path::new(path);
-    let target = at(path);
-    let source = match beneath {
-        Some(above) => {
-            let rest = host.strip_prefix(above).map_err(|_| Errno(libc::EINVAL))?;
-            Some(open_beneath(open_path(above)?.as_fd(), rest)?)
-        }
-        None => None,
+    let mut set = MOUNT_ATTR_NOSUID;
+    if !below_dev(path) {
+        set |= MOUNT_ATTR_NODEV;
+    }
+    if mode.read_only() {
+        set |= MOUNT_ATTR_RDONLY;
+    }
+    let map = match (mode.idmapped(), idmap) {
+        (false, _) => None,
+        (true, Some(ns)) => Some(ns),
+        (true, None) => return Err(Errno(libc::EINVAL)),
     };
+    if let Some(above) = beneath {
+        // Neither the source nor the place it goes to is looked up by a path a symlink in a
+        // directory the service can write could redirect.
+        let rest = host.strip_prefix(above).map_err(|_| Errno(libc::EINVAL))?;
+        let source = open_beneath(open_path(above)?.as_fd(), rest)?;
+        return attach_beneath(
+            &at(&above.to_string_lossy()),
+            rest,
+            source.as_fd(),
+            set,
+            mode,
+            map,
+        );
+    }
+    let target = at(path);
     let kind = lstat_kind(host)?;
     if let Some(parent) = target.parent() {
         mkdir_all(parent, 0o755)?;
@@ -201,48 +226,94 @@ pub fn entry(
             None,
         );
     }
-    let mut set = MOUNT_ATTR_NOSUID;
-    if !below_dev(path) {
-        set |= MOUNT_ATTR_NODEV;
-    }
-    if ro {
-        set |= MOUNT_ATTR_RDONLY;
-    }
-    let map = match (mode.idmapped(), idmap) {
-        (false, _) => None,
-        (true, Some(ns)) => Some(ns),
-        (true, None) => return Err(Errno(libc::EINVAL)),
-    };
-    match source {
-        Some(fd) => attach_fd(fd.as_fd(), &target, set, mode.follows(), map),
-        None => attach_fd(open_path(host)?.as_fd(), &target, set, mode.follows(), map),
+    let clone = clone_of(open_path(host)?.as_fd(), set, mode, map)?;
+    move_mount_to(clone.as_fd(), &target)?;
+    if mode.follows() {
+        Ok(())
+    } else {
+        private_rec(&target)
     }
 }
 
-/// Binds the tree behind `source` (and every mount below it) at `target` as a detached clone that
-/// gets the attributes `set` before it is attached, so it is never visible without them; with
-/// `idmap` it is also idmapped through that user namespace, which fails (`EINVAL`) when a
-/// filesystem below does not support it. Attaching under a shared parent joins the clone to its
-/// peer group whatever the clone's own propagation was, so it is made private afterwards: a
-/// mount the host makes later below `source` must not appear in the view, writable and without
-/// `nosuid`. `follows`: it is left a slave of the host's mount instead, so the mounts the host
-/// makes later do appear (`rs:`, `ws:`).
-fn attach_fd(
+/// The detached clone of the tree behind `source` (and every mount below it) with the attributes
+/// `set` already on it, so it is never visible without them; with `idmap` it is idmapped through
+/// that user namespace, which fails (`EINVAL`) when a filesystem below does not support it. It
+/// is made private unless the mode follows the host's later mounts (`rs:`, `ws:`).
+fn clone_of(
     source: BorrowedFd<'_>,
-    target: &Path,
     set: u64,
-    follows: bool,
+    mode: Mode,
     idmap: Option<BorrowedFd<'_>>,
-) -> Result<()> {
+) -> Result<OwnedFd> {
     let clone = open_tree(source, c"", true)?;
     let set = if idmap.is_some() {
         set | MOUNT_ATTR_IDMAP
     } else {
         set
     };
-    setattr_fd(clone.as_fd(), set, 0, 0, idmap, true)?;
-    move_mount_to(clone.as_fd(), target)?;
-    if follows { Ok(()) } else { private_rec(target) }
+    let propagation = if mode.follows() {
+        0
+    } else {
+        PROPAGATION_PRIVATE
+    };
+    setattr_fd(clone.as_fd(), set, 0, propagation, idmap, true)?;
+    Ok(clone)
+}
+
+/// Attaches the clone of `source` at `rest` below `base` (the writable entry's directory in the
+/// view), walking and creating the path one component at a time with `openat2` that refuses
+/// every symlink, and moving the mount onto the descriptor of the last component. Attaching
+/// under a shared parent joins the clone to its peer group whatever its own propagation was, so
+/// a mode that does not follow makes the attached mount private again.
+fn attach_beneath(
+    base: &Path,
+    rest: &Path,
+    source: BorrowedFd<'_>,
+    set: u64,
+    mode: Mode,
+    idmap: Option<BorrowedFd<'_>>,
+) -> Result<()> {
+    let is_dir = file_type(source)? == libc::S_IFDIR;
+    let names: Vec<CString> = rest
+        .components()
+        .map(|c| CString::new(c.as_os_str().as_bytes()).map_err(|_| Errno(libc::EINVAL)))
+        .collect::<Result<_>>()?;
+    let mut dir = open_path(base)?;
+    let mut parent = None;
+    for (i, name) in names.iter().enumerate() {
+        let last = i + 1 == names.len();
+        let rel = Path::new(std::ffi::OsStr::from_bytes(name.to_bytes()));
+        let next = match open_beneath(dir.as_fd(), rel) {
+            Ok(fd) => fd,
+            Err(Errno(libc::ENOENT)) => {
+                if last && !is_dir {
+                    create_at(dir.as_fd(), name, 0o644)?;
+                } else {
+                    mkdirat(dir.as_fd(), name, 0o755)?;
+                }
+                open_beneath(dir.as_fd(), rel)?
+            }
+            Err(e) => return Err(e),
+        };
+        if !last && file_type(next.as_fd())? != libc::S_IFDIR {
+            return Err(Errno(libc::ENOTDIR));
+        }
+        parent = Some(dir);
+        dir = next;
+    }
+    let clone = clone_of(source, set, mode, idmap)?;
+    move_mount_to_fd(clone.as_fd(), dir.as_fd())?;
+    if mode.follows() {
+        return Ok(());
+    }
+    // The descriptor is the mount point underneath; the name now leads into the new mount.
+    let parent = parent.ok_or(Errno(libc::EINVAL))?;
+    let last = names.last().ok_or(Errno(libc::EINVAL))?;
+    let attached = open_beneath(
+        parent.as_fd(),
+        Path::new(std::ffi::OsStr::from_bytes(last.to_bytes())),
+    )?;
+    setattr_fd(attached.as_fd(), 0, 0, PROPAGATION_PRIVATE, None, true)
 }
 
 /// `ViewPivot`: the view becomes the root and the old root is gone.

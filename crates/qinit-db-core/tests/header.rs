@@ -51,9 +51,9 @@ fn the_record_sizes_match_the_word_indices() {
     assert_eq!(WORDS[T_ENABLED], 1);
     assert_eq!(WORDS[T_PRESYSLOG], 1);
     assert_eq!(P_RLIMIT_BASE + 2 * RLIMIT_COUNT, P_ALLOW_INSIDE_IDS);
-    assert_eq!(P_ALLOW_INSIDE_IDS + 1, WORDS[T_POLICY]);
+    assert_eq!(P_ALLOW_IDMAP + 1, WORDS[T_POLICY]);
     assert_eq!(PH_RLIMIT_BASE + 2 * RLIMIT_COUNT, WORDS[T_POLICY_HEAD]);
-    assert_eq!((WORDS[T_POLICY], WORDS[T_POLICY_HEAD]), (44, 34));
+    assert_eq!((WORDS[T_POLICY], WORDS[T_POLICY_HEAD]), (45, 34));
 }
 
 #[test]

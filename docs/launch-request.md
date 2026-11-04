@@ -143,7 +143,9 @@ The modes:
 | `rs:` `ws:` | as `ro:` and `rw:`, but the entry stays a slave of the host's mount, so a mount the host makes later below the path **appears** in the view (without the entry's `nosuid`, `nodev` or read-only attributes). It only follows if the host's mounts are shared, which is not this document's business. |
 | `ri:` `wi:` | as `ro:` and `rw:`, **idmapped** through the service's id map. Needs the `user` bit of `ns`. The ids on disk are the service's inside ids: a file owned by disk id `i` is owned by inside id `i`, and what the service creates under inside id `i` is disk id `i`. Disk ids the map does not cover (an own map covers one) show as `nobody`, and an inode owned by one cannot be written. The launch fails at the entry (`EINVAL`) when a filesystem below cannot be idmapped; nothing falls back to a plain bind, so an idmapped entry should lie on one filesystem. |
 
-`ro:/proc` in a pid namespace is a fresh `proc` mount instead of a bind of the host's.
+`ro:/proc` in a pid namespace is a fresh `proc` mount instead of a bind of the host's. The other
+modes bind the host's `/proc`: `rs:/proc` shows every host process, and `ri:/proc` always fails
+(`EINVAL`), because procfs cannot be idmapped.
 
 **Symlinks.** An entry below a writable entry listed before it (`rw:/data` and `ro:/data/app`, by
 whole components) is opened without following any symlink, the last component included: a symlink
@@ -162,7 +164,10 @@ the user's subordinate ranges (`/etc/subuid`, `/etc/subgid`, `count` being the s
 and allows `setgroups`. An inside id of a range map above `count` fails the launch at the
 `identity` step with `ERANGE`; an own map accepts any id up to 4294967294. Whether a request may
 ask for a user namespace, for the range map and for a non-zero inside id is the policy's decision
-(`allow_userns`, `allow_inside_ids`; see `docs/db-format.md`).
+(`allow_userns`, `allow_inside_ids`; see `docs/db-format.md`). A request with an idmapped path
+entry also needs a rule with `allow_idmap = true`: an idmapped mount hands the service the
+ownership of disk ids (with the default own map, files owned by disk root become the service's
+own), which is more than the user namespace's map alone gives it.
 
 ## The failure record
 

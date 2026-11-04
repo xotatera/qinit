@@ -145,6 +145,8 @@ pub struct RuleSpec {
     pub allow_userns: u32,
     /// 1 when the rule lets a request run as a non-zero inside id.
     pub allow_inside_ids: u32,
+    /// 1 when the rule lets a request have an idmapped path entry.
+    pub allow_idmap: u32,
     /// The ceilings, by kernel resource number; `u64::MAX` is infinity.
     pub rlimits: [Option<u64>; 16],
 }
@@ -160,6 +162,7 @@ pub fn rule(pattern: &'static str) -> RuleSpec {
         require_seccomp: 0,
         allow_userns: 0,
         allow_inside_ids: 0,
+        allow_idmap: 0,
         rlimits: [None; 16],
     }
 }
@@ -354,7 +357,7 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
     for r in &spec.policy {
         let (po, pl) = intern(&mut pool, r.pattern.as_bytes());
         let (uo, ul) = intern(&mut pool, r.users.as_bytes());
-        let mut rec = [0u32; 44];
+        let mut rec = [0u32; 45];
         rec[P_PATTERN_OFF] = po;
         rec[P_PATTERN_LEN] = pl;
         rec[P_USERS_OFF] = uo;
@@ -366,6 +369,7 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
         rec[P_REQUIRE_SECCOMP] = r.require_seccomp;
         rec[P_ALLOW_USERNS] = r.allow_userns;
         rec[P_ALLOW_INSIDE_IDS] = r.allow_inside_ids;
+        rec[P_ALLOW_IDMAP] = r.allow_idmap;
         let mut mask = 0;
         limit_words(&r.rlimits, &mut mask, &mut rec[P_RLIMIT_BASE..]);
         rec[P_RLIMIT_MASK] = mask;

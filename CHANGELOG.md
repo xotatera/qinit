@@ -21,7 +21,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     follow the host's later mounts (D47). The proved path rules, the decoder and the plan change
     by a mode set; the plan has one new step, `IdmapNamespace`.
   - Inside ids (D44): `sandbox.inside_uid`/`inside_gid`, the credential record grows to 15 words,
-    the launch request to 69 and a policy rule to 44 (`allow_inside_ids`, denial code 9).
+    the launch request to 69 and a policy rule to 45 (`allow_inside_ids`, denial code 9;
+    `allow_idmap`, denial code 10: an idmapped entry needs a rule that allows it).
   - `qinit_client::pidfd_exit` reads a launch's exit status from its pidfd on Linux 6.15 and later
     (D45).
   - `Run` flag bit 1 `wait_ready`: the second reply is `Settled` when the service writes its

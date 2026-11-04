@@ -29,7 +29,7 @@ pub(crate) fn words_of(t: usize) -> (w: usize)
     } else if t == 4 {
         3
     } else if t == T_POLICY {
-        44
+        45
     } else if t == T_POLICY_HEAD {
         34
     } else {

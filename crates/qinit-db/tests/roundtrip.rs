@@ -361,6 +361,7 @@ fn allow_inside_ids_round_trips() {
         require_seccomp: false,
         allow_userns: Userns::Own,
         allow_inside_ids: allow,
+        allow_idmap: allow,
         rlimits: [None; 16],
     };
     let mut m = sample();
@@ -395,6 +396,7 @@ fn a_policy_round_trips() {
                 require_seccomp: true,
                 allow_userns: Userns::Range,
                 allow_inside_ids: false,
+                allow_idmap: false,
                 rlimits: own,
             },
             PolicyRule {
@@ -405,6 +407,7 @@ fn a_policy_round_trips() {
                 require_seccomp: false,
                 allow_userns: Userns::Own,
                 allow_inside_ids: false,
+                allow_idmap: false,
                 rlimits: [None; 16],
             },
         ],

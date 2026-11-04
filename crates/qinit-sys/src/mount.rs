@@ -203,6 +203,8 @@ pub const MOUNT_ATTR_IDMAP: u64 = 0x0010_0000;
 pub const PROPAGATION_PRIVATE: u64 = MS_PRIVATE;
 /// `MOVE_MOUNT_F_EMPTY_PATH`: the source is the descriptor itself.
 const MOVE_MOUNT_F_EMPTY_PATH: u32 = 0x4;
+/// `MOVE_MOUNT_T_EMPTY_PATH`: the target is the descriptor itself.
+const MOVE_MOUNT_T_EMPTY_PATH: u32 = 0x40;
 
 /// `open_tree(dir, path, OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC [| AT_RECURSIVE])`: a detached
 /// copy of the mount at `path` below `dir` (the mount `dir` itself when `path` is empty), with
@@ -274,6 +276,24 @@ pub fn move_mount_to(tree: BorrowedFd<'_>, target: &Path) -> Result<()> {
             libc::AT_FDCWD,
             t.as_ptr(),
             MOVE_MOUNT_F_EMPTY_PATH,
+        )
+    })?;
+    Ok(())
+}
+
+/// `move_mount(tree, "", target, "", MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH)`: attaches
+/// the detached mount behind `tree` on the directory or file that `target` is open on, with no
+/// path to resolve (and so no symlink to follow).
+pub fn move_mount_to_fd(tree: BorrowedFd<'_>, target: BorrowedFd<'_>) -> Result<()> {
+    // SAFETY: valid descriptors, empty NUL-terminated paths and an integer flag set.
+    check_long(unsafe {
+        libc::syscall(
+            libc::SYS_move_mount,
+            tree.as_raw_fd(),
+            c"".as_ptr(),
+            target.as_raw_fd(),
+            c"".as_ptr(),
+            MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH,
         )
     })?;
     Ok(())

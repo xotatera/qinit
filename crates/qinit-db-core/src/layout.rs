@@ -76,7 +76,7 @@ pub const T_POLICY_HEAD: usize = 8;
 pub const T_POOL: usize = 9;
 
 /// Words per record, tables 0..=8.
-pub const WORDS: [usize; 9] = [68, 3, 7, 15, 3, 1, 1, 44, 34];
+pub const WORDS: [usize; 9] = [68, 3, 7, 15, 3, 1, 1, 45, 34];
 
 /// Policy rules.
 pub const MAX_POLICY_RULES: usize = 1024;
@@ -126,6 +126,10 @@ pub const P_RLIMIT_BASE: usize = 11;
 /// Policy rule record word 43: `allow_inside_ids`, 0 or 1: a request that runs as a non-zero id
 /// inside its user namespace needs a matching rule with 1.
 pub const P_ALLOW_INSIDE_IDS: usize = 43;
+
+/// Policy rule record word 44: `allow_idmap`, 0 or 1: a request with an idmapped path entry
+/// (`ri:`, `wi:`, which hands the service the ownership of disk ids) needs a matching rule with 1.
+pub const P_ALLOW_IDMAP: usize = 44;
 
 /// Policy header record word 0: `allow`, 1 when the default is to allow.
 pub const PH_ALLOW: usize = 0;

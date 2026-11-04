@@ -8,7 +8,7 @@ use qinit_sys::Errno;
 use qinit_sys::fs::{is_readonly, open_beneath, open_path};
 use qinit_sys::mount::{
     MOUNT_ATTR_NODEV, MOUNT_ATTR_NOSUID, MOUNT_ATTR_RDONLY, PROPAGATION_PRIVATE, mkdir, mount_data,
-    move_mount_to, open_tree, setattr_fd,
+    move_mount_to, move_mount_to_fd, open_tree, setattr_fd,
 };
 use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
@@ -152,6 +152,17 @@ fn child_roles() {
                 "peer group: {line}"
             );
         }
+        "attach-fd" => {
+            let to = open_path(&target).unwrap();
+            move_mount_to_fd(clone.as_fd(), to.as_fd()).unwrap();
+            // Opening the same name again crosses into the new mount: it is the clone's root.
+            let again = open_path(&target).unwrap();
+            assert_eq!(
+                qinit_sys::fd::file_type(again.as_fd()).unwrap(),
+                libc::S_IFDIR
+            );
+            assert!(!attached_line(&target).is_empty());
+        }
         _ => std::process::exit(99),
     }
     std::process::exit(0);
@@ -197,4 +208,28 @@ fn a_detached_clone_attaches_read_only() {
 fn setattr_fd_propagation_private_leaves_no_peer_group() {
     let d = scratch("private");
     assert!(in_namespaces("attach-private", &d));
+}
+
+#[test]
+fn create_at_and_mkdirat_make_entries_beneath_a_descriptor() {
+    use qinit_sys::fs::{create_at, mkdirat};
+    let d = scratch("create");
+    let dfd = open_path(&d).unwrap();
+    mkdirat(dfd.as_fd(), c"sub", 0o755).unwrap();
+    create_at(dfd.as_fd(), c"file", 0o644).unwrap();
+    assert!(d.join("sub").is_dir() && d.join("file").is_file());
+    // A second create of the same name, and one through a planted symlink, are refused.
+    assert_eq!(
+        create_at(dfd.as_fd(), c"file", 0o644).unwrap_err(),
+        Errno(libc::EEXIST)
+    );
+    std::os::unix::fs::symlink("/etc/x", d.join("link")).unwrap();
+    assert!(create_at(dfd.as_fd(), c"link", 0o644).is_err());
+    assert!(!Path::new("/etc/x").exists());
+}
+
+#[test]
+fn a_clone_attaches_on_a_descriptor() {
+    let d = scratch("tofd");
+    assert!(in_namespaces("attach-fd", &d));
 }

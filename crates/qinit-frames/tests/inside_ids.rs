@@ -118,3 +118,24 @@ fn a_bad_allow_inside_ids_is_a_bad_value() {
         (Code::BadValue, "rule[0].allow_inside_ids")
     );
 }
+
+#[test]
+fn an_idmapped_entry_needs_allow_idmap() {
+    let src = r#"
+        [worker.box]
+        exec = ["/bin/box"]
+        credentials = { uid = "svc" }
+        sandbox = { namespaces = ["user"], paths = ["ro:/bin", "wi:/data"] }
+    "#;
+    let m = ok(src).model;
+    let es = check(&pol("im-no", ""), &m).expect_err("refused");
+    assert_eq!(es.len(), 1, "{es:?}");
+    assert_eq!(
+        (es[0].code, es[0].key.as_str()),
+        (Code::Policy, "rule[0].allow_idmap")
+    );
+    assert_eq!(check(&pol("im-yes", "allow_idmap = true"), &m), Ok(()));
+    // A plain writable entry needs nothing.
+    let plain = ok(&src.replace("wi:", "rw:")).model;
+    assert_eq!(check(&pol("im-plain", ""), &plain), Ok(()));
+}
