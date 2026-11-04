@@ -21,6 +21,8 @@ fn rule(pattern: &str) -> PolicyRule {
         require_nnp: false,
         require_seccomp: false,
         allow_userns: Userns::No,
+        allow_inside_ids: false,
+        allow_idmap: false,
         rlimits: [None; 16],
     }
 }
@@ -242,4 +244,111 @@ fn the_first_matching_rule_decides() {
     let d = db(policy(false, vec![deny, rule("*")]));
     assert_eq!(check(&d, "~job", &root()), Err(Denial::User));
     assert_eq!(check(&d, "other", &root()), Ok(()));
+}
+
+/// A request in a user namespace that runs as inside ids `uid` and `gid`.
+fn inside(uid: u32, gid: u32) -> Vec<u8> {
+    req(move |q| {
+        q.ns = 32;
+        q.inside_uid = uid;
+        q.inside_gid = gid;
+    })
+}
+
+#[test]
+fn a_run_with_inside_ids_needs_a_rule() {
+    let mut allow = rule("*");
+    allow.allow_userns = Userns::Own;
+    let mut yes = allow.clone();
+    yes.allow_inside_ids = true;
+    let denied = db(policy(false, vec![allow]));
+    let allowed = db(policy(false, vec![yes]));
+    for (uid, gid) in [(1000, 0), (0, 1000), (1000, 1001)] {
+        assert_eq!(
+            check(&denied, "~a", &inside(uid, gid)),
+            Err(Denial::InsideIds),
+            "{uid} {gid}"
+        );
+        assert_eq!(
+            check(&allowed, "~a", &inside(uid, gid)),
+            Ok(()),
+            "{uid} {gid}"
+        );
+    }
+    // Inside id 0 needs no permission, and the code is stable.
+    assert_eq!(check(&denied, "~a", &inside(0, 0)), Ok(()));
+    assert_eq!(Denial::InsideIds.code(), 9);
+}
+
+#[test]
+fn the_inside_ids_clause_comes_after_userns_and_before_limits() {
+    // No user-namespace permission: Userns first.
+    let d = db(policy(false, vec![rule("*")]));
+    assert_eq!(check(&d, "~a", &inside(1000, 0)), Err(Denial::Userns));
+    // Permission for the namespace but not the ids, and a limit above the ceiling: the ids first.
+    let mut r = rule("*");
+    r.allow_userns = Userns::Own;
+    r.rlimits[7] = Some(10);
+    let d = db(policy(false, vec![r]));
+    let both = req(|q| {
+        q.ns = 32;
+        q.inside_uid = 1000;
+        q.rlimits[7] = Some(1000);
+    });
+    assert_eq!(check(&d, "~a", &both), Err(Denial::InsideIds));
+}
+
+/// A request in a user namespace whose first path entry is `entry`.
+fn with_entry(entry: &str) -> Vec<u8> {
+    let entry = entry.to_owned();
+    req(move |q| {
+        q.ns = 33;
+        q.paths = vec!["ro:/bin".into(), entry];
+        q.argv = vec!["/bin/x".into()];
+    })
+}
+
+#[test]
+fn an_idmapped_entry_needs_a_rule_that_allows_it() {
+    let mut base = rule("*");
+    base.allow_userns = Userns::Own;
+    let mut yes = base.clone();
+    yes.allow_idmap = true;
+    let denied = db(policy(false, vec![base]));
+    let allowed = db(policy(false, vec![yes]));
+    for entry in ["ri:/data", "wi:/data"] {
+        assert_eq!(
+            check(&denied, "~a", &with_entry(entry)),
+            Err(Denial::Idmap),
+            "{entry}"
+        );
+        assert_eq!(check(&allowed, "~a", &with_entry(entry)), Ok(()), "{entry}");
+    }
+    // Plain and following entries need no such permission.
+    for entry in ["ro:/data", "rw:/data", "rs:/data", "ws:/data"] {
+        assert_eq!(check(&denied, "~a", &with_entry(entry)), Ok(()), "{entry}");
+    }
+    assert_eq!(Denial::Idmap.code(), 10);
+}
+
+#[test]
+fn the_idmap_clause_comes_after_inside_ids_and_before_limits() {
+    let mut r = rule("*");
+    r.allow_userns = Userns::Own;
+    r.rlimits[7] = Some(10);
+    let d = db(policy(false, vec![r]));
+    let both = req(|q| {
+        q.ns = 33;
+        q.paths = vec!["ro:/bin".into(), "wi:/data".into()];
+        q.argv = vec!["/bin/x".into()];
+        q.rlimits[7] = Some(1000);
+    });
+    assert_eq!(check(&d, "~a", &both), Err(Denial::Idmap));
+    let ids = req(|q| {
+        q.ns = 33;
+        q.inside_uid = 1000;
+        q.paths = vec!["ro:/bin".into(), "wi:/data".into()];
+        q.argv = vec!["/bin/x".into()];
+    });
+    assert_eq!(check(&d, "~a", &ids), Err(Denial::InsideIds));
 }

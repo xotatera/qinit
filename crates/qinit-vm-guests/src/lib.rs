@@ -121,7 +121,7 @@ fn enter_tmpfs_root() -> Result<(), String> {
 
 fn setup() -> Result<(), String> {
     use qinit_sys::mount::{mkdir, mount};
-    for d in ["/dev", "/proc", "/sys", "/tmp"] {
+    for d in ["/dev", "/proc", "/sys", "/tmp", "/run"] {
         let _ = mkdir(Path::new(d), 0o755);
     }
     let m = |src: &str, dst: &str, fs: &str| {
@@ -132,6 +132,8 @@ fn setup() -> Result<(), String> {
     m("sysfs", "/sys", "sysfs")?;
     m("cgroup2", "/sys/fs/cgroup", "cgroup2")?;
     m("tmpfs", "/tmp", "tmpfs")?;
+    // The writable directory of a host whose root may be read-only; the view is built below it.
+    m("tmpfs", "/run", "tmpfs")?;
     mkdir(Path::new(COMB), 0o755).map_err(|e| format!("mkdir {COMB}: {e}"))?;
     // The home of the `svc` account of the initrd's /etc/passwd.
     let _ = mkdir(Path::new("/home"), 0o755);
@@ -867,6 +869,35 @@ fn launch_helper(role: &str, args: &[String]) -> Option<i32> {
             }
             _ => 2,
         },
+        // `probe-owner <path>`: the owner of the file as `<uid> <gid>` on standard output.
+        "probe-owner" => a0.map_or(2, |p| match std::fs::metadata(p) {
+            Ok(m) => {
+                let ids = format!(
+                    "{} {}",
+                    std::os::unix::fs::MetadataExt::uid(&m),
+                    std::os::unix::fs::MetadataExt::gid(&m)
+                );
+                if writeln!(std::io::stdout(), "{ids}").is_ok() {
+                    0
+                } else {
+                    2
+                }
+            }
+            Err(x) => x.raw_os_error().unwrap_or(2),
+        }),
+        // `probe-after-go <path>`: says `started` on standard output, waits for a line on
+        // standard input, then exits 0 when the file can be opened for reading, the errno
+        // otherwise.
+        "probe-after-go" => a0.map_or(2, |p| {
+            let mut line = String::new();
+            if writeln!(std::io::stdout(), "started").is_err()
+                || std::io::stdout().flush().is_err()
+                || std::io::stdin().read_line(&mut line).is_err()
+            {
+                return 2;
+            }
+            std::fs::File::open(p).map_or_else(|x| x.raw_os_error().unwrap_or(2), |_| 0)
+        }),
         // `probe-statvfs <path>`: 0 when the mount holding the path is read-only, 1 when not,
         // the errno when the path cannot be examined.
         "probe-statvfs" => a0.map_or(2, |p| match qinit_sys::fs::is_readonly(Path::new(p)) {

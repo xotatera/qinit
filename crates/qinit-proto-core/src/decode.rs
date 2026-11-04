@@ -285,8 +285,10 @@ fn check_enums(b: &[u8], t: u32) -> (r: Result<(), DecodeError>)
             return bad;
         }
     } else if t == T_RUN {
-        if rword(b, RU_FD_ROLES) > 7 || rword(b, RU_FLAGS) > FLAG_PIDFD || rword(b, RU_STOP_MODE)
-            > 1 {
+        if rword(b, RU_FD_ROLES) > 7 || rword(b, RU_FLAGS) > RUN_FLAGS_MASK || rword(
+            b,
+            RU_STOP_MODE,
+        ) > 1 {
             return bad;
         }
     } else if t == T_ERROR {

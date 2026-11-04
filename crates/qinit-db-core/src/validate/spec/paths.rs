@@ -41,16 +41,32 @@ pub open spec fn canonical(p: Seq<u8>) -> bool {
     &&& forall|k: int| 1 <= k < p.len() ==> !(#[trigger] dotdot_at(p, k))
 }
 
-/// A sandbox path entry: `ro:` or `rw:` and a canonical path.
+/// The two mode bytes of an entry: `ro` `rw` `ri` `wi` `rs` `ws` (read-only, writable, and the
+/// letters `i` for an idmapped mount and `s` for one that follows the host's later mounts).
+pub open spec fn mode_ok(a: u8, b: u8) -> bool {
+    ||| a == 0x72 && (b == 0x6f || b == 0x77 || b == 0x69 || b == 0x73)
+    ||| a == 0x77 && (b == 0x69 || b == 0x73)
+}
+
+/// A sandbox path entry: a mode (`ro:` `rw:` `ri:` `wi:` `rs:` `ws:`) and a canonical path.
 pub open spec fn path_entry_ok(e: Seq<u8>) -> bool {
     &&& e.len() >= 4
-    &&& e[0] == 0x72
-    &&& (e[1] == 0x6f || e[1] == 0x77)
+    &&& mode_ok(e[0], e[1])
     &&& e[2] == 0x3a
     &&& canonical(e.subrange(3, e.len() as int))
 }
 
-/// The path of an entry: everything after `ro:` or `rw:`.
+/// The entry's mode is writable: `rw:`, `wi:` or `ws:`.
+pub open spec fn entry_writable(e: Seq<u8>) -> bool {
+    e.len() >= 2 && (e[0] == 0x77 || e[1] == 0x77)
+}
+
+/// The entry's mode is idmapped: `ri:` or `wi:`.
+pub open spec fn entry_idmapped(e: Seq<u8>) -> bool {
+    e.len() >= 2 && e[1] == 0x69
+}
+
+/// The path of an entry: everything after the mode and the colon.
 pub open spec fn path_of(e: Seq<u8>) -> Seq<u8> {
     e.subrange(3, e.len() as int)
 }
@@ -65,7 +81,7 @@ pub open spec fn forbidden_path(p: Seq<u8>) -> bool {
 /// An entry a list may not hold: a forbidden path, or `/proc` writable.
 pub open spec fn forbidden_entry(e: Seq<u8>) -> bool {
     &&& e.len() >= 4
-    &&& (forbidden_path(path_of(e)) || (e[1] == 0x77 && path_of(e).len() == 5 && path_of(e)[0]
+    &&& (forbidden_path(path_of(e)) || (entry_writable(e) && path_of(e).len() == 5 && path_of(e)[0]
         == 0x2f && path_of(e)[1] == 0x70 && path_of(e)[2] == 0x72 && path_of(e)[3] == 0x6f
         && path_of(e)[4] == 0x63))
 }
@@ -86,11 +102,20 @@ pub open spec fn paths_allowed(s: Seq<u8>) -> bool {
         is_elem(s, p, q) && q - p >= 4 ==> !forbidden_entry(s.subrange(p, q))
 }
 
-/// A non-empty list needs the mount namespace (bit 0 of `ns`).
+/// No entry of the list is idmapped.
+pub open spec fn paths_no_idmapped(s: Seq<u8>) -> bool {
+    forall|p: int, q: int|
+        #![trigger is_elem(s, p, q)]
+        is_elem(s, p, q) && q - p >= 4 ==> !entry_idmapped(s.subrange(p, q))
+}
+
+/// A non-empty list needs the mount namespace (bit 0 of `ns`), and an idmapped entry needs the
+/// user namespace (bit 5).
 pub open spec fn paths_shape_ok(s: Seq<u8>, ns: u32) -> bool {
     &&& paths_ordered(s)
     &&& paths_allowed(s)
     &&& (s.len() > 0 ==> ns & 1u32 != 0u32)
+    &&& (ns & 32u32 == 0u32 ==> paths_no_idmapped(s))
 }
 
 /// `p` is `q` or below it, by whole components.

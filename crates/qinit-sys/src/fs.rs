@@ -3,7 +3,8 @@
 
 //! File-system calls the sandbox view needs that `std::fs` follows links for or hides:
 //! `lstat` kinds, symlinks and exclusive file creation.
-use crate::{Errno, Result, check, cpath};
+use crate::{Errno, Result, check, check_long, cpath};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 
@@ -91,4 +92,71 @@ pub fn is_readonly(path: &Path) -> Result<bool> {
     // SAFETY: a NUL-terminated path and a writable statvfs.
     check(unsafe { libc::statvfs(p.as_ptr(), &raw mut st) })?;
     Ok(st.f_flag & libc::ST_RDONLY != 0)
+}
+
+/// `open(path, O_PATH | O_CLOEXEC)`: a descriptor naming `path`, symlinks followed.
+pub fn open_path(path: &Path) -> Result<OwnedFd> {
+    let p = cpath(path)?;
+    // SAFETY: a NUL-terminated path that outlives the call.
+    let fd = check(unsafe { libc::open(p.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) })?;
+    // SAFETY: open returned a new descriptor that nothing else owns.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// `struct open_how` of `openat2(2)` (libc's is non-exhaustive).
+#[repr(C)]
+struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+
+/// `openat2(dir, rel, O_PATH | O_CLOEXEC, RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS |
+/// RESOLVE_NO_MAGICLINKS)`: a descriptor naming `rel` below `dir`. A symlink anywhere on the
+/// way, the last component included, is `ELOOP`; a `..` or an absolute `rel` that leaves `dir`
+/// is `EXDEV`.
+pub fn open_beneath(dir: BorrowedFd<'_>, rel: &Path) -> Result<OwnedFd> {
+    let p = cpath(rel)?;
+    let how = OpenHow {
+        flags: (libc::O_PATH | libc::O_CLOEXEC) as u64,
+        mode: 0,
+        resolve: libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_MAGICLINKS,
+    };
+    // SAFETY: a valid descriptor, a NUL-terminated path that outlives the call and a readable
+    // `open_how` of the size passed.
+    let fd = check_long(unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            dir.as_raw_fd(),
+            p.as_ptr(),
+            &raw const how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    })?;
+    let fd = libc::c_int::try_from(fd).map_err(|_| Errno(libc::EBADF))?;
+    // SAFETY: openat2 returned a new descriptor that nothing else owns.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// `mkdirat(dir, name, mode)`.
+pub fn mkdirat(dir: BorrowedFd<'_>, name: &std::ffi::CStr, mode: u32) -> Result<()> {
+    // SAFETY: a valid descriptor and a NUL-terminated name that outlives the call.
+    check(unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), mode) })?;
+    Ok(())
+}
+
+/// Creates the regular file `name` below `dir` (`O_CREAT | O_EXCL | O_NOFOLLOW`) and closes it.
+pub fn create_at(dir: BorrowedFd<'_>, name: &std::ffi::CStr, mode: u32) -> Result<()> {
+    // SAFETY: a valid descriptor, a NUL-terminated name and an integer mode.
+    let fd = check(unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            mode,
+        )
+    })?;
+    // SAFETY: openat returned a new descriptor that nothing else owns.
+    drop(unsafe { OwnedFd::from_raw_fd(fd) });
+    Ok(())
 }

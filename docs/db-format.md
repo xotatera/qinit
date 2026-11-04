@@ -31,11 +31,11 @@ Table ids, in header order, with the words per record (`WORDS`):
 | 0 `T_NODES` | nodes | 68 |
 | 1 `T_GROUPS` | dependency groups | 3 |
 | 2 `T_EDGES` | edges | 7 |
-| 3 `T_CREDS` | credentials | 13 |
+| 3 `T_CREDS` | credentials | 15 |
 | 4 `T_ROUTES` | output routes | 3 |
 | 5 `T_ENABLED` | enabled closure | 1 |
 | 6 `T_PRESYSLOG` | pre-syslog list | 1 |
-| 7 `T_POLICY` | policy rules | 43 |
+| 7 `T_POLICY` | policy rules | 45 |
 | 8 `T_POLICY_HEAD` | the policy's defaults | 34 |
 | 9 `T_POOL` | string pool | bytes |
 
@@ -115,7 +115,7 @@ later step, not at the limit's own.
 | 5 | `E_RESTART_ON` | 0 none, 1 error, 2 restart, 3 refresh |
 | 6 | `E_FLAGS` | bit 0 = `stop = "parallel"`, bit 1 = cascade (a quarantined `require_all` target quarantines the dependent); all other bits zero |
 
-### Credential (13 words)
+### Credential (15 words)
 
 | Word | Name | Meaning |
 | --- | --- | --- |
@@ -125,9 +125,10 @@ later step, not at the limit's own.
 | 5 | `C_NNP` | no_new_privs, 0 or 1 |
 | 6 | `C_NS` | namespaces, bits 0..=5: mount, pid, ipc, uts, net, user |
 | 7 | `C_SECCOMP` | 0 none, 1 default, 2 deny-list, 3 allow-list |
-| 8, 9 | `C_PATHS_OFF`, `C_PATHS_LEN` | the sandbox path list: entries `ro:<path>` or `rw:<path>` with a canonical absolute path (starts `/`, no empty, `.` or `..` component, no trailing `/`), NUL-separated |
+| 8, 9 | `C_PATHS_OFF`, `C_PATHS_LEN` | the sandbox path list: entries `<mode>:<path>`, the mode one of `ro` `rw` `ri` `wi` `rs` `ws` (read-only, writable, idmapped read-only, idmapped writable, read-only and following the host's later mounts, writable and following), with a canonical absolute path (starts `/`, no empty, `.` or `..` component, no trailing `/`), NUL-separated |
 | 10, 11 | `C_SECCOMP_OFF`, `C_SECCOMP_LEN` | syscall numbers of the deny- or allow-list, NUL-separated canonical decimals; length 0 exactly when `C_SECCOMP` is 0 or 1 |
 | 12 | `C_USER_MAP` | the user namespace's id map: 0 own, 1 range; 1 only with the `user` bit of `C_NS` |
+| 13, 14 | `C_INSIDE_UID`, `C_INSIDE_GID` | the user and group id the service runs as inside its user namespace, at most 4294967294; 0 unless `C_NS` has the `user` bit |
 
 The default program answers `clone`, `unshare`, `clone3` and `setns` itself (`clone` and
 `unshare` by their namespace flags, `setns` always, `clone3` with `ENOSYS`), so a deny-list
@@ -138,7 +139,7 @@ A canonical decimal is 1 to 3 ASCII digits with no leading zero (the single digi
 only entry starting with `0`), and its value is below `MAX_SYSCALL`. The compiler emits exactly
 this form and the validator accepts only it.
 
-### Policy rule (43 words)
+### Policy rule (45 words)
 
 A rule says what a request launched under a matching name may ask for. Rules are in file order
 and the first match decides.
@@ -154,6 +155,8 @@ and the first match decides.
 | 9 | `P_ALLOW_USERNS` | 0 no user namespace, 1 its own map, 2 its own or the range map |
 | 10 | `P_RLIMIT_MASK` | the limits the rule sets a ceiling for (the node record's encoding) |
 | 11 + 2r, 12 + 2r | `P_RLIMIT_BASE` | the ceiling of resource `r`, low and high word |
+| 43 | `P_ALLOW_INSIDE_IDS` | 1 when a request may run as a non-zero id inside its user namespace; 0 or 1 |
+| 44 | `P_ALLOW_IDMAP` | 1 when a request may have an idmapped path entry (`ri:`, `wi:`), which hands the service the ownership of disk ids; 0 or 1 |
 
 ### Policy header (34 words)
 
@@ -203,7 +206,7 @@ The validator is total and never panics. It accepts a database only if all of th
 1. **V1** Header fields, offsets and counts are in bounds and within the limits, and tables do not overlap.
 2. **V2** The pool is valid UTF-8, and every pool reference is an in-bounds slice between two character boundaries, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, environment entries, path entries, seccomp lists) holds no empty element. `N_INSTANCE_OF` may be empty, but at most `MAX_NAME_LEN` bytes.
 3. **V3** Every cross-table index is `NONE` or in range of its table.
-4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline). A node's `stop_mode` is 0 or 1, its `restart_delay_ms` and `stop_grace_ms` are at least 100, `restart_max > 0` implies `restart_window_ms > 0`, and its `umask` is at most `MAX_UMASK`. A worker or forager has a credential and a brood has none; the working directory is a canonical absolute path; every path entry is `ro:` or `rw:` and a canonical absolute path; every environment entry has a non-empty key before its first `=`. A credential's user is non-empty, `seccomp` is at most 3 and its list is non-empty exactly when `seccomp` is 2 or 3; every list entry is a canonical decimal below `MAX_SYSCALL`; `nnp` 0 with a path list or a seccomp filter requires `CAP_SYS_ADMIN` in `caps_lo`. A credential's path list is strictly ascending by path (so no path repeats), holds no `/`, `/dev` or `/tmp` and no writable `/proc`, and needs the `mount` bit of `C_NS`; a node with a non-empty list has an absolute program (the first element of its `exec`) at or below an entry, and a working directory that is `/` or at or below an entry. A policy rule's flags and enums are in range (`users_any` and `require_*` 0 or 1, `allow_userns` at most 2, `caps_hi` at most `0x1ff`), its pattern is 1 to `MAX_PATTERN_LEN` bytes of node-name bytes, `*` and `~`, its users are valid names, `users_any` 1 goes with an empty users list, its limits are node-record limits, there is a header record whenever there is a rule, and the header record's flags and limits are in range. `C_NS` is at most `0x3f`, `C_USER_MAP` at most 1, `C_USER_MAP` 1 needs the `user` bit, and a credential with the `user` bit does not name `root`.
+4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline). A node's `stop_mode` is 0 or 1, its `restart_delay_ms` and `stop_grace_ms` are at least 100, `restart_max > 0` implies `restart_window_ms > 0`, and its `umask` is at most `MAX_UMASK`. A worker or forager has a credential and a brood has none; the working directory is a canonical absolute path; every path entry starts with one of the six modes and a colon and has a canonical absolute path; every environment entry has a non-empty key before its first `=`. A credential's user is non-empty, `seccomp` is at most 3 and its list is non-empty exactly when `seccomp` is 2 or 3; every list entry is a canonical decimal below `MAX_SYSCALL`; `nnp` 0 with a path list or a seccomp filter requires `CAP_SYS_ADMIN` in `caps_lo`. A credential's path list is strictly ascending by path (so no path repeats), holds no `/`, `/dev` or `/tmp` and no writable (`rw:`, `wi:`, `ws:`) `/proc`, needs the `mount` bit of `C_NS`, and, when an entry is idmapped (`ri:`, `wi:`), the `user` bit; a node with a non-empty list has an absolute program (the first element of its `exec`) at or below an entry, and a working directory that is `/` or at or below an entry. A policy rule's flags and enums are in range (`users_any` and `require_*` 0 or 1, `allow_userns` at most 2, `caps_hi` at most `0x1ff`), its pattern is 1 to `MAX_PATTERN_LEN` bytes of node-name bytes, `*` and `~`, its users are valid names, `users_any` 1 goes with an empty users list, its limits are node-record limits, there is a header record whenever there is a rule, and the header record's flags and limits are in range. `C_NS` is at most `0x3f`, `C_USER_MAP` at most 1, `C_USER_MAP` 1 needs the `user` bit, and a credential with the `user` bit does not name `root`. `C_INSIDE_UID` and `C_INSIDE_GID` are at most 4294967294 and 0 without the `user` bit; a policy rule's `P_ALLOW_INSIDE_IDS` and `P_ALLOW_IDMAP` are 0 or 1.
 5. **V5** The ordering-edge graph is acyclic.
 6. **V6** The stop order derived by `qinit-graph-core` places every hard dependent before its dependency, whatever the opt-outs.
 7. **V7** `stop = "parallel"` appears on no hard edge.

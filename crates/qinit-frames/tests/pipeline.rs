@@ -102,6 +102,8 @@ fn an_etc_amend_changes_only_the_amended_key() {
         "sandbox.seccomp",
         "sandbox.paths",
         "sandbox.user_map",
+        "sandbox.inside_uid",
+        "sandbox.inside_gid",
     ];
     for l in lines
         .iter()

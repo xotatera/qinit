@@ -4,6 +4,7 @@
 //! What a guest `/init` needs: mounts, directories, sync and powering off from a child.
 use crate::{Errno, Result, check, check_long, cpath};
 use std::ffi::{CStr, CString};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::path::Path;
 
 /// `mount(source, target, fstype, flags, NULL)`.
@@ -81,24 +82,6 @@ pub fn mount_data(
     Ok(())
 }
 
-/// `mount(source, target, NULL, MS_BIND | MS_REC, NULL)`: the whole tree below `source`
-/// appears at `target`.
-pub fn bind_rec(source: &Path, target: &Path) -> Result<()> {
-    let s = cpath(source)?;
-    let t = cpath(target)?;
-    // SAFETY: NUL-terminated paths that outlive the call, no type and no data.
-    check(unsafe {
-        libc::mount(
-            s.as_ptr(),
-            t.as_ptr(),
-            std::ptr::null(),
-            libc::MS_BIND | libc::MS_REC,
-            std::ptr::null(),
-        )
-    })?;
-    Ok(())
-}
-
 /// `MOUNT_ATTR_RDONLY`.
 pub const MOUNT_ATTR_RDONLY: u64 = 0x1;
 /// `MOUNT_ATTR_NOSUID`.
@@ -118,12 +101,6 @@ struct MountAttr {
     attr_clr: u64,
     propagation: u64,
     userns_fd: u64,
-}
-
-/// `mount_setattr(AT_FDCWD, path, AT_RECURSIVE, {set, clear})`: changes the attributes of the
-/// mount at `path` and of every mount below it.
-pub fn setattr_rec(path: &Path, set: u64, clear: u64) -> Result<()> {
-    setattr_with(path, set, clear, libc::AT_RECURSIVE, 0)
 }
 
 /// `mount_setattr(AT_FDCWD, path, AT_RECURSIVE, {propagation: MS_PRIVATE})`: the mount at `path`
@@ -213,5 +190,111 @@ pub fn rmdir(path: &Path) -> Result<()> {
     let p = cpath(path)?;
     // SAFETY: a NUL-terminated path that outlives the call.
     check(unsafe { libc::rmdir(p.as_ptr()) })?;
+    Ok(())
+}
+
+/// `OPEN_TREE_CLONE`: `open_tree` returns a detached copy of the mount.
+pub const OPEN_TREE_CLONE: u32 = 1;
+/// `OPEN_TREE_CLOEXEC`.
+const OPEN_TREE_CLOEXEC: u32 = libc::O_CLOEXEC as u32;
+/// `MOUNT_ATTR_IDMAP`: with `userns_fd`, the mount maps ids through that user namespace.
+pub const MOUNT_ATTR_IDMAP: u64 = 0x0010_0000;
+/// The `mount_attr` propagation value for a private mount (`MS_PRIVATE`).
+pub const PROPAGATION_PRIVATE: u64 = MS_PRIVATE;
+/// `MOVE_MOUNT_F_EMPTY_PATH`: the source is the descriptor itself.
+const MOVE_MOUNT_F_EMPTY_PATH: u32 = 0x4;
+/// `MOVE_MOUNT_T_EMPTY_PATH`: the target is the descriptor itself.
+const MOVE_MOUNT_T_EMPTY_PATH: u32 = 0x40;
+
+/// `open_tree(dir, path, OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC [| AT_RECURSIVE])`: a detached
+/// copy of the mount at `path` below `dir` (the mount `dir` itself when `path` is empty), with
+/// every mount below it when `recursive`. The copy is in no namespace until `move_mount_to`.
+pub fn open_tree(dir: BorrowedFd<'_>, path: &CStr, recursive: bool) -> Result<OwnedFd> {
+    let mut flags = OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC;
+    if recursive {
+        flags |= libc::AT_RECURSIVE as u32;
+    }
+    if path.is_empty() {
+        flags |= libc::AT_EMPTY_PATH as u32;
+    }
+    // SAFETY: a valid descriptor, a NUL-terminated path and an integer flag set.
+    let fd = check_long(unsafe {
+        libc::syscall(libc::SYS_open_tree, dir.as_raw_fd(), path.as_ptr(), flags)
+    })?;
+    let fd = RawFd::try_from(fd).map_err(|_| Errno(libc::EBADF))?;
+    // SAFETY: open_tree returned a new descriptor that nothing else owns.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// `mount_setattr(tree, "", AT_EMPTY_PATH [| AT_RECURSIVE], {set, clear, propagation, userns})`:
+/// changes the attributes of the mount behind `tree`, attached or detached, and of every mount
+/// below it when `recursive`. `userns` is the namespace of `MOUNT_ATTR_IDMAP`.
+pub fn setattr_fd(
+    tree: BorrowedFd<'_>,
+    set: u64,
+    clear: u64,
+    propagation: u64,
+    userns: Option<BorrowedFd<'_>>,
+    recursive: bool,
+) -> Result<()> {
+    let mut flags = libc::AT_EMPTY_PATH;
+    if recursive {
+        flags |= libc::AT_RECURSIVE;
+    }
+    let attr = MountAttr {
+        attr_set: set,
+        attr_clr: clear,
+        propagation,
+        userns_fd: userns.map_or(0, |u| u64::from(u.as_raw_fd().unsigned_abs())),
+    };
+    // SAFETY: a valid descriptor, an empty NUL-terminated path and a readable `mount_attr` of
+    // the size passed.
+    check_long(unsafe {
+        libc::syscall(
+            libc::SYS_mount_setattr,
+            tree.as_raw_fd(),
+            c"".as_ptr(),
+            flags,
+            &raw const attr,
+            std::mem::size_of::<MountAttr>(),
+        )
+    })?;
+    Ok(())
+}
+
+/// `move_mount(tree, "", AT_FDCWD, target, MOVE_MOUNT_F_EMPTY_PATH)`: attaches the detached
+/// mount behind `tree` at the absolute path `target`.
+pub fn move_mount_to(tree: BorrowedFd<'_>, target: &Path) -> Result<()> {
+    let t = cpath(target)?;
+    // SAFETY: a valid descriptor, NUL-terminated paths that outlive the call and an integer
+    // flag set.
+    check_long(unsafe {
+        libc::syscall(
+            libc::SYS_move_mount,
+            tree.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_FDCWD,
+            t.as_ptr(),
+            MOVE_MOUNT_F_EMPTY_PATH,
+        )
+    })?;
+    Ok(())
+}
+
+/// `move_mount(tree, "", target, "", MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH)`: attaches
+/// the detached mount behind `tree` on the directory or file that `target` is open on, with no
+/// path to resolve (and so no symlink to follow).
+pub fn move_mount_to_fd(tree: BorrowedFd<'_>, target: BorrowedFd<'_>) -> Result<()> {
+    // SAFETY: valid descriptors, empty NUL-terminated paths and an integer flag set.
+    check_long(unsafe {
+        libc::syscall(
+            libc::SYS_move_mount,
+            tree.as_raw_fd(),
+            c"".as_ptr(),
+            target.as_raw_fd(),
+            c"".as_ptr(),
+            MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH,
+        )
+    })?;
     Ok(())
 }

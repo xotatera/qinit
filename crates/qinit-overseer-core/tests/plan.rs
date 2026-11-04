@@ -537,3 +537,36 @@ fn proc_self_precedes_the_pivot() {
     let s = steps(&userns());
     assert!(pos(&s, Step::ProcSelf) < pos(&s, Step::ClearGroups));
 }
+
+fn user_view(paths: &'static str) -> ReqSpec {
+    ReqSpec {
+        ns: 0b10_0011, // mount, pid, user
+        argv: "/etc/x",
+        paths,
+        ..minimal()
+    }
+}
+
+#[test]
+fn plan_lists_idmap_namespace_exactly_for_an_idmapped_entry() {
+    for idmapped in ["ro:/etc\0ri:/run/x", "ro:/etc\0wi:/run/x"] {
+        let s = steps(&user_view(idmapped));
+        assert_eq!(
+            s.iter().filter(|x| **x == Step::IdmapNamespace).count(),
+            1,
+            "{idmapped:?}"
+        );
+        assert!(pos(&s, Step::RearmDeadline) < pos(&s, Step::IdmapNamespace));
+        assert!(pos(&s, Step::IdmapNamespace) < pos(&s, Step::ViewRoot));
+        assert!(pos(&s, Step::IdmapNamespace) < pos(&s, Step::UserNamespace));
+    }
+    for plain in [
+        "ro:/etc\0rw:/run/x",
+        "ro:/etc\0rs:/run/x",
+        "ro:/etc\0ws:/run/x",
+    ] {
+        let s = steps(&user_view(plain));
+        assert!(!s.contains(&Step::IdmapNamespace), "{plain:?}");
+    }
+    assert!(!steps(&listed()).contains(&Step::IdmapNamespace));
+}

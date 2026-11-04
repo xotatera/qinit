@@ -247,16 +247,16 @@ listed path (read-only or writable, `nosuid`, and `nodev` except below `/dev`; e
 seal, then Landlock on the same paths. The list is the old `sandbox.landlock` renamed
 `sandbox.paths`; it is sorted, canonical, refuses `/`, `/dev`, `/tmp` and a writable `/proc`, and
 needs the `mount` namespace. The plan has one proved step per phase of the view. What the view
-does not do is in D43 and D47.
+adds since is in D43, D47, D48 and D49.
 
 ### D33 — User namespaces · `RESOLVED`
 
 A credential or request with the `user` namespace bit unshares a user namespace after the view
-is locked. `user_map` `own` maps inside 0 onto the service's user and group; `range` also maps
-inside 1.. onto its `/etc/subuid` and `/etc/subgid` ranges, written by a forked map writer that
+is locked. `user_map` `own` maps the service's inside id (0 unless D44 sets it) onto the
+service's user and group; `range` also maps inside 1.. onto its `/etc/subuid` and `/etc/subgid` ranges, written by a forked map writer that
 stays in the host namespace. A user namespace needs a user other than `root`, and a policy
 rule's `allow_userns` (0 none, 1 own, 2 own or range). The initrd and the kernel config of the VM
-suites carry `CONFIG_USER_NS` and subordinate ranges. The inside user is always 0 (D44).
+suites carry `CONFIG_USER_NS` and subordinate ranges. The inside ids are 0 unless D44 sets them.
 
 ### D34 — Other rlimits · `RESOLVED`
 
@@ -313,46 +313,74 @@ project, which plugs in at that function.
 `qinit-client` is a Rust library. Other languages implement the protocol from
 `docs/control-protocol.md`; a C ABI over the client is deferred.
 
-### D43 — Idmapped mounts in the view · `OPEN`
+### D43 — Idmapped mounts in the view · `RESOLVED`
 
-The view binds host paths with the host's ids, so a user namespace with a `range` map sees files
-owned by ids it does not map as `nobody`. Idmapped binds (`mount_setattr` with a user namespace
-fd) would give the service ownership of its own tree.
+An entry with the mode `ri:` (read-only) or `wi:` (writable) is bound as an idmapped mount: the
+overseer creates a helper user namespace (plan step `IdmapNamespace`) with the maps the service's
+own namespace will get, and passes it to `mount_setattr(MOUNT_ATTR_IDMAP)` on the entry's
+detached clone. A disk id `i` the map covers is then the service's inside id `i`, and what the
+service creates under inside id `i` is disk id `i`; every other disk id shows as `nobody`, and an
+inode whose disk owner the map does not cover cannot be written (the kernel refuses). The mode
+needs the `user` namespace bit (frames, the validator and the decoder alike) and fails the launch
+at the entry (`EINVAL`) when a filesystem below cannot be idmapped; it never falls back to a
+plain bind. An idmapped entry should lie on one filesystem: the clone is recursive and fails
+whole. A rule's `allow_idmap = true` is needed for a request with an idmapped entry (proved
+clause, denial code 10, after the inside-ids clause), because the mount gives the service the
+ownership of disk ids.
 
-### D44 — An inside user other than root · `OPEN`
+### D44 — An inside user other than root · `RESOLVED`
 
-Inside a user namespace the service is always id 0. Choosing another inside id, and mapping a
-group other than the service's own, needs a request field and a policy clause.
+`sandbox.inside_uid` and `sandbox.inside_gid` (request words 67 and 68, credential words 13 and
+14) choose the ids the service runs as inside its user namespace; both default to 0, are at most
+4294967294, and are non-zero only with the `user` bit. The map writer maps the chosen inside id
+(own map) or inside 0 and `1..count` (range map) and the credential steps set the chosen ids. A
+range map whose inside id is above the subordinate count fails at the `identity` step with
+`ERANGE`. A policy rule needs `allow_inside_ids = true` for a non-zero inside id (the proved
+check; denial code 9, between the user-namespace and limit clauses). Mapping a group other than
+the service's own is not offered.
 
-### D45 — `PIDFD_INFO_EXIT` for the pidfd reply · `OPEN`
+### D45 — `PIDFD_INFO_EXIT` for the pidfd reply · `RESOLVED`
 
-When the kernel floor is Linux 6.15 a client holding the pidfd can read the exit status from it
-without asking colony. Until then the pidfd only signals and polls.
+`qinit_client::pidfd_exit` reads the exit status from a launch's pidfd with `PIDFD_GET_INFO`
+and `PIDFD_INFO_EXIT` (Linux 6.15; the kernel floor stays 6.13): `Exited(status)` once the parent
+has reaped the process (the kernel records the status at the reap, not at the exit), `Running` before
+that, `Unsupported` on a kernel without it. The implementation lives in `qinit-ipc` (MPL) because
+the client library cannot depend on `qinit-sys`.
 
-### D46 — Readiness for instances · `OPEN`
+### D46 — Readiness for instances · `RESOLVED`
 
-`Run` refuses a request with a readiness pipe, and a forager launch has none: an instance is
-running when its `execve` succeeds. Waiting for a readiness signal needs an instance-level wait
-state.
+`Run` flag bit 1 `wait_ready`: the request must route a readiness pipe, the instance starts with
+readiness by pipe, and the second reply is `Settled` (state running) when the service writes its
+byte, `Exited` if it ends first, or `Pending` at `wait_ms`. `Launch` refuses the flag. A request with a
+pipe and no flag stays refused (`Denied`, detail 0). A service that never writes the byte is
+bounded only by `wait_ms` and an explicit stop.
 
-### D47 — Host mount propagation into views · `OPEN`
+### D47 — Host mount propagation into views · `RESOLVED`
 
-Every mount of a view is private, so a mount the host makes after the view was built (a removable
-drive under a bound path) is not seen inside. Offering a listed path whose later mounts do follow
-the host (a `slave` entry) is deferred; it belongs to queen (SP8).
+The modes `rs:` and `ws:` leave their mounts slaves of the host's, so a mount the host makes later
+below the path appears in the view; every other mode is cut off as before. Making the host's own
+mounts shared is still queen's (SP8): the entry follows only if the host's tree is shared.
 
-### D48 — A listed path below a directory the service can write · `OPEN`
+### D48 — A listed path below a directory the service can write · `RESOLVED`
 
-Host paths and view targets are resolved with symlinks followed, as root, before the pivot. A
-service that can write below a listed `rw:` directory can plant a relative symlink in it
-(`s -> ../../etc`), so a listed child path (`ro:/var/lib/app/s/data`) resolves to a different host
-file than the one the view puts it under, and the next start binds that file into the view. The
-last component stays fixed and file permissions still apply. Until paths are resolved without
-following symlinks (`openat2` with `RESOLVE_NO_SYMLINKS` and `open_tree`), do not list a child path
-below a directory the service can write.
+An entry below a writable one (`rw:`, `wi:`, `ws:` above it in the list, by whole components) is
+opened with `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS)` below that
+entry: a symlink anywhere on the way, the last component included, fails the launch at the entry
+with `ELOOP`. An entry that is not below a writable one still follows symlinks (ordinary host
+layouts such as `/lib -> usr/lib` keep working). See D50 for what this does not cover.
 
-### D49 — The view is built on the host root · `OPEN`
+### D49 — The view is built on the host root · `RESOLVED`
 
-The view's root is `/.qinit-view` on the host's root filesystem, so a launch with a path list
-needs a writable root directory (`EROFS` at `view-root` otherwise), and an empty `/.qinit-view`
-stays behind. Building the view on a detached `tmpfs` (`fsopen`, `fsmount`) removes both.
+The view's root is `/run/qinit/view` (`/run` is a writable `tmpfs` on every host this runs on)
+and every entry is a detached clone (`open_tree`, `mount_setattr`, `move_mount`) that carries its
+attributes before it is attached, so a launch no longer needs a writable host root and leaves no
+`/.qinit-view` behind.
+
+### D50 — A symlink planted in a writable directory the launch does not list · `OPEN`
+
+D48 closes the symlink a service can plant below a *listed* writable entry. A symlink planted in
+a directory that is writable by the service but not listed `rw:` (a world-writable `/var/tmp`, a
+home directory listed `ro:` by a different launch of the same user) can still redirect a later
+launch that lists a path through it. Resolving every entry without symlinks would break ordinary
+host layouts and is not proposed; the answer is to list such paths only from directories the
+service cannot write.

@@ -96,10 +96,22 @@ pub(crate) fn canonical(p: &str) -> bool {
                 .all(|c| !c.is_empty() && c != "." && c != ".."))
 }
 
+/// The modes of a path entry, three bytes before the path: read-only, writable, and each of
+/// them idmapped (`i`) or following the host's later mounts (`s`).
+const MODES: [&str; 6] = ["ro:", "rw:", "ri:", "wi:", "rs:", "ws:"];
+
+/// The path of an entry, when it starts with one of the [`MODES`].
+fn entry_path(s: &str) -> Option<&str> {
+    MODES.iter().find_map(|m| s.strip_prefix(m))
+}
+
 fn path_entry(s: &str) -> bool {
-    s.strip_prefix("ro:")
-        .or_else(|| s.strip_prefix("rw:"))
-        .is_some_and(canonical)
+    entry_path(s).is_some_and(canonical)
+}
+
+/// The entry's mode is idmapped (`ri:` or `wi:`).
+fn idmapped(e: &str) -> bool {
+    e.starts_with("ri:") || e.starts_with("wi:")
 }
 
 /// The `user` bit of `Cred::ns`.
@@ -123,10 +135,28 @@ fn user_map(cx: &mut Cx, base: &str, word: Option<&str>, ns: u32) -> UserMap {
     map
 }
 
-/// `e` is an entry a list may not hold: `/`, `/dev`, `/tmp`, or `/proc` writable.
+/// The id a service runs as inside its user namespace: 0 to 4294967294, and non-zero only with
+/// the `user` namespace.
+fn inside_id(cx: &mut Cx, key: String, id: Option<i64>, ns: u32) -> u32 {
+    let Some(n) = id else {
+        return 0;
+    };
+    let Some(id) = u32::try_from(n).ok().filter(|id| *id != u32::MAX) else {
+        cx.bad(key, format!("{n} is not an id from 0 to 4294967294"));
+        return 0;
+    };
+    if id != 0 && ns & USER_BIT == 0 {
+        cx.bad(key, "a non-zero inside id needs \"user\" in namespaces");
+    }
+    id
+}
+
+/// `e` is an entry a list may not hold: `/`, `/dev`, `/tmp`, or `/proc` writable (`rw:`, `wi:`
+/// or `ws:`).
 fn forbidden(e: &str) -> bool {
     let path = &e[3..];
-    matches!(path, "/" | "/dev" | "/tmp") || (e.starts_with("rw:") && path == "/proc")
+    let writable = ["rw:", "wi:", "ws:"].iter().any(|m| e.starts_with(m));
+    matches!(path, "/" | "/dev" | "/tmp") || (writable && path == "/proc")
 }
 
 /// The entries ordered by path, bytewise; a forbidden or repeated path is refused (and the
@@ -212,10 +242,29 @@ fn from_sandbox(cx: &mut Cx, base: &str, s: &Sandbox, out: &mut Cred) {
     out.ns = namespaces(cx, &key, s.namespaces.as_deref().unwrap_or_default());
     let paths = s.paths.clone().unwrap_or_default();
     if let Some(bad) = paths.iter().find(|e| !path_entry(e)) {
-        let why = format!("path entry {bad:?} must be ro: or rw: and a canonical absolute path");
+        let why = format!(
+            "path entry {bad:?} must start with ro:, rw:, ri:, wi:, rs: or ws: and have a canonical absolute path"
+        );
+        cx.bad(format!("{base}.sandbox.paths"), why);
+    } else if let Some(bad) = paths.iter().find(|e| idmapped(e))
+        && out.ns & USER_BIT == 0
+    {
+        let why = format!("path entry {bad:?} is idmapped and needs \"user\" in namespaces");
         cx.bad(format!("{base}.sandbox.paths"), why);
     }
     out.user_map = user_map(cx, base, s.user_map.as_deref(), out.ns);
+    out.inside_uid = inside_id(
+        cx,
+        format!("{base}.sandbox.inside_uid"),
+        s.inside_uid,
+        out.ns,
+    );
+    out.inside_gid = inside_id(
+        cx,
+        format!("{base}.sandbox.inside_gid"),
+        s.inside_gid,
+        out.ns,
+    );
     out.paths = sorted_paths(cx, base, paths);
     if !out.paths.is_empty() {
         // A path list is a view: it needs its own mount namespace.
@@ -287,6 +336,8 @@ pub(super) fn cred(
         seccomp: Seccomp::None,
         paths: Vec::new(),
         user_map: UserMap::Own,
+        inside_uid: 0,
+        inside_gid: 0,
     };
     from_creds(cx, base, c, &mut out);
     if let Some(s) = s {

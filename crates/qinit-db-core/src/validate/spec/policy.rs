@@ -104,6 +104,8 @@ pub open spec fn policy_rule_ok(b: Seq<u8>, p: int) -> bool {
     &&& pf(b, p, P_REQUIRE_NNP) <= 1
     &&& pf(b, p, P_REQUIRE_SECCOMP) <= 1
     &&& pf(b, p, P_ALLOW_USERNS) <= 2
+    &&& pf(b, p, P_ALLOW_INSIDE_IDS) <= 1
+    &&& pf(b, p, P_ALLOW_IDMAP) <= 1
     &&& pattern_ok(pool_slice(b, pf(b, p, P_PATTERN_OFF), pf(b, p, P_PATTERN_LEN)))
     &&& (pf(b, p, P_USERS_ANY) == 1 ==> pf(b, p, P_USERS_LEN) == 0)
     &&& users_list_ok(pool_slice(b, pf(b, p, P_USERS_OFF), pf(b, p, P_USERS_LEN)))

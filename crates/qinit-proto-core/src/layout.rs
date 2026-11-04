@@ -183,8 +183,15 @@ pub const RU_NAME_LEN: usize = 1;
 /// Run request word 2: `fd_roles`, a mask of 1 stdin, 2 stdout, 4 stderr.
 pub const RU_FD_ROLES: usize = 2;
 
-/// Run request word 3: `flags`, bit 0 `FLAG_PIDFD`.
+/// Run request word 3: `flags`, bit 0 `FLAG_PIDFD`, bit 1 `FLAG_WAIT_READY`.
 pub const RU_FLAGS: usize = 3;
+
+/// `Run` flag: the second reply waits for the service's readiness byte (`Settled`) instead of
+/// its exit; the request must carry a readiness pipe.
+pub const FLAG_WAIT_READY: u32 = 2;
+
+/// Every flag bit a `Run` may set.
+pub const RUN_FLAGS_MASK: u32 = 3;
 
 /// Run request word 4: `memory_max_kib`, 0 for none.
 pub const RU_MEMORY_MAX_KIB: usize = 4;

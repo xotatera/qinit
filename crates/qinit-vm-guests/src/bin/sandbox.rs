@@ -269,6 +269,223 @@ fn no_view_mount_takes_part_in_a_peer_group() -> Result<(), String> {
     want(out.as_str(), "0", "mounts with a shared: or master: field")
 }
 
+fn the_view_builds_with_a_read_only_root() -> Result<(), String> {
+    // D49: the view's root lives below /run, so a read-only host root does not stop it.
+    let root = std::path::Path::new("/");
+    let remount = |flags: libc::c_ulong| {
+        qinit_sys::mount::mount("none", root, "none", libc::MS_REMOUNT | flags)
+            .map_err(|x| x.to_string())
+    };
+    // An earlier launch left the mount point behind; a read-only root must find none.
+    let _ = std::fs::remove_dir("/.qinit-view");
+    let _ = std::fs::remove_dir("/run/qinit/view");
+    remount(libc::MS_RDONLY)?;
+    if !qinit_sys::fs::is_readonly(root).map_err(|x| x.to_string())? {
+        remount(0)?;
+        return Err("the host root did not become read-only".into());
+    }
+    let r = viewed("vr", "probe-path", &["/etc/passwd", "r"], &["ro:/etc"], 0);
+    remount(0)?;
+    want(r?.0, 0, "open of a listed path with a read-only host root")
+}
+
+/// Runs `probe-path` over the view `paths` and returns the name of the step that failed and its
+/// errno.
+fn view_failure(name: &str, paths: &[&str]) -> Result<(String, i32), String> {
+    let mut request = spec("svc", "probe-path", &["/etc/passwd", "r"]);
+    request.ns = NS_MOUNT;
+    let mut list: Vec<String> = paths.iter().map(ToString::to_string).collect();
+    list.push("ro:/init".into());
+    list.sort_by(|a, b| a[3..].cmp(&b[3..]));
+    request.paths = list;
+    let o = run_to_end(name, request, true)?;
+    let f = o.failure.ok_or("the launch did not fail")?;
+    Ok((
+        qinit_overseer::status::step_name(&o.request, f.step).to_string(),
+        f.errno,
+    ))
+}
+
+fn a_planted_symlink_below_a_writable_entry_is_refused() -> Result<(), String> {
+    // D48: with `rw:/tmp/w` listed, an entry below it is opened without following symlinks, so a
+    // link the service planted there cannot redirect the entry to a host path: as the entry
+    // itself, or as a directory on the way to it.
+    let _ = std::fs::remove_dir_all("/tmp/w");
+    e(std::fs::create_dir_all("/tmp/w"))?;
+    e(std::os::unix::fs::symlink("/etc", "/tmp/w/s"))?;
+    want(
+        view_failure("vw", &["rw:/tmp/w", "ro:/tmp/w/s"])?,
+        ("view-entry".to_string(), libc::ELOOP),
+        "a symlink as the entry",
+    )?;
+    want(
+        view_failure("vw2", &["rw:/tmp/w", "ro:/tmp/w/s/passwd"])?,
+        ("view-entry".to_string(), libc::ELOOP),
+        "a symlink on the way to the entry",
+    )
+}
+
+fn a_symlink_entry_beside_a_writable_one_still_works() -> Result<(), String> {
+    // The writable entry is not an ancestor of the symlink entry: nothing is opened beneath it.
+    let _ = std::fs::remove_file("/tmp/ro_s");
+    e(std::fs::create_dir_all("/tmp/w2"))?;
+    e(std::os::unix::fs::symlink("/etc", "/tmp/ro_s"))?;
+    want(
+        viewed(
+            "vx",
+            "probe-kind",
+            &["/tmp/ro_s"],
+            &["ro:/tmp/ro_s", "rw:/tmp/w2"],
+            0,
+        )?
+        .0,
+        10,
+        "a listed symlink beside a writable entry",
+    )
+}
+
+/// Lists `entry` over a host directory `/tmp/fol` with an empty `m` below it and starts a service
+/// that says `started`, waits for a line, and then looks for `/tmp/fol/m/marker`. Once the view
+/// is built (the service said so) a `tmpfs` holding the marker is mounted on the host's `m`, and
+/// the service is told to look. The service's exit: 0 when it saw the marker.
+fn mount_after_the_service_started(name: &str, entry: &str) -> Result<i32, String> {
+    use qinit_cell::{ReadyMode, Report};
+    use std::io::{BufRead, Write};
+    // A shared host tree, as a service manager's host has.
+    e(qinit_sys::mount::mount(
+        "none",
+        std::path::Path::new("/"),
+        "none",
+        libc::MS_SHARED | libc::MS_REC,
+    )
+    .map_err(|x| x.to_string()))?;
+    let m = std::path::Path::new("/tmp/fol/m");
+    let _ = qinit_sys::mount::umount_detach(m);
+    e(std::fs::create_dir_all(m))?;
+    let (out_r, out_w) = capture();
+    let (in_r, in_w) = e(qinit_sys::fd::pipe(libc::O_CLOEXEC).map_err(|x| x.to_string()))?;
+    let mut request = spec("svc", "probe-after-go", &["/tmp/fol/m/marker"]);
+    request.ns = NS_MOUNT;
+    request.stdin = Stream::Fd(5);
+    request.stdout = Stream::Fd(6);
+    request.paths = vec!["ro:/init".into(), entry.into()];
+    request.paths.sort_by(|a, b| a[3..].cmp(&b[3..]));
+    let mut cells = cells()?;
+    let l = launch(
+        &mut cells,
+        name,
+        &request,
+        vec![(in_r, 5), (out_w, 6)],
+        ReadyMode::Exit,
+    )?;
+    let mut said = String::new();
+    let heard = std::io::BufReader::new(std::fs::File::from(out_r)).read_line(&mut said);
+    let prepared = match heard {
+        Ok(n) if n > 0 && said.trim() == "started" => {
+            e(qinit_sys::mount::mount("tmpfs", m, "tmpfs", 0).map_err(|x| x.to_string()))
+                .and_then(|()| e(std::fs::write("/tmp/fol/m/marker", b"x")))
+        }
+        other => Err(format!(
+            "the service did not start: {other:?} {said:?} {:?}",
+            status_of(&l)
+        )),
+    };
+    let told = e(std::fs::File::from(in_w).write_all(b"go\n"));
+    let seen = expect(&mut cells, l.id, Report::Empty);
+    let exit = seen.map(|seen| {
+        reports_of(&seen, l.id).iter().find_map(|r| match r {
+            Report::MainExited(Some(st)) if libc::WIFEXITED(*st) => Some(libc::WEXITSTATUS(*st)),
+            Report::Ready => Some(0),
+            _ => None,
+        })
+    });
+    let _ = qinit_sys::mount::umount_detach(m);
+    remove(&mut cells, l.id)?;
+    prepared?;
+    told?;
+    exit?.ok_or_else(|| "the service did not exit normally".to_string())
+}
+
+fn a_following_entry_sees_a_later_host_mount() -> Result<(), String> {
+    want(
+        mount_after_the_service_started("fo1", "rs:/tmp/fol")?,
+        0,
+        "the marker of a mount made after the launch, through rs:",
+    )
+}
+
+fn a_plain_entry_does_not_see_a_later_host_mount() -> Result<(), String> {
+    want(
+        mount_after_the_service_started("fo2", "ro:/tmp/fol")?,
+        libc::ENOENT,
+        "the marker of a mount made after the launch, through ro:",
+    )
+}
+
+/// A `tmpfs` at `/tmp/idm` with a file `f` that belongs to host root.
+fn idmapped_tmpfs() -> Result<(), String> {
+    let m = std::path::Path::new("/tmp/idm");
+    let _ = qinit_sys::mount::umount_detach(m);
+    e(std::fs::create_dir_all(m))?;
+    e(qinit_sys::mount::mount("tmpfs", m, "tmpfs", 0).map_err(|x| x.to_string()))?;
+    e(std::fs::write("/tmp/idm/f", b"x"))
+}
+
+fn an_idmapped_entry_shows_disk_root_as_inside_root() -> Result<(), String> {
+    idmapped_tmpfs()?;
+    let r = viewed(
+        "id1",
+        "probe-owner",
+        &["/tmp/idm/f"],
+        &["wi:/tmp/idm"],
+        NS_USER,
+    );
+    // The same list as a plain entry: disk root is not mapped in the service's namespace.
+    let plain = viewed(
+        "id2",
+        "probe-owner",
+        &["/tmp/idm/f"],
+        &["rw:/tmp/idm"],
+        NS_USER,
+    );
+    let _ = qinit_sys::mount::umount_detach(std::path::Path::new("/tmp/idm"));
+    want(r?, (0, "0 0".to_string()), "owner through wi:")?;
+    want(plain?, (0, "65534 65534".to_string()), "owner through rw:")
+}
+
+fn a_file_created_in_an_idmapped_entry_lands_on_disk_as_the_inside_id() -> Result<(), String> {
+    idmapped_tmpfs()?;
+    // A directory whose disk owner is not mapped cannot be written (the kernel refuses writes
+    // to an inode whose ids the mount does not map), so the directory belongs to the inside ids.
+    e(qinit_sys::fd::chown(c"/tmp/idm", 1234, 1235).map_err(|x| x.to_string()))?;
+    let mut request = spec("svc", "probe-path", &["/tmp/idm/new", "w"]);
+    request.ns = NS_MOUNT | NS_USER;
+    request.inside_uid = 1234;
+    request.inside_gid = 1235;
+    request.paths = vec!["ro:/init".into(), "wi:/tmp/idm".into()];
+    let o = run_to_end("id3", request, true);
+    let owner = std::fs::metadata("/tmp/idm/new").map(|m| {
+        (
+            std::os::unix::fs::MetadataExt::uid(&m),
+            std::os::unix::fs::MetadataExt::gid(&m),
+        )
+    });
+    let _ = qinit_sys::mount::umount_detach(std::path::Path::new("/tmp/idm"));
+    want(o?.code()?, 0, "creating the file")?;
+    // Inside 1234 is the outside `svc` (1000), and the disk holds the inside id, not 1000.
+    want(e(owner)?, (1234, 1235), "owner on disk")
+}
+
+fn an_idmapped_entry_on_a_filesystem_that_cannot_be_idmapped_fails() -> Result<(), String> {
+    // sysfs does not support idmapped mounts: the launch fails at the entry, never downgrades.
+    match viewed("id4", "probe-path", &["/sys", "r"], &["ri:/sys"], NS_USER) {
+        Err(m) if m.contains(&format!("errno: {}", libc::EINVAL)) => Ok(()),
+        other => Err(format!(
+            "ri:/sys: {other:?}, want a launch failure with EINVAL"
+        )),
+    }
+}
+
 fn a_setuid_binary_outside_the_list_is_absent() -> Result<(), String> {
     e(std::fs::write("/tmp/su", b"x"))?;
     e(std::fs::set_permissions(
@@ -488,6 +705,86 @@ fn inside_uid_0_outside_the_declared_uid() -> Result<(), String> {
     want(lines.get(3).copied(), Some("setgroups deny"), "setgroups")
 }
 
+/// The owner on the host of a file `/tmp/<name>` that a service running with `ids` created.
+fn owner_of_a_service_file(name: &str, range: bool, ids: (u32, u32)) -> Result<u32, String> {
+    let path = format!("/tmp/{name}");
+    let _ = std::fs::remove_file(&path);
+    let mut request = userns_request("probe-path", &[&path, "w"], 0);
+    if range {
+        request.user_map = UserMap::Range;
+    }
+    (request.inside_uid, request.inside_gid) = ids;
+    want(
+        run_to_end(name, request, true)?.code()?,
+        0,
+        "creating the file",
+    )?;
+    let owner = std::os::unix::fs::MetadataExt::uid(&e(std::fs::metadata(&path))?);
+    let _ = std::fs::remove_file(&path);
+    Ok(owner)
+}
+
+fn inside_uid_1000_with_an_own_map() -> Result<(), String> {
+    let mut show = userns_request("userns-show", &[], 0);
+    show.inside_uid = 1000;
+    show.inside_gid = 1001;
+    let o = run_to_end("ui1", show, true)?;
+    want(o.code()?, 0, "the helper's exit")?;
+    let lines: Vec<&str> = o.out.lines().collect();
+    want(lines.first().copied(), Some("ids 1000 1001"), "inside ids")?;
+    want(
+        lines.get(1).copied(),
+        Some("uid_map 1000 1000 1"),
+        "uid_map",
+    )?;
+    want(
+        lines.get(2).copied(),
+        Some("gid_map 1001 1000 1"),
+        "gid_map",
+    )?;
+    // The inside id 1000 is the outside `svc` (1000): its files belong to it on the host.
+    want(
+        owner_of_a_service_file("ui1f", false, (1000, 1001))?,
+        1000,
+        "owner on the host",
+    )
+}
+
+fn inside_uid_1000_with_a_range_map() -> Result<(), String> {
+    let mut show = userns_request("userns-show", &[], 0);
+    show.user_map = UserMap::Range;
+    show.inside_uid = 1000;
+    show.inside_gid = 1000;
+    let o = run_to_end("ui2", show, true)?;
+    want(o.code()?, 0, "the helper's exit")?;
+    let lines: Vec<&str> = o.out.lines().collect();
+    want(lines.first().copied(), Some("ids 1000 1000"), "inside ids")?;
+    want(
+        lines.get(1).copied(),
+        Some("uid_map 0 1000 1 1 100000 65536"),
+        "range uid_map",
+    )?;
+    // Inside 1000 is the 1000th subordinate id: outside 100000 + 999.
+    want(
+        owner_of_a_service_file("ui2f", true, (1000, 1000))?,
+        100_999,
+        "owner on the host",
+    )
+}
+
+fn an_unmapped_inside_id_fails_the_launch() -> Result<(), String> {
+    let mut request = userns_request("userns-show", &[], 0);
+    request.user_map = UserMap::Range;
+    request.inside_uid = 65_537;
+    let o = run_to_end("ui3", request, true)?;
+    let failure = o.failure.ok_or("no failure record")?;
+    want(
+        (failure.step, failure.errno),
+        (qinit_overseer::status::STEP_IDENTITY, libc::ERANGE),
+        "failure step and errno",
+    )
+}
+
 fn a_range_map_lets_inside_root_setuid_1() -> Result<(), String> {
     let mut own = userns_request("setuid-1", &[], 0);
     own.caps = SETIDS;
@@ -598,6 +895,7 @@ fn a_root_only_directory_is_listable() -> Result<(), String> {
     want(o.code()?, 0, "reading below a root-only parent")
 }
 
+#[allow(clippy::too_many_lines)] // the table of cases is the whole body
 fn main() {
     run(
         "sandbox",
@@ -634,6 +932,18 @@ fn main() {
             ),
             ("the_root_is_read_only", the_root_is_read_only),
             (
+                "inside_uid_1000_with_an_own_map",
+                inside_uid_1000_with_an_own_map,
+            ),
+            (
+                "inside_uid_1000_with_a_range_map",
+                inside_uid_1000_with_a_range_map,
+            ),
+            (
+                "an_unmapped_inside_id_fails_the_launch",
+                an_unmapped_inside_id_fails_the_launch,
+            ),
+            (
                 "a_ro_bind_below_rw_is_read_only",
                 a_ro_bind_below_rw_is_read_only,
             ),
@@ -668,6 +978,38 @@ fn main() {
             (
                 "no_view_mount_takes_part_in_a_peer_group",
                 no_view_mount_takes_part_in_a_peer_group,
+            ),
+            (
+                "the_view_builds_with_a_read_only_root",
+                the_view_builds_with_a_read_only_root,
+            ),
+            (
+                "a_planted_symlink_below_a_writable_entry_is_refused",
+                a_planted_symlink_below_a_writable_entry_is_refused,
+            ),
+            (
+                "a_symlink_entry_beside_a_writable_one_still_works",
+                a_symlink_entry_beside_a_writable_one_still_works,
+            ),
+            (
+                "a_following_entry_sees_a_later_host_mount",
+                a_following_entry_sees_a_later_host_mount,
+            ),
+            (
+                "a_plain_entry_does_not_see_a_later_host_mount",
+                a_plain_entry_does_not_see_a_later_host_mount,
+            ),
+            (
+                "an_idmapped_entry_shows_disk_root_as_inside_root",
+                an_idmapped_entry_shows_disk_root_as_inside_root,
+            ),
+            (
+                "a_file_created_in_an_idmapped_entry_lands_on_disk_as_the_inside_id",
+                a_file_created_in_an_idmapped_entry_lands_on_disk_as_the_inside_id,
+            ),
+            (
+                "an_idmapped_entry_on_a_filesystem_that_cannot_be_idmapped_fails",
+                an_idmapped_entry_on_a_filesystem_that_cannot_be_idmapped_fails,
             ),
             (
                 "a_setuid_binary_outside_the_list_is_absent",

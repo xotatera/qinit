@@ -46,6 +46,17 @@ impl Served {
 
     /// As [`Served::start`], with the pidfds the simulated effects hand out.
     fn start_with(enable: &[&str], root: bool, instance: Script, pidfds: Vec<OwnedFd>) -> Served {
+        Served::start_policy(enable, root, instance, pidfds, None)
+    }
+
+    /// As [`Served::start_with`], with a compiled policy when `policy` is given.
+    fn start_policy(
+        enable: &[&str],
+        root: bool,
+        instance: Script,
+        pidfds: Vec<OwnedFd>,
+        policy: Option<&str>,
+    ) -> Served {
         let dir = std::env::temp_dir().join(format!(
             "qinit-client-{}-{}",
             std::process::id(),
@@ -59,7 +70,10 @@ impl Served {
         let path = dir.join("colony");
         let c = CString::new(path.to_str().unwrap()).unwrap();
         let listener = listen_seqpacket(&c, 16).unwrap();
-        let (mut colony, _) = boot(&frames(), enable, Sim::new());
+        let mut colony = match policy {
+            Some(p) => boot_with_policy(&frames(), enable, p, Sim::new()),
+            None => boot(&frames(), enable, Sim::new()).0,
+        };
         colony.effects.instance_script = instance;
         colony.effects.pidfds.extend(pidfds);
         let mut driver = Driver::new(listener, Limits::default()).unwrap();
@@ -336,4 +350,58 @@ fn begin_run_sends_the_sealed_request_first() {
     };
     let got = c.run("job", &request, &args, Duration::from_secs(5));
     assert_eq!(got.err(), Some(ClientError::Server(ErrorCode::Denied, 0)));
+}
+
+#[test]
+fn pidfd_exit_is_exported_and_works_on_a_spawned_child() {
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "exit 5"])
+        .spawn()
+        .unwrap();
+    let fd = qinit_sys::proc::pidfd_open(child.id().cast_signed()).unwrap();
+    let live = qinit_client::pidfd_exit(&fd).unwrap();
+    assert!(matches!(
+        live,
+        qinit_client::PidfdExit::Running | qinit_client::PidfdExit::Unsupported
+    ));
+    child.wait().unwrap();
+    match qinit_client::pidfd_exit(&fd).unwrap() {
+        qinit_client::PidfdExit::Exited(status) => assert_eq!((status >> 8) & 0xff, 5),
+        other => assert_eq!(other, qinit_client::PidfdExit::Unsupported),
+    }
+}
+
+#[test]
+fn begin_run_wait_ready_sets_flag_bit_1_and_finish_returns_ready() {
+    use qinit_client::RunArgs;
+    use qinit_launch::RequestSpec;
+    let ready = Script {
+        ready_after_ms: Some(0),
+        ..Script::default()
+    };
+    let s = Served::start_policy(&[], true, ready, Vec::new(), Some("default = \"allow\"\n"));
+    let request = RequestSpec {
+        argv: vec!["/bin/job".into()],
+        user: "svc".into(),
+        ready_fd: Some(8),
+        ..RequestSpec::default()
+    };
+    // Without the flag a readiness pipe is refused (detail 0).
+    let got = s
+        .client()
+        .run("job", &request, &RunArgs::default(), Duration::from_secs(5));
+    assert_eq!(got.err(), Some(ClientError::Server(ErrorCode::Denied, 0)));
+    // With it the server accepts, and `finish` reads the `Settled` reply as `Ready`.
+    let args = RunArgs {
+        wait_ready: true,
+        ..RunArgs::default()
+    };
+    let mut c = s.client();
+    let Begun::Started(Started { id, .. }) = c
+        .begin_run("job", &request, &args, false, Duration::from_secs(5))
+        .unwrap()
+    else {
+        panic!("not started")
+    };
+    assert_eq!(c.finish(id).unwrap(), LaunchOutcome::Ready { id });
 }

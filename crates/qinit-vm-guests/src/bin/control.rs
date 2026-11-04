@@ -81,6 +81,8 @@ fn world() -> Result<Colony<Sim>, String> {
             seccomp: Seccomp::None,
             paths: Vec::new(),
             user_map: UserMap::Own,
+            inside_uid: 0,
+            inside_gid: 0,
         }],
         routes: Vec::new(),
         enabled: vec![1],
@@ -303,6 +305,59 @@ fn run_request_reaches_the_executor_and_runs() -> Result<(), String> {
     )
 }
 
+/// A `Run` with `wait_ready` starts the instance with a readiness pipe at the request's
+/// descriptor, and the executor routes that pipe to the service, whose byte the cell reports.
+fn run_wait_ready_reaches_the_executor() -> Result<(), String> {
+    use qinit_cell::{Polite, ReadyMode, Report};
+    use qinit_vm_guests::{HANG_GUARD, cells, e, expect, launch_fd, remove, spec};
+    let mut request = spec("svc", "ready", &[]);
+    request.ready_fd = Some(5);
+    let expected = request.bytes().map_err(|x| format!("{x:?}"))?;
+    serve_with(
+        |_| Ok(()),
+        move || {
+            let Ok(mut c) = connect() else { return 1 };
+            let args = qinit_client::RunArgs {
+                wait_ready: true,
+                ..qinit_client::RunArgs::default()
+            };
+            // The sim's clock stands still: read only the start.
+            let got = c.begin_run(
+                "job",
+                &request,
+                &args,
+                false,
+                std::time::Duration::from_secs(60),
+            );
+            i32::from(!matches!(got, Ok(qinit_client::Begun::Started(_))))
+        },
+        |colony| {
+            if colony.effects.instance_ready != [(0, Some(5))] {
+                return Err(format!(
+                    "the pipe was not asked for: {:?}",
+                    colony.effects.instance_ready
+                ));
+            }
+            let fd = colony
+                .effects
+                .instance_requests
+                .remove(&0)
+                .ok_or("the sim saw no request")?;
+            let got = qinit_sys::memfd::read_all(fd.as_fd(), 65536).map_err(|x| x.to_string())?;
+            if got != expected {
+                return Err("the request changed on the way".into());
+            }
+            // The cell the real layer would create: readiness by pipe at descriptor 5.
+            let mut cells = cells()?;
+            let l = launch_fd(&mut cells, "run-ready", fd, Vec::new(), ReadyMode::Pipe)?;
+            expect(&mut cells, l.id, Report::Ready)?;
+            e(cells.stop(l.id, Polite::Main, HANG_GUARD, HANG_GUARD))?;
+            expect(&mut cells, l.id, Report::Empty)?;
+            remove(&mut cells, l.id)
+        },
+    )
+}
+
 /// With a deny default and no rule for it, a privileged `Run` is refused with the clause.
 fn run_is_refused_without_a_run_rule() -> Result<(), String> {
     use qinit_vm_guests::spec;
@@ -338,6 +393,10 @@ fn main() {
             (
                 "run_request_reaches_the_executor_and_runs",
                 run_request_reaches_the_executor_and_runs,
+            ),
+            (
+                "run_wait_ready_reaches_the_executor",
+                run_wait_ready_reaches_the_executor,
             ),
             (
                 "run_is_refused_without_a_run_rule",

@@ -179,6 +179,13 @@ pub open spec fn cred_enum_ok(b: Seq<u8>, c: int) -> bool {
         ==> has_sys_admin(b, c))
     &&& seccomp_list_ok(pool_slice(b, cf(b, c, C_SECCOMP_OFF), cf(b, c, C_SECCOMP_LEN)))
     &&& (cf(b, c, C_USER_MAP) == 1 ==> (cf(b, c, C_NS) as u32) & 32u32 != 0u32)
+    &&& cf(b, c, C_INSIDE_UID) <= 0xFFFF_FFFE
+    &&& cf(b, c, C_INSIDE_GID) <= 0xFFFF_FFFE
+    &&& ((cf(b, c, C_NS) as u32) & 32u32 == 0u32 ==> cf(b, c, C_INSIDE_UID) == 0 && cf(
+        b,
+        c,
+        C_INSIDE_GID,
+    ) == 0)
     &&& ((cf(b, c, C_NS) as u32) & 32u32 != 0u32 ==> !is_root(
         pool_slice(b, cf(b, c, C_USER_OFF), cf(b, c, C_USER_LEN)),
     ))

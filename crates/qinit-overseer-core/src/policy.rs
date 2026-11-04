@@ -175,6 +175,10 @@ pub enum Denial {
     Seccomp,
     /// The rule does not allow this user namespace map.
     Userns,
+    /// The rule does not allow a non-zero inside id.
+    InsideIds,
+    /// The rule does not allow an idmapped path entry.
+    Idmap,
     /// A limit is above its ceiling.
     Limit,
     /// No rule matches and the default is to deny.
@@ -183,11 +187,11 @@ pub enum Denial {
 
 impl Denial {
     /// The number a reply carries: 1 `NoPolicy`, 2 `User`, 3 `Caps`, 4 `Nnp`, 5 `Seccomp`,
-    /// 6 `Userns`, 7 `Limit`, 8 `Default`.
+    /// 6 `Userns`, 7 `Limit`, 8 `Default`, 9 `InsideIds`, 10 `Idmap`.
     #[must_use]
     pub fn code(self) -> (c: u32)
         ensures
-            1 <= c <= 8,
+            1 <= c <= 10,
     {
         match self {
             Denial::NoPolicy => 1,
@@ -198,6 +202,8 @@ impl Denial {
             Denial::Userns => 6,
             Denial::Limit => 7,
             Denial::Default => 8,
+            Denial::InsideIds => 9,
+            Denial::Idmap => 10,
         }
     }
 }
@@ -379,6 +385,19 @@ pub open spec fn rule_userns_ok(db: Seq<u8>, i: int, req: Seq<u8>) -> bool {
     ) == 1 && qw(req, Q_USER_MAP) == 0))
 }
 
+/// The clause on inside ids: a request that runs as a non-zero id inside its user namespace
+/// needs a rule that allows it.
+pub open spec fn rule_inside_ok(db: Seq<u8>, i: int, req: Seq<u8>) -> bool {
+    (qw(req, Q_INSIDE_UID) != 0 || qw(req, Q_INSIDE_GID) != 0) ==> pf(db, i, P_ALLOW_INSIDE_IDS)
+        == 1
+}
+
+/// The clause on idmapped entries: an idmapped mount hands the service the ownership of disk
+/// ids, so a request with one needs a rule that allows it.
+pub open spec fn rule_idmap_ok(db: Seq<u8>, i: int, req: Seq<u8>) -> bool {
+    !paths_no_idmapped(field_slice(req, Q_PATHS_OFF, Q_PATHS_LEN)) ==> pf(db, i, P_ALLOW_IDMAP) == 1
+}
+
 /// What rule `i` says about the request, clause by clause in the order of [`Denial`].
 pub open spec fn rule_verdict(db: Seq<u8>, i: int, req: Seq<u8>) -> Result<(), Denial> {
     if !rule_user_ok(db, i, req) {
@@ -391,6 +410,10 @@ pub open spec fn rule_verdict(db: Seq<u8>, i: int, req: Seq<u8>) -> Result<(), D
         Err(Denial::Seccomp)
     } else if !rule_userns_ok(db, i, req) {
         Err(Denial::Userns)
+    } else if !rule_inside_ok(db, i, req) {
+        Err(Denial::InsideIds)
+    } else if !rule_idmap_ok(db, i, req) {
+        Err(Denial::Idmap)
     } else if raised_rule(db, i, req) {
         Err(Denial::Limit)
     } else {
@@ -764,6 +787,25 @@ fn rule_exec(db: &[u8], p: usize, req: &[u8], user: &[u8]) -> (r: Result<(), Den
     ) == 0);
     if !userns_ok {
         return Err(Denial::Userns);
+    }
+    let inside_ok = (crate::req(req, Q_INSIDE_UID) == 0 && crate::req(req, Q_INSIDE_GID) == 0)
+        || policy_word(db, p, P_ALLOW_INSIDE_IDS) == 1;
+    if !inside_ok {
+        return Err(Denial::InsideIds);
+    }
+    let idmap_ok = {
+        proof {
+            assert(req_pool_ref(req@, qw(req@, Q_PATHS_OFF), qw(req@, Q_PATHS_LEN)));
+        }
+        let len = crate::req(req, Q_PATHS_LEN);
+        no_idmapped_exec(crate::pool(req, crate::req(req, Q_PATHS_OFF), len)) || policy_word(
+            db,
+            p,
+            P_ALLOW_IDMAP,
+        ) == 1
+    };
+    if !idmap_ok {
+        return Err(Denial::Idmap);
     }
     if raised_exec(db, req, p, true) {
         return Err(Denial::Limit);

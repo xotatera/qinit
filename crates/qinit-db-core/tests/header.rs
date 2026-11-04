@@ -46,13 +46,14 @@ fn the_record_sizes_match_the_word_indices() {
     assert_eq!(N_RLIMIT_BASE + 2 * RLIMIT_COUNT, WORDS[T_NODES]);
     assert_eq!(G_EDGE_COUNT + 1, WORDS[T_GROUPS]);
     assert_eq!(E_FLAGS + 1, WORDS[T_EDGES]);
-    assert_eq!(C_USER_MAP + 1, WORDS[T_CREDS]);
+    assert_eq!(C_INSIDE_GID + 1, WORDS[T_CREDS]);
     assert_eq!(R_B + 1, WORDS[T_ROUTES]);
     assert_eq!(WORDS[T_ENABLED], 1);
     assert_eq!(WORDS[T_PRESYSLOG], 1);
-    assert_eq!(P_RLIMIT_BASE + 2 * RLIMIT_COUNT, WORDS[T_POLICY]);
+    assert_eq!(P_RLIMIT_BASE + 2 * RLIMIT_COUNT, P_ALLOW_INSIDE_IDS);
+    assert_eq!(P_ALLOW_IDMAP + 1, WORDS[T_POLICY]);
     assert_eq!(PH_RLIMIT_BASE + 2 * RLIMIT_COUNT, WORDS[T_POLICY_HEAD]);
-    assert_eq!((WORDS[T_POLICY], WORDS[T_POLICY_HEAD]), (43, 34));
+    assert_eq!((WORDS[T_POLICY], WORDS[T_POLICY_HEAD]), (45, 34));
 }
 
 #[test]

@@ -19,6 +19,8 @@ pub fn svc() -> Cred {
         seccomp: Seccomp::None,
         paths: Vec::new(),
         user_map: UserMap::Own,
+        inside_uid: 0,
+        inside_gid: 0,
     }
 }
 
@@ -135,6 +137,8 @@ pub fn sample() -> Model {
                 seccomp: Seccomp::Deny(vec![101, 310]),
                 paths: vec!["ro:/bin".into(), "ro:/etc".into(), "rw:/run/sshd".into()],
                 user_map: UserMap::Own,
+                inside_uid: 0,
+                inside_gid: 0,
             },
             svc(),
         ],

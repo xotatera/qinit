@@ -496,3 +496,76 @@ fn rlimit_rules_match_the_database() {
         assert_eq!(decode(&bad), Err(LaunchError::Consistency));
     }
 }
+
+fn with_entry(entry: &str, ns: u32) -> ReqSpec {
+    let paths: &'static str = Box::leak(format!("ro:/etc\0{entry}").into_boxed_str());
+    with_paths(paths, ns)
+}
+
+#[test]
+fn decode_refuses_what_the_validator_refuses() {
+    for mode in ["ro", "rw", "ri", "wi", "rs", "ws"] {
+        assert_eq!(
+            decode(&build(&with_entry(&format!("{mode}:/z"), 33))),
+            Ok(()),
+            "{mode}"
+        );
+    }
+    for bad in ["rx:/z", "ws/z", "wo:/z", "rr:/z", "ww:/z", "ri/z"] {
+        assert_eq!(
+            decode(&build(&with_entry(bad, 33))),
+            Err(LaunchError::Consistency),
+            "{bad:?}"
+        );
+    }
+    // An idmapped entry needs the user bit.
+    for entry in ["ri:/z", "wi:/z"] {
+        assert_eq!(
+            decode(&build(&with_entry(entry, 1))),
+            Err(LaunchError::Consistency),
+            "{entry}"
+        );
+    }
+    // `/proc` is never writable, whatever the mode.
+    for entry in ["rw:/proc", "wi:/proc", "ws:/proc"] {
+        assert_eq!(
+            decode(&build(&with_entry(entry, 33))),
+            Err(LaunchError::Consistency),
+            "{entry}"
+        );
+    }
+    for entry in ["ro:/proc", "ri:/proc", "rs:/proc"] {
+        assert_eq!(decode(&build(&with_entry(entry, 33))), Ok(()), "{entry}");
+    }
+}
+
+#[test]
+fn decode_reads_inside_ids_and_refuses_the_validators_cases() {
+    let with = |ns: u32, uid: u32, gid: u32| {
+        let mut spec = minimal();
+        spec.ns = ns;
+        spec.inside_uid = uid;
+        spec.inside_gid = gid;
+        decode(&build(&spec))
+    };
+    // 32 is the user namespace; the minimal request runs as `svc`, not root.
+    assert_eq!(with(32, 0, 0), Ok(()));
+    assert_eq!(with(32, 1000, 1001), Ok(()));
+    assert_eq!(with(32, 4_294_967_294, 4_294_967_294), Ok(()));
+    for (uid, gid) in [(u32::MAX, 0), (0, u32::MAX)] {
+        assert_eq!(
+            with(32, uid, gid),
+            Err(LaunchError::Consistency),
+            "{uid} {gid}"
+        );
+    }
+    // A non-zero inside id means a user namespace.
+    for (uid, gid) in [(1, 0), (0, 1), (1000, 1000)] {
+        assert_eq!(
+            with(0, uid, gid),
+            Err(LaunchError::Consistency),
+            "{uid} {gid}"
+        );
+    }
+    assert_eq!(with(0, 0, 0), Ok(()));
+}

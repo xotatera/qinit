@@ -26,6 +26,18 @@ const POLICIES: &[(&str, &str)] = &[
         "default = \"deny\"\n[[rule]]\nmatch = \"*\"\nallow_userns = \"range\"\n",
     ),
     (
+        "inside-ids",
+        "default = \"deny\"\n[[rule]]\nmatch = \"*\"\nallow_userns = \"range\"\nallow_inside_ids = true\n",
+    ),
+    (
+        "inside-ids-not-allowed",
+        "default = \"deny\"\n[[rule]]\nmatch = \"*\"\nallow_userns = \"range\"\n",
+    ),
+    (
+        "idmap",
+        "default = \"deny\"\n[[rule]]\nmatch = \"*\"\nallow_userns = \"range\"\nallow_idmap = true\n",
+    ),
+    (
         "limits",
         "default = \"deny\"\nrlimits_max = { nofile = 2048 }\n[[rule]]\nmatch = \"w*\"\nrlimits_max = { nofile = 4096 }\n",
     ),
@@ -68,6 +80,22 @@ fn frames() -> Vec<String> {
             "sandbox = { namespaces = [\"user\"], user_map = \"range\" }",
         ] {
             v.push(frame(name, "uid = \"svc\"", sandbox));
+        }
+        for sandbox in [
+            "sandbox = { namespaces = [\"user\"], inside_uid = 1000 }",
+            "sandbox = { namespaces = [\"user\"], inside_gid = 1000 }",
+            "sandbox = { namespaces = [\"user\"], user_map = \"range\", inside_uid = 1000, inside_gid = 1000 }",
+        ] {
+            v.push(frame(name, "uid = \"svc\"", sandbox));
+        }
+        for mode in ["wi", "ri", "rw"] {
+            v.push(frame(
+                name,
+                "uid = \"svc\"",
+                &format!(
+                    "sandbox = {{ namespaces = [\"user\"], paths = [\"ro:/{name}\", \"{mode}:/data\"] }}"
+                ),
+            ));
         }
         for nofile in [1000, 2048, 3000, 4096, 5000] {
             v.push(frame(
@@ -124,7 +152,7 @@ fn the_two_checks_agree_on_every_pair() {
             pairs += 1;
         }
     }
-    assert!(pairs > 700, "{pairs}");
+    assert!(pairs > 900, "{pairs}");
 }
 
 #[test]

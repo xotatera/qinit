@@ -11,7 +11,9 @@ use crate::instance::{LaunchArgs, LaunchError, RunArgs, RunError};
 use crate::swap::SwapError;
 use qinit_colony_core::{Reason, Report, Request, SlotState, State, Why, slot_of};
 use qinit_db::ReadError;
-use qinit_proto_core::{DecodeError, EncodeError, FLAG_PIDFD, MAX_MESSAGE, PeerId, authorized};
+use qinit_proto_core::{
+    DecodeError, EncodeError, FLAG_PIDFD, FLAG_WAIT_READY, MAX_MESSAGE, PeerId, authorized,
+};
 use qinit_wire::{
     Action, Entries, ErrorCode, InstanceStatus, ListEntry, Mode, Msg, NodeStatus, Rep, Req,
     StateWord, encode, op_of,
@@ -64,6 +66,7 @@ struct RunWire<'a> {
     name: &'a str,
     fd_roles: u32,
     pidfd: bool,
+    wait_ready: bool,
     memory_max_kib: u32,
     pids_max: u32,
     stop_mode: u32,
@@ -232,6 +235,8 @@ enum What {
     Down(String),
     /// The instance ends.
     Instance(u32),
+    /// The instance writes its readiness byte, or ends first.
+    InstanceReady(u32),
     /// The swap has happened and the nodes it touched have settled.
     Refresh { names: Vec<String>, swapped: bool },
     /// Colony's part of the shutdown is done.
@@ -402,6 +407,7 @@ impl<E: Effects> Colony<E> {
                     name,
                     fd_roles,
                     pidfd: flags & FLAG_PIDFD != 0,
+                    wait_ready: flags & FLAG_WAIT_READY != 0,
                     memory_max_kib,
                     pids_max,
                     stop_mode,
@@ -704,6 +710,7 @@ impl<E: Effects> Colony<E> {
                 qinit_colony_core::StopMode::Main
             },
             grace_ms: w.stop_grace_ms,
+            wait_ready: w.wait_ready,
         };
         match self.run_request(args, now) {
             Ok((id, out)) => {
@@ -718,7 +725,12 @@ impl<E: Effects> Colony<E> {
                 {
                     h.reply_fds.push(fd);
                 }
-                self.park(wait, What::Instance(id), w.wait_ms, h);
+                let what = if w.wait_ready {
+                    What::InstanceReady(id)
+                } else {
+                    What::Instance(id)
+                };
+                self.park(wait, what, w.wait_ms, h);
             }
             Err(RunError::Spawn(e)) => {
                 h.reply = OwnedRep::LaunchFailed {
@@ -893,6 +905,17 @@ impl<E: Effects> Colony<E> {
                 }
                 _ => None,
             }),
+            // Whichever comes first, in the order the notices came.
+            What::InstanceReady(id) => notices.iter().find_map(|n| match n {
+                Notice::InstanceReady(x) if x == id => Some(OwnedRep::Settled(StateWord {
+                    state: 3,
+                    detail: 0,
+                })),
+                Notice::Instance(x, SlotState::Exited(status)) if x == id => {
+                    Some(OwnedRep::Exited { status: *status })
+                }
+                _ => None,
+            }),
             What::Refresh { swapped: done, .. } => {
                 *done |= swapped;
                 self.refresh_met(what)
@@ -919,7 +942,7 @@ impl<E: Effects> Colony<E> {
             What::Up(n) | What::Down(n) => self.node_index(n).map_or(state_word(State::Off), |i| {
                 state_word(self.nodes[i as usize].state)
             }),
-            What::Instance(id) => self.instance(*id).map_or(
+            What::Instance(id) | What::InstanceReady(id) => self.instance(*id).map_or(
                 StateWord {
                     state: 4,
                     detail: 0,
@@ -929,6 +952,13 @@ impl<E: Effects> Colony<E> {
                         state: 2,
                         detail: 0,
                     },
+                    // A running process that has not written its byte is still starting.
+                    SlotState::Running if matches!(&rec.what, What::InstanceReady(_)) => {
+                        StateWord {
+                            state: 2,
+                            detail: 0,
+                        }
+                    }
                     SlotState::Running => StateWord {
                         state: 3,
                         detail: 0,

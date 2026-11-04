@@ -121,7 +121,12 @@ pub(crate) fn check_policy_rule(b: &[u8], p: usize) -> (r: Result<(), DbError>)
         t,
         p,
         P_REQUIRE_SECCOMP,
-    ) > 1 || field(b, t, p, P_ALLOW_USERNS) > 2 || mask & !RLIMIT_MASK_ALLOWED != 0 {
+    ) > 1 || field(b, t, p, P_ALLOW_USERNS) > 2 || field(b, t, p, P_ALLOW_INSIDE_IDS) > 1 || field(
+        b,
+        t,
+        p,
+        P_ALLOW_IDMAP,
+    ) > 1 || mask & !RLIMIT_MASK_ALLOWED != 0 {
         return Err(enum_error);
     }
     let pattern = pool_bytes(b, field(b, t, p, P_PATTERN_OFF), field(b, t, p, P_PATTERN_LEN));

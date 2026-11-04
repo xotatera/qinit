@@ -18,7 +18,7 @@ drift from the code.
 ## Layout
 
 Every word is a 32-bit little-endian unsigned integer. A request is a header of 5 words, a
-record of 67 words and a string pool, in that order; it is at most `MAX_REQUEST` = 65536 bytes.
+record of 69 words and a string pool, in that order; it is at most `MAX_REQUEST` = 65536 bytes.
 A pool reference is an `(offset, length)` pair of words into the pool.
 
 ### Header
@@ -47,7 +47,7 @@ A pool reference is an `(offset, length)` pair of words into the pool.
 | 14 | `ns` | namespace bits: 1 mount, 2 pid, 4 ipc, 8 uts, 16 net, 32 user; at most `0x3f` |
 | 15 | `seccomp` | 0 none, 1 default program, 2 deny-list, 3 allow-list |
 | 16, 17 | `seccomp_off`, `seccomp_len` | the list: NUL-separated canonical decimal syscall numbers below 512; length 0 exactly when `seccomp` is 0 or 1; at most 512 entries |
-| 18, 19 | `paths_off`, `paths_len` | the path list (below), NUL-separated `ro:<path>` or `rw:<path>` entries, at most 64 |
+| 18, 19 | `paths_off`, `paths_len` | the path list (below), NUL-separated `<mode>:<path>` entries (`ro` `rw` `ri` `wi` `rs` `ws`), at most 64 |
 | 20, 21, 22 | `stdout_kind`, `stdout_a`, `stdout_b` | a stream (below); kind 0 or 1 |
 | 23, 24, 25 | `stderr_kind`, `stderr_a`, `stderr_b` | a stream; kind 0, 1 or 2 |
 | 26 | `ready_kind` | 0 none, 1 a readiness pipe |
@@ -58,6 +58,7 @@ A pool reference is an `(offset, length)` pair of words into the pool.
 | 31 | reserved | 0 |
 | 32, 33, 34 | `stdin_kind`, `stdin_a`, `stdin_b` | a stream; kind 0 or 1 |
 | 35 + 2r, 36 + 2r | limit `r` | low and high word of the value of resource `r`, for `r` in 0..=15 (the kernel's resource numbers); both 0 unless bit `r` of `rlimit_mask` is set; all ones is infinity |
+| 67, 68 | `inside_uid`, `inside_gid` | the ids the service runs as inside its user namespace, at most 4294967294; 0 unless the `user` bit of `ns` is set |
 
 Limits: `nofile` (7) must not be 0 or infinity, `nice` (13) is at most 40 and `rtprio` (14) at
 most 99, and the high word of those two is 0.
@@ -110,6 +111,8 @@ descriptor is closed before `execve`.
    - the user is 1 to 96 bytes; the working directory is canonical (starts with `/`, no empty,
      `.` or `..` component, no trailing `/`, except `/` itself);
    - environment entries have a non-empty key before the first `=`;
+   - `inside_uid` and `inside_gid` are at most 4294967294, and non-zero only with the `user` bit
+     of `ns`;
    - `user_map` 1 needs the `user` bit of `ns`, and a request with the `user` bit does not run
      as `root`;
    - **the path list** (below);
@@ -118,7 +121,7 @@ descriptor is closed before `execve`.
 
 ### The path list
 
-Each entry is `ro:` or `rw:` and a canonical absolute path. The list is strictly ascending by path
+Each entry is a mode (`ro:` `rw:` `ri:` `wi:` `rs:` `ws:`) and a canonical absolute path. The list is strictly ascending by path
 (so a path never repeats), holds none of `/`, `/dev` or `/tmp`, and no writable `/proc`. A non-
 empty list needs the `mount` bit of `ns`, the program (the first argv element) must be at or below
 an entry, and the working directory must be `/` or at or below an entry.
@@ -126,17 +129,45 @@ an entry, and the working directory must be `/` or at or below an entry.
 With a path list the service does not see the host's filesystem. The overseer builds an empty
 `tmpfs` root with a fixed `/dev` (`null`, `zero`, `full`, `random`, `urandom`) and a private
 `/tmp`, binds each listed path into it, pivots into it, and seals it read-only; Landlock then
-restricts the service to those paths. The view is built under `/.qinit-view` on the host's root filesystem, so
-a launch with a path list needs a writable root directory (`EROFS` at `view-root` otherwise).
-Every mount of the view is private, so a mount the host makes later is not seen inside.
+restricts the service to those paths. The view is built under `/run/qinit/view`, so `/run` must
+be a writable directory (a `tmpfs`, on every host this runs on); the host's root filesystem may
+be read-only. Each entry is a detached clone of the host's mount (with every mount below it),
+given `nosuid`, `nodev` (except below `/dev`) and, for the read-only modes, read-only before it is
+attached.
+
+The modes:
+
+| Mode | Meaning |
+| --- | --- |
+| `ro:` `rw:` | a recursive bind, read-only or writable; every mount of the entry is private, so a mount the host makes later is not seen inside |
+| `rs:` `ws:` | as `ro:` and `rw:`, but the entry stays a slave of the host's mount, so a mount the host makes later below the path **appears** in the view (without the entry's `nosuid`, `nodev` or read-only attributes). It only follows if the host's mounts are shared, which is not this document's business. |
+| `ri:` `wi:` | as `ro:` and `rw:`, **idmapped** through the service's id map. Needs the `user` bit of `ns`. The ids on disk are the service's inside ids: a file owned by disk id `i` is owned by inside id `i`, and what the service creates under inside id `i` is disk id `i`. Disk ids the map does not cover (an own map covers one) show as `nobody`, and an inode owned by one cannot be written. The launch fails at the entry (`EINVAL`) when a filesystem below cannot be idmapped; nothing falls back to a plain bind, so an idmapped entry should lie on one filesystem. |
+
+`ro:/proc` in a pid namespace is a fresh `proc` mount instead of a bind of the host's. The other
+modes bind the host's `/proc`: `rs:/proc` shows every host process, and `ri:/proc` always fails
+(`EINVAL`), because procfs cannot be idmapped.
+
+**Symlinks.** An entry below a writable entry listed before it (`rw:/data` and `ro:/data/app`, by
+whole components) is opened without following any symlink, the last component included: a symlink
+there fails the launch at the entry with `ELOOP`, so a link the service planted below a directory
+it can write cannot redirect the bind. An entry that is not below a writable one follows symlinks
+as before (a listed symlink is recreated as a symlink). A symlink planted in a directory the
+launch does not list writable is not covered.
 
 ### User namespace
 
-With the `user` bit the service runs in its own user namespace, as `0` inside it. `user_map` 0
-maps inside id 0 onto the user's own user and group id and denies `setgroups`; 1 also maps
-inside ids 1 and up onto the user's subordinate ranges (`/etc/subuid`, `/etc/subgid`) and allows
-`setgroups`. Whether a request may ask for a user namespace, and for the range map, is the
-policy's decision (`allow_userns`, see `docs/db-format.md`).
+With the `user` bit the service runs in its own user namespace, as `inside_uid` and `inside_gid`
+inside it (both 0 unless the request sets them). `user_map` 0 maps that one inside id onto the
+user's own user and group id (so `inside_uid` 1000 is still the outside user, whatever its number)
+and denies `setgroups`; 1 maps inside id 0 onto them and also maps inside ids 1 to `count` onto
+the user's subordinate ranges (`/etc/subuid`, `/etc/subgid`, `count` being the size of the range)
+and allows `setgroups`. An inside id of a range map above `count` fails the launch at the
+`identity` step with `ERANGE`; an own map accepts any id up to 4294967294. Whether a request may
+ask for a user namespace, for the range map and for a non-zero inside id is the policy's decision
+(`allow_userns`, `allow_inside_ids`; see `docs/db-format.md`). A request with an idmapped path
+entry also needs a rule with `allow_idmap = true`: an idmapped mount hands the service the
+ownership of disk ids (with the default own map, files owned by disk root become the service's
+own), which is more than the user namespace's map alone gives it.
 
 ## The failure record
 
@@ -174,7 +205,7 @@ Run `/bin/true` as `svc`, in `/`, with standard input and output on `/dev/null` 
 error following standard output.
 
 ```qlr1
-514c5231 01000000 3f010000 20010000 1f000000  # header: magic, version, total_len, pool_off, pool_len
+514c5231 01000000 47010000 28010000 1f000000  # header: magic, version, total_len, pool_off, pool_len
 00000000 09000000  # argv_off, argv_len
 09000000 00000000  # env_off, env_len
 09000000 01000000  # cwd_off, cwd_len
@@ -199,6 +230,7 @@ error following standard output.
 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000  # limits: resource 4 to 7
 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000  # limits: resource 8 to 11
 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000  # limits: resource 12 to 15
+00000000 00000000  # inside_uid, inside_gid
 2f62696e 2f747275 652f7376 632f6465 762f6e75 6c6c2f64 65762f6e 756c6c  # pool: "/bin/true", "/", "svc", then "/dev/null" for stdin and again for stdout
 ```
 
@@ -210,7 +242,7 @@ paths `/usr` (read-only) and `/work` (writable). Standard output goes to routed 
 the service dies with its parent.
 
 ```qlr1
-514c5231 01000000 5a010000 20010000 3a000000  # header: magic, version, total_len, pool_off, pool_len
+514c5231 01000000 62010000 28010000 3a000000  # header: magic, version, total_len, pool_off, pool_len
 00000000 13000000  # argv_off, argv_len
 13000000 06000000  # env_off, env_len
 19000000 05000000  # cwd_off, cwd_len
@@ -235,6 +267,7 @@ the service dies with its parent.
 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000  # limits: resource 4 to 7
 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000  # limits: resource 8 to 11
 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000  # limits: resource 12 to 15
+e8030000 e8030000  # inside_uid, inside_gid
 2f757372 2f62696e 2f6a6f62 002d2d6f 6e63654c 414e473d 432f776f 726b7376  # pool: "/usr/bin/job" NUL "--once", "LANG=C", "/work", "svc", "ro:/usr" NUL "rw:/work", "/dev/null" for stdin
 63726f3a 2f757372 0072773a 2f776f72 6b2f6465 762f6e75 6c6c
 ```

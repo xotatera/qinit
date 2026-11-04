@@ -19,6 +19,8 @@ pub enum Notice {
     Node(u32, Report),
     /// An instance (by id) reached this state; `Exited` carries its wait status, -1 if unknown.
     Instance(u32, SlotState),
+    /// An instance (by id) wrote its readiness byte.
+    InstanceReady(u32),
     /// A database refresh finished: the new database is live.
     Swapped,
 }

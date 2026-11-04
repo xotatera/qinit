@@ -97,6 +97,8 @@ pub struct Sim {
     pub instance_cells: HashSet<u32>,
     /// The descriptors each started instance was given, by slot.
     pub instance_fds: HashMap<u32, Vec<std::os::fd::OwnedFd>>,
+    /// For each started instance, in order, `(slot, readiness pipe descriptor)`.
+    pub instance_ready: Vec<(u32, Option<u32>)>,
     /// The launch request each started `Run` instance was given, by slot.
     pub instance_requests: HashMap<u32, OwnedFd>,
     /// The pidfds `instance_pidfd` hands out, one per call; a test fills the queue (the real
@@ -220,6 +222,7 @@ impl Effects for Sim {
         if script.spawn_fails {
             return Err(Errno(2));
         }
+        self.instance_ready.push((slot, spec.ready_fd));
         self.instance_cells.insert(slot);
         self.instance_fds
             .insert(slot, spec.fds.into_iter().flatten().collect());
@@ -228,6 +231,11 @@ impl Effects for Sim {
         }
         let t = self.now;
         self.instance_event(slot, t, CellPhase::Running);
+        if spec.node.ready == qinit_db::Ready::Pipe
+            && let Some(ms) = script.ready_after_ms
+        {
+            self.instance_event(slot, t + ms, CellPhase::Ready);
+        }
         if let Some((ms, status)) = script.exit_after {
             self.instance_event(slot, t + ms, CellPhase::MainExited(status));
         }

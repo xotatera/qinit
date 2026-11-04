@@ -216,6 +216,14 @@ fn check_cred(b: &[u8], c: usize) -> (r: Result<(), DbError>)
     if field(b, t, c, C_USER_MAP) == 1 && ns & 32 == 0 {
         return Err(DbError::Consistency { table: tid(t), record: rid(c) });
     }
+    let inner_uid = field(b, t, c, C_INSIDE_UID);
+    let inner_group = field(b, t, c, C_INSIDE_GID);
+    if inner_uid > 0xFFFF_FFFE || inner_group > 0xFFFF_FFFE {
+        return Err(DbError::Consistency { table: tid(t), record: rid(c) });
+    }
+    if ns & 32 == 0 && (inner_uid != 0 || inner_group != 0) {
+        return Err(DbError::Consistency { table: tid(t), record: rid(c) });
+    }
     let user = pool_bytes(b, field(b, t, c, C_USER_OFF), field(b, t, c, C_USER_LEN));
     if ns & 32 != 0 && is_root_exec(user) {
         return Err(DbError::Consistency { table: tid(t), record: rid(c) });

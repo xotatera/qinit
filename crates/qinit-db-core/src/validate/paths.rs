@@ -78,7 +78,8 @@ pub fn canonical_exec(s: &[u8], p: usize, q: usize) -> (ok: bool)
     true
 }
 
-/// `s[p..q]` is a [`path_entry_ok`] entry: `ro:` or `rw:` and a canonical path.
+/// `s[p..q]` is a [`path_entry_ok`] entry: a mode (`ro:` `rw:` `ri:` `wi:` `rs:` `ws:`) and a
+/// canonical path.
 #[must_use]
 pub fn path_entry_ok_exec(s: &[u8], p: usize, q: usize) -> (ok: bool)
     requires
@@ -89,7 +90,11 @@ pub fn path_entry_ok_exec(s: &[u8], p: usize, q: usize) -> (ok: bool)
     if q - p < 4 {
         return false;
     }
-    let prefix = s[p] == 0x72 && (s[p + 1] == 0x6f || s[p + 1] == 0x77) && s[p + 2] == 0x3a;
+    let m0 = s[p];
+    let m1 = s[p + 1];
+    let mode = (m0 == 0x72 && (m1 == 0x6f || m1 == 0x77 || m1 == 0x69 || m1 == 0x73)) || (m0 == 0x77
+        && (m1 == 0x69 || m1 == 0x73));
+    let prefix = mode && s[p + 2] == 0x3a;
     if !prefix || !canonical_exec(s, p + 3, q) {
         return false;
     }
@@ -134,9 +139,92 @@ fn allowed_exec(s: &[u8], p: usize, q: usize) -> (ok: bool)
         + 4] == 0x74 && s[p + 5] == 0x6d && s[p + 6] == 0x70)) {
         return false;
     }
-    if l == 5 && s[p + 1] == 0x77 && a == 0x2f && s[p + 4] == 0x70 && s[p + 5] == 0x72 && s[p + 6]
-        == 0x6f && s[p + 7] == 0x63 {
+    if l == 5 && (s[p] == 0x77 || s[p + 1] == 0x77) && a == 0x2f && s[p + 4] == 0x70 && s[p + 5]
+        == 0x72 && s[p + 6] == 0x6f && s[p + 7] == 0x63 {
         return false;
+    }
+    true
+}
+
+/// No entry of the list is idmapped (`ri:` or `wi:`).
+#[must_use]
+pub fn no_idmapped_exec(s: &[u8]) -> (ok: bool)
+    requires
+        nul_list(s@),
+        paths_list_ok(s@),
+    ensures
+        ok <==> paths_no_idmapped(s@),
+{
+    let n = s.len();
+    if n == 0 {
+        assert(paths_no_idmapped(s@)) by {
+            assert forall|p: int, q: int| is_elem(s@, p, q) && q - p >= 4 implies !entry_idmapped(
+                s@.subrange(p, q),
+            ) by {}
+        }
+        return true;
+    }
+    let mut es: usize = 0;
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            n == s@.len(),
+            0 < n,
+            nul_list(s@),
+            paths_list_ok(s@),
+            es <= i <= n,
+            es == 0 || s@[es - 1] == 0,
+            forall|k: int| es <= k < i ==> #[trigger] s@[k] != 0,
+            forall|p: int, q: int|
+                #![trigger is_elem(s@, p, q)]
+                is_elem(s@, p, q) && q < i && q - p >= 4 ==> !entry_idmapped(s@.subrange(p, q)),
+        decreases n - i,
+    {
+        if s[i] == 0 {
+            proof {
+                assert(is_elem(s@, es as int, i as int));
+                assert(path_entry_ok(s@.subrange(es as int, i as int)));
+            }
+            if s[es + 1] == 0x69 {
+                proof {
+                    let e = s@.subrange(es as int, i as int);
+                    assert(e[1] == s@[es + 1]);
+                    assert(entry_idmapped(e));
+                    assert(is_elem(s@, es as int, i as int) && i - es >= 4);
+                }
+                return false;
+            }
+            assert forall|p: int, q: int|
+                is_elem(s@, p, q) && q < i + 1 && q - p >= 4 implies !entry_idmapped(
+                s@.subrange(p, q),
+            ) by {
+                if q == i {
+                    lemma_elem_start(s@, es as int, i as int, p);
+                }
+            }
+            es = i + 1;
+        }
+        i += 1;
+    }
+    proof {
+        assert(is_elem(s@, es as int, n as int));
+        assert(path_entry_ok(s@.subrange(es as int, n as int)));
+    }
+    if s[es + 1] == 0x69 {
+        proof {
+            let e = s@.subrange(es as int, n as int);
+            assert(e[1] == s@[es + 1]);
+            assert(entry_idmapped(e));
+            assert(is_elem(s@, es as int, n as int) && n - es >= 4);
+        }
+        return false;
+    }
+    assert forall|p: int, q: int| is_elem(s@, p, q) && q - p >= 4 implies !entry_idmapped(
+        s@.subrange(p, q),
+    ) by {
+        if q == n {
+            lemma_elem_start(s@, es as int, n as int, p);
+        }
     }
     true
 }
@@ -154,14 +242,20 @@ pub fn paths_shape_exec(s: &[u8], ns: u32) -> (ok: bool)
 {
     let n = s.len();
     if n == 0 {
-        assert(paths_ordered(s@) && paths_allowed(s@)) by {
+        assert(paths_ordered(s@) && paths_allowed(s@) && paths_no_idmapped(s@)) by {
             assert forall|p: int, q: int| is_elem(s@, p, q) && q - p >= 4 implies !forbidden_entry(
+                s@.subrange(p, q),
+            ) by {}
+            assert forall|p: int, q: int| is_elem(s@, p, q) && q - p >= 4 implies !entry_idmapped(
                 s@.subrange(p, q),
             ) by {}
         }
         return true;
     }
     if ns & 1 == 0 {
+        return false;
+    }
+    if ns & 32 == 0 && !no_idmapped_exec(s) {
         return false;
     }
     let mut es: usize = 0;
@@ -178,6 +272,7 @@ pub fn paths_shape_exec(s: &[u8], ns: u32) -> (ok: bool)
             es <= i <= n,
             es == 0 || s@[es - 1] == 0,
             forall|k: int| es <= k < i ==> #[trigger] s@[k] != 0,
+            ns & 32u32 == 0u32 ==> paths_no_idmapped(s@),
             have_prev ==> ps + 4 <= pe && pe + 1 == es && is_elem(s@, ps as int, pe as int),
             !have_prev ==> es == 0,
             forall|p: int, q: int|

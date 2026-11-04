@@ -12,10 +12,11 @@ use crate::userns;
 use crate::view;
 use qinit_overseer_core::{
     DEFAULT_DENY, Insn, MAX_BPF, MAX_REQUEST, MAX_STEPS, Q_ARGV_LEN, Q_ARGV_OFF, Q_CAPS_HI,
-    Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_ENV_LEN, Q_ENV_OFF, Q_NS, Q_PATHS_LEN, Q_PATHS_OFF,
-    Q_SECCOMP, Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_STDERR_A, Q_STDERR_B, Q_STDERR_KIND, Q_STDIN_A,
-    Q_STDIN_B, Q_STDIN_KIND, Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND, Q_UMASK, Q_USER_LEN,
-    Q_USER_MAP, Q_USER_OFF, STREAM_FD, STREAM_PATH, Step, decode, plan, pool, program, req,
+    Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_ENV_LEN, Q_ENV_OFF, Q_INSIDE_GID, Q_INSIDE_UID, Q_NS,
+    Q_PATHS_LEN, Q_PATHS_OFF, Q_SECCOMP, Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_STDERR_A, Q_STDERR_B,
+    Q_STDERR_KIND, Q_STDIN_A, Q_STDIN_B, Q_STDIN_KIND, Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND,
+    Q_UMASK, Q_USER_LEN, Q_USER_MAP, Q_USER_OFF, STREAM_FD, STREAM_PATH, Step, decode, plan, pool,
+    program, req,
 };
 use qinit_sys::fs::{Kind, lstat_kind};
 use qinit_sys::landlock::{
@@ -101,6 +102,8 @@ struct Run<'a> {
     alarm: Option<Alarm>,
     /// The host's `/proc/self`, for the map writer, from `ProcSelf` until the user namespace.
     proc_self: Option<OwnedFd>,
+    /// The helper user namespace of the idmapped entries, from `IdmapNamespace` until the pivot.
+    idmap_ns: Option<OwnedFd>,
 }
 
 impl<'a> Run<'a> {
@@ -184,8 +187,8 @@ impl<'a> Run<'a> {
     fn landlock_rule(&self, i: u32) -> Result<()> {
         let list = self.list(Q_PATHS_OFF, Q_PATHS_LEN)?;
         let entry = list.get(i as usize).ok_or(Errno(libc::EINVAL))?;
-        let (ro, path) = view::split(entry)?;
-        let access = if ro {
+        let (mode, path) = view::split(entry)?;
+        let access = if mode.read_only() {
             LANDLOCK_ACCESS_FS_READ
         } else {
             LANDLOCK_ACCESS_FS_ALL_V3
@@ -253,15 +256,31 @@ impl<'a> Run<'a> {
             Step::MountTmp => ns::mount_private_tmp(),
             Step::LoopbackUp => ns::loopback_up(),
             Step::Fork => Err(Errno(libc::EINVAL)),
+            Step::IdmapNamespace => {
+                self.idmap_ns = Some(userns::helper(
+                    self.id,
+                    req(self.b, Q_USER_MAP) == 1,
+                    (req(self.b, Q_INSIDE_UID), req(self.b, Q_INSIDE_GID)),
+                )?);
+                Ok(())
+            }
             Step::ViewRoot => Self::unmasked(view::root),
             Step::ViewDev => Self::unmasked(view::dev),
             Step::ViewTmp => Self::unmasked(view::tmp),
             Step::ViewEntry(i) => {
                 let list = self.list(Q_PATHS_OFF, Q_PATHS_LEN)?;
                 let entry = list.get(i as usize).ok_or(Errno(libc::EINVAL))?;
-                Self::unmasked(|| view::entry(entry, req(self.b, Q_NS) & 2 != 0))
+                let above = view::writable_ancestor(&list, i as usize)
+                    .map(|j| view::split(list[j]).map(|(_, p)| Path::new(p)))
+                    .transpose()?;
+                let idmap = self.idmap_ns.as_ref().map(AsFd::as_fd);
+                Self::unmasked(|| view::entry(entry, req(self.b, Q_NS) & 2 != 0, above, idmap))
             }
-            Step::ViewPivot => Self::unmasked(view::pivot),
+            Step::ViewPivot => {
+                // The last entry is attached: the mounts keep the namespace, this process need not.
+                self.idmap_ns = None;
+                Self::unmasked(view::pivot)
+            }
             Step::ViewSeal => view::seal(),
             Step::ArmDeadline(ms) => {
                 self.deadline_ns = now_monotonic_ns().saturating_add(u64::from(ms) * 1_000_000);
@@ -295,7 +314,7 @@ impl<'a> Run<'a> {
             Step::RlimitCore0 => set_rlimit(RLIMIT_CORE, 0, 0),
             Step::Setgroups => cred::setgroups(&self.id.groups),
             Step::Setgid => cred::setresgid(if self.in_user_namespace() {
-                0
+                req(self.b, Q_INSIDE_GID)
             } else {
                 self.id.gid
             }),
@@ -309,7 +328,7 @@ impl<'a> Run<'a> {
                 }
             }
             Step::Setuid => cred::setresuid(if self.in_user_namespace() {
-                0
+                req(self.b, Q_INSIDE_UID)
             } else {
                 self.id.uid
             }),
@@ -341,7 +360,12 @@ impl<'a> Run<'a> {
             Step::ClearGroups => cred::setgroups(&[]),
             Step::UserNamespace => {
                 let dir = self.proc_self.take().ok_or(Errno(libc::EBADF))?;
-                userns::enter(&dir, self.id, req(self.b, Q_USER_MAP) == 1)
+                userns::enter(
+                    &dir,
+                    self.id,
+                    req(self.b, Q_USER_MAP) == 1,
+                    (req(self.b, Q_INSIDE_UID), req(self.b, Q_INSIDE_GID)),
+                )
             }
             Step::UnshareOwned(flags) => {
                 ns::unshare(libc::c_int::try_from(flags).map_err(|_| Errno(libc::EINVAL))?)
@@ -356,6 +380,7 @@ impl<'a> Run<'a> {
 fn identity_errno(e: IdentityError) -> i32 {
     match e {
         IdentityError::Unknown | IdentityError::SubidMissing => libc::ENOENT,
+        IdentityError::InsideRange => libc::ERANGE,
         IdentityError::RootAlias | IdentityError::RootGroup | IdentityError::SubidOverlap => {
             libc::EPERM
         }
@@ -434,12 +459,21 @@ pub fn launch() -> ! {
         deadline_ns: 0,
         alarm: None,
         proc_self: None,
+        idmap_ns: None,
     };
     let user = match run.text(Q_USER_OFF, Q_USER_LEN) {
         Ok(u) => u,
         Err(e) => die(&status, STEP_DECODE, e.0),
     };
-    let id = match identity::resolve(user, req(&bytes, Q_USER_MAP) == 1) {
+    let range = req(&bytes, Q_USER_MAP) == 1;
+    let id = match identity::resolve(user, range).and_then(|id| {
+        identity::check_inside(
+            &id,
+            range,
+            (req(&bytes, Q_INSIDE_UID), req(&bytes, Q_INSIDE_GID)),
+        )
+        .map(|()| id)
+    }) {
         Ok(i) => i,
         Err(e) => die(&status, STEP_IDENTITY, identity_errno(e)),
     };

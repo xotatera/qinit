@@ -60,6 +60,8 @@ fn instantiate(f: &Frame, inst: &str) -> Frame {
             seccomp: x.seccomp.clone(),
             paths: sl(&x.paths),
             user_map: s(&x.user_map),
+            inside_uid: x.inside_uid,
+            inside_gid: x.inside_gid,
         }),
         env: f
             .env

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: MPL-2.0
-//! The launch request layout: a five-word header, a 67-word record and a string pool. Every
+//! The launch request layout: a five-word header, a 69-word record and a string pool. Every
 //! word is little-endian; pool references are `(offset, length)` into the pool.
 use vstd::prelude::*;
 
@@ -16,7 +16,7 @@ pub const LAUNCH_VERSION: u32 = 1;
 pub const HEADER_WORDS: usize = 5;
 
 /// Words in the record, which follows the header.
-pub const REQ_WORDS: usize = 67;
+pub const REQ_WORDS: usize = 69;
 
 /// Bytes of the header and the record together; the pool starts at or after this.
 pub const FIXED_BYTES: usize = 4 * (HEADER_WORDS + REQ_WORDS);
@@ -110,7 +110,7 @@ pub const Q_SECCOMP_OFF: usize = 16;
 /// Record word 17: `seccomp_len`, 0 exactly when `seccomp` is 0 or 1.
 pub const Q_SECCOMP_LEN: usize = 17;
 
-/// Record word 18: `paths_off`, NUL-separated `ro:/path` or `rw:/path` entries.
+/// Record word 18: `paths_off`, NUL-separated `<mode>:/path` entries (`ro` `rw` `ri` `wi` `rs` `ws`).
 pub const Q_PATHS_OFF: usize = 18;
 
 /// Record word 19: `paths_len`.
@@ -165,6 +165,13 @@ pub const Q_STDIN_B: usize = 34;
 /// `Q_RLIMIT_BASE + 2 * r` and its high word one later; both are 0 unless bit `r` of
 /// `rlimit_mask` is set, and all ones is infinity.
 pub const Q_RLIMIT_BASE: usize = 35;
+
+/// Record word 67: `inside_uid`, the user id the service runs as inside its user namespace; at
+/// most `0xFFFF_FFFE`, and non-zero only with the `user` namespace bit.
+pub const Q_INSIDE_UID: usize = 67;
+
+/// Record word 68: `inside_gid`, as `inside_uid` for the group id.
+pub const Q_INSIDE_GID: usize = 68;
 
 /// A stream goes to a path opened by the executor.
 pub const STREAM_PATH: u32 = 0;

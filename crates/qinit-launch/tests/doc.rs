@@ -49,6 +49,8 @@ fn described() -> Vec<RequestSpec> {
             securebits: Securebits::NorootLocked,
             ns: 1 | 32,
             user_map: UserMap::Range,
+            inside_uid: 1000,
+            inside_gid: 1000,
             seccomp: Seccomp::Default,
             paths: vec!["ro:/usr".into(), "rw:/work".into()],
             stdout: Stream::Fd(6),

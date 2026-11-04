@@ -212,6 +212,8 @@ pub struct Sandbox {
     pub seccomp: Option<SeccompCfg>,
     pub paths: Option<Vec<String>>,
     pub user_map: Option<String>,
+    pub inside_uid: Option<i64>,
+    pub inside_gid: Option<i64>,
 }
 
 /// The seccomp filter: `"none"`, `"default"`, a denylist or an allowlist of syscall names.
@@ -594,7 +596,17 @@ const TABLE_KEYS: [(&str, &[&str]); 7] = [
     ("stop", &["mode", "grace"]),
     ("cell", &["memory_max", "pids_max"]),
     ("credentials", &["uid", "caps", "nnp", "securebits"]),
-    ("sandbox", &["namespaces", "seccomp", "paths", "user_map"]),
+    (
+        "sandbox",
+        &[
+            "namespaces",
+            "seccomp",
+            "paths",
+            "user_map",
+            "inside_uid",
+            "inside_gid",
+        ],
+    ),
     (
         "rlimits",
         &[

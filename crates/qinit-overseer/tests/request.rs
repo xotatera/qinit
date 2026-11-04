@@ -29,8 +29,10 @@ fn full() -> RequestSpec {
         caps: (1 << 10) | (1 << 40),
         securebits: Securebits::NorootLocked,
         nnp: true,
-        ns: 0b10011,
+        ns: 0b10_0011,
         user_map: UserMap::Own,
+        inside_uid: 1000,
+        inside_gid: 1001,
         seccomp: Seccomp::Deny(vec![101, 110]),
         paths: vec!["ro:/srv".into(), "ro:/usr/bin".into(), "rw:/var/log".into()],
         stdin: Stream::Fd(8),
@@ -67,7 +69,8 @@ fn a_request_spec_round_trips_through_decode() {
     assert_eq!((req(&b, Q_CAPS_LO), req(&b, Q_CAPS_HI)), (1 << 10, 1 << 8));
     assert_eq!(req(&b, Q_SECUREBITS), 2);
     assert_eq!(req(&b, Q_NNP), 1);
-    assert_eq!(req(&b, Q_NS), 0b10011);
+    assert_eq!(req(&b, Q_NS), 0b10_0011);
+    assert_eq!((req(&b, Q_INSIDE_UID), req(&b, Q_INSIDE_GID)), (1000, 1001));
     assert_eq!(req(&b, Q_SECCOMP), 2);
     assert_eq!(req(&b, Q_STDOUT_KIND), STREAM_PATH);
     assert_eq!(

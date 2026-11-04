@@ -3,7 +3,7 @@
 //! The privilege policy: ordered rules that bound the credentials a compiled model may grant.
 //!
 //! A policy file has a required `default = "allow" | "deny"` and ordered `[[rule]]` tables
-//! (`match`, `users`, `caps_max`, `require_nnp`, `require_seccomp`, `allow_userns`). For each node that may hold privilege, the
+//! (`match`, `users`, `caps_max`, `require_nnp`, `require_seccomp`, `allow_userns`, `allow_inside_ids`, `allow_idmap`). For each node that may hold privilege, the
 //! first rule whose `match` glob fits the node name decides, and a rule that rejects a node is
 //! final: later rules are never consulted. A node no rule matches follows `default`.
 //!
@@ -56,6 +56,8 @@ struct RawRule {
     require_seccomp: Option<bool>,
     rlimits_max: Option<Rlimits>,
     allow_userns: Option<toml::Value>,
+    allow_inside_ids: Option<bool>,
+    allow_idmap: Option<bool>,
 }
 
 /// The kernel's boot hard limits by resource number (`include/asm-generic/resource.h`,
@@ -80,6 +82,7 @@ const BOOT_CEILING: [Option<u64>; RLIMIT_COUNT] = [
 ];
 
 #[derive(Clone, Debug)]
+#[allow(clippy::struct_excessive_bools)] // one flag per clause of the rule
 struct Rule {
     rlimits: [Option<u64>; RLIMIT_COUNT],
     pattern: String,
@@ -88,6 +91,8 @@ struct Rule {
     require_nnp: bool,
     require_seccomp: bool,
     allow_userns: Userns,
+    allow_inside_ids: bool,
+    allow_idmap: bool,
 }
 
 /// A parsed policy.
@@ -116,6 +121,8 @@ pub fn to_model(p: &Policy) -> qinit_db::Policy {
                 require_nnp: r.require_nnp,
                 require_seccomp: r.require_seccomp,
                 allow_userns: r.allow_userns,
+                allow_inside_ids: r.allow_inside_ids,
+                allow_idmap: r.allow_idmap,
                 rlimits: r.rlimits,
             })
             .collect(),
@@ -344,6 +351,8 @@ fn build_rule(path: &Path, i: usize, r: RawRule, errs: &mut Vec<Error>) -> Rule 
     };
     Rule {
         allow_userns,
+        allow_inside_ids: r.allow_inside_ids.unwrap_or(false),
+        allow_idmap: r.allow_idmap.unwrap_or(false),
         rlimits: ceilings(
             path,
             &format!("rule[{i}].rlimits_max"),
@@ -468,6 +477,31 @@ fn check_rule(
             let key = format!("rule[{ri}].allow_userns");
             errs.push((i, Error::new(Code::Policy, key, why).in_file(&policy.path)));
         }
+    }
+    if (cred.inside_uid != 0 || cred.inside_gid != 0) && !rule.allow_inside_ids {
+        let why = format!(
+            "{} `{}` runs as a non-zero inside id, which rule `{}` does not allow",
+            kind_name(node.kind),
+            node.name,
+            rule.pattern
+        );
+        let key = format!("rule[{ri}].allow_inside_ids");
+        errs.push((i, Error::new(Code::Policy, key, why).in_file(&policy.path)));
+    }
+    if cred
+        .paths
+        .iter()
+        .any(|e| e.starts_with("ri:") || e.starts_with("wi:"))
+        && !rule.allow_idmap
+    {
+        let why = format!(
+            "{} `{}` has an idmapped path entry (it hands the service the ownership of disk ids), which rule `{}` does not allow",
+            kind_name(node.kind),
+            node.name,
+            rule.pattern
+        );
+        let key = format!("rule[{ri}].allow_idmap");
+        errs.push((i, Error::new(Code::Policy, key, why).in_file(&policy.path)));
     }
     let over = raised(node, &policy.ceiling, Some(&rule.rlimits));
     if !over.is_empty() {
