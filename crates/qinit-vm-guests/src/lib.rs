@@ -869,6 +869,22 @@ fn launch_helper(role: &str, args: &[String]) -> Option<i32> {
             }
             _ => 2,
         },
+        // `probe-owner <path>`: the owner of the file as `<uid> <gid>` on standard output.
+        "probe-owner" => a0.map_or(2, |p| match std::fs::metadata(p) {
+            Ok(m) => {
+                let ids = format!(
+                    "{} {}",
+                    std::os::unix::fs::MetadataExt::uid(&m),
+                    std::os::unix::fs::MetadataExt::gid(&m)
+                );
+                if writeln!(std::io::stdout(), "{ids}").is_ok() {
+                    0
+                } else {
+                    2
+                }
+            }
+            Err(x) => x.raw_os_error().unwrap_or(2),
+        }),
         // `probe-wait-file <path> <ms>`: sleeps, then exits 0 when the file can be opened for
         // reading, the errno otherwise.
         "probe-wait-file" => match (a0, args.get(1).and_then(|m| m.parse::<u64>().ok())) {

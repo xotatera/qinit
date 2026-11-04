@@ -9,8 +9,8 @@ use qinit_sys::fs::{
 };
 use qinit_sys::landlock::{LANDLOCK_ACCESS_FS_ALL_V3, add_path_rule};
 use qinit_sys::mount::{
-    MOUNT_ATTR_NODEV, MOUNT_ATTR_NOSUID, MOUNT_ATTR_RDONLY, mount_data, move_mount_to, open_tree,
-    pivot_root, private_rec, rmdir, setattr, setattr_fd, umount_detach,
+    MOUNT_ATTR_IDMAP, MOUNT_ATTR_NODEV, MOUNT_ATTR_NOSUID, MOUNT_ATTR_RDONLY, mount_data,
+    move_mount_to, open_tree, pivot_root, private_rec, rmdir, setattr, setattr_fd, umount_detach,
 };
 use qinit_sys::{Errno, Result};
 use std::ffi::CString;
@@ -49,7 +49,13 @@ pub fn dev() -> Result<()> {
     for node in DEV_NODES {
         let target = dev.join(node);
         create_file(&target, 0o644)?;
-        attach(&Path::new("/dev").join(node), &target, 0, false)?;
+        attach_fd(
+            open_path(&Path::new("/dev").join(node))?.as_fd(),
+            &target,
+            0,
+            false,
+            None,
+        )?;
     }
     let shm = dev.join("shm");
     mkdir_all(&shm, 0o755)?;
@@ -154,8 +160,15 @@ pub fn writable_ancestor(list: &[&str], i: usize) -> Option<usize> {
 /// `ViewEntry`: one listed path. `pid`: the request has a pid namespace, so `ro:/proc` is a
 /// fresh `proc` instead of a bind of the host's. `beneath`: the host path of the writable entry
 /// above this one; the path is then opened below it without following any symlink, the last
-/// component included (`ELOOP`), so nothing planted there redirects the bind.
-pub fn entry(entry: &str, pid: bool, beneath: Option<&Path>) -> Result<()> {
+/// component included (`ELOOP`), so nothing planted there redirects the bind. `idmap`: the
+/// helper user namespace an idmapped entry (`ri:`, `wi:`) is mapped through; without it such an
+/// entry fails (`EINVAL`) instead of being bound plain.
+pub fn entry(
+    entry: &str,
+    pid: bool,
+    beneath: Option<&Path>,
+    idmap: Option<BorrowedFd<'_>>,
+) -> Result<()> {
     let (mode, path) = split(entry)?;
     let ro = mode.read_only();
     let host = Path::new(path);
@@ -179,7 +192,7 @@ pub fn entry(entry: &str, pid: bool, beneath: Option<&Path>) -> Result<()> {
     } else if lstat_kind(&target).is_err() {
         create_file(&target, 0o644)?;
     }
-    if path == "/proc" && ro && pid {
+    if path == "/proc" && mode == Mode::Ro && pid {
         return mount_data(
             "proc",
             &target,
@@ -195,26 +208,39 @@ pub fn entry(entry: &str, pid: bool, beneath: Option<&Path>) -> Result<()> {
     if ro {
         set |= MOUNT_ATTR_RDONLY;
     }
+    let map = match (mode.idmapped(), idmap) {
+        (false, _) => None,
+        (true, Some(ns)) => Some(ns),
+        (true, None) => return Err(Errno(libc::EINVAL)),
+    };
     match source {
-        Some(fd) => attach_fd(fd.as_fd(), &target, set, mode.follows()),
-        None => attach(host, &target, set, mode.follows()),
+        Some(fd) => attach_fd(fd.as_fd(), &target, set, mode.follows(), map),
+        None => attach_fd(open_path(host)?.as_fd(), &target, set, mode.follows(), map),
     }
 }
 
-/// Binds `host` (and every mount below it) at `target` as a detached clone that gets the
-/// attributes `set` before it is attached, so it is never visible without them. Attaching under
-/// a shared parent joins the clone to its peer group whatever the clone's own propagation was,
-/// so it is made private afterwards: a mount the host makes later below `host` must not
-/// appear in the view, writable and without `nosuid`. `follows`: it is left a slave of the
-/// host's mount instead, so the mounts the host makes below `host` later do appear (`rs:`, `ws:`).
-fn attach(host: &Path, target: &Path, set: u64, follows: bool) -> Result<()> {
-    attach_fd(open_path(host)?.as_fd(), target, set, follows)
-}
-
-/// `attach` for a source already opened.
-fn attach_fd(source: BorrowedFd<'_>, target: &Path, set: u64, follows: bool) -> Result<()> {
+/// Binds the tree behind `source` (and every mount below it) at `target` as a detached clone that
+/// gets the attributes `set` before it is attached, so it is never visible without them; with
+/// `idmap` it is also idmapped through that user namespace, which fails (`EINVAL`) when a
+/// filesystem below does not support it. Attaching under a shared parent joins the clone to its
+/// peer group whatever the clone's own propagation was, so it is made private afterwards: a
+/// mount the host makes later below `source` must not appear in the view, writable and without
+/// `nosuid`. `follows`: it is left a slave of the host's mount instead, so the mounts the host
+/// makes later do appear (`rs:`, `ws:`).
+fn attach_fd(
+    source: BorrowedFd<'_>,
+    target: &Path,
+    set: u64,
+    follows: bool,
+    idmap: Option<BorrowedFd<'_>>,
+) -> Result<()> {
     let clone = open_tree(source, c"", true)?;
-    setattr_fd(clone.as_fd(), set, 0, 0, None, true)?;
+    let set = if idmap.is_some() {
+        set | MOUNT_ATTR_IDMAP
+    } else {
+        set
+    };
+    setattr_fd(clone.as_fd(), set, 0, 0, idmap, true)?;
     move_mount_to(clone.as_fd(), target)?;
     if follows { Ok(()) } else { private_rec(target) }
 }

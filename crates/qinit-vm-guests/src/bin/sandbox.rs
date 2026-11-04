@@ -371,6 +371,70 @@ fn a_plain_entry_does_not_see_a_later_host_mount() -> Result<(), String> {
     )
 }
 
+/// A `tmpfs` at `/tmp/idm` with a file `f` that belongs to host root.
+fn idmapped_tmpfs() -> Result<(), String> {
+    let m = std::path::Path::new("/tmp/idm");
+    let _ = qinit_sys::mount::umount_detach(m);
+    e(std::fs::create_dir_all(m))?;
+    e(qinit_sys::mount::mount("tmpfs", m, "tmpfs", 0).map_err(|x| x.to_string()))?;
+    e(std::fs::write("/tmp/idm/f", b"x"))
+}
+
+fn an_idmapped_entry_shows_disk_root_as_inside_root() -> Result<(), String> {
+    idmapped_tmpfs()?;
+    let r = viewed(
+        "id1",
+        "probe-owner",
+        &["/tmp/idm/f"],
+        &["wi:/tmp/idm"],
+        NS_USER,
+    );
+    // The same list as a plain entry: disk root is not mapped in the service's namespace.
+    let plain = viewed(
+        "id2",
+        "probe-owner",
+        &["/tmp/idm/f"],
+        &["rw:/tmp/idm"],
+        NS_USER,
+    );
+    let _ = qinit_sys::mount::umount_detach(std::path::Path::new("/tmp/idm"));
+    want(r?, (0, "0 0".to_string()), "owner through wi:")?;
+    want(plain?, (0, "65534 65534".to_string()), "owner through rw:")
+}
+
+fn a_file_created_in_an_idmapped_entry_lands_on_disk_as_the_inside_id() -> Result<(), String> {
+    idmapped_tmpfs()?;
+    // A directory whose disk owner is not mapped cannot be written (the kernel refuses writes
+    // to an inode whose ids the mount does not map), so the directory belongs to the inside ids.
+    e(qinit_sys::fd::chown(c"/tmp/idm", 1234, 1235).map_err(|x| x.to_string()))?;
+    let mut request = spec("svc", "probe-path", &["/tmp/idm/new", "w"]);
+    request.ns = NS_MOUNT | NS_USER;
+    request.inside_uid = 1234;
+    request.inside_gid = 1235;
+    request.paths = vec!["ro:/init".into(), "wi:/tmp/idm".into()];
+    let o = run_to_end("id3", request, true);
+    let owner = std::fs::metadata("/tmp/idm/new").map(|m| {
+        (
+            std::os::unix::fs::MetadataExt::uid(&m),
+            std::os::unix::fs::MetadataExt::gid(&m),
+        )
+    });
+    let _ = qinit_sys::mount::umount_detach(std::path::Path::new("/tmp/idm"));
+    want(o?.code()?, 0, "creating the file")?;
+    // Inside 1234 is the outside `svc` (1000), and the disk holds the inside id, not 1000.
+    want(e(owner)?, (1234, 1235), "owner on disk")
+}
+
+fn an_idmapped_entry_on_a_filesystem_that_cannot_be_idmapped_fails() -> Result<(), String> {
+    // sysfs does not support idmapped mounts: the launch fails at the entry, never downgrades.
+    match viewed("id4", "probe-path", &["/sys", "r"], &["ri:/sys"], NS_USER) {
+        Err(m) if m.contains(&format!("errno: {}", libc::EINVAL)) => Ok(()),
+        other => Err(format!(
+            "ri:/sys: {other:?}, want a launch failure with EINVAL"
+        )),
+    }
+}
+
 fn a_setuid_binary_outside_the_list_is_absent() -> Result<(), String> {
     e(std::fs::write("/tmp/su", b"x"))?;
     e(std::fs::set_permissions(
@@ -883,6 +947,18 @@ fn main() {
             (
                 "a_plain_entry_does_not_see_a_later_host_mount",
                 a_plain_entry_does_not_see_a_later_host_mount,
+            ),
+            (
+                "an_idmapped_entry_shows_disk_root_as_inside_root",
+                an_idmapped_entry_shows_disk_root_as_inside_root,
+            ),
+            (
+                "a_file_created_in_an_idmapped_entry_lands_on_disk_as_the_inside_id",
+                a_file_created_in_an_idmapped_entry_lands_on_disk_as_the_inside_id,
+            ),
+            (
+                "an_idmapped_entry_on_a_filesystem_that_cannot_be_idmapped_fails",
+                an_idmapped_entry_on_a_filesystem_that_cannot_be_idmapped_fails,
             ),
             (
                 "a_setuid_binary_outside_the_list_is_absent",

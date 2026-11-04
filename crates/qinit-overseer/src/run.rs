@@ -102,6 +102,8 @@ struct Run<'a> {
     alarm: Option<Alarm>,
     /// The host's `/proc/self`, for the map writer, from `ProcSelf` until the user namespace.
     proc_self: Option<OwnedFd>,
+    /// The helper user namespace of the idmapped entries, from `IdmapNamespace` until the pivot.
+    idmap_ns: Option<OwnedFd>,
 }
 
 impl<'a> Run<'a> {
@@ -254,8 +256,14 @@ impl<'a> Run<'a> {
             Step::MountTmp => ns::mount_private_tmp(),
             Step::LoopbackUp => ns::loopback_up(),
             Step::Fork => Err(Errno(libc::EINVAL)),
-            // The helper user namespace of the idmapped entries arrives with the idmapped mounts.
-            Step::IdmapNamespace => Err(Errno(libc::ENOSYS)),
+            Step::IdmapNamespace => {
+                self.idmap_ns = Some(userns::helper(
+                    self.id,
+                    req(self.b, Q_USER_MAP) == 1,
+                    (req(self.b, Q_INSIDE_UID), req(self.b, Q_INSIDE_GID)),
+                )?);
+                Ok(())
+            }
             Step::ViewRoot => Self::unmasked(view::root),
             Step::ViewDev => Self::unmasked(view::dev),
             Step::ViewTmp => Self::unmasked(view::tmp),
@@ -265,9 +273,14 @@ impl<'a> Run<'a> {
                 let above = view::writable_ancestor(&list, i as usize)
                     .map(|j| view::split(list[j]).map(|(_, p)| Path::new(p)))
                     .transpose()?;
-                Self::unmasked(|| view::entry(entry, req(self.b, Q_NS) & 2 != 0, above))
+                let idmap = self.idmap_ns.as_ref().map(AsFd::as_fd);
+                Self::unmasked(|| view::entry(entry, req(self.b, Q_NS) & 2 != 0, above, idmap))
             }
-            Step::ViewPivot => Self::unmasked(view::pivot),
+            Step::ViewPivot => {
+                // The last entry is attached: the mounts keep the namespace, this process need not.
+                self.idmap_ns = None;
+                Self::unmasked(view::pivot)
+            }
             Step::ViewSeal => view::seal(),
             Step::ArmDeadline(ms) => {
                 self.deadline_ns = now_monotonic_ns().saturating_add(u64::from(ms) * 1_000_000);
@@ -446,6 +459,7 @@ pub fn launch() -> ! {
         deadline_ns: 0,
         alarm: None,
         proc_self: None,
+        idmap_ns: None,
     };
     let user = match run.text(Q_USER_OFF, Q_USER_LEN) {
         Ok(u) => u,
