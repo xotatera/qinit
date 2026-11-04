@@ -12,7 +12,8 @@ qinit is an init and service-supervision system for Linux. It is one design buil
 - **qctl**: the configuration compiler and administrative CLI.
 - **client library**: the library for the control protocol.
 
-The compiled service database is described in [docs/db-format.md](docs/db-format.md). The
+The compiled service database is described in [docs/db-format.md](docs/db-format.md) and the
+control protocol in [docs/control-protocol.md](docs/control-protocol.md). The
 scheduler that runs it is `qinit-colony-core` (proved) and `qinit-colony` (run against simulated
 cells on the host). `qinit-overseer` is the launch executor over the proved `qinit-overseer-core`
 plan; see the launch sequence in `crates/qinit-overseer/src/run.rs`.
