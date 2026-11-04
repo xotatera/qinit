@@ -37,13 +37,14 @@ fn iov(bytes: &[u8]) -> libc::iovec {
     }
 }
 
+#[allow(clippy::unnecessary_cast)] // the control length is `usize` on glibc and `u32` on musl
 fn header(iov: &mut libc::iovec, control: &mut Control) -> libc::msghdr {
     // SAFETY: msghdr is a plain C struct; zeroed is a valid value.
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
     msg.msg_iov = iov;
     msg.msg_iovlen = 1;
     msg.msg_control = control.bytes.as_mut_ptr().cast();
-    msg.msg_controllen = CONTROL_BYTES;
+    msg.msg_controllen = CONTROL_BYTES as _;
     msg
 }
 
@@ -73,6 +74,7 @@ fn check_long(r: libc::ssize_t) -> Result<usize> {
 }
 
 /// Sends `bytes` as one message with `fds` attached (`EINVAL` for more than [`MAX_FDS`]).
+#[allow(clippy::unnecessary_cast, clippy::cast_possible_truncation)] // the field types differ between glibc and musl; the values are small
 pub fn send(fd: BorrowedFd<'_>, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> Result<()> {
     if fds.len() > MAX_FDS {
         return Err(Errno(libc::EINVAL));
@@ -87,10 +89,10 @@ pub fn send(fd: BorrowedFd<'_>, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> Result<
         let payload = fds.len() * core::mem::size_of::<libc::c_int>();
         let payload = u32::try_from(payload).map_err(|_| Errno(libc::EINVAL))?;
         // SAFETY: pure arithmetic on the sizes.
-        let space = unsafe { libc::CMSG_SPACE(payload) } as usize;
+        let space = unsafe { libc::CMSG_SPACE(payload) };
         // SAFETY: pure arithmetic on the sizes.
-        let len = unsafe { libc::CMSG_LEN(payload) } as usize;
-        msg.msg_controllen = space;
+        let len = unsafe { libc::CMSG_LEN(payload) };
+        msg.msg_controllen = space as _;
         // SAFETY: msg_control points at an aligned buffer with room for the header.
         let cmsg = unsafe { libc::CMSG_FIRSTHDR(&raw const msg) };
         // SAFETY: cmsg points into the control buffer, which is large enough for MAX_FDS.
@@ -98,7 +100,7 @@ pub fn send(fd: BorrowedFd<'_>, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> Result<
         // SAFETY: as above.
         unsafe { (*cmsg).cmsg_type = libc::SCM_RIGHTS };
         // SAFETY: as above.
-        unsafe { (*cmsg).cmsg_len = len };
+        unsafe { (*cmsg).cmsg_len = len as _ };
         for (i, f) in fds.iter().enumerate() {
             put_fd(cmsg, i, f.as_raw_fd());
         }
@@ -127,6 +129,7 @@ pub struct Received {
 }
 
 /// Receives one message into `buf`.
+#[allow(clippy::unnecessary_cast, clippy::cast_possible_truncation)] // the field types differ between glibc and musl; the values are small
 pub fn recv(fd: BorrowedFd<'_>, buf: &mut [u8]) -> Result<Received> {
     let mut vec = libc::iovec {
         iov_base: buf.as_mut_ptr().cast(),
@@ -136,7 +139,7 @@ pub fn recv(fd: BorrowedFd<'_>, buf: &mut [u8]) -> Result<Received> {
     let mut msg = header(&mut vec, &mut control);
     // Room for exactly MAX_FDS descriptors: a fourth is dropped and reported as `ctrunc`.
     // SAFETY: pure arithmetic on the sizes.
-    msg.msg_controllen = unsafe { libc::CMSG_LEN(FDS_BYTES) } as usize;
+    msg.msg_controllen = unsafe { libc::CMSG_LEN(FDS_BYTES) } as _;
     // SAFETY: msg points at valid iovec and control buffers for the call.
     let got =
         check_long(unsafe { libc::recvmsg(fd.as_raw_fd(), &raw mut msg, libc::MSG_CMSG_CLOEXEC) })?;
@@ -149,7 +152,7 @@ pub fn recv(fd: BorrowedFd<'_>, buf: &mut [u8]) -> Result<Received> {
         // SAFETY: as above.
         let kind = unsafe { (*cmsg).cmsg_type };
         // SAFETY: as above.
-        let len = unsafe { (*cmsg).cmsg_len };
+        let len = unsafe { (*cmsg).cmsg_len } as usize;
         if level == libc::SOL_SOCKET && kind == libc::SCM_RIGHTS {
             // SAFETY: pure arithmetic on the sizes.
             let header = unsafe { libc::CMSG_LEN(0) } as usize;

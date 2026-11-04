@@ -16,7 +16,7 @@ mod sock;
 
 pub use msg::{MAX_FDS, Received, recv, send};
 pub use peer::{PeerCred, peer_cred, peer_pidfd};
-pub use sock::{accept, connect_seqpacket, listen_seqpacket, seqpacket_pair};
+pub use sock::{accept, connect_seqpacket, listen_seqpacket, seqpacket_pair, unix_address};
 
 /// An OS error number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

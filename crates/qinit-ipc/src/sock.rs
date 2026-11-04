@@ -6,7 +6,11 @@ use crate::{Errno, Result, check, owned};
 use std::ffi::CStr;
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 
-fn address(path: &CStr) -> Result<libc::sockaddr_un> {
+/// The `AF_UNIX` socket address of `path`.
+///
+/// # Errors
+/// `ENAMETOOLONG` when the path does not fit `sun_path`.
+pub fn unix_address(path: &CStr) -> Result<libc::sockaddr_un> {
     // SAFETY: sockaddr_un is a plain C struct; zeroed is a valid value.
     let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
     addr.sun_family =
@@ -35,7 +39,7 @@ fn sockaddr_len() -> Result<libc::socklen_t> {
 
 /// A close-on-exec `SOCK_SEQPACKET` socket bound to `path` and listening with `backlog`.
 pub fn listen_seqpacket(path: &CStr, backlog: libc::c_int) -> Result<OwnedFd> {
-    let addr = address(path)?;
+    let addr = unix_address(path)?;
     let fd = socket()?;
     let len = sockaddr_len()?;
     // SAFETY: a readable sockaddr_un of the length given.
@@ -47,7 +51,7 @@ pub fn listen_seqpacket(path: &CStr, backlog: libc::c_int) -> Result<OwnedFd> {
 
 /// A close-on-exec `SOCK_SEQPACKET` socket connected to `path`.
 pub fn connect_seqpacket(path: &CStr) -> Result<OwnedFd> {
-    let addr = address(path)?;
+    let addr = unix_address(path)?;
     let fd = socket()?;
     let len = sockaddr_len()?;
     // SAFETY: a readable sockaddr_un of the length given.
