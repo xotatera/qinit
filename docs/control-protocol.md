@@ -238,7 +238,7 @@ the policy compiled into the database.
 
 | Word | Name | Meaning |
 | --- | --- | --- |
-| 0, 1 | `name_off`, `name_len` | the launch name, 1 to 95 bytes; the instance is `~<name>#<id>` (`~` is not a node-name byte, so it never collides with a frame's instances) |
+| 0, 1 | `name_off`, `name_len` | the launch name, 1 to 95 bytes of letters, digits and `.` `_` `@` `:` `+` `-` (the node-name bytes, so the instance name splits at its first `#`); the instance is `~<name>#<id>` (`~` is not a node-name byte, so it never collides with a frame's instances) |
 | 2 | `fd_roles` | 1 stdin, 2 stdout, 4 stderr, as `Launch` |
 | 3 | `flags` | bit 0 `pidfd`, as `Launch` |
 | 4 | `memory_max_kib` | 0 for none |
@@ -248,10 +248,10 @@ the policy compiled into the database.
 | 8 | `wait_ms` | 1 to 600000 |
 
 Descriptors: first the request, then one per role set in the order stdin, stdout, stderr. The
-request is a memfd sealed with `F_SEAL_SHRINK`, `F_SEAL_GROW`, `F_SEAL_WRITE` and `F_SEAL_SEAL`
+request is a memfd sealed with at least `F_SEAL_SHRINK`, `F_SEAL_GROW`, `F_SEAL_WRITE` and `F_SEAL_SEAL`
 holding at most 65536 bytes, read whole from offset 0; any other descriptor is `Error(Invalid)`
 (reason 21 not fully sealed, 19 too large, 20 unreadable). Colony checks, in order: the request
-decodes (`Error(Invalid)`, detail 1 header, 2 pool, 3 enum, 4 consistency of the request, 0 for a name that does not fit); its streams agree with the
+decodes (`Error(Invalid)`, detail 1 header, 2 pool, 3 enum, 4 consistency of the request, 0 for a name that is empty, too long or has another byte); its streams agree with the
 roles sent (stdin, stdout and stderr arrive as descriptors 5, 6 and 7; a stream `fd n` names a
 sent role's number and every role sent is used) and it names no readiness pipe (`Error(Denied)`,
 detail 0); the policy allows it under the name `~<name>` (`Error(Denied)`, the detail the

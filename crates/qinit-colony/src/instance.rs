@@ -156,6 +156,13 @@ fn streams_match(args: &RunArgs) -> bool {
         .all(|(named, sent)| *named == sent.is_some())
 }
 
+/// A byte of a node name (the frames grammar: letters, digits and `._@:+-`). The launch name goes
+/// into the instance name `~<name>#<id>`, which is split at the first `#`, and into a cell name,
+/// so no other byte may appear in it.
+fn node_name_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'@' | b':' | b'+' | b'-')
+}
+
 impl<E: Effects> Colony<E> {
     /// Launches an instance of the forager `args.frame`.
     ///
@@ -245,7 +252,10 @@ impl<E: Effects> Colony<E> {
         if self.meta.shutdown {
             return Err(RunError::ShuttingDown);
         }
-        if args.name.is_empty() || args.name.len() > MAX_RUN_NAME {
+        if args.name.is_empty()
+            || args.name.len() > MAX_RUN_NAME
+            || !args.name.bytes().all(node_name_byte)
+        {
             return Err(RunError::Invalid(0));
         }
         if let Err(e) = decode(&args.request) {

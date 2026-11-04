@@ -243,7 +243,7 @@ sub-project (SP7).
 
 A credential or launch request with a `paths` list gets a view: an empty `tmpfs` root with a
 fixed `/dev` (`null zero full random urandom`) and a private `/tmp`, a recursive bind of every
-listed path (read-only or writable, `nosuid` and `nodev`), a `pivot_root` into it and a read-only
+listed path (read-only or writable, `nosuid`, and `nodev` except below `/dev`; every mount of the view is made private, so a mount the host makes later does not appear in it), a `pivot_root` into it and a read-only
 seal, then Landlock on the same paths. The list is the old `sandbox.landlock` renamed
 `sandbox.paths`; it is sorted, canonical, refuses `/`, `/dev`, `/tmp` and a writable `/proc`, and
 needs the `mount` namespace. The plan has one proved step per phase of the view. What the view
@@ -337,5 +337,22 @@ state.
 
 ### D47 — Host mount propagation into views · `OPEN`
 
-A view is built once, so a mount made on the host later (a removable drive under a bound path) is
-not seen inside. Propagation policy belongs to queen (SP8).
+Every mount of a view is private, so a mount the host makes after the view was built (a removable
+drive under a bound path) is not seen inside. Offering a listed path whose later mounts do follow
+the host (a `slave` entry) is deferred; it belongs to queen (SP8).
+
+### D48 — A listed path below a directory the service can write · `OPEN`
+
+Host paths and view targets are resolved with symlinks followed, as root, before the pivot. A
+service that can write below a listed `rw:` directory can plant a relative symlink in it
+(`s -> ../../etc`), so a listed child path (`ro:/var/lib/app/s/data`) resolves to a different host
+file than the one the view puts it under, and the next start binds that file into the view. The
+last component stays fixed and file permissions still apply. Until paths are resolved without
+following symlinks (`openat2` with `RESOLVE_NO_SYMLINKS` and `open_tree`), do not list a child path
+below a directory the service can write.
+
+### D49 — The view is built on the host root · `OPEN`
+
+The view's root is `/.qinit-view` on the host's root filesystem, so a launch with a path list
+needs a writable root directory (`EROFS` at `view-root` otherwise), and an empty `/.qinit-view`
+stays behind. Building the view on a detached `tmpfs` (`fsopen`, `fsmount`) removes both.

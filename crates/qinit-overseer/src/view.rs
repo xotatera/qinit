@@ -8,7 +8,7 @@ use qinit_sys::fs::{Kind, create_file, lstat_kind, mkdir_all, readlink, symlink}
 use qinit_sys::landlock::{LANDLOCK_ACCESS_FS_ALL_V3, add_path_rule};
 use qinit_sys::mount::{
     MOUNT_ATTR_NODEV, MOUNT_ATTR_NOSUID, MOUNT_ATTR_RDONLY, bind_rec, mount_data, pivot_root,
-    rmdir, setattr, setattr_rec, umount_detach,
+    private_rec, rmdir, setattr, setattr_rec, umount_detach,
 };
 use qinit_sys::{Errno, Result};
 use std::ffi::CString;
@@ -47,6 +47,7 @@ pub fn dev() -> Result<()> {
         let target = dev.join(node);
         create_file(&target, 0o644)?;
         bind_rec(&Path::new("/dev").join(node), &target)?;
+        private_rec(&target)?;
     }
     let shm = dev.join("shm");
     mkdir_all(&shm, 0o755)?;
@@ -108,11 +109,14 @@ pub fn entry(entry: &str, pid: bool) -> Result<()> {
             "proc",
             &target,
             "proc",
-            libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+            libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC | libc::MS_RDONLY,
             None,
         );
     }
     bind_rec(host, &target)?;
+    // The bind is a slave of the host's mount: cut it, so a mount the host makes later below the
+    // path does not appear in the view, writable and without `nosuid`.
+    private_rec(&target)?;
     let mut set = MOUNT_ATTR_NOSUID;
     if !below_dev(path) {
         set |= MOUNT_ATTR_NODEV;

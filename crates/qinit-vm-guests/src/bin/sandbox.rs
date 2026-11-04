@@ -222,6 +222,53 @@ fn proc_in_a_pid_namespace_shows_only_the_namespace() -> Result<(), String> {
     }
 }
 
+fn a_mount_namespace_without_paths_keeps_the_host_copy() -> Result<(), String> {
+    e(std::fs::write("/tmp/hostonly", b"x"))?;
+    // No path list: no view. The host's tree is there (a copy of it) ...
+    want(
+        probe_path("mh1", "/etc/passwd", "r", &[])?,
+        0,
+        "the host's /etc/passwd is readable",
+    )?;
+    // ... but `/tmp` is a private tmpfs, so the host's file is not.
+    want(
+        probe_path("mh2", "/tmp/hostonly", "r", &[])?,
+        libc::ENOENT,
+        "the host's /tmp file is absent",
+    )
+}
+
+fn a_fresh_proc_is_read_only_for_a_ro_entry() -> Result<(), String> {
+    want(
+        viewed("vq2", "probe-statvfs", &["/proc"], &["ro:/proc"], NS_PID)?.0,
+        0,
+        "a ro:/proc in a pid namespace is read-only",
+    )
+}
+
+fn no_view_mount_takes_part_in_a_peer_group() -> Result<(), String> {
+    // A host mount made after the view was built must not appear in it, so no mount of the view
+    // may still be a slave of (or share with) the host's.
+    e(std::fs::create_dir_all("/tmp/srv"))?;
+    // A shared host tree, as a service manager's host has: the view's binds become its slaves.
+    e(qinit_sys::mount::mount(
+        "none",
+        std::path::Path::new("/"),
+        "none",
+        libc::MS_SHARED | libc::MS_REC,
+    )
+    .map_err(|x| x.to_string()))?;
+    let (code, out) = viewed(
+        "vp",
+        "probe-propagation",
+        &[],
+        &["ro:/proc", "ro:/tmp/srv"],
+        0,
+    )?;
+    want(code, 0, "the helper's exit")?;
+    want(out.as_str(), "0", "mounts with a shared: or master: field")
+}
+
 fn a_setuid_binary_outside_the_list_is_absent() -> Result<(), String> {
     e(std::fs::write("/tmp/su", b"x"))?;
     e(std::fs::set_permissions(
@@ -609,6 +656,18 @@ fn main() {
             (
                 "proc_in_a_pid_namespace_shows_only_the_namespace",
                 proc_in_a_pid_namespace_shows_only_the_namespace,
+            ),
+            (
+                "a_mount_namespace_without_paths_keeps_the_host_copy",
+                a_mount_namespace_without_paths_keeps_the_host_copy,
+            ),
+            (
+                "a_fresh_proc_is_read_only_for_a_ro_entry",
+                a_fresh_proc_is_read_only_for_a_ro_entry,
+            ),
+            (
+                "no_view_mount_takes_part_in_a_peer_group",
+                no_view_mount_takes_part_in_a_peer_group,
             ),
             (
                 "a_setuid_binary_outside_the_list_is_absent",

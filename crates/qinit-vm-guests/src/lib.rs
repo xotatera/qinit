@@ -883,6 +883,35 @@ fn launch_helper(role: &str, args: &[String]) -> Option<i32> {
             Ok(qinit_sys::fs::Kind::Other) => 13,
             Err(e) => e.0,
         }),
+        // `probe-propagation`: `0` when no mount in `/proc/self/mountinfo` takes part in a peer
+        // group (a `shared:` or `master:` optional field), else those lines joined by ` | `.
+        "probe-propagation" => {
+            let lines = std::fs::read_to_string("/proc/self/mountinfo").map_or_else(
+                |_| vec!["unreadable".to_string()],
+                |t| {
+                    t.lines()
+                        .filter(|l| {
+                            l.split(" - ").next().is_some_and(|head| {
+                                head.split(' ')
+                                    .skip(6)
+                                    .any(|f| f.starts_with("shared:") || f.starts_with("master:"))
+                            })
+                        })
+                        .map(ToString::to_string)
+                        .collect()
+                },
+            );
+            let text = if lines.is_empty() {
+                "0".to_string()
+            } else {
+                lines.join(" | ")
+            };
+            if writeln!(std::io::stdout(), "{text}").is_ok() {
+                0
+            } else {
+                2
+            }
+        }
         // `probe-procs`: the number of process directories in `/proc`, on standard output.
         "probe-procs" => {
             let n = std::fs::read_dir("/proc").map_or(0, |d| {

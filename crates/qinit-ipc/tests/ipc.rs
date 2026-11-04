@@ -171,7 +171,8 @@ fn a_sealed_memfd_reports_all_four_seals() {
     use qinit_ipc::memfd::{ALL_SEALS, read_all, sealed, seals};
     use std::os::fd::AsFd;
     let fd = sealed(c"req", b"hello").unwrap();
-    assert_eq!(seals(fd.as_fd()).unwrap(), ALL_SEALS);
+    // `sealed` also asks for `F_SEAL_EXEC`, so a host with `vm.memfd_noexec` set does not warn.
+    assert_eq!(seals(fd.as_fd()).unwrap() & ALL_SEALS, ALL_SEALS);
     assert_eq!(ALL_SEALS, 0xf);
     assert_eq!(read_all(fd.as_fd(), 16).unwrap(), b"hello");
     assert_eq!(

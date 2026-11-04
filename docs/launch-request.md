@@ -126,7 +126,9 @@ an entry, and the working directory must be `/` or at or below an entry.
 With a path list the service does not see the host's filesystem. The overseer builds an empty
 `tmpfs` root with a fixed `/dev` (`null`, `zero`, `full`, `random`, `urandom`) and a private
 `/tmp`, binds each listed path into it, pivots into it, and seals it read-only; Landlock then
-restricts the service to those paths.
+restricts the service to those paths. The view is built under `/.qinit-view` on the host's root filesystem, so
+a launch with a path list needs a writable root directory (`EROFS` at `view-root` otherwise).
+Every mount of the view is private, so a mount the host makes later is not seen inside.
 
 ### User namespace
 

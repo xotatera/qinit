@@ -11,16 +11,24 @@ use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 /// `memfd_create` flag `MFD_ALLOW_SEALING` (`linux/memfd.h`).
 const MFD_ALLOW_SEALING: libc::c_uint = 2;
 
+/// `memfd_create` flag `MFD_NOEXEC_SEAL` (`linux/memfd.h`, Linux 6.3): the file can never be
+/// executed, and carries `F_SEAL_EXEC`.
+const MFD_NOEXEC_SEAL: libc::c_uint = 8;
+
 /// Every seal a sender sets: no shrinking, growing, writing or further sealing.
 pub const ALL_SEALS: i32 =
     libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
 
-/// A close-on-exec memfd named `name` holding `bytes`, carrying [`ALL_SEALS`], with its offset
-/// back at 0.
+/// A close-on-exec, non-executable memfd named `name` holding `bytes`, carrying [`ALL_SEALS`]
+/// (and `F_SEAL_EXEC`), with its offset back at 0.
 pub fn sealed(name: &CStr, bytes: &[u8]) -> Result<OwnedFd> {
     // SAFETY: a NUL-terminated name and integer flags.
-    let fd =
-        owned(unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | MFD_ALLOW_SEALING) })?;
+    let fd = owned(unsafe {
+        libc::memfd_create(
+            name.as_ptr(),
+            libc::MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL,
+        )
+    })?;
     let mut file = std::fs::File::from(fd);
     file.write_all(bytes)
         .map_err(|e| Errno(e.raw_os_error().unwrap_or(libc::EIO)))?;

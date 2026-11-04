@@ -108,6 +108,9 @@ pub const MOUNT_ATTR_NODEV: u64 = 0x4;
 /// `MOUNT_ATTR_NOEXEC`.
 pub const MOUNT_ATTR_NOEXEC: u64 = 0x8;
 
+/// `MS_PRIVATE`, as a `mount_attr` propagation value.
+const MS_PRIVATE: u64 = 1 << 18;
+
 /// `struct mount_attr` of `mount_setattr(2)`.
 #[repr(C)]
 struct MountAttr {
@@ -120,21 +123,33 @@ struct MountAttr {
 /// `mount_setattr(AT_FDCWD, path, AT_RECURSIVE, {set, clear})`: changes the attributes of the
 /// mount at `path` and of every mount below it.
 pub fn setattr_rec(path: &Path, set: u64, clear: u64) -> Result<()> {
-    setattr_with(path, set, clear, libc::AT_RECURSIVE)
+    setattr_with(path, set, clear, libc::AT_RECURSIVE, 0)
+}
+
+/// `mount_setattr(AT_FDCWD, path, AT_RECURSIVE, {propagation: MS_PRIVATE})`: the mount at `path`
+/// and every mount below it stop receiving mounts from, and sending them to, any peer group.
+pub fn private_rec(path: &Path) -> Result<()> {
+    setattr_with(path, 0, 0, libc::AT_RECURSIVE, MS_PRIVATE)
 }
 
 /// `mount_setattr(AT_FDCWD, path, 0, {set, clear})`: changes the attributes of the mount at
 /// `path` only.
 pub fn setattr(path: &Path, set: u64, clear: u64) -> Result<()> {
-    setattr_with(path, set, clear, 0)
+    setattr_with(path, set, clear, 0, 0)
 }
 
-fn setattr_with(path: &Path, set: u64, clear: u64, flags: libc::c_int) -> Result<()> {
+fn setattr_with(
+    path: &Path,
+    set: u64,
+    clear: u64,
+    flags: libc::c_int,
+    propagation: u64,
+) -> Result<()> {
     let p = cpath(path)?;
     let attr = MountAttr {
         attr_set: set,
         attr_clr: clear,
-        propagation: 0,
+        propagation,
         userns_fd: 0,
     };
     // SAFETY: a NUL-terminated path and a readable `mount_attr` of the size passed.

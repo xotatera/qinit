@@ -275,6 +275,8 @@ fn a_refresh_leaves_run_instances_alone() {
         (view.frame_name.as_str(), view.state),
         ("~job", SlotState::Starting)
     );
+    // Nor was it remapped onto the new database's frames.
+    assert_eq!(view.frame, qinit_colony::FRAMELESS);
     assert!(
         !c.effects
             .calls
@@ -314,5 +316,31 @@ fn shutdown_stops_run_instances() {
             .calls
             .iter()
             .any(|x| matches!(x, Call::StopInstance(0, ..)))
+    );
+}
+
+#[test]
+fn a_name_outside_the_node_name_bytes_is_invalid() {
+    // `#` would split the instance name `~a#b#1` at the wrong place; `~`, `*`, `/` and a NUL are
+    // not node-name bytes either.
+    for name in ["a#b", "~a", "a*", "a/b", "a\0b", "a b", "é"] {
+        let mut c = booted();
+        let h = simple(&mut c, name, &spec());
+        assert_eq!(h.reply, error(ErrorCode::Invalid, 0), "{name:?}");
+        assert!(
+            !c.effects
+                .calls
+                .iter()
+                .any(|c| matches!(c, Call::StartInstance(..))),
+            "{name:?}"
+        );
+    }
+    // The node-name bytes are accepted.
+    let mut c = booted();
+    let h = simple(&mut c, "A.b_c@d:e+f-9", &spec());
+    assert!(
+        matches!(h.reply, OwnedRep::Launched { .. }),
+        "{:?}",
+        h.reply
     );
 }

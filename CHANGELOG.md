@@ -182,7 +182,7 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   namespace, and must cover the program and the working directory.
 - The credential record is 13 words (`C_USER_MAP`), the database header 24 words, and the launch
   sequence is reordered (view, then user namespace, then identity, then Landlock): the plan
-  has 25 phases and at most 320 steps, with a `RearmDeadline` step after the view.
+  has 25 phases and at most 320 steps, with a `RearmDeadline` step before the view.
 - The proof timeouts of `qinit-overseer-core` (90s) and `qinit-colony-core` (100s) are raised to
   about three times their measured CPU time.
 - The database node record is 68 words (a limit mask and 32 limit words) and the launch request

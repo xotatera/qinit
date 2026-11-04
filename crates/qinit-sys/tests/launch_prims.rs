@@ -15,7 +15,7 @@ use qinit_sys::timer::{arm_alarm_at, now_monotonic_ns};
 use qinit_sys::{Errno, fd, proc, spawn};
 use std::ffi::{CString, OsStr};
 use std::io::{Read, Write};
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::{AsFd, AsRawFd, IntoRawFd};
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 
@@ -248,9 +248,9 @@ fn file_type_tells_regular_fifo_socket_and_char() {
 #[test]
 fn dup2_places_a_descriptor_at_a_number_without_cloexec() {
     let (r, _w) = fd::pipe(libc::O_CLOEXEC).unwrap();
-    let hole = fd::dup_above(r.as_fd(), 10).unwrap();
-    let n = hole.as_raw_fd();
-    drop(hole);
+    // Keep the number open while it is replaced: closing it first would let a parallel test
+    // thread's `open` take it, and `dup2` then fails with `EBUSY`.
+    let n = fd::dup_above(r.as_fd(), 10).unwrap().into_raw_fd();
     fd::dup2(r.as_fd(), n).unwrap();
     assert!(fd::is_open(n));
     // SAFETY: F_GETFD only reads the flags.

@@ -125,11 +125,12 @@ fn read_database(fd: OwnedFd) -> Result<Vec<u8>, u32> {
     Ok(bytes)
 }
 
-/// Reads the launch request a `Run` passed: a memfd carrying every seal, at most
+/// Reads the launch request a `Run` passed: a memfd carrying at least the four seals, at most
 /// `MAX_REQUEST` bytes. Returns the bytes and the descriptor, which the executor receives.
 fn read_request(fd: OwnedFd) -> Result<(Vec<u8>, OwnedFd), u32> {
     match qinit_ipc::memfd::seals(fd.as_fd()) {
-        Ok(s) if s == qinit_ipc::memfd::ALL_SEALS => {}
+        // At least these four: a further seal (`F_SEAL_EXEC` of a `MFD_NOEXEC_SEAL` file) only restricts.
+        Ok(s) if s & qinit_ipc::memfd::ALL_SEALS == qinit_ipc::memfd::ALL_SEALS => {}
         _ => return Err(REASON_UNSEALED),
     }
     match qinit_ipc::memfd::read_all(fd.as_fd(), MAX_REQUEST) {
