@@ -121,7 +121,7 @@ fn enter_tmpfs_root() -> Result<(), String> {
 
 fn setup() -> Result<(), String> {
     use qinit_sys::mount::{mkdir, mount};
-    for d in ["/dev", "/proc", "/sys", "/tmp"] {
+    for d in ["/dev", "/proc", "/sys", "/tmp", "/run"] {
         let _ = mkdir(Path::new(d), 0o755);
     }
     let m = |src: &str, dst: &str, fs: &str| {
@@ -132,6 +132,8 @@ fn setup() -> Result<(), String> {
     m("sysfs", "/sys", "sysfs")?;
     m("cgroup2", "/sys/fs/cgroup", "cgroup2")?;
     m("tmpfs", "/tmp", "tmpfs")?;
+    // The writable directory of a host whose root may be read-only; the view is built below it.
+    m("tmpfs", "/run", "tmpfs")?;
     mkdir(Path::new(COMB), 0o755).map_err(|e| format!("mkdir {COMB}: {e}"))?;
     // The home of the `svc` account of the initrd's /etc/passwd.
     let _ = mkdir(Path::new("/home"), 0o755);

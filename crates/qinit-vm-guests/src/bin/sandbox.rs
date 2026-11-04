@@ -269,6 +269,26 @@ fn no_view_mount_takes_part_in_a_peer_group() -> Result<(), String> {
     want(out.as_str(), "0", "mounts with a shared: or master: field")
 }
 
+fn the_view_builds_with_a_read_only_root() -> Result<(), String> {
+    // D49: the view's root lives below /run, so a read-only host root does not stop it.
+    let root = std::path::Path::new("/");
+    let remount = |flags: libc::c_ulong| {
+        qinit_sys::mount::mount("none", root, "none", libc::MS_REMOUNT | flags)
+            .map_err(|x| x.to_string())
+    };
+    // An earlier launch left the mount point behind; a read-only root must find none.
+    let _ = std::fs::remove_dir("/.qinit-view");
+    let _ = std::fs::remove_dir("/run/qinit/view");
+    remount(libc::MS_RDONLY)?;
+    if !qinit_sys::fs::is_readonly(root).map_err(|x| x.to_string())? {
+        remount(0)?;
+        return Err("the host root did not become read-only".into());
+    }
+    let r = viewed("vr", "probe-path", &["/etc/passwd", "r"], &["ro:/etc"], 0);
+    remount(0)?;
+    want(r?.0, 0, "open of a listed path with a read-only host root")
+}
+
 fn a_setuid_binary_outside_the_list_is_absent() -> Result<(), String> {
     e(std::fs::write("/tmp/su", b"x"))?;
     e(std::fs::set_permissions(
@@ -668,6 +688,10 @@ fn main() {
             (
                 "no_view_mount_takes_part_in_a_peer_group",
                 no_view_mount_takes_part_in_a_peer_group,
+            ),
+            (
+                "the_view_builds_with_a_read_only_root",
+                the_view_builds_with_a_read_only_root,
             ),
             (
                 "a_setuid_binary_outside_the_list_is_absent",

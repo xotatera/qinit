@@ -82,24 +82,6 @@ pub fn mount_data(
     Ok(())
 }
 
-/// `mount(source, target, NULL, MS_BIND | MS_REC, NULL)`: the whole tree below `source`
-/// appears at `target`.
-pub fn bind_rec(source: &Path, target: &Path) -> Result<()> {
-    let s = cpath(source)?;
-    let t = cpath(target)?;
-    // SAFETY: NUL-terminated paths that outlive the call, no type and no data.
-    check(unsafe {
-        libc::mount(
-            s.as_ptr(),
-            t.as_ptr(),
-            std::ptr::null(),
-            libc::MS_BIND | libc::MS_REC,
-            std::ptr::null(),
-        )
-    })?;
-    Ok(())
-}
-
 /// `MOUNT_ATTR_RDONLY`.
 pub const MOUNT_ATTR_RDONLY: u64 = 0x1;
 /// `MOUNT_ATTR_NOSUID`.
@@ -119,12 +101,6 @@ struct MountAttr {
     attr_clr: u64,
     propagation: u64,
     userns_fd: u64,
-}
-
-/// `mount_setattr(AT_FDCWD, path, AT_RECURSIVE, {set, clear})`: changes the attributes of the
-/// mount at `path` and of every mount below it.
-pub fn setattr_rec(path: &Path, set: u64, clear: u64) -> Result<()> {
-    setattr_with(path, set, clear, libc::AT_RECURSIVE, 0)
 }
 
 /// `mount_setattr(AT_FDCWD, path, AT_RECURSIVE, {propagation: MS_PRIVATE})`: the mount at `path`

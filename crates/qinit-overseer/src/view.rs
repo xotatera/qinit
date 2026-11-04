@@ -4,19 +4,20 @@
 //! and a bind of each listed path, pivoted into before the credentials are changed. Every
 //! function performs one plan step.
 #![allow(clippy::missing_errors_doc)] // each step returns the errno of the call that failed
-use qinit_sys::fs::{Kind, create_file, lstat_kind, mkdir_all, readlink, symlink};
+use qinit_sys::fs::{Kind, create_file, lstat_kind, mkdir_all, open_path, readlink, symlink};
 use qinit_sys::landlock::{LANDLOCK_ACCESS_FS_ALL_V3, add_path_rule};
 use qinit_sys::mount::{
-    MOUNT_ATTR_NODEV, MOUNT_ATTR_NOSUID, MOUNT_ATTR_RDONLY, bind_rec, mount_data, pivot_root,
-    private_rec, rmdir, setattr, setattr_rec, umount_detach,
+    MOUNT_ATTR_NODEV, MOUNT_ATTR_NOSUID, MOUNT_ATTR_RDONLY, mount_data, move_mount_to, open_tree,
+    pivot_root, private_rec, rmdir, setattr, setattr_fd, umount_detach,
 };
 use qinit_sys::{Errno, Result};
 use std::ffi::CString;
-use std::os::fd::BorrowedFd;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
 
-/// Where the view's root is built, in the host's root.
-pub const VIEW_ROOT: &str = "/.qinit-view";
+/// Where the view's root is built: below `/run`, which is a writable `tmpfs` even when the host's
+/// root filesystem is read-only.
+pub const VIEW_ROOT: &str = "/run/qinit/view";
 
 /// The five device nodes the view's `/dev` binds from the host.
 const DEV_NODES: [&str; 5] = ["null", "zero", "full", "random", "urandom"];
@@ -34,7 +35,7 @@ fn tmpfs(target: &Path, flags: libc::c_ulong, data: &str) -> Result<()> {
 /// `ViewRoot`: the root's `tmpfs`.
 pub fn root() -> Result<()> {
     let root = Path::new(VIEW_ROOT);
-    mkdir_all(root, 0o755)?;
+    mkdir_all(root, 0o700)?;
     tmpfs(root, libc::MS_NOSUID | libc::MS_NODEV, "mode=0755")
 }
 
@@ -46,8 +47,7 @@ pub fn dev() -> Result<()> {
     for node in DEV_NODES {
         let target = dev.join(node);
         create_file(&target, 0o644)?;
-        bind_rec(&Path::new("/dev").join(node), &target)?;
-        private_rec(&target)?;
+        attach(&Path::new("/dev").join(node), &target, 0)?;
     }
     let shm = dev.join("shm");
     mkdir_all(&shm, 0o755)?;
@@ -113,10 +113,6 @@ pub fn entry(entry: &str, pid: bool) -> Result<()> {
             None,
         );
     }
-    bind_rec(host, &target)?;
-    // The bind is a slave of the host's mount: cut it, so a mount the host makes later below the
-    // path does not appear in the view, writable and without `nosuid`.
-    private_rec(&target)?;
     let mut set = MOUNT_ATTR_NOSUID;
     if !below_dev(path) {
         set |= MOUNT_ATTR_NODEV;
@@ -124,7 +120,20 @@ pub fn entry(entry: &str, pid: bool) -> Result<()> {
     if ro {
         set |= MOUNT_ATTR_RDONLY;
     }
-    setattr_rec(&target, set, 0)
+    attach(host, &target, set)
+}
+
+/// Binds `host` (and every mount below it) at `target` as a detached clone that gets the
+/// attributes `set` before it is attached, so it is never visible without them. Attaching under
+/// a shared parent joins the clone to its peer group whatever the clone's own propagation was,
+/// so it is made private afterwards: a mount the host makes later below `host` must not
+/// appear in the view, writable and without `nosuid`.
+fn attach(host: &Path, target: &Path, set: u64) -> Result<()> {
+    let source = open_path(host)?;
+    let clone = open_tree(source.as_fd(), c"", true)?;
+    setattr_fd(clone.as_fd(), set, 0, 0, None, true)?;
+    move_mount_to(clone.as_fd(), target)?;
+    private_rec(target)
 }
 
 /// `ViewPivot`: the view becomes the root and the old root is gone.
