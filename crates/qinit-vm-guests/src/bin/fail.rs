@@ -39,6 +39,14 @@ fn unknown_user() -> Result<(), String> {
     )
 }
 
+fn missing_subuid_entry() -> Result<(), String> {
+    // `nobody` has a passwd line but no `/etc/subuid` line.
+    let mut request = spec("nobody", "exit-0", &[]);
+    request.ns = 1 << 5;
+    request.user_map = qinit_overseer::request::UserMap::Range;
+    at("f9", request, "identity", libc::ENOENT)
+}
+
 fn root_alias() -> Result<(), String> {
     at("f2", spec("toor", "exit-0", &[]), "identity", libc::EPERM)
 }
@@ -124,6 +132,10 @@ fn main() {
             ("an_unknown_user_fails_at_identity", unknown_user),
             ("uid_zero_under_another_name_fails_at_identity", root_alias),
             ("a_missing_executable_fails_at_exec", missing_executable),
+            (
+                "a_missing_subuid_entry_fails_at_identity",
+                missing_subuid_entry,
+            ),
             (
                 "a_cwd_the_user_cannot_enter_fails_at_chdir",
                 cwd_not_enterable,

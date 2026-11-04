@@ -445,3 +445,95 @@ fn landlock_view_rules_iff_a_list() {
     assert!(pos(&s, Step::LandlockRule(2)) < pos(&s, Step::LandlockRestrict));
     assert!(!steps(&minimal()).contains(&Step::LandlockViewRules));
 }
+
+fn userns() -> ReqSpec {
+    ReqSpec {
+        ns: 0b11_1111,
+        user: "svc",
+        ..minimal()
+    }
+}
+
+fn is_user_step(x: &Step) -> bool {
+    matches!(
+        x,
+        Step::ProcSelf | Step::ClearGroups | Step::UserNamespace | Step::UnshareOwned(_)
+    )
+}
+
+#[test]
+fn user_steps_iff_the_bit() {
+    assert!(!steps(&minimal()).iter().any(is_user_step));
+    let mut spec = minimal();
+    spec.ns = 0b01_1111;
+    assert!(!steps(&spec).iter().any(is_user_step));
+    for ns in [32, 0b11_1111, 32 | 1, 32 | 16] {
+        spec.ns = ns;
+        let s = steps(&spec);
+        for want in [Step::ProcSelf, Step::ClearGroups, Step::UserNamespace] {
+            assert_eq!(s.iter().filter(|x| **x == want).count(), 1, "{want:?}");
+        }
+        assert_eq!(
+            s.iter()
+                .filter(|x| matches!(x, Step::UnshareOwned(_)))
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn clear_groups_precedes_the_user_namespace_which_precedes_the_owned_unshare() {
+    let s = steps(&userns());
+    let owned = s
+        .iter()
+        .position(|x| matches!(x, Step::UnshareOwned(_)))
+        .unwrap();
+    assert!(pos(&s, Step::ClearGroups) < pos(&s, Step::UserNamespace));
+    assert!(pos(&s, Step::UserNamespace) < owned);
+    // Every view step and the host-owned unshare precede the user namespace.
+    assert!(pos(&s, Step::RearmDeadline) < pos(&s, Step::ClearGroups));
+    assert!(owned < pos(&s, Step::LoopbackUp));
+    assert!(owned < pos(&s, Step::Setgid));
+    // No setgroups: the groups were cleared in the host.
+    assert!(!s.contains(&Step::Setgroups));
+}
+
+#[test]
+fn net_uts_ipc_move_to_the_owned_unshare() {
+    let (ns, uts, ipc, net) = (
+        0x0002_0000_u32,
+        0x0400_0000_u32,
+        0x0800_0000_u32,
+        0x4000_0000_u32,
+    );
+    let pid = 0x2000_0000_u32;
+    let s = steps(&userns());
+    assert!(s.contains(&Step::Unshare(ns | pid)));
+    assert!(s.contains(&Step::UnshareOwned(ns | uts | ipc | net)));
+    // Without the mount and pid bits there is no host-owned unshare at all.
+    let mut spec = minimal();
+    spec.ns = 32 | 16;
+    let s = steps(&spec);
+    assert!(!s.iter().any(|x| matches!(x, Step::Unshare(_))));
+    assert!(s.contains(&Step::UnshareOwned(net)));
+    // Without the user bit the old arrangement stands.
+    spec.ns = 16 | 8;
+    let s = steps(&spec);
+    assert!(s.contains(&Step::Unshare(net | uts)));
+    assert!(!s.iter().any(|x| matches!(x, Step::UnshareOwned(_))));
+}
+
+#[test]
+fn proc_self_precedes_the_pivot() {
+    let mut spec = userns();
+    spec.argv = "/etc/x";
+    spec.paths = "ro:/etc";
+    let s = steps(&spec);
+    assert!(pos(&s, Step::ProcSelf) < pos(&s, Step::ViewPivot));
+    assert!(pos(&s, Step::ViewEntry(0)) < pos(&s, Step::ProcSelf));
+    assert!(pos(&s, Step::ViewSeal) < pos(&s, Step::ClearGroups));
+    // Without a view the descriptor is still opened, before the user namespace.
+    let s = steps(&userns());
+    assert!(pos(&s, Step::ProcSelf) < pos(&s, Step::ClearGroups));
+}

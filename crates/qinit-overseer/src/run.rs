@@ -8,13 +8,14 @@ use crate::output::{open_input, open_route};
 use crate::request::RequestSpec;
 use crate::status::{STEP_DECODE, STEP_IDENTITY, Status};
 use crate::supervisor::supervise;
+use crate::userns;
 use crate::view;
 use qinit_overseer_core::{
     DEFAULT_DENY, Insn, MAX_BPF, MAX_REQUEST, MAX_STEPS, Q_ARGV_LEN, Q_ARGV_OFF, Q_CAPS_HI,
     Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_ENV_LEN, Q_ENV_OFF, Q_NS, Q_PATHS_LEN, Q_PATHS_OFF,
     Q_SECCOMP, Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_STDERR_A, Q_STDERR_B, Q_STDERR_KIND, Q_STDIN_A,
     Q_STDIN_B, Q_STDIN_KIND, Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND, Q_UMASK, Q_USER_LEN,
-    Q_USER_OFF, STREAM_FD, STREAM_PATH, Step, decode, plan, pool, program, req,
+    Q_USER_MAP, Q_USER_OFF, STREAM_FD, STREAM_PATH, Step, decode, plan, pool, program, req,
 };
 use qinit_sys::fs::{Kind, lstat_kind};
 use qinit_sys::landlock::{
@@ -98,6 +99,8 @@ struct Run<'a> {
     deadline_ns: u64,
     /// The armed deadline timer; a pid-namespace fork leaves it with the supervisor outside.
     alarm: Option<Alarm>,
+    /// The host's `/proc/self`, for the map writer, from `ProcSelf` until the user namespace.
+    proc_self: Option<OwnedFd>,
 }
 
 impl<'a> Run<'a> {
@@ -117,6 +120,11 @@ impl<'a> Run<'a> {
         let r = f();
         let _ = umask(old);
         r
+    }
+
+    /// The service runs in a user namespace of its own: its ids are the inside ones.
+    fn in_user_namespace(&self) -> bool {
+        req(self.b, Q_NS) & 32 != 0
     }
 
     fn caps(&self) -> u64 {
@@ -234,6 +242,7 @@ impl<'a> Run<'a> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)] // one arm per plan step
     fn perform(&mut self, step: Step) -> Result<()> {
         match step {
             Step::Setsid => proc::setsid(),
@@ -285,7 +294,11 @@ impl<'a> Run<'a> {
             ),
             Step::RlimitCore0 => set_rlimit(RLIMIT_CORE, 0, 0),
             Step::Setgroups => cred::setgroups(&self.id.groups),
-            Step::Setgid => cred::setresgid(self.id.gid),
+            Step::Setgid => cred::setresgid(if self.in_user_namespace() {
+                0
+            } else {
+                self.id.gid
+            }),
             Step::Securebits(bits) => cred::set_securebits(bits),
             Step::DropBounding(cap) => {
                 self.drop_newer_capabilities()?;
@@ -295,7 +308,11 @@ impl<'a> Run<'a> {
                     r => r,
                 }
             }
-            Step::Setuid => cred::setresuid(self.id.uid),
+            Step::Setuid => cred::setresuid(if self.in_user_namespace() {
+                0
+            } else {
+                self.id.uid
+            }),
             Step::Capset => {
                 let caps = self.caps();
                 cred::capset(caps, caps, caps)
@@ -317,6 +334,18 @@ impl<'a> Run<'a> {
                 let rs = self.ruleset.take().ok_or(Errno(libc::EBADF))?;
                 restrict_self(rs.as_fd())
             }
+            Step::ProcSelf => {
+                self.proc_self = Some(userns::proc_self()?);
+                Ok(())
+            }
+            Step::ClearGroups => cred::setgroups(&[]),
+            Step::UserNamespace => {
+                let dir = self.proc_self.take().ok_or(Errno(libc::EBADF))?;
+                userns::enter(&dir, self.id, req(self.b, Q_USER_MAP) == 1)
+            }
+            Step::UnshareOwned(flags) => {
+                ns::unshare(libc::c_int::try_from(flags).map_err(|_| Errno(libc::EINVAL))?)
+            }
             Step::Seccomp => self.seccomp(),
             Step::CloseRange => fd::close_from(5),
             Step::Exec => Err(self.exec()),
@@ -326,12 +355,16 @@ impl<'a> Run<'a> {
 
 fn identity_errno(e: IdentityError) -> i32 {
     match e {
-        IdentityError::Unknown => libc::ENOENT,
-        IdentityError::RootAlias | IdentityError::RootGroup => libc::EPERM,
-        IdentityError::Io(Errno(n)) => n,
-        IdentityError::BadName | IdentityError::Ambiguous | IdentityError::Malformed(_) => {
-            libc::EINVAL
+        IdentityError::Unknown | IdentityError::SubidMissing => libc::ENOENT,
+        IdentityError::RootAlias | IdentityError::RootGroup | IdentityError::SubidOverlap => {
+            libc::EPERM
         }
+        IdentityError::Io(Errno(n)) => n,
+        IdentityError::BadName
+        | IdentityError::Ambiguous
+        | IdentityError::Malformed(_)
+        | IdentityError::SubidAmbiguous
+        | IdentityError::SubidMalformed(_) => libc::EINVAL,
     }
 }
 
@@ -391,6 +424,8 @@ pub fn launch() -> ! {
             gid: 0,
             groups: Vec::new(),
             home: String::new(),
+            subuid: None,
+            subgid: None,
         },
         user: "",
         ruleset: None,
@@ -398,12 +433,13 @@ pub fn launch() -> ! {
         extra_dropped: false,
         deadline_ns: 0,
         alarm: None,
+        proc_self: None,
     };
     let user = match run.text(Q_USER_OFF, Q_USER_LEN) {
         Ok(u) => u,
         Err(e) => die(&status, STEP_DECODE, e.0),
     };
-    let id = match identity::resolve(user) {
+    let id = match identity::resolve(user, req(&bytes, Q_USER_MAP) == 1) {
         Ok(i) => i,
         Err(e) => die(&status, STEP_IDENTITY, identity_errno(e)),
     };

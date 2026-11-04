@@ -30,6 +30,9 @@ const SUITES: &[&str] = &[
 /// The guest's accounts (`/etc/passwd`): `toor` is uid 0 under another name (spec R6).
 const PASSWD: &str = "root:x:0:0:root:/root:/bin/sh\nsvc:x:1000:1000:svc:/home/svc:/bin/sh\nnobody:x:65534:65534::/:/bin/sh\ntoor:x:0:0::/:/bin/sh\n";
 
+/// The guest's subordinate ranges (`/etc/subuid`, `/etc/subgid`): `svc` may map 65536 ids.
+const SUBIDS: &str = "svc:100000:65536\n";
+
 /// The guest's groups (`/etc/group`): `svc` is a member of `wheel`.
 const GROUP: &str = "root:x:0:\nsvc:x:1000:\nwheel:x:10:svc\nnobody:x:65534:\n";
 
@@ -61,7 +64,12 @@ fn suite_run(
         mode: 0o100_755,
         data: overseer,
     });
-    for (path, text) in [("etc/passwd", PASSWD), ("etc/group", GROUP)] {
+    for (path, text) in [
+        ("etc/passwd", PASSWD),
+        ("etc/group", GROUP),
+        ("etc/subuid", SUBIDS),
+        ("etc/subgid", SUBIDS),
+    ] {
         entries.push(Entry {
             path: path.to_string(),
             mode: 0o100_644,

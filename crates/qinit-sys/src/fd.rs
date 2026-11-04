@@ -67,6 +67,37 @@ pub fn open_cloexec(path: &CStr, flags: libc::c_int, mode: u32) -> Result<OwnedF
     })
 }
 
+/// `openat(dir, name, flags | O_CLOEXEC | O_NOCTTY, 0)`: `name` relative to the directory
+/// descriptor `dir` (an `O_PATH` one will do).
+pub fn openat_cloexec(dir: BorrowedFd<'_>, name: &CStr, flags: libc::c_int) -> Result<OwnedFd> {
+    // SAFETY: a valid directory descriptor and a NUL-terminated name that outlives the call.
+    owned(unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_CLOEXEC | libc::O_NOCTTY,
+            0,
+        )
+    })
+}
+
+/// Reads one byte from `fd`, retrying on `EINTR`: `None` at the end of the stream.
+pub fn read_byte(fd: BorrowedFd<'_>) -> Result<Option<u8>> {
+    let mut byte = 0u8;
+    loop {
+        // SAFETY: a writable buffer of one byte.
+        let n = unsafe { libc::read(fd.as_raw_fd(), (&raw mut byte).cast(), 1) };
+        if n < 0 {
+            match crate::Errno::last() {
+                crate::Errno(libc::EINTR) => {}
+                e => return Err(e),
+            }
+        } else {
+            return Ok((n == 1).then_some(byte));
+        }
+    }
+}
+
 /// `dup3(from, to, 0)`: `to` becomes a copy of `from` without close-on-exec, replacing what
 /// was there. Changing a numbered slot is safe: the caller owns the number it names.
 pub fn dup2(from: BorrowedFd<'_>, to: RawFd) -> Result<()> {

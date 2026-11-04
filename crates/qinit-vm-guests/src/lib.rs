@@ -872,6 +872,7 @@ fn launch_helper(role: &str, args: &[String]) -> Option<i32> {
                 Some("ptrace") => qinit_sys::proc::ptrace_probe(),
                 Some("unshare-net") => qinit_sys::ns::unshare(libc::CLONE_NEWNET),
                 Some("clone3") => qinit_sys::proc::clone3_probe(),
+                Some("mount") => qinit_sys::mount::mount("tmpfs", Path::new("/tmp"), "tmpfs", 0),
                 _ => return Some(2),
             };
             let line = r.map_or_else(|x| x.0.to_string(), |()| "ok".to_string());
@@ -915,6 +916,63 @@ fn launch_helper(role: &str, args: &[String]) -> Option<i32> {
                 2
             }
         }
+        // `userns-show`: this process's uid and gid, then `uid_map`, `gid_map` and `setgroups`
+        // of its user namespace, on standard output.
+        "userns-show" => {
+            let read =
+                |f: &str| std::fs::read_to_string(format!("/proc/self/{f}")).unwrap_or_default();
+            let words = |t: String| t.split_whitespace().collect::<Vec<_>>().join(" ");
+            let out = format!(
+                "ids {} {}\nuid_map {}\ngid_map {}\nsetgroups {}\n",
+                qinit_sys::cred::getuid(),
+                qinit_sys::cred::getgid(),
+                words(read("uid_map")),
+                words(read("gid_map")),
+                read("setgroups").trim()
+            );
+            if write!(std::io::stdout(), "{out}").is_ok() {
+                0
+            } else {
+                2
+            }
+        }
+        // `setuid-1`: `setresuid(1, 1, 1)`: `ok` or the errno, on standard output.
+        "setuid-1" => {
+            let line = qinit_sys::cred::setresuid(1)
+                .map_or_else(|x| x.0.to_string(), |()| "ok".to_string());
+            if writeln!(std::io::stdout(), "{line}").is_ok() {
+                0
+            } else {
+                2
+            }
+        }
+        // `loosen <dir>`: tries to remount `<dir>` writable and to unmount it, on standard
+        // output as `remount <errno|ok> umount <errno|ok>`.
+        "loosen" => a0.map_or(2, |dir| {
+            let path = Path::new(dir);
+            let word =
+                |r: qinit_sys::Result<()>| r.map_or_else(|x| x.0.to_string(), |()| "ok".into());
+            let remount = qinit_sys::mount::mount_data(
+                "none",
+                path,
+                "",
+                libc::MS_REMOUNT | libc::MS_BIND,
+                None,
+            );
+            let umount = qinit_sys::mount::umount_detach(path);
+            if writeln!(
+                std::io::stdout(),
+                "remount {} umount {}",
+                word(remount),
+                word(umount)
+            )
+            .is_ok()
+            {
+                0
+            } else {
+                2
+            }
+        }),
         "raise-usr1" => {
             let _ = qinit_sys::proc::kill(qinit_sys::proc::pid(), libc::SIGUSR1);
             2

@@ -79,6 +79,14 @@ pub enum Step {
     ViewPivot,
     /// The view's root mount made read-only.
     ViewSeal,
+    /// Open a descriptor of the host's `/proc/self`, for the map writer.
+    ProcSelf,
+    /// `setgroups([])` while still in the host user namespace.
+    ClearGroups,
+    /// Fork the map writer, `unshare(CLONE_NEWUSER)`, let the writer map the ids, reap it.
+    UserNamespace,
+    /// `unshare(flags)` of the namespaces the new user namespace owns.
+    UnshareOwned(u32),
     /// Arm the deadline timer, in milliseconds.
     ArmDeadline(u32),
     /// Arm the deadline timer again at the same instant, in the new pid namespace's child (the
@@ -159,6 +167,10 @@ pub open spec fn phase(s: Step) -> int {
         Step::ViewEntry(_) => 7,
         Step::ViewPivot => 7,
         Step::ViewSeal => 7,
+        Step::ProcSelf => 7,
+        Step::ClearGroups => 8,
+        Step::UserNamespace => 8,
+        Step::UnshareOwned(_) => 8,
         Step::LoopbackUp => 9,
         Step::Setgroups => 10,
         Step::Setgid => 10,
@@ -188,8 +200,11 @@ pub open spec fn sub(s: Step) -> int {
         Step::ViewDev => 1,
         Step::ViewTmp => 2,
         Step::ViewEntry(i) => 3 + i as int,
+        Step::ProcSelf => 67,
         Step::ViewPivot => 68,
         Step::ViewSeal => 69,
+        Step::UserNamespace => 1,
+        Step::UnshareOwned(_) => 2,
         Step::OpenStdout => 1,
         Step::OpenStderr => 2,
         Step::RouteReady(_) => 3,
@@ -244,6 +259,11 @@ pub proof fn lemma_phase_table(c: u32, i: u32, f: u32, r: u32, v: u64)
         phase(Step::Fork) < phase(Step::RearmDeadline),
         phase(Step::RearmDeadline) < phase(Step::ViewRoot),
         phase(Step::ViewTmp) < phase(Step::LoopbackUp),
+        phase(Step::ProcSelf) <= phase(Step::ViewPivot),
+        phase(Step::ViewSeal) < phase(Step::ClearGroups),
+        phase(Step::ClearGroups) <= phase(Step::UserNamespace),
+        phase(Step::UserNamespace) <= phase(Step::UnshareOwned(f)),
+        phase(Step::UnshareOwned(f)) < phase(Step::LoopbackUp),
         phase(Step::ViewSeal) < phase(Step::Setgroups),
         phase(Step::ViewSeal) < phase(Step::LandlockRuleset),
         phase(Step::RearmDeadline) < phase(Step::LoopbackUp),
@@ -319,7 +339,16 @@ pub open spec fn rlimit_value(b: Seq<u8>, r: int) -> int {
 /// a presence the request's flags allow.
 pub open spec fn step_ok(b: Seq<u8>, x: Step) -> bool {
     match x {
-        Step::Unshare(f) => qw(b, Q_NS) != 0 && f as int == ns_flags(qw(b, Q_NS) as u32),
+        Step::Unshare(f) => host_flags(qw(b, Q_NS) as u32) != 0 && f as int == host_flags(
+            qw(b, Q_NS) as u32,
+        ),
+        Step::UnshareOwned(f) => ((qw(b, Q_NS) as u32) & 32u32) != 0u32 && f as int == owned_flags(
+            qw(b, Q_NS) as u32,
+        ),
+        Step::ProcSelf => ((qw(b, Q_NS) as u32) & 32u32) != 0u32,
+        Step::ClearGroups => ((qw(b, Q_NS) as u32) & 32u32) != 0u32,
+        Step::UserNamespace => ((qw(b, Q_NS) as u32) & 32u32) != 0u32,
+        Step::Setgroups => ((qw(b, Q_NS) as u32) & 32u32) == 0u32,
         Step::MountSlaveRoot => ((qw(b, Q_NS) as u32) & 1u32) != 0u32,
         Step::MountTmp => ((qw(b, Q_NS) as u32) & 1u32) != 0u32 && qw(b, Q_PATHS_LEN) == 0,
         Step::LoopbackUp => ((qw(b, Q_NS) as u32) & 16u32) != 0u32,
@@ -383,7 +412,10 @@ pub open spec fn present_env(b: Seq<u8>, s: Seq<Step>) -> bool {
 
 /// The namespaces: the unshare, the mount steps, the fork and the second deadline.
 pub open spec fn present_ns(b: Seq<u8>, s: Seq<Step>) -> bool {
-    &&& (qw(b, Q_NS) != 0 ==> has(s, Step::Unshare(ns_flags(qw(b, Q_NS) as u32) as u32)))
+    &&& (host_flags(qw(b, Q_NS) as u32) != 0 ==> has(
+        s,
+        Step::Unshare(host_flags(qw(b, Q_NS) as u32) as u32),
+    ))
     &&& (((qw(b, Q_NS) as u32) & 1u32) != 0u32 ==> has(s, Step::MountSlaveRoot))
     &&& (((qw(b, Q_NS) as u32) & 1u32) != 0u32 && qw(b, Q_PATHS_LEN) == 0 ==> has(
         s,
@@ -404,10 +436,29 @@ pub open spec fn present_view(b: Seq<u8>, s: Seq<Step>) -> bool {
     &&& forall|i: int| 0 <= i < paths_elems(b) ==> #[trigger] has(s, Step::ViewEntry(i as u32))
 }
 
+/// The user namespace: the descriptor, the cleared groups, the namespace and the owned unshare.
+pub open spec fn present_user(b: Seq<u8>, s: Seq<Step>) -> bool {
+    ((qw(b, Q_NS) as u32) & 32u32) != 0u32 ==> {
+        &&& has(s, Step::ProcSelf)
+        &&& has(s, Step::ClearGroups)
+        &&& has(s, Step::UserNamespace)
+        &&& has(s, Step::UnshareOwned(owned_flags(qw(b, Q_NS) as u32) as u32))
+    }
+}
+
+/// The user namespace's steps of phase 8.
+pub open spec fn present_user_steps(b: Seq<u8>, s: Seq<Step>) -> bool {
+    ((qw(b, Q_NS) as u32) & 32u32) != 0u32 ==> {
+        &&& has(s, Step::ClearGroups)
+        &&& has(s, Step::UserNamespace)
+        &&& has(s, Step::UnshareOwned(owned_flags(qw(b, Q_NS) as u32) as u32))
+    }
+}
+
 /// The loopback, the groups and the securebits.
 pub open spec fn present_ids(b: Seq<u8>, s: Seq<Step>) -> bool {
     &&& (((qw(b, Q_NS) as u32) & 16u32) != 0u32 ==> has(s, Step::LoopbackUp))
-    &&& has(s, Step::Setgroups)
+    &&& (((qw(b, Q_NS) as u32) & 32u32) == 0u32 ==> has(s, Step::Setgroups))
     &&& has(s, Step::Setgid)
     &&& has(s, Step::Securebits(sb_value(qw(b, Q_SECUREBITS)) as u32))
 }
@@ -453,6 +504,7 @@ pub open spec fn present(b: Seq<u8>, s: Seq<Step>) -> bool {
     &&& present_env(b, s)
     &&& present_ns(b, s)
     &&& present_view(b, s)
+    &&& present_user(b, s)
     &&& present_ids(b, s)
     &&& present_drops(b, s)
     &&& present_creds(b, s)
@@ -470,6 +522,8 @@ pub proof fn lemma_present_mono(b: Seq<u8>, s: Seq<Step>, t: Seq<Step>)
         present_env(b, s) ==> present_env(b, t),
         present_ns(b, s) ==> present_ns(b, t),
         present_view(b, s) ==> present_view(b, t),
+        present_user(b, s) ==> present_user(b, t),
+        present_user_steps(b, s) ==> present_user_steps(b, t),
         present_ids(b, s) ==> present_ids(b, t),
         present_drops(b, s) ==> present_drops(b, t),
         present_creds(b, s) ==> present_creds(b, t),
@@ -553,14 +607,38 @@ fn emit(b: &[u8], out: &mut [Step; MAX_STEPS], n: usize, s: Step) -> (m: usize)
     n + 1
 }
 
-/// The `CLONE_NEW*` flags of namespace bits `ns`, summed (the six flags are distinct bits).
-pub open spec fn ns_flags(ns: u32) -> int {
+/// The `CLONE_NEW*` flags of the host-owned `unshare` for namespace bits `ns`, summed (the
+/// flags are distinct bits): `mount` and `pid` always, `ipc`, `uts` and `net` only when no user
+/// namespace owns them.
+pub open spec fn host_flags(ns: u32) -> int {
     (if ns & 1u32 != 0 {
         CLONE_NEWNS as int
     } else {
         0int
     }) + (if ns & 2u32 != 0 {
         CLONE_NEWPID as int
+    } else {
+        0int
+    }) + (if ns & 32u32 == 0 && ns & 4u32 != 0 {
+        CLONE_NEWIPC as int
+    } else {
+        0int
+    }) + (if ns & 32u32 == 0 && ns & 8u32 != 0 {
+        CLONE_NEWUTS as int
+    } else {
+        0int
+    }) + (if ns & 32u32 == 0 && ns & 16u32 != 0 {
+        CLONE_NEWNET as int
+    } else {
+        0int
+    })
+}
+
+/// The `CLONE_NEW*` flags of the `unshare` inside the user namespace: `mount` (the nested copy),
+/// `ipc`, `uts` and `net`.
+pub open spec fn owned_flags(ns: u32) -> int {
+    (if ns & 1u32 != 0 {
+        CLONE_NEWNS as int
     } else {
         0int
     }) + (if ns & 4u32 != 0 {
@@ -573,10 +651,6 @@ pub open spec fn ns_flags(ns: u32) -> int {
         0int
     }) + (if ns & 16u32 != 0 {
         CLONE_NEWNET as int
-    } else {
-        0int
-    }) + (if ns & 32u32 != 0 {
-        CLONE_NEWUSER as int
     } else {
         0int
     })
@@ -604,13 +678,13 @@ fn cap_bit(b: &[u8], c: u32) -> (r: bool)
     }
 }
 
-/// The `CLONE_NEW*` flags of the namespace bits `ns`.
+/// The flags of the host-owned `unshare` ([`host_flags`]).
 #[allow(clippy::many_single_char_names)]  // one letter per namespace flag
-fn flags_of(ns: u32) -> (f: u32)
+fn host_flags_of(ns: u32) -> (f: u32)
     requires
         ns <= 0x3f,
     ensures
-        f as int == ns_flags(ns),
+        f as int == host_flags(ns),
 {
     let a = if ns & 1 != 0 {
         CLONE_NEWNS
@@ -619,6 +693,36 @@ fn flags_of(ns: u32) -> (f: u32)
     };
     let p = if ns & 2 != 0 {
         CLONE_NEWPID
+    } else {
+        0
+    };
+    let i = if ns & 32 == 0 && ns & 4 != 0 {
+        CLONE_NEWIPC
+    } else {
+        0
+    };
+    let u = if ns & 32 == 0 && ns & 8 != 0 {
+        CLONE_NEWUTS
+    } else {
+        0
+    };
+    let n = if ns & 32 == 0 && ns & 16 != 0 {
+        CLONE_NEWNET
+    } else {
+        0
+    };
+    a + p + i + u + n
+}
+
+/// The flags of the `unshare` inside the user namespace ([`owned_flags`]).
+fn owned_flags_of(ns: u32) -> (f: u32)
+    requires
+        ns <= 0x3f,
+    ensures
+        f as int == owned_flags(ns),
+{
+    let a = if ns & 1 != 0 {
+        CLONE_NEWNS
     } else {
         0
     };
@@ -637,12 +741,7 @@ fn flags_of(ns: u32) -> (f: u32)
     } else {
         0
     };
-    let r = if ns & 32 != 0 {
-        CLONE_NEWUSER
-    } else {
-        0
-    };
-    a + p + i + u + n + r
+    a + i + u + n
 }
 
 /// Phases 0 to 2: `setsid`, the deadline and the descriptors.
@@ -759,9 +858,9 @@ fn sec_ns(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 {
     let ns = req(b, Q_NS);
     assert(ns <= 0x3f);
-    let flags = flags_of(ns);
+    let flags = host_flags_of(ns);
     let mut n = n0;
-    if ns != 0 {
+    if flags != 0 {
         n = emit(b, out, n, Step::Unshare(flags));
     }
     assert(below(out@, n as int, 4, 1));
@@ -796,6 +895,7 @@ fn sec_view(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
         below(final(out)@, m as int, 8, 0),
         ext(old(out)@.take(n0 as int), final(out)@.take(m as int)),
         present_view(b@, final(out)@.take(m as int)),
+        ((qw(b@, Q_NS) as u32) & 32u32) != 0u32 ==> has(final(out)@.take(m as int), Step::ProcSelf),
 {
     let len = req(b, Q_PATHS_LEN);
     let entries = {
@@ -843,8 +943,42 @@ fn sec_view(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
             n = emit(b, out, n, Step::ViewEntry(i as u32));  // i < 64
             i += 1;
         }
+        if req(b, Q_NS) & 32 != 0 {
+            n = emit(b, out, n, Step::ProcSelf);
+        }
         n = emit(b, out, n, Step::ViewPivot);
         n = emit(b, out, n, Step::ViewSeal);
+    } else if req(b, Q_NS) & 32 != 0 {
+        n = emit(b, out, n, Step::ProcSelf);
+    }
+    n
+}
+
+/// Phase 8: the user namespace and the namespaces it owns.
+fn sec_user(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
+    requires
+        accepted(b@),
+        n0 <= 99,
+        sorted(old(out)@.take(n0 as int)),
+        faithful(b@, old(out)@.take(n0 as int)),
+        below(old(out)@, n0 as int, 8, 0),
+    ensures
+        n0 <= m <= n0 + 3,
+        final(out)@.len() == old(out)@.len(),
+        sorted(final(out)@.take(m as int)),
+        faithful(b@, final(out)@.take(m as int)),
+        below(final(out)@, m as int, 9, 0),
+        ext(old(out)@.take(n0 as int), final(out)@.take(m as int)),
+        present_user_steps(b@, final(out)@.take(m as int)),
+{
+    let ns = req(b, Q_NS);
+    assert(ns <= 0x3f);
+    let mut n = n0;
+    if ns & 32 != 0 {
+        let owned = owned_flags_of(ns);
+        n = emit(b, out, n, Step::ClearGroups);
+        n = emit(b, out, n, Step::UserNamespace);
+        n = emit(b, out, n, Step::UnshareOwned(owned));
     }
     n
 }
@@ -856,9 +990,9 @@ fn sec_ids(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
         n0 <= 102,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
-        below(old(out)@, n0 as int, 8, 0),
+        below(old(out)@, n0 as int, 9, 0),
     ensures
-        n0 + 3 <= m <= n0 + 4,
+        n0 + 2 <= m <= n0 + 4,
         final(out)@.len() == old(out)@.len(),
         sorted(final(out)@.take(m as int)),
         faithful(b@, final(out)@.take(m as int)),
@@ -881,7 +1015,9 @@ fn sec_ids(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
         n = emit(b, out, n, Step::LoopbackUp);
     }
     let ghost t_lo = out@.take(n as int);
-    n = emit(b, out, n, Step::Setgroups);
+    if req(b, Q_NS) & 32 == 0 {
+        n = emit(b, out, n, Step::Setgroups);
+    }
     let ghost t_groups = out@.take(n as int);
     n = emit(b, out, n, Step::Setgid);
     let ghost t_gid = out@.take(n as int);
@@ -1142,7 +1278,9 @@ pub fn plan(b: &[u8], out: &mut [Step; MAX_STEPS]) -> (n: usize)
     let ghost t2 = out@.take(n2 as int);
     let nv = sec_view(b, out, n2);
     let ghost tv = out@.take(nv as int);
-    let n3 = sec_ids(b, out, nv);
+    let nu = sec_user(b, out, nv);
+    let ghost tu = out@.take(nu as int);
+    let n3 = sec_ids(b, out, nu);
     let ghost t3 = out@.take(n3 as int);
     let n4 = sec_drops(b, out, n3);
     let ghost t4 = out@.take(n4 as int);
@@ -1159,7 +1297,8 @@ pub fn plan(b: &[u8], out: &mut [Step; MAX_STEPS]) -> (n: usize)
         lemma_ext_trans(t5, t6, t8);
         lemma_ext_trans(t4, t5, t8);
         lemma_ext_trans(t3, t4, t8);
-        lemma_ext_trans(tv, t3, t8);
+        lemma_ext_trans(tu, t3, t8);
+        lemma_ext_trans(tv, tu, t8);
         lemma_ext_trans(t2, tv, t8);
         lemma_ext_trans(t1, t2, t8);
         lemma_ext_trans(t0, t1, t8);
@@ -1167,11 +1306,19 @@ pub fn plan(b: &[u8], out: &mut [Step; MAX_STEPS]) -> (n: usize)
         lemma_present_mono(b@, t1, t8);
         lemma_present_mono(b@, t2, t8);
         lemma_present_mono(b@, tv, t8);
+        lemma_present_mono(b@, tu, t8);
         lemma_present_mono(b@, t3, t8);
         lemma_present_mono(b@, t4, t8);
         lemma_present_mono(b@, t5, t8);
         lemma_present_mono(b@, t6, t8);
         lemma_present_mono(b@, t7, t8);
+        assert(present_user(b@, t8)) by {
+            if (qw(b@, Q_NS) as u32) & 32u32 != 0u32 {
+                assert(has(tv, Step::ProcSelf));
+                assert(has(t8, Step::ProcSelf));
+                assert(present_user_steps(b@, t8));
+            }
+        }
         assert(t8.last() == out@[n8 - 1]);
     }
     n8
