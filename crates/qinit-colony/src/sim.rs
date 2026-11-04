@@ -6,6 +6,7 @@
 
 use crate::effects::{Effects, Errno, InstanceSpec, NodeSpec};
 use crate::engine::{Colony, Notice, Outcome};
+use crate::handle::WaitId;
 use qinit_cell_core::{Failure, Report as CellPhase};
 use qinit_colony_core::{StopMode, TimerKind};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -54,6 +55,8 @@ pub enum Call {
     StartInstance(u32, String),
     StopInstance(u32, StopMode, u32),
     ReleaseInstance(u32),
+    ArmWait(u64, u32),
+    CancelWait(u64),
 }
 
 /// A timer kind as a map key.
@@ -69,6 +72,7 @@ enum Due {
     Timer(u32, TimerKind),
     Cell(u32, CellPhase),
     Instance(u32, CellPhase),
+    Wait(u64),
 }
 
 /// The simulation.
@@ -100,6 +104,7 @@ pub struct Sim {
     cell_events: HashMap<u32, Vec<(u64, u64)>>,
     instance_events: HashMap<u32, Vec<(u64, u64)>>,
     timers: HashMap<(u32, u8), (u64, u64)>,
+    wait_timers: HashMap<u64, (u64, u64)>,
 }
 
 impl Sim {
@@ -164,7 +169,9 @@ impl Sim {
                 Call::Watch(_)
                 | Call::StartInstance(..)
                 | Call::StopInstance(..)
-                | Call::ReleaseInstance(_) => false,
+                | Call::ReleaseInstance(_)
+                | Call::ArmWait(..)
+                | Call::CancelWait(_) => false,
             })
             .cloned()
             .collect()
@@ -291,7 +298,7 @@ impl Effects for Sim {
             .iter()
             .filter(|(_, what)| match what {
                 Due::Timer(n, _) | Due::Cell(n, _) => !new_of.contains_key(n),
-                Due::Instance(..) => false,
+                Due::Instance(..) | Due::Wait(_) => false,
             })
             .map(|(k, _)| *k)
             .collect();
@@ -301,7 +308,7 @@ impl Effects for Sim {
         for what in self.due.values_mut() {
             match what {
                 Due::Timer(n, _) | Due::Cell(n, _) => *n = new_of[n],
-                Due::Instance(..) => {}
+                Due::Instance(..) | Due::Wait(_) => {}
             }
         }
         let rekey = |n: &u32| new_of.get(n).copied();
@@ -322,6 +329,20 @@ impl Effects for Sim {
             .drain()
             .filter_map(|((n, t), k)| new_of.get(&n).map(|&m| ((m, t), k)))
             .collect();
+    }
+
+    fn arm_wait(&mut self, wait: u64, ms: u32) -> Result<(), Errno> {
+        self.calls.push(Call::ArmWait(wait, ms));
+        let key = self.schedule(self.now + u64::from(ms), Due::Wait(wait));
+        self.wait_timers.insert(wait, key);
+        Ok(())
+    }
+
+    fn cancel_wait(&mut self, wait: u64) {
+        self.calls.push(Call::CancelWait(wait));
+        if let Some(key) = self.wait_timers.remove(&wait) {
+            self.due.remove(&key);
+        }
     }
 
     fn signal(&mut self, node: u32, sig: i32) -> Result<(), Errno> {
@@ -356,7 +377,25 @@ pub fn deliver_next(colony: &mut Colony<Sim>, target: u64) -> Option<Outcome> {
         }
         Due::Cell(node, report) => colony.on_cell(node, report, key.0),
         Due::Instance(slot, report) => colony.on_instance(slot, report, key.0),
+        Due::Wait(id) => {
+            colony.effects.wait_timers.remove(&id);
+            colony.on_wait_deadline(WaitId(id), key.0)
+        }
     })
+}
+
+/// As [`advance`], but returns everything the events produced: notices, errors and the replies
+/// of parked waits.
+pub fn advance_outcome(colony: &mut Colony<Sim>, ms: u64) -> Outcome {
+    let target = colony.effects.now + ms;
+    let mut all = Outcome::default();
+    while let Some(out) = deliver_next(colony, target) {
+        all.notices.extend(out.notices);
+        all.errors.extend(out.errors);
+        all.replies.extend(out.replies);
+    }
+    colony.effects.now = target;
+    all
 }
 
 /// Moves virtual time forward by `ms`, delivering every timer and cell event that falls due, in

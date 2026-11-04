@@ -145,6 +145,8 @@ dependencies = [
  "qinit-colony-core",
  "qinit-db",
  "qinit-frames",
+ "qinit-proto-core",
+ "qinit-wire",
 ]
 
 [[package]]

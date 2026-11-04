@@ -72,6 +72,10 @@ pub trait Effects {
     /// (`u32::MAX` for a node that is new). Everything the layer keeps per node index (cells,
     /// timers, pids) moves with it; nodes absent from `map` have none.
     fn remap(&mut self, map: &[u32]);
+    /// Arms the deadline of a settled wait: `wait` is the caller's id, `ms` from now.
+    fn arm_wait(&mut self, wait: u64, ms: u32) -> Result<(), Errno>;
+    /// Cancels the wait's deadline, if armed.
+    fn cancel_wait(&mut self, wait: u64);
     /// Sends the node's main process the Linux signal `sig` (its reload signal).
     fn signal(&mut self, node: u32, sig: i32) -> Result<(), Errno>;
 }

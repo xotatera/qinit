@@ -158,10 +158,17 @@ impl<E: Effects> Colony<E> {
             return Ok(Outcome {
                 notices: vec![Notice::Swapped],
                 errors: Vec::new(),
+                replies: Vec::new(),
             });
         }
         let mut sw = self.classify(db, model);
         self.close_over_hard_dependents(&mut sw);
+        self.refresh_set = sw
+            .again
+            .iter()
+            .map(|(name, _)| name.clone())
+            .chain(sw.reload.iter().cloned())
+            .collect();
         let mut out = Outcome::default();
         // Stop what must stop; the swap is stored only afterwards, so that a node released
         // at once does not finish it before the rest has been asked.
@@ -294,6 +301,7 @@ impl<E: Effects> Colony<E> {
         if done {
             self.finish_swap(now, out);
         }
+        self.resolve_waits(out);
     }
 
     /// Phase 2: the new database goes live.
@@ -372,6 +380,15 @@ impl<E: Effects> Colony<E> {
             .map(|i| if kept[i] { sw.map[i] } else { NEW_NODE })
             .collect();
         self.effects.remap(&back);
+        self.starts = (0..new_len)
+            .map(|i| {
+                if kept[i] {
+                    self.starts[sw.map[i] as usize]
+                } else {
+                    0
+                }
+            })
+            .collect();
         self.live = (0..new_len)
             .map(|i| kept[i] && self.live[sw.map[i] as usize])
             .collect();

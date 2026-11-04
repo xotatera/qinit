@@ -297,6 +297,31 @@ pub fn deps_satisfied(db: &[u8], ns: &[NodeState], paths: &[bool], i: usize, now
     node_satisfied(db, ns, paths, i, now, now)
 }
 
+/// Whether group `g` is satisfied right now, judged as [`deps_satisfied`] judges a node.
+#[must_use]
+pub fn group_met(db: &[u8], ns: &[NodeState], paths: &[bool], g: usize, now: u64) -> (r: bool)
+    requires
+        sized(db@, ns@.len() as int, paths@.len() as int, paths@.len() as int),
+        g < tcnt(db@, T_GROUPS as int),
+    ensures
+        r == group_ok(db@, ns@, paths@, g as int, now as int, now as int),
+{
+    group_satisfied(db, ns, paths, g, now, now)
+}
+
+/// Whether edge `x` of a group of `kind` is met right now, as [`group_met`] counts it.
+#[must_use]
+pub fn edge_met(db: &[u8], ns: &[NodeState], paths: &[bool], kind: u32, x: usize, now: u64) -> (r:
+    bool)
+    requires
+        sized(db@, ns@.len() as int, paths@.len() as int, paths@.len() as int),
+        x < tcnt(db@, T_EDGES as int),
+    ensures
+        r == edge_pred(db@, ns@, paths@, kind as int, x as int, now as int, now as int),
+{
+    edge_contributes(db, ns, paths, kind, x, now, now)
+}
+
 // ---- scans of one node's edges ----
 /// Whether group `g` has an edge to a filesystem path.
 fn group_has_path(db: &[u8], g: usize) -> (r: bool)

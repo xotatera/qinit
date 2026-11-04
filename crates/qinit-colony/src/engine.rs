@@ -41,6 +41,8 @@ pub enum Error {
 pub struct Outcome {
     pub notices: Vec<Notice>,
     pub errors: Vec<Error>,
+    /// Replies owed to parked waits that this call settled, answered or superseded.
+    pub replies: Vec<(crate::handle::WaitId, crate::handle::OwnedRep)>,
 }
 
 /// Colony: the compiled database, the node table and the scheduler's state.
@@ -69,6 +71,14 @@ pub struct Colony<E: Effects> {
     pub(crate) ring: std::collections::VecDeque<crate::instance::Exit>,
     /// A database swap waiting for its first phase to finish.
     pub(crate) swap: Option<crate::swap::Swap>,
+    /// Per node, how many times it was started since the database was loaded.
+    pub(crate) starts: Vec<u32>,
+    /// The waits parked for protocol requests.
+    pub(crate) waits: Vec<crate::handle::WaitRec>,
+    /// The mode of the shutdown in progress, if any.
+    pub(crate) shutdown_mode: Option<crate::handle::ShutdownMode>,
+    /// The nodes the last refresh restarts or signals, by name.
+    pub(crate) refresh_set: Vec<String>,
 }
 
 /// The state of a worker colony found already running when it started.
@@ -154,6 +164,10 @@ impl<E: Effects> Colony<E> {
             next_id: 1,
             ring: std::collections::VecDeque::new(),
             swap: None,
+            starts: vec![0; n],
+            waits: Vec::new(),
+            shutdown_mode: None,
+            refresh_set: Vec::new(),
         };
         let mut out = Outcome::default();
         let converged = qinit_colony_core::load_from(
@@ -350,6 +364,7 @@ impl<E: Effects> Colony<E> {
                 if let Ok(pid) = self.effects.start(node, &spec) {
                     self.live[node as usize] = true;
                     self.pids[node as usize] = Some(pid);
+                    self.starts[node as usize] = self.starts[node as usize].saturating_add(1);
                 } else {
                     queue.push_back(Input::Cell {
                         node,

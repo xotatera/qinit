@@ -104,7 +104,9 @@ fn policy_word(p: RestartPolicy) -> u32 {
     }
 }
 
-fn group_word(k: GroupKind) -> u32 {
+/// The database word of a group kind.
+#[must_use]
+pub fn group_word(k: GroupKind) -> u32 {
     match k {
         GroupKind::RequireAll => 0,
         GroupKind::RequireAny => 1,

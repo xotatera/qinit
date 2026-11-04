@@ -145,6 +145,7 @@ impl<E: Effects> Colony<E> {
                 let out = Outcome {
                     notices: vec![Notice::Instance(id, SlotState::Starting)],
                     errors: Vec::new(),
+                    replies: Vec::new(),
                 };
                 Ok((id, out))
             }
