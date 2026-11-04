@@ -66,7 +66,7 @@ pub fn name(s: Step) -> &'static str {
         Step::OpenStderr => "open-stderr",
         Step::RouteReady(_) => "route-ready",
         Step::Umask(_) => "umask",
-        Step::RlimitNofile(_) => "rlimit-nofile",
+        Step::Rlimit(r, _) => rlimit_name(r),
         Step::RlimitCore0 => "rlimit-core",
         Step::Setgroups => "setgroups",
         Step::Setgid => "setgid",
@@ -101,4 +101,27 @@ pub fn step_name(b: &[u8], step: u32) -> &'static str {
             out[..n].get(step as usize).map_or("?", |s| name(*s))
         }
     }
+}
+
+/// The status name of the step that sets resource `r`: `rlimit-<key>`.
+fn rlimit_name(r: u32) -> &'static str {
+    const NAMES: [&str; 16] = [
+        "rlimit-cpu",
+        "rlimit-fsize",
+        "rlimit-data",
+        "rlimit-stack",
+        "rlimit-core",
+        "rlimit-rss",
+        "rlimit-nproc",
+        "rlimit-nofile",
+        "rlimit-memlock",
+        "rlimit-as",
+        "rlimit-locks",
+        "rlimit-sigpending",
+        "rlimit-msgqueue",
+        "rlimit-nice",
+        "rlimit-rtprio",
+        "rlimit-rttime",
+    ];
+    NAMES.get(r as usize).copied().unwrap_or("rlimit")
 }

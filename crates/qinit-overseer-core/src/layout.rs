@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! The launch request layout: a five-word header, a 35-word record and a string pool. Every
+//! The launch request layout: a five-word header, a 67-word record and a string pool. Every
 //! word is little-endian; pool references are `(offset, length)` into the pool.
 use vstd::prelude::*;
 
@@ -16,7 +16,7 @@ pub const LAUNCH_VERSION: u32 = 1;
 pub const HEADER_WORDS: usize = 5;
 
 /// Words in the record, which follows the header.
-pub const REQ_WORDS: usize = 35;
+pub const REQ_WORDS: usize = 67;
 
 /// Bytes of the header and the record together; the pool starts at or after this.
 pub const FIXED_BYTES: usize = 4 * (HEADER_WORDS + REQ_WORDS);
@@ -76,8 +76,9 @@ pub const Q_CWD_LEN: usize = 5;
 /// Record word 6: `umask`, at most `MAX_UMASK`.
 pub const Q_UMASK: usize = 6;
 
-/// Record word 7: `nofile`, the `RLIMIT_NOFILE` to set; 0 keeps the inherited limit.
-pub const Q_NOFILE: usize = 7;
+/// Record word 7: `rlimit_mask`, the resource limits to set: bit `r` for kernel resource number
+/// `r` (the database's `N_RLIMIT_MASK` rules).
+pub const Q_RLIMIT_MASK: usize = 7;
 
 /// Record word 8: `user_off`, the user name, non-empty.
 pub const Q_USER_OFF: usize = 8;
@@ -159,6 +160,11 @@ pub const Q_STDIN_A: usize = 33;
 
 /// Record word 34: `stdin_b`, the path length; 0 for a descriptor.
 pub const Q_STDIN_B: usize = 34;
+
+/// Record word 35: the first of 16 limit values. Resource `r` has its low word at
+/// `Q_RLIMIT_BASE + 2 * r` and its high word one later; both are 0 unless bit `r` of
+/// `rlimit_mask` is set, and all ones is infinity.
+pub const Q_RLIMIT_BASE: usize = 35;
 
 /// A stream goes to a path opened by the executor.
 pub const STREAM_PATH: u32 = 0;

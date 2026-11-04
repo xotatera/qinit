@@ -8,7 +8,8 @@ use qinit_cell::{Polite, ReadyMode, Report};
 use qinit_overseer::request::{RequestSpec, Securebits, Stream};
 use qinit_overseer::status::step_name;
 use qinit_vm_guests::{
-    HANG_GUARD, Launched, capture, cells, e, expect, launch, read_all, remove, run, spec, status_of,
+    HANG_GUARD, Launched, RLIMIT_NAMES, capture, cells, e, expect, launch, read_all, remove, run,
+    spec, status_of,
 };
 
 /// `CAP_NET_BIND_SERVICE`.
@@ -247,6 +248,50 @@ fn stdin_from_a_routed_pipe() -> Result<(), String> {
     }
 }
 
+fn limits_reach_the_service() -> Result<(), String> {
+    let mut request = spec("svc", "show", &[]);
+    for (name, v) in [
+        ("nofile", 2048),
+        ("memlock", u64::MAX),
+        ("stack", 16_777_216),
+        ("rtprio", 0),
+        ("nproc", 4096),
+    ] {
+        let r = RLIMIT_NAMES.iter().position(|n| *n == name).ok_or(name)?;
+        request.rlimits[r] = Some(v);
+    }
+    let out = shown("limits", request)?;
+    for (key, want) in [
+        ("rlimit_nofile", "2048 2048"),
+        ("rlimit_memlock", "inf inf"),
+        ("rlimit_stack", "16777216 16777216"),
+        ("rlimit_rtprio", "0 0"),
+        ("rlimit_nproc", "4096 4096"),
+    ] {
+        let got = field(&out, key)?;
+        if got != want {
+            return Err(format!("{key} is {got:?}, want {want:?}"));
+        }
+    }
+    // A limit the request leaves unset is the one this process has.
+    let (soft, hard) = qinit_sys::limits::get_rlimit(1).map_err(|x| x.to_string())?;
+    let text = |v: u64| {
+        if v == u64::MAX {
+            "inf".to_string()
+        } else {
+            v.to_string()
+        }
+    };
+    let want = format!("{} {}", text(soft), text(hard));
+    let got = field(&out, "rlimit_fsize")?;
+    if got != want {
+        return Err(format!(
+            "rlimit_fsize is {got:?}, want the inherited {want:?}"
+        ));
+    }
+    Ok(())
+}
+
 fn status_pipe_at_eof() -> Result<(), String> {
     let mut cells = cells()?;
     let request = spec("svc", "exit-0", &[]);
@@ -287,6 +332,7 @@ fn main() {
                 "stdin_from_a_routed_pipe_reaches_the_service",
                 stdin_from_a_routed_pipe,
             ),
+            ("limits_reach_the_service", limits_reach_the_service),
             (
                 "a_successful_launch_leaves_the_status_pipe_at_eof",
                 status_pipe_at_eof,

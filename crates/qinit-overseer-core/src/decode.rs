@@ -164,8 +164,43 @@ fn check_enums(b: &[u8]) -> (r: Result<(), LaunchError>)
         b,
         Q_STDERR_KIND,
     ) > STREAM_SAME || rword(b, Q_READY_KIND) > READY_PIPE || rword(b, Q_FLAGS)
-        > FLAG_DIE_WITH_PARENT || rword(b, Q_RESERVED_0) != 0 || rword(b, Q_RESERVED_1) != 0 {
+        > FLAG_DIE_WITH_PARENT || rword(b, Q_RESERVED_0) != 0 || rword(b, Q_RESERVED_1) != 0
+        || rword(b, Q_RLIMIT_MASK) & !RLIMIT_MASK_ALLOWED != 0 {
         return Err(LaunchError::Enum);
+    }
+    Ok(())
+}
+
+/// Every limit of the request is [`req_rlimit_ok`].
+fn check_rlimits(b: &[u8]) -> (r: Result<(), LaunchError>)
+    requires
+        req_header_ok(b@),
+    ensures
+        r is Ok ==> req_rlimits_ok(b@),
+{
+    let mask = rword(b, Q_RLIMIT_MASK);
+    let mut k: usize = 0;
+    while k < RLIMIT_COUNT
+        invariant
+            req_header_ok(b@),
+            mask as int == qw(b@, Q_RLIMIT_MASK),
+            k <= RLIMIT_COUNT,
+            forall|j: usize| j < k ==> #[trigger] req_rlimit_ok(b@, j),
+        decreases RLIMIT_COUNT - k,
+    {
+        let lo = rword(b, Q_RLIMIT_BASE + 2 * k);
+        let hi = rword(b, Q_RLIMIT_BASE + 2 * k + 1);
+        let bad = if (mask >> (k as u32)) & 1 == 0 {
+            lo != 0 || hi != 0
+        } else {
+            (k == RLIMIT_NOFILE as usize && ((lo == 0 && hi == 0) || (lo == u32::MAX && hi
+                == u32::MAX))) || (k == RLIMIT_NICE as usize && (hi != 0 || lo > MAX_RLIMIT_NICE))
+                || (k == RLIMIT_RTPRIO as usize && (hi != 0 || lo > MAX_RLIMIT_RTPRIO))
+        };
+        if bad {
+            return Err(LaunchError::Consistency);
+        }
+        k += 1;
     }
     Ok(())
 }
@@ -253,6 +288,7 @@ fn check_content(b: &[u8]) -> (r: Result<(), LaunchError>)
     if rword(b, Q_ARGV_LEN) == 0 || rword(b, Q_DEADLINE_MS) == 0 {
         return Err(LaunchError::Consistency);
     }
+    check_rlimits(b)?;
     let user_len = rword(b, Q_USER_LEN);
     if user_len == 0 || user_len as usize > MAX_NAME_LEN {
         return Err(LaunchError::Consistency);

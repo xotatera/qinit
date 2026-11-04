@@ -7,10 +7,11 @@ pub use qinit_db::{Seccomp, Securebits};
 use qinit_overseer_core::{
     FLAG_DIE_WITH_PARENT, HEADER_WORDS, LAUNCH_MAGIC, LAUNCH_VERSION, MAX_REQUEST, Q_ARGV_LEN,
     Q_ARGV_OFF, Q_CAPS_HI, Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_DEADLINE_MS, Q_ENV_LEN, Q_ENV_OFF,
-    Q_FLAGS, Q_LANDLOCK_LEN, Q_LANDLOCK_OFF, Q_NNP, Q_NOFILE, Q_NS, Q_READY_FD, Q_READY_KIND,
-    Q_SECCOMP, Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_SECUREBITS, Q_STDERR_A, Q_STDERR_B, Q_STDERR_KIND,
-    Q_STDIN_A, Q_STDIN_B, Q_STDIN_KIND, Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND, Q_UMASK, Q_USER_LEN,
-    Q_USER_OFF, READY_NONE, READY_PIPE, REQ_WORDS, STREAM_FD, STREAM_PATH, STREAM_SAME,
+    Q_FLAGS, Q_LANDLOCK_LEN, Q_LANDLOCK_OFF, Q_NNP, Q_NS, Q_READY_FD, Q_READY_KIND, Q_RLIMIT_BASE,
+    Q_RLIMIT_MASK, Q_SECCOMP, Q_SECCOMP_LEN, Q_SECCOMP_OFF, Q_SECUREBITS, Q_STDERR_A, Q_STDERR_B,
+    Q_STDERR_KIND, Q_STDIN_A, Q_STDIN_B, Q_STDIN_KIND, Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND,
+    Q_UMASK, Q_USER_LEN, Q_USER_OFF, READY_NONE, READY_PIPE, REQ_WORDS, STREAM_FD, STREAM_PATH,
+    STREAM_SAME,
 };
 
 /// Where a stream goes.
@@ -31,7 +32,8 @@ pub struct RequestSpec {
     pub env: Vec<String>,
     pub cwd: String,
     pub umask: u32,
-    pub nofile: u32,
+    /// The resource limits to set, by kernel resource number; `u64::MAX` is infinity.
+    pub rlimits: [Option<u64>; 16],
     pub user: String,
     pub caps: u64,
     pub securebits: Securebits,
@@ -54,7 +56,7 @@ impl Default for RequestSpec {
             env: Vec::new(),
             cwd: "/".into(),
             umask: 0o027,
-            nofile: 0,
+            rlimits: [None; 16],
             user: String::new(),
             caps: 0,
             securebits: Securebits::None,
@@ -157,7 +159,14 @@ impl RequestSpec {
             }
         }
         rec[Q_UMASK] = self.umask;
-        rec[Q_NOFILE] = self.nofile;
+        for (r, limit) in self.rlimits.iter().enumerate() {
+            if let Some(v) = limit {
+                rec[Q_RLIMIT_MASK] |= 1 << r;
+                // Low word, then high word.
+                rec[Q_RLIMIT_BASE + 2 * r] = *v as u32;
+                rec[Q_RLIMIT_BASE + 2 * r + 1] = (*v >> 32) as u32;
+            }
+        }
         rec[Q_CAPS_LO] =
             u32::try_from(self.caps & 0xffff_ffff).map_err(|_| BuildError::TooLarge)?;
         rec[Q_CAPS_HI] = u32::try_from(self.caps >> 32).map_err(|_| BuildError::TooLarge)?;
@@ -250,7 +259,7 @@ fn build(
         env: node.env.clone(),
         cwd: node.cwd.clone(),
         umask: node.umask,
-        nofile: node.rlimits[7].map_or(0, |v| u32::try_from(v).unwrap_or(u32::MAX)),
+        rlimits: node.rlimits,
         user: cred.user.clone(),
         caps: cred.caps,
         securebits: cred.securebits,

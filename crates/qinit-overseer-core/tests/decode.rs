@@ -303,3 +303,51 @@ fn a_stdin_fd_has_no_length() {
     let db = with(&build(&spec), |w| w[at(Q_STDIN_B)] = 1);
     assert_eq!(decode(&db), Err(LaunchError::Consistency));
 }
+
+/// The minimal request with node limits set by `f`.
+fn limited(f: impl FnOnce(&mut [Option<u64>; 16])) -> Vec<u8> {
+    let mut spec = minimal();
+    f(&mut spec.rlimits);
+    build(&spec)
+}
+
+#[test]
+fn rlimit_rules_match_the_database() {
+    // A valid full mask (every resource but core) is accepted.
+    let full = limited(|l| {
+        for (r, v) in l.iter_mut().enumerate() {
+            *v = (r != 4).then_some(match r {
+                13 | 14 => 9,
+                _ => 1 << 33,
+            });
+        }
+    });
+    assert_eq!(decode(&full), Ok(()));
+    let edge = limited(|l| {
+        l[13] = Some(40);
+        l[14] = Some(99);
+        l[6] = Some(u64::MAX);
+        l[7] = Some(1);
+    });
+    assert_eq!(decode(&edge), Ok(()));
+    // The core bit and bit 16 are enum errors.
+    assert_eq!(decode(&limited(|l| l[4] = Some(0))), Err(LaunchError::Enum));
+    let mut b = build(&minimal());
+    let w = 4 * (HEADER_WORDS + Q_RLIMIT_MASK);
+    b[w..w + 4].copy_from_slice(&(1u32 << 16).to_le_bytes());
+    assert_eq!(decode(&b), Err(LaunchError::Enum));
+    // An unset limit with a value.
+    let mut b = build(&minimal());
+    let w = 4 * (HEADER_WORDS + Q_RLIMIT_BASE + 2 * 6);
+    b[w..w + 4].copy_from_slice(&5u32.to_le_bytes());
+    assert_eq!(decode(&b), Err(LaunchError::Consistency));
+    for bad in [
+        limited(|l| l[7] = Some(0)),
+        limited(|l| l[7] = Some(u64::MAX)),
+        limited(|l| l[13] = Some(41)),
+        limited(|l| l[14] = Some(100)),
+        limited(|l| l[13] = Some(1 << 32)),
+    ] {
+        assert_eq!(decode(&bad), Err(LaunchError::Consistency));
+    }
+}

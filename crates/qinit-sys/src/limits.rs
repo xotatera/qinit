@@ -22,6 +22,25 @@ pub fn set_rlimit(resource: libc::c_int, cur: u64, max: u64) -> Result<()> {
     Ok(())
 }
 
+/// The limits `(soft, hard)` of `resource` for this process (`prlimit64` with no new limit).
+pub fn get_rlimit(resource: libc::c_int) -> Result<(u64, u64)> {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: a writable two-field struct for the call; a null new limit leaves the limits.
+    check_long(unsafe {
+        libc::syscall(
+            libc::SYS_prlimit64,
+            0,
+            resource,
+            std::ptr::null::<libc::rlimit>(),
+            &raw mut lim,
+        )
+    })?;
+    Ok((lim.rlim_cur, lim.rlim_max))
+}
+
 /// `umask(mask)`: the previous mask.
 #[must_use]
 pub fn umask(mask: u32) -> u32 {
