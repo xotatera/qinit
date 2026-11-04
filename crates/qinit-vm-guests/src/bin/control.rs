@@ -6,12 +6,14 @@
 //! each peer's `SO_PEERCRED` and `SO_PEERPIDFD`. Colony runs on simulated cells here; the real
 //! cells are sub-project 7's. No threads: the server is this process, and each client is a
 //! forked process whose exit status is the verdict.
-use qinit_client::{Action, Client, ClientError, ErrorCode, Status, Wait};
+use qinit_client::{
+    Action, Begun, Client, ClientError, ErrorCode, LaunchArgs, Started, Status, Wait,
+};
 use qinit_colony::Colony;
 use qinit_colony::sim::{Sim, advance_outcome};
 use qinit_db::{
-    Cred, Kind, Model, Node, Ready, Restart, RestartPolicy, Seccomp, Securebits, Stop, StopMode,
-    UserMap, write,
+    Cred, Kind, Launch, Model, Node, Ready, Restart, RestartPolicy, Seccomp, Securebits, Stop,
+    StopMode, UserMap, write,
 };
 use qinit_ipc::listen_seqpacket;
 use qinit_proto::Limits;
@@ -58,7 +60,18 @@ fn node(name: &str, kind: Kind) -> Node {
 
 fn world() -> Result<Colony<Sim>, String> {
     let model = Model {
-        nodes: vec![node("db", Kind::Worker)],
+        nodes: vec![
+            Node {
+                launch: Some(Launch {
+                    concurrency: 1,
+                    argv_tail: 0,
+                    env: Vec::new(),
+                    fds: 0,
+                }),
+                ..node("backup", Kind::Forager)
+            },
+            node("db", Kind::Worker),
+        ],
         creds: vec![Cred {
             user: "svc".into(),
             caps: 0,
@@ -70,7 +83,7 @@ fn world() -> Result<Colony<Sim>, String> {
             user_map: UserMap::Own,
         }],
         routes: Vec::new(),
-        enabled: vec![0],
+        enabled: vec![1],
         presyslog: Vec::new(),
         policy: None,
     };
@@ -83,12 +96,21 @@ fn world() -> Result<Colony<Sim>, String> {
 /// Runs the server in this process until the forked client `client` exits, and returns the
 /// client's exit status (0 is success).
 fn serve_while(client: impl FnOnce() -> i32) -> Result<(), String> {
+    serve_with(|_| Ok(()), client)
+}
+
+/// As [`serve_while`], with `prepare` run on the colony before the client starts.
+fn serve_with(
+    prepare: impl FnOnce(&mut Colony<Sim>) -> Result<(), String>,
+    client: impl FnOnce() -> i32,
+) -> Result<(), String> {
     let _ = std::fs::remove_file(SOCKET);
     let path = CString::new(SOCKET).map_err(|e| e.to_string())?;
     // connect(2) needs write permission on the socket file: let the unprivileged clients in.
     let _ = qinit_sys::limits::umask(0);
     let listener = listen_seqpacket(&path, 16).map_err(|e| format!("listen: {e}"))?;
     let mut colony = world()?;
+    prepare(&mut colony)?;
     let mut driver = Driver::new(listener, Limits::default()).map_err(|e| format!("{e}"))?;
     let pid = qinit_sys::proc::fork().map_err(|e| format!("fork: {e}"))?;
     if pid == 0 {
@@ -178,6 +200,61 @@ fn root_is_not_limited_per_uid() -> Result<(), String> {
     })
 }
 
+/// A launch with the pidfd flag hands the client a pidfd that is readable once the process ends.
+fn a_launch_pidfd_polls_readable_at_exit() -> Result<(), String> {
+    use qinit_sys::event::{epoll, epoll_add, epoll_wait, timer};
+    use std::os::fd::AsRawFd;
+    use std::time::Duration;
+    // The sim's stand-in for the instance's main process: a child that waits to be killed.
+    let victim = qinit_sys::proc::fork().map_err(|e| format!("fork: {e}"))?;
+    if victim == 0 {
+        loop {
+            qinit_sys::proc::pause();
+        }
+    }
+    let victim_fd = qinit_sys::proc::pidfd_open(victim).map_err(|e| format!("pidfd: {e}"))?;
+    let result = serve_with(
+        |colony| {
+            colony.effects.pidfds.push_back(victim_fd);
+            Ok(())
+        },
+        || {
+            let Ok(mut c) = connect() else { return 1 };
+            let Ok(Begun::Started(Started {
+                pidfd: Some(pidfd), ..
+            })) = c.begin_launch(
+                "backup",
+                &LaunchArgs::default(),
+                true,
+                Duration::from_secs(60),
+            )
+            else {
+                return 2;
+            };
+            let readable = |ms: u64| -> Option<bool> {
+                let ep = epoll().ok()?;
+                let clock = timer(Duration::from_millis(ms)).ok()?;
+                epoll_add(&ep, pidfd.as_raw_fd(), libc::EPOLLIN as u32, 1).ok()?;
+                epoll_add(&ep, clock.as_raw_fd(), libc::EPOLLIN as u32, 2).ok()?;
+                let mut events = [libc::epoll_event { events: 0, u64: 0 }; 2];
+                let n = epoll_wait(&ep, &mut events).ok()?;
+                Some(events[..n].iter().any(|e| e.u64 == 1))
+            };
+            // Alive: not readable (the 100 ms timer fires first).
+            if readable(100) != Some(false) {
+                return 3;
+            }
+            if qinit_sys::proc::pidfd_signal(&pidfd, libc::SIGKILL).is_err() {
+                return 4;
+            }
+            // Dead: readable within the hang guard.
+            i32::from(readable(30_000) != Some(true)) * 5
+        },
+    );
+    let _ = qinit_sys::proc::kill(victim, libc::SIGKILL);
+    result
+}
+
 fn main() {
     run(
         "control",
@@ -188,6 +265,10 @@ fn main() {
             ),
             ("both_peers_get_a_pidfd", both_peers_get_a_pidfd),
             ("root_is_not_limited_per_uid", root_is_not_limited_per_uid),
+            (
+                "a_launch_pidfd_polls_readable_at_exit",
+                a_launch_pidfd_polls_readable_at_exit,
+            ),
         ],
     )
 }

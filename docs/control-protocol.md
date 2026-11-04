@@ -95,7 +95,7 @@ A decoder refuses a message with the first of these errors, checked in this orde
 | 4 | `Pool` | a string leaves the message or enters the record region, is not UTF-8, or a list has an empty element |
 | 5 | `Enum` | an enum word out of range |
 | 6 | `Consistency` | a name or target of the wrong length, a list over its cap, a bad environment entry, a wait that disagrees with `settled`, or fields that contradict each other |
-| 7 | `FdCount` | the descriptors received, the `fd_count` word and the count the record requires disagree |
+| 7 | `FdCount` | the descriptors received, the `fd_count` word and the count the record requires disagree (a `Launched` reply requires none or one) |
 
 ## Message types
 
@@ -191,8 +191,11 @@ the state the node reached or is in.
 | 4, 5 | `env_off`, `env_len` | a list of `KEY=VALUE` entries, at most 64, each key one the frame lists |
 | 6 | `fd_roles` | the roles of the descriptors sent, a subset of the frame's `fds` |
 | 7 | `wait_ms` | 1 to 600000 |
+| 8 | `flags` | bit 0 `pidfd`: ask for a pidfd of the instance's main process; other bits 0 |
 
-One descriptor per role set. Reply: `Launched` with the instance id, or `LaunchFailed` (the
+One descriptor per role set. Reply: `Launched` with the instance id (and, when `pidfd` was set
+and the server could open one, a pidfd of the instance's main process as its one descriptor; it
+names the process even after the pid is reused and polls readable when the process exits), or `LaunchFailed` (the
 step that failed and its errno; step 0 is the creation of the instance's cell), or `Error`
 (`UnknownNode`, `NotLaunchable`, `Unsatisfied`, `NoSlot`, `ShuttingDown`, and `Denied` for a
 request that breaks the frame's launch table: too long an argument tail, an environment key or
@@ -303,6 +306,10 @@ effect. `Superseded`: another request changed what the wait waited for, or a ref
 | --- | --- | --- |
 | 0 | `id` | the instance id, never reused within one colony run |
 
+A `Launched` reply carries no descriptor, or one: the pidfd a `Launch` with the `pidfd` flag asked
+for. A server that cannot open it replies without; the instance runs either way. A
+`LaunchFailed` reply never carries one.
+
 ### `LaunchFailed` (type 73)
 
 | Word | Name | Meaning |
@@ -346,8 +353,8 @@ Text after `#` is a comment.
 ### Launch
 ```qcp1
 # fds: 2
-51435031 01000000 52000000 04000000 02000000  # header: magic, version, total_len, type, fd_count
-34000000 06000000 3a000000 0c000000 46000000 0c000000 05000000 88130000  # record
+51435031 01000000 56000000 04000000 02000000  # header: magic, version, total_len, type, fd_count
+38000000 06000000 3e000000 0c000000 4a000000 0c000000 05000000 88130000 00000000  # record
 6261636b 75702d2d 66756c6c 002f6461 74615441 52474554 3d2f6461 7461  # pool: "backup--full\0/dataTARGET=/data"
 ```
 ### Refresh
@@ -416,6 +423,12 @@ Text after `#` is a comment.
 ```qcp1
 # fds: 0
 51435031 01000000 18000000 48000000 00000000  # header: magic, version, total_len, type, fd_count
+07000000  # record
+```
+The same reply with a pidfd:
+```qcp1
+# fds: 1
+51435031 01000000 18000000 48000000 01000000  # header: magic, version, total_len, type, fd_count
 07000000  # record
 ```
 ### LaunchFailed

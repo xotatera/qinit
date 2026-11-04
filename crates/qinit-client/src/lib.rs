@@ -142,6 +142,23 @@ pub enum LaunchOutcome {
     Failed { step: u32, errno: u32 },
 }
 
+/// A launch the server started: the instance's id, and a pidfd of its main process when the
+/// launch asked for one and the server could open it.
+#[derive(Debug)]
+pub struct Started {
+    pub id: u32,
+    pub pidfd: Option<OwnedFd>,
+}
+
+/// What `begin_launch` returns: the first reply of a launch.
+#[derive(Debug)]
+pub enum Begun {
+    /// The instance runs; `finish` reads how it ends.
+    Started(Started),
+    /// The instance could not be started; nothing more comes.
+    Failed { step: u32, errno: u32 },
+}
+
 /// What a launch adds to the frame's own definition.
 #[derive(Default)]
 pub struct LaunchArgs<'a> {
@@ -240,8 +257,9 @@ impl Client {
         Ok(())
     }
 
-    /// Reads the next reply; a server error is returned as an error.
-    fn reply(&mut self) -> Result<Reply, ClientError> {
+    /// Reads the next reply and the descriptors that came with it; a server error is returned
+    /// as an error.
+    fn reply_with_fds(&mut self) -> Result<(Reply, Vec<OwnedFd>), ClientError> {
         let got = recv(self.fd.as_fd(), &mut self.buf)?;
         if got.len == 0 {
             return Err(ClientError::Unexpected);
@@ -249,10 +267,15 @@ impl Client {
         match decode(&self.buf[..got.len], got.fds.len()).map_err(ClientError::Protocol)? {
             Msg::Rep(rep) => match own(rep) {
                 Reply::Error(code, detail) => Err(ClientError::Server(code, detail)),
-                other => Ok(other),
+                other => Ok((other, got.fds)),
             },
             Msg::Req(_) => Err(ClientError::Unexpected),
         }
+    }
+
+    /// Reads the next reply, which carries no descriptor.
+    fn reply(&mut self) -> Result<Reply, ClientError> {
+        self.reply_with_fds().map(|(rep, _)| rep)
     }
 
     /// The status of a node, or of an instance (`<frame>#<id>`).
@@ -328,7 +351,7 @@ impl Client {
     }
 
     /// Launches an instance of the forager `frame` (root only) and waits for it to end for at
-    /// most `wait`.
+    /// most `wait`. No pidfd: see [`Client::begin_launch`].
     ///
     /// # Errors
     /// [`ClientError`].
@@ -338,6 +361,26 @@ impl Client {
         args: &LaunchArgs<'_>,
         wait: Duration,
     ) -> Result<LaunchOutcome, ClientError> {
+        match self.begin_launch(frame, args, false, wait)? {
+            Begun::Failed { step, errno } => Ok(LaunchOutcome::Failed { step, errno }),
+            Begun::Started(Started { id, .. }) => self.finish(id),
+        }
+    }
+
+    /// Sends a launch of the forager `frame` (root only) and reads its first reply. With
+    /// `pidfd`, the reply to a started instance carries a pidfd of its main process when the
+    /// server could open one; [`Client::finish`] then reads how the instance ends, within
+    /// `wait`.
+    ///
+    /// # Errors
+    /// [`ClientError`].
+    pub fn begin_launch(
+        &mut self,
+        frame: &str,
+        args: &LaunchArgs<'_>,
+        pidfd: bool,
+        wait: Duration,
+    ) -> Result<Begun, ClientError> {
         let tail = args.argv_tail.join("\0");
         let env: Vec<String> = args.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let env = env.join("\0");
@@ -357,14 +400,29 @@ impl Client {
                 env_add: qinit_wire::StrList::new(env.as_bytes()),
                 fd_roles: roles,
                 wait_ms,
+                flags: u32::from(pidfd) * qinit_proto_core::FLAG_PIDFD,
             },
             &fds,
         )?;
-        let id = match self.reply()? {
-            Reply::Launched(id) => id,
-            Reply::LaunchFailed(step, errno) => return Ok(LaunchOutcome::Failed { step, errno }),
-            _ => return Err(ClientError::Unexpected),
-        };
+        match self.reply_with_fds()? {
+            (Reply::Launched(id), mut got) => Ok(Begun::Started(Started {
+                id,
+                pidfd: if got.is_empty() {
+                    None
+                } else {
+                    Some(got.remove(0))
+                },
+            })),
+            (Reply::LaunchFailed(step, errno), _) => Ok(Begun::Failed { step, errno }),
+            _ => Err(ClientError::Unexpected),
+        }
+    }
+
+    /// Reads the end of the launch `id` that [`Client::begin_launch`] started.
+    ///
+    /// # Errors
+    /// [`ClientError`].
+    pub fn finish(&mut self, id: u32) -> Result<LaunchOutcome, ClientError> {
         match self.reply()? {
             Reply::Exited(status) => Ok(LaunchOutcome::Exited { id, status }),
             Reply::Pending(state) => Ok(LaunchOutcome::Pending { id, state }),

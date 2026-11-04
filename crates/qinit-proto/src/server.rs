@@ -198,14 +198,18 @@ impl Server {
 
     /// Sends `rep` on `conn` without ever blocking; `false` when it could not be sent (the
     /// reply did not encode, or the client's queue is full because it does not read).
-    fn reply(&mut self, conn: ConnId, rep: &OwnedRep) -> bool {
+    fn reply(&mut self, conn: ConnId, rep: &OwnedRep, fds: &[OwnedFd]) -> bool {
         let Some(c) = self.conns.get(&conn) else {
             return false;
         };
-        let Ok(n) = rep.encode(&mut self.out) else {
+        let Ok(count) = u32::try_from(fds.len()) else {
             return false;
         };
-        send_nowait(c.fd.as_fd(), &self.out[..n], &[]).is_ok()
+        let Ok(n) = rep.encode_with(count, &mut self.out) else {
+            return false;
+        };
+        let borrowed: Vec<BorrowedFd<'_>> = fds.iter().map(AsFd::as_fd).collect();
+        send_nowait(c.fd.as_fd(), &self.out[..n], &borrowed).is_ok()
     }
 
     /// Answers a malformed or unwanted message with one error and closes the connection.
@@ -216,7 +220,7 @@ impl Server {
         detail: u32,
         colony: &mut Colony<E>,
     ) {
-        let _ = self.reply(conn, &OwnedRep::Error { code, detail });
+        let _ = self.reply(conn, &OwnedRep::Error { code, detail }, &[]);
         self.close(conn, colony);
     }
 
@@ -353,7 +357,7 @@ impl Server {
         let wait = WaitId(self.next_wait);
         self.next_wait += 1;
         let handled = colony.handle(peer, req, attached, wait, now);
-        let sent = self.reply(conn, &handled.reply);
+        let sent = self.reply(conn, &handled.reply, &handled.reply_fds);
         // A second reply is owed when the wait was parked, or when the same call already
         // settled it (it then goes out with the outcome below).
         let owed = handled.waiting || handled.outcome.replies.iter().any(|(w, _)| *w == wait);
@@ -382,7 +386,7 @@ impl Server {
             if let Some(c) = self.conns.get_mut(&conn) {
                 c.state = State::Idle;
             }
-            if !self.reply(conn, rep) {
+            if !self.reply(conn, rep, &[]) {
                 self.close(conn, colony);
                 closed.push(conn);
             }

@@ -271,7 +271,7 @@ fn check_enums(b: &[u8], t: u32) -> (r: Result<(), DecodeError>)
             return bad;
         }
     } else if t == T_LAUNCH {
-        if rword(b, LA_FD_ROLES) > 7 {
+        if rword(b, LA_FD_ROLES) > 7 || rword(b, LA_FLAGS) > FLAG_PIDFD {
             return bad;
         }
     } else if t == T_REFRESH {
@@ -479,7 +479,14 @@ fn check_fds(b: &[u8], t: u32, received: usize) -> (r: Result<(), DecodeError>)
     } else {
         0
     };
-    if declared as usize != received || declared != required {
+    if declared as usize != received {
+        return Err(DecodeError::FdCount);
+    }
+    if t == T_LAUNCHED {
+        if declared > 1 {
+            return Err(DecodeError::FdCount);
+        }
+    } else if declared != required {
         return Err(DecodeError::FdCount);
     }
     Ok(())

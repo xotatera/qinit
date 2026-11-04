@@ -310,6 +310,8 @@ pub enum Req<'a> {
         env_add: StrList<'a>,
         fd_roles: u32,
         wait_ms: u32,
+        /// `FLAG_PIDFD`: reply to `Launched` with a pidfd of the instance's main process.
+        flags: u32,
     },
     Refresh {
         settled: bool,
@@ -402,6 +404,7 @@ fn request(b: &[u8], t: u32) -> Result<Req<'_>, DecodeError> {
             env_add: StrList(string(b, rec(b, LA_ENV_OFF), rec(b, LA_ENV_LEN))),
             fd_roles: rec(b, LA_FD_ROLES),
             wait_ms: rec(b, LA_WAIT_MS),
+            flags: rec(b, LA_FLAGS),
         },
         T_REFRESH => Req::Refresh {
             settled: flag(rec(b, RF_SETTLED)),
@@ -508,7 +511,7 @@ pub fn op_of(r: &Req<'_>) -> Op {
 }
 
 /// The descriptors a message carries: one per role of a launch, one for a refresh, none
-/// otherwise.
+/// otherwise. A `Launched` reply carries none or a pidfd (see [`FLAG_PIDFD`]): this counts none.
 #[must_use]
 pub fn required_fds(m: &Msg<'_>) -> u32 {
     match m {
@@ -594,12 +597,14 @@ fn request_record<'a>(r: &Req<'a>, rec: &mut Rec<'a>) -> u32 {
             env_add,
             fd_roles,
             wait_ms,
+            flags,
         } => {
             rec.s(frame)
                 .list(argv_tail)
                 .list(env_add)
                 .w(fd_roles)
-                .w(wait_ms);
+                .w(wait_ms)
+                .w(flags);
             T_LAUNCH
         }
         Req::Refresh { settled, wait_ms } => {

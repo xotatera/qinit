@@ -100,7 +100,7 @@ fn a_list_with_an_empty_element_is_pool() {
     let b = build(
         T_LAUNCH,
         0,
-        &[S("backup"), S("a\0\0b"), S(""), N(0), N(1000)],
+        &[S("backup"), S("a\0\0b"), S(""), N(0), N(1000), N(0)],
         &[],
     );
     assert_eq!(check(&b, 0).unwrap_err(), DecodeError::Pool);
@@ -109,12 +109,27 @@ fn a_list_with_an_empty_element_is_pool() {
 #[test]
 fn a_97_byte_name_is_consistency() {
     let name: &'static str = Box::leak("n".repeat(97).into_boxed_str());
-    let b = build(T_LAUNCH, 0, &[S(name), S(""), S(""), N(0), N(1000)], &[]);
+    let b = build(
+        T_LAUNCH,
+        0,
+        &[S(name), S(""), S(""), N(0), N(1000), N(0)],
+        &[],
+    );
     assert_eq!(check(&b, 0).unwrap_err(), DecodeError::Consistency);
     let name: &'static str = Box::leak("n".repeat(96).into_boxed_str());
-    let b = build(T_LAUNCH, 0, &[S(name), S(""), S(""), N(0), N(1000)], &[]);
+    let b = build(
+        T_LAUNCH,
+        0,
+        &[S(name), S(""), S(""), N(0), N(1000), N(0)],
+        &[],
+    );
     assert!(check(&b, 0).is_ok());
-    let empty = build(T_LAUNCH, 0, &[S(""), S(""), S(""), N(0), N(1000)], &[]);
+    let empty = build(
+        T_LAUNCH,
+        0,
+        &[S(""), S(""), S(""), N(0), N(1000), N(0)],
+        &[],
+    );
     assert_eq!(check(&empty, 0).unwrap_err(), DecodeError::Consistency);
 }
 
@@ -223,7 +238,7 @@ fn a_launch_with_no_roles_carries_no_fd() {
     let b = build(
         T_LAUNCH,
         0,
-        &[S("backup"), S(""), S(""), N(0), N(1000)],
+        &[S("backup"), S(""), S(""), N(0), N(1000), N(0)],
         &[],
     );
     assert!(check(&b, 0).is_ok());
@@ -279,7 +294,7 @@ fn argv_tail_of_65_is_consistency() {
     let b = build(
         T_LAUNCH,
         0,
-        &[S("backup"), S(many), S(""), N(0), N(1000)],
+        &[S("backup"), S(many), S(""), N(0), N(1000), N(0)],
         &[],
     );
     assert_eq!(check(&b, 0).unwrap_err(), DecodeError::Consistency);
@@ -287,7 +302,7 @@ fn argv_tail_of_65_is_consistency() {
     let b = build(
         T_LAUNCH,
         0,
-        &[S("backup"), S(ok64), S(""), N(0), N(1000)],
+        &[S("backup"), S(ok64), S(""), N(0), N(1000), N(0)],
         &[],
     );
     assert!(check(&b, 0).is_ok());
@@ -298,14 +313,14 @@ fn env_additions_are_entries_and_at_most_64() {
     let bad = build(
         T_LAUNCH,
         0,
-        &[S("backup"), S(""), S("NOEQ"), N(0), N(1000)],
+        &[S("backup"), S(""), S("NOEQ"), N(0), N(1000), N(0)],
         &[],
     );
     assert_eq!(check(&bad, 0).unwrap_err(), DecodeError::Consistency);
     let keyless = build(
         T_LAUNCH,
         0,
-        &[S("backup"), S(""), S("=v"), N(0), N(1000)],
+        &[S("backup"), S(""), S("=v"), N(0), N(1000), N(0)],
         &[],
     );
     assert_eq!(check(&keyless, 0).unwrap_err(), DecodeError::Consistency);
@@ -313,7 +328,7 @@ fn env_additions_are_entries_and_at_most_64() {
     let b = build(
         T_LAUNCH,
         0,
-        &[S("backup"), S(""), S(many), N(0), N(1000)],
+        &[S("backup"), S(""), S(many), N(0), N(1000), N(0)],
         &[],
     );
     assert_eq!(check(&b, 0).unwrap_err(), DecodeError::Consistency);
@@ -351,4 +366,45 @@ fn the_record_table_matches_the_function() {
         assert!(known_type(t));
     }
     assert!(!known_type(0) && !known_type(7) && !known_type(75));
+}
+
+#[test]
+fn launch_flags_above_1_are_enum() {
+    let (b, fds) = ok(T_LAUNCH);
+    for flags in [0, 1] {
+        assert!(check(&with(&b, |x| x[at(LA_FLAGS)] = flags), fds).is_ok());
+    }
+    for flags in [2, 3, 0x8000_0000] {
+        assert_eq!(
+            check(&with(&b, |x| x[at(LA_FLAGS)] = flags), fds).unwrap_err(),
+            DecodeError::Enum,
+            "flags {flags:#x}"
+        );
+    }
+    assert_eq!(FLAG_PIDFD, 1);
+    assert_eq!(LA_FLAGS, 8);
+}
+
+#[test]
+fn launched_with_one_fd_is_accepted_and_two_is_fd_count() {
+    let (b, _) = ok(T_LAUNCHED);
+    assert!(check(&b, 0).is_ok());
+    let one = with(&b, |x| x[H_FD_COUNT] = 1);
+    assert!(check(&one, 1).is_ok());
+    assert_eq!(check(&one, 0).unwrap_err(), DecodeError::FdCount);
+    let two = with(&b, |x| x[H_FD_COUNT] = 2);
+    assert_eq!(check(&two, 2).unwrap_err(), DecodeError::FdCount);
+}
+
+#[test]
+fn every_other_reply_with_an_fd_is_fd_count() {
+    for t in TYPES.into_iter().filter(|t| *t >= 64 && *t != T_LAUNCHED) {
+        let (b, _) = ok(t);
+        let one = with(&b, |x| x[H_FD_COUNT] = 1);
+        assert_eq!(
+            check(&one, 1).unwrap_err(),
+            DecodeError::FdCount,
+            "type {t}"
+        );
+    }
 }

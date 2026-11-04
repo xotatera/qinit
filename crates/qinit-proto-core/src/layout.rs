@@ -159,6 +159,12 @@ pub const LA_FD_ROLES: usize = 6;
 /// Launch request word 7: `wait_ms`, 1 to `MAX_WAIT_MS`.
 pub const LA_WAIT_MS: usize = 7;
 
+/// Launch request word 8: `flags`, bit 0 `FLAG_PIDFD`.
+pub const LA_FLAGS: usize = 8;
+
+/// `Launch` flag: reply to `Launched` with a pidfd of the instance's main process.
+pub const FLAG_PIDFD: u32 = 1;
+
 /// Refresh request word 0: `settled`, 0 or 1.
 pub const RF_SETTLED: usize = 0;
 
@@ -329,7 +335,7 @@ pub const RECORD_WORDS: [(u32, usize); 17] = [
     (T_STATUS, 2),
     (T_LIST, 2),
     (T_CHANGE, 5),
-    (T_LAUNCH, 8),
+    (T_LAUNCH, 9),
     (T_REFRESH, 2),
     (T_SHUTDOWN, 3),
     (T_ERROR, 3),
@@ -355,7 +361,7 @@ pub open spec fn spec_record_words(t: int) -> int {
     } else if t == 3 {
         5
     } else if t == 4 {
-        8
+        9
     } else if t == 5 {
         2
     } else if t == 6 {
@@ -400,7 +406,7 @@ pub fn record_words(t: u32) -> (n: usize)
     } else if t == T_CHANGE {
         5
     } else if t == T_LAUNCH {
-        8
+        9
     } else if t == T_SHUTDOWN {
         3
     } else if t == T_ERROR {

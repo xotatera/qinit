@@ -9,9 +9,9 @@ use crate::effects::Effects;
 use crate::engine::{Colony, Error, Notice, Outcome};
 use crate::instance::{LaunchArgs, LaunchError};
 use crate::swap::SwapError;
-use qinit_colony_core::{Reason, Report, Request, SlotState, State, Why};
+use qinit_colony_core::{Reason, Report, Request, SlotState, State, Why, slot_of};
 use qinit_db::ReadError;
-use qinit_proto_core::{DecodeError, EncodeError, MAX_MESSAGE, PeerId, authorized};
+use qinit_proto_core::{DecodeError, EncodeError, FLAG_PIDFD, MAX_MESSAGE, PeerId, authorized};
 use qinit_wire::{
     Action, Entries, ErrorCode, InstanceStatus, ListEntry, Mode, Msg, NodeStatus, Rep, Req,
     StateWord, encode, op_of,
@@ -120,11 +120,24 @@ pub enum OwnedRep {
 }
 
 impl OwnedRep {
-    /// Encodes the reply (no descriptors travel with a reply) and returns its length.
+    /// Encodes the reply with no descriptor and returns its length.
     ///
     /// # Errors
     /// As `qinit_wire::encode`.
     pub fn encode(&self, out: &mut [u8; MAX_MESSAGE]) -> Result<usize, EncodeError> {
+        self.encode_with(0, out)
+    }
+
+    /// Encodes the reply declaring `fd_count` descriptors (a `Launched` reply may carry a
+    /// pidfd) and returns its length.
+    ///
+    /// # Errors
+    /// As `qinit_wire::encode`.
+    pub fn encode_with(
+        &self,
+        fd_count: u32,
+        out: &mut [u8; MAX_MESSAGE],
+    ) -> Result<usize, EncodeError> {
         let list: Vec<ListEntry<'_>> = match self {
             OwnedRep::ListPage { entries, .. } => entries
                 .iter()
@@ -174,7 +187,7 @@ impl OwnedRep {
             },
             OwnedRep::Exited { status } => Rep::Exited { status: *status },
         };
-        encode(&Msg::Rep(rep), 0, out)
+        encode(&Msg::Rep(rep), fd_count, out)
     }
 }
 
@@ -183,6 +196,8 @@ impl OwnedRep {
 #[derive(Debug)]
 pub struct Handled {
     pub reply: OwnedRep,
+    /// The descriptors that travel with `reply`: a pidfd with `Launched`, none otherwise.
+    pub reply_fds: Vec<OwnedFd>,
     pub waiting: bool,
     pub outcome: Outcome,
 }
@@ -296,6 +311,7 @@ impl<E: Effects> Colony<E> {
     ) -> Handled {
         let mut h = Handled {
             reply: OwnedRep::Accepted,
+            reply_fds: Vec::new(),
             waiting: false,
             outcome: Outcome::default(),
         };
@@ -337,6 +353,7 @@ impl<E: Effects> Colony<E> {
                 env_add,
                 fd_roles,
                 wait_ms,
+                flags,
             } => {
                 let argv: Vec<String> = argv_tail.iter().map(str::to_owned).collect();
                 let env: Vec<(String, String)> = env_add
@@ -345,7 +362,15 @@ impl<E: Effects> Colony<E> {
                     .map(|(k, v)| (k.to_owned(), v.to_owned()))
                     .collect();
                 self.launch_request(
-                    frame, argv, env, fd_roles, wait_ms, attached, wait, now, &mut h,
+                    frame,
+                    argv,
+                    env,
+                    (fd_roles, flags & FLAG_PIDFD != 0),
+                    wait_ms,
+                    attached,
+                    wait,
+                    now,
+                    &mut h,
                 );
             }
             Req::Refresh { settled, wait_ms } => {
@@ -545,7 +570,7 @@ impl<E: Effects> Colony<E> {
         frame: &str,
         argv_tail: Vec<String>,
         env_add: Vec<(String, String)>,
-        fd_roles: u32,
+        (fd_roles, pidfd): (u32, bool),
         wait_ms: u32,
         attached: Attached,
         wait: WaitId,
@@ -570,6 +595,14 @@ impl<E: Effects> Colony<E> {
                 h.outcome.notices.extend(out.notices);
                 h.outcome.errors.extend(out.errors);
                 h.reply = OwnedRep::Launched { id };
+                if pidfd
+                    && let Some(slot) = slot_of(&self.slots, id)
+                    && let Ok(fd) = self
+                        .effects
+                        .instance_pidfd(u32::try_from(slot).unwrap_or(u32::MAX))
+                {
+                    h.reply_fds.push(fd);
+                }
                 self.park(wait, What::Instance(id), wait_ms, h);
             }
             Err(LaunchError::Spawn(e)) => {

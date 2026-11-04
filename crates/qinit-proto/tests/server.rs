@@ -300,6 +300,7 @@ fn launch_with(roles: u32, declared: u32, travelling: usize) -> (ErrorCode, u32)
         env_add: StrList::new(b""),
         fd_roles: roles,
         wait_ms: 1000,
+        flags: 0,
     };
     let n = encode(&Msg::Req(req), roles.count_ones(), &mut out).unwrap();
     out[4 * 4] = u8::try_from(declared).unwrap();
@@ -489,6 +490,7 @@ fn a_launch_with_stdout_routes_the_callers_pipe() {
             env_add: StrList::new(b""),
             fd_roles: 2,
             wait_ms: 60_000,
+            flags: 0,
         }),
         &[pipe_w.as_fd()],
     );
@@ -612,4 +614,56 @@ fn the_idle_driver_returns_without_sleeping() {
     r.pump();
     r.pump();
     assert_eq!(r.driver.server.connections(), 0);
+}
+
+#[test]
+fn launched_carries_the_pidfd_over_the_socket() {
+    let mut sim = Sim::new();
+    sim.instance_script = Script {
+        ready_after_ms: None,
+        ..Script::default()
+    };
+    // The sim hands out the read end of a pipe in place of a pidfd.
+    let (pipe_r, pipe_w) = qinit_sys::fd::pipe(libc_cloexec()).unwrap();
+    sim.pidfds.push_back(pipe_r);
+    let mut r = rig(&[], Limits::default(), sim);
+    r.root();
+    let c = r.connect();
+    let req = Req::Launch {
+        frame: "backup",
+        argv_tail: StrList::new(b""),
+        env_add: StrList::new(b""),
+        fd_roles: 0,
+        wait_ms: 1000,
+        flags: 1,
+    };
+    send_msg(&c, &Msg::Req(req), &[]);
+    r.pump();
+    let mut buf = vec![0u8; MAX_MESSAGE];
+    let got = recv(c.as_fd(), &mut buf).unwrap();
+    assert_eq!(got.fds.len(), 1, "the pidfd travels with Launched");
+    let Msg::Rep(Rep::Launched { id }) = decode(&buf[..got.len], got.fds.len()).unwrap() else {
+        panic!("expected Launched");
+    };
+    assert_eq!(id, 1);
+    // The descriptor is the pipe: writing to it is seen by the read end the client got.
+    let mut w = std::fs::File::from(pipe_w);
+    w.write_all(b"x").unwrap();
+    let mut file = std::fs::File::from(got.fds.into_iter().next().unwrap());
+    let mut one = [0u8; 1];
+    assert_eq!(file.read(&mut one).unwrap(), 1);
+    // Without the flag no descriptor travels.
+    let c2 = r.connect();
+    let plain = Req::Launch {
+        frame: "backup",
+        argv_tail: StrList::new(b""),
+        env_add: StrList::new(b""),
+        fd_roles: 0,
+        wait_ms: 1000,
+        flags: 0,
+    };
+    send_msg(&c2, &Msg::Req(plain), &[]);
+    r.pump();
+    let got = recv(c2.as_fd(), &mut buf).unwrap();
+    assert!(got.fds.is_empty());
 }

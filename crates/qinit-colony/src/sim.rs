@@ -9,7 +9,8 @@ use crate::engine::{Colony, Notice, Outcome};
 use crate::handle::WaitId;
 use qinit_cell_core::{Failure, Report as CellPhase};
 use qinit_colony_core::{StopMode, TimerKind};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::os::fd::OwnedFd;
 
 /// What a simulated node does once started.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,6 +54,7 @@ pub enum Call {
     Cancel(u32, TimerKind),
     Signal(u32, i32),
     StartInstance(u32, String),
+    InstancePidfd(u32),
     StopInstance(u32, StopMode, u32),
     ReleaseInstance(u32),
     ArmWait(u64, u32),
@@ -95,6 +97,9 @@ pub struct Sim {
     pub instance_cells: HashSet<u32>,
     /// The descriptors each started instance was given, by slot.
     pub instance_fds: HashMap<u32, Vec<std::os::fd::OwnedFd>>,
+    /// The pidfds `instance_pidfd` hands out, one per call; a test fills the queue (the real
+    /// layer opens one on the instance's pid). An empty queue fails with `EMFILE`.
+    pub pidfds: VecDeque<OwnedFd>,
     /// Nodes that have a cell. A start that succeeds adds the node, `release` removes it; a
     /// test that adopts a node adds it by hand. `stop` of a node without one does nothing, as
     /// the cell layer refuses it.
@@ -170,6 +175,7 @@ impl Sim {
                 | Call::Signal(n, _) => *n == node,
                 Call::Watch(_)
                 | Call::StartInstance(..)
+                | Call::InstancePidfd(_)
                 | Call::StopInstance(..)
                 | Call::ReleaseInstance(_)
                 | Call::ArmWait(..)
@@ -221,6 +227,11 @@ impl Effects for Sim {
             self.instance_event(slot, t + ms, CellPhase::MainExited(status));
         }
         Ok(5000 + i32::try_from(slot).unwrap_or(0))
+    }
+
+    fn instance_pidfd(&mut self, slot: u32) -> Result<OwnedFd, Errno> {
+        self.calls.push(Call::InstancePidfd(slot));
+        self.pidfds.pop_front().ok_or(Errno(24))
     }
 
     fn stop_instance(&mut self, slot: u32, mode: StopMode, grace_ms: u32) -> Result<(), Errno> {

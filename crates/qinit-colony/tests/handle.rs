@@ -101,6 +101,7 @@ fn non_root_change_is_denied() {
             env_add: StrList::new(b""),
             fd_roles: 0,
             wait_ms: 1000,
+            flags: 0,
         },
     ] {
         assert_eq!(
@@ -369,6 +370,7 @@ fn launch_req(wait_ms: u32) -> Req<'static> {
         env_add: StrList::new(b"TARGET=/data"),
         fd_roles: 0,
         wait_ms,
+        flags: 0,
     }
 }
 
@@ -433,6 +435,7 @@ fn launch_refusals_have_their_error_codes() {
         env_add: StrList::new(b""),
         fd_roles: 0,
         wait_ms: 1000,
+        flags: 0,
     };
     assert_eq!(
         handle(&mut c, ROOT, &unknown, 1).reply,
@@ -444,6 +447,7 @@ fn launch_refusals_have_their_error_codes() {
         env_add: StrList::new(b""),
         fd_roles: 0,
         wait_ms: 1000,
+        flags: 0,
     };
     assert_eq!(
         handle(&mut c, ROOT, &plain, 2).reply,
@@ -455,6 +459,7 @@ fn launch_refusals_have_their_error_codes() {
         env_add: StrList::new(b"PATH=/x"),
         fd_roles: 0,
         wait_ms: 1000,
+        flags: 0,
     };
     assert_eq!(
         handle(&mut c, ROOT, &bad_key, 3).reply,
@@ -888,4 +893,80 @@ fn a_refresh_that_adds_an_enabled_forager_runs_it() {
         panic!()
     };
     assert_ne!(s.state, state(0, 0), "the forager never started");
+}
+
+fn launch_with_pidfd(wait_ms: u32) -> Req<'static> {
+    Req::Launch {
+        frame: "backup",
+        argv_tail: StrList::new(b""),
+        env_add: StrList::new(b""),
+        fd_roles: 0,
+        wait_ms,
+        flags: 1,
+    }
+}
+
+/// A pipe's two ends as descriptors.
+fn pipe() -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
+    let (r, w) = std::io::pipe().unwrap();
+    (r.into(), w.into())
+}
+
+fn fd_number(fd: &std::os::fd::OwnedFd) -> i32 {
+    use std::os::fd::AsRawFd;
+    fd.as_raw_fd()
+}
+
+#[test]
+fn a_pidfd_launch_replies_with_the_injected_fd() {
+    let mut c = booted(&[]);
+    c.effects.instance_script = script(None, None);
+    let (r, w) = pipe();
+    let injected = fd_number(&r);
+    c.effects.pidfds.push_back(r);
+    let h = handle(&mut c, ROOT, &launch_with_pidfd(1000), 1);
+    assert_eq!(h.reply, OwnedRep::Launched { id: 1 });
+    assert_eq!(
+        h.reply_fds.iter().map(fd_number).collect::<Vec<_>>(),
+        [injected]
+    );
+    assert!(c.effects.pidfds.is_empty());
+    assert!(c.effects.calls.contains(&Call::InstancePidfd(0)));
+    drop(w);
+}
+
+#[test]
+fn no_pidfd_when_none_can_be_had() {
+    let mut c = booted(&[]);
+    c.effects.instance_script = script(None, None);
+    let h = handle(&mut c, ROOT, &launch_with_pidfd(1000), 1);
+    assert_eq!(h.reply, OwnedRep::Launched { id: 1 });
+    assert!(h.reply_fds.is_empty());
+    assert!(h.waiting, "the instance runs on");
+}
+
+#[test]
+fn a_launch_without_the_flag_takes_no_pidfd() {
+    let mut c = booted(&[]);
+    c.effects.instance_script = script(None, None);
+    let (r, _w) = pipe();
+    c.effects.pidfds.push_back(r);
+    let h = handle(&mut c, ROOT, &launch_req(1000), 1);
+    assert!(h.reply_fds.is_empty());
+    assert_eq!(c.effects.pidfds.len(), 1);
+}
+
+#[test]
+fn a_failed_launch_sends_no_pidfd() {
+    let mut c = booted(&[]);
+    c.effects.instance_script = Script {
+        spawn_fails: true,
+        ..Script::default()
+    };
+    let (r, _w) = pipe();
+    c.effects.pidfds.push_back(r);
+    let h = handle(&mut c, ROOT, &launch_with_pidfd(1000), 1);
+    assert_eq!(h.reply, OwnedRep::LaunchFailed { step: 0, errno: 2 });
+    assert!(h.reply_fds.is_empty());
+    assert_eq!(c.effects.pidfds.len(), 1, "the queue was not touched");
 }

@@ -52,6 +52,9 @@ pub trait Effects {
     fn start(&mut self, node: u32, spec: &NodeSpec) -> Result<i32, Errno>;
     /// Creates the cell of instance slot `slot` and starts its main process; returns the pid.
     fn start_instance(&mut self, slot: u32, spec: InstanceSpec) -> Result<i32, Errno>;
+    /// A pidfd of the main process of the instance in `slot`, for a caller that asked for one.
+    /// The instance runs on without one when this fails.
+    fn instance_pidfd(&mut self, slot: u32) -> Result<OwnedFd, Errno>;
     /// Begins the stop of the instance in `slot`, as `stop` does for a node.
     fn stop_instance(&mut self, slot: u32, mode: StopMode, grace_ms: u32) -> Result<(), Errno>;
     /// The instance's cell is empty, or its creation failed: remove it. Called once per cell.

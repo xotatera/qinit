@@ -136,7 +136,8 @@ pub open spec fn enums_ok(b: Seq<u8>) -> bool {
         &&& rw(b, CH_ACTION as int) <= 5
         &&& rw(b, CH_SETTLED as int) <= 1
     } else if t == T_LAUNCH {
-        rw(b, LA_FD_ROLES as int) <= 7
+        &&& rw(b, LA_FD_ROLES as int) <= 7
+        &&& rw(b, LA_FLAGS as int) <= FLAG_PIDFD as int
     } else if t == T_REFRESH {
         rw(b, RF_SETTLED as int) <= 1
     } else if t == T_SHUTDOWN {
@@ -245,10 +246,15 @@ pub open spec fn required_fds(b: Seq<u8>) -> int {
     }
 }
 
-/// The header's descriptor count is the number received and the number the record requires.
+/// The header's descriptor count is the number received and the number the record requires. A
+/// `Launched` reply carries a pidfd or none, so for it the count is 0 or 1.
 pub open spec fn fds_ok(b: Seq<u8>, received: int) -> bool {
     &&& hw(b, H_FD_COUNT as int) == received
-    &&& hw(b, H_FD_COUNT as int) == required_fds(b)
+    &&& if mtype(b) == T_LAUNCHED {
+        hw(b, H_FD_COUNT as int) <= 1
+    } else {
+        hw(b, H_FD_COUNT as int) == required_fds(b)
+    }
 }
 
 /// The shape of a message: the header, a known type, and the whole record region inside it.

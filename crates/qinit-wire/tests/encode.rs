@@ -53,6 +53,7 @@ fn every_request_round_trips() {
             env_add: StrList::new(b"TARGET=/data\0V="),
             fd_roles: 7,
             wait_ms: 1,
+            flags: 0,
         }),
         Msg::Req(Req::Launch {
             frame: "backup",
@@ -60,6 +61,7 @@ fn every_request_round_trips() {
             env_add: StrList::new(b""),
             fd_roles: 0,
             wait_ms: 30_000,
+            flags: 0,
         }),
         Msg::Req(Req::Refresh {
             settled: true,
@@ -166,6 +168,7 @@ fn lists_of_0_1_and_64_elements_round_trip() {
             env_add: StrList::new(env.as_bytes()),
             fd_roles: 0,
             wait_ms: 1000,
+            flags: 0,
         }));
     }
 }
@@ -200,6 +203,7 @@ fn an_overlong_name_is_invalid() {
         env_add: StrList::new(b""),
         fd_roles: 0,
         wait_ms: 1000,
+        flags: 0,
     });
     assert_eq!(encoded(&m, 0), Err(EncodeError::Invalid));
     let empty = Msg::Req(Req::Status { target: "" });
@@ -226,6 +230,7 @@ fn an_invalid_value_is_refused_not_encoded() {
         env_add: StrList::new(b""),
         fd_roles: 8,
         wait_ms: 1000,
+        flags: 0,
     });
     assert_eq!(encoded(&bad_roles, 0), Err(EncodeError::Invalid));
     let bad_state = Msg::Rep(Rep::Settled(StateWord {
@@ -243,6 +248,7 @@ fn the_declared_fd_count_must_be_the_required_one() {
         env_add: StrList::new(b""),
         fd_roles: 3,
         wait_ms: 1000,
+        flags: 0,
     });
     assert!(encoded(&launch, 2).is_ok());
     assert_eq!(encoded(&launch, 1), Err(EncodeError::Invalid));
@@ -259,6 +265,7 @@ fn a_message_over_65536_bytes_is_too_large() {
         env_add: StrList::new(b""),
         fd_roles: 0,
         wait_ms: 1000,
+        flags: 0,
     });
     assert!(encoded(&m, 0).is_ok(), "64000 bytes of arguments fit");
     let tail = "t".repeat(1100);
@@ -269,6 +276,7 @@ fn a_message_over_65536_bytes_is_too_large() {
         env_add: StrList::new(b""),
         fd_roles: 0,
         wait_ms: 1000,
+        flags: 0,
     });
     assert_eq!(encoded(&m, 0), Err(EncodeError::TooLarge));
 }
