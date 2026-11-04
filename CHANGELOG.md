@@ -12,6 +12,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `docs/design-principles.md`: the rules that decide whether a feature belongs in qinit and
+  which part owns it, with a tie-break order and the patterns qinit does not use.
 - `qinit-graph-core`: the dependency graph model, Verus-proved: cycle detection
   (a graph is reported cyclic exactly when it has a cycle) and level assignment
   in which every hard edge strictly orders its two ends, so a stop order exists
