@@ -59,13 +59,19 @@ pub enum Wait {
     Settled(Duration),
 }
 
+/// The longest wait the protocol allows, in milliseconds.
+const MAX_WAIT_MS: u32 = 600_000;
+
 impl Wait {
     fn words(self) -> (bool, u32) {
         match self {
             Wait::Now => (false, 0),
             Wait::Settled(d) => (
                 true,
-                u32::try_from(d.as_millis()).unwrap_or(u32::MAX).max(1),
+                // The protocol allows 1 ms to 10 min: a longer wait is clamped, a zero one raised.
+                u32::try_from(d.as_millis())
+                    .unwrap_or(u32::MAX)
+                    .clamp(1, MAX_WAIT_MS),
             ),
         }
     }

@@ -148,6 +148,18 @@ fn client_change_settled() {
 }
 
 #[test]
+fn a_wait_longer_than_the_protocol_allows_is_clamped() {
+    let s = Served::start(&[], true, instant(None));
+    let mut c = s.client();
+    let hour = Wait::Settled(Duration::from_secs(3600));
+    let out = c.change("app", Action::Start, hour).unwrap();
+    assert!(
+        matches!(out, Outcome::Settled(w) if w.state == 3),
+        "{out:?}"
+    );
+}
+
+#[test]
 fn client_launch_exits() {
     let s = Served::start(&[], true, instant(Some(7)));
     let mut c = s.client();

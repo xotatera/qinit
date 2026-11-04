@@ -768,3 +768,124 @@ fn notices_still_flow_alongside_replies() {
             .any(|n| matches!(n, Notice::Node(_, qinit_colony::Report::Ready)))
     );
 }
+
+#[test]
+fn a_refused_change_leaves_other_waits_alone() {
+    let (probe, _) = boot(&frames(), &[], Sim::new());
+    let mut sim = Sim::new();
+    sim.scripts.insert(idx(&probe, "db"), script(None, None));
+    let (mut c, _) = boot(&frames(), &[], sim);
+    handle(&mut c, ROOT, &change("db", Action::Start, true, 60_000), 1);
+    // `clear` on a node that is not quarantined does nothing: the parked start stays parked.
+    let h = handle(&mut c, ROOT, &change("db", Action::Clear, false, 0), 2);
+    assert_eq!(h.reply, error(ErrorCode::NotNow, 2));
+    assert!(replies(&h.outcome).is_empty(), "{:?}", replies(&h.outcome));
+    let out = run(&mut c, 61_000);
+    assert_eq!(replies(&out), [(1, OwnedRep::Pending(state(2, 0)))]);
+}
+
+#[test]
+fn an_identical_refresh_settles_at_once_after_a_restarting_one() {
+    let (probe, _) = boot(&frames(), &[], Sim::new());
+    let mut sim = Sim::new();
+    sim.scripts.insert(idx(&probe, "db"), script(None, None));
+    let (mut c, _) = boot(&frames(), &["db"], sim);
+    run(&mut c, 5);
+    let changed = frames().replace("/bin/db", "/bin/db2");
+    let refresh = |c: &mut Colony<Sim>, id: u64| {
+        let now = c.effects.now();
+        c.handle(
+            ROOT,
+            &Req::Refresh {
+                settled: true,
+                wait_ms: 60_000,
+            },
+            Attached {
+                fds: Vec::new(),
+                database: Some(Ok(database(&changed, &["db"]))),
+            },
+            WaitId(id),
+            now,
+        )
+    };
+    // The first refresh restarts db, which never becomes ready: its wait stays parked.
+    let first = refresh(&mut c, 31);
+    assert!(first.waiting);
+    run(&mut c, 100);
+    // The same bytes again change nothing, so nothing is awaited and the answer is immediate.
+    let second = refresh(&mut c, 32);
+    let got = replies(&second.outcome);
+    assert!(
+        got.iter()
+            .any(|(w, r)| *w == 32 && matches!(r, OwnedRep::Settled(_))),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn a_wait_that_cannot_be_armed_ends_at_once() {
+    let mut sim = Sim::new();
+    sim.fail_arm_wait = true;
+    let (probe, _) = boot(&frames(), &[], Sim::new());
+    sim.scripts.insert(idx(&probe, "db"), script(None, None));
+    let (mut c, _) = boot(&frames(), &[], sim);
+    let h = handle(&mut c, ROOT, &change("db", Action::Start, true, 60_000), 1);
+    assert!(!h.waiting);
+    let got = replies(&h.outcome);
+    assert!(
+        got.iter()
+            .any(|(w, r)| *w == 1 && matches!(r, OwnedRep::Pending(_))),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn a_long_path_target_is_shown_clipped_to_the_name_limit() {
+    let path = format!("/{}", "p/".repeat(60));
+    let frames = format!(
+        "[worker.app]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/bin/app\"]\n\
+         deps = [{{ group = \"require_all\", edges = [{{ path = \"{path}\" }}] }}]\n"
+    );
+    let (mut c, _) = boot(&frames, &["app"], Sim::new());
+    run(&mut c, 100);
+    let OwnedRep::NodeStatus(s) = handle(&mut c, USER, &Req::Status { target: "app" }, 1).reply
+    else {
+        panic!()
+    };
+    let (group, text) = s.blocking.expect("blocked on the path");
+    assert_eq!(group, 0);
+    assert_eq!(text.len(), 96);
+    assert!(path.starts_with(&text));
+}
+
+#[test]
+fn a_refresh_that_adds_an_enabled_forager_runs_it() {
+    let without = frames().replace(
+        "[forager.plain]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/plain\"]\n",
+        "",
+    );
+    assert_ne!(without, frames());
+    let (mut c, _) = boot(&without, &["db"], Sim::new());
+    run(&mut c, 5);
+    let now = c.effects.now();
+    let h = c.handle(
+        ROOT,
+        &Req::Refresh {
+            settled: false,
+            wait_ms: 0,
+        },
+        Attached {
+            fds: Vec::new(),
+            database: Some(Ok(database(&frames(), &["db", "plain"]))),
+        },
+        WaitId(41),
+        now,
+    );
+    assert_eq!(h.reply, OwnedRep::Accepted);
+    run(&mut c, 100);
+    let OwnedRep::NodeStatus(s) = handle(&mut c, USER, &Req::Status { target: "plain" }, 2).reply
+    else {
+        panic!()
+    };
+    assert_ne!(s.state, state(0, 0), "the forager never started");
+}

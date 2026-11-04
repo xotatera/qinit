@@ -3,12 +3,12 @@
 //! Connections: limits, identity, framing and the dispatch into colony.
 
 use qinit_colony::{Attached, Colony, Effects, Outcome, OwnedRep, Peer, WaitId};
-use qinit_ipc::{PeerCred, Received, peer_cred, peer_pidfd, recv, send};
+use qinit_ipc::{PeerCred, Received, peer_cred, peer_pidfd, recv, send_nowait};
 use qinit_proto_core::{DecodeError, MAX_MESSAGE, authorized};
 use qinit_wire::{ErrorCode, Msg, Req, decode, op_of};
 use std::collections::HashMap;
-use std::io::Read;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::fs::FileExt;
 
 /// The most bytes of a database a refresh may pass: above the largest valid one (four tables at
 /// their limits plus the string pool).
@@ -98,14 +98,23 @@ fn read_database(fd: OwnedFd) -> Result<Vec<u8>, u32> {
     if meta.len() > MAX_DB_READ as u64 {
         return Err(REASON_TOO_LARGE);
     }
-    let mut bytes = Vec::new();
-    let mut reader = file.take(MAX_DB_READ as u64 + 1);
-    reader
-        .read_to_end(&mut bytes)
-        .map_err(|_| REASON_UNREADABLE)?;
-    if bytes.len() > MAX_DB_READ {
+    // pread from offset 0: whatever the sender left the shared file offset at, and the offset
+    // stays as it was.
+    let mut bytes =
+        vec![0u8; usize::try_from(meta.len()).map_or(MAX_DB_READ, |n| n.min(MAX_DB_READ)) + 1];
+    let mut have = 0usize;
+    while have < bytes.len() {
+        match file.read_at(&mut bytes[have..], have as u64) {
+            Ok(0) => break,
+            Ok(n) => have += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return Err(REASON_UNREADABLE),
+        }
+    }
+    if have > MAX_DB_READ {
         return Err(REASON_TOO_LARGE);
     }
+    bytes.truncate(have);
     Ok(bytes)
 }
 
@@ -169,7 +178,7 @@ impl Server {
         let over_user = peer.uid != 0 && same_user >= self.limits.per_uid;
         if self.conns.len() >= self.limits.total || over_user {
             if let Some(bytes) = encode_error(ErrorCode::Full, 0) {
-                let _ = send(fd.as_fd(), &bytes, &[]);
+                let _ = send_nowait(fd.as_fd(), &bytes, &[]);
             }
             return Err(Full);
         }
@@ -187,7 +196,8 @@ impl Server {
         Ok(id)
     }
 
-    /// Sends `rep` on `conn`; `false` when it could not be sent.
+    /// Sends `rep` on `conn` without ever blocking; `false` when it could not be sent (the
+    /// reply did not encode, or the client's queue is full because it does not read).
     fn reply(&mut self, conn: ConnId, rep: &OwnedRep) -> bool {
         let Some(c) = self.conns.get(&conn) else {
             return false;
@@ -195,7 +205,7 @@ impl Server {
         let Ok(n) = rep.encode(&mut self.out) else {
             return false;
         };
-        send(c.fd.as_fd(), &self.out[..n], &[]).is_ok()
+        send_nowait(c.fd.as_fd(), &self.out[..n], &[]).is_ok()
     }
 
     /// Answers a malformed or unwanted message with one error and closes the connection.
@@ -343,7 +353,7 @@ impl Server {
         let wait = WaitId(self.next_wait);
         self.next_wait += 1;
         let handled = colony.handle(peer, req, attached, wait, now);
-        let _ = self.reply(conn, &handled.reply);
+        let sent = self.reply(conn, &handled.reply);
         // A second reply is owed when the wait was parked, or when the same call already
         // settled it (it then goes out with the outcome below).
         let owed = handled.waiting || handled.outcome.replies.iter().any(|(w, _)| *w == wait);
@@ -351,7 +361,14 @@ impl Server {
             c.state = State::Waiting(wait);
             self.waits.insert(wait, conn);
         }
-        self.on_outcome(&handled.outcome, colony)
+        // A client that cannot be answered is closed, which also forgets its parked wait.
+        let mut closed = Vec::new();
+        if !sent {
+            self.close(conn, colony);
+            closed.push(conn);
+        }
+        closed.extend(self.on_outcome(&handled.outcome, colony));
+        closed
     }
 
     /// Sends the replies colony owes to parked waits, and returns the connections that could

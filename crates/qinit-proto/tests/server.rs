@@ -13,7 +13,7 @@ use qinit_proto::{Limits, MAX_DB_READ};
 use qinit_proto_core::{H_VERSION, HEADER_WORDS, MAX_MESSAGE};
 use qinit_wire::{Action, ErrorCode, Mode, Msg, Rep, Req, StateWord, StrList, decode, encode};
 use std::ffi::CString;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 
@@ -543,6 +543,39 @@ fn a_refresh_fd_is_read_and_swapped() {
         r.colony.model().nodes[idx(&r.colony, "db") as usize].exec,
         ["/bin/db2"]
     );
+}
+
+#[test]
+fn a_refresh_fd_is_read_from_the_start_whatever_its_offset() {
+    let mut r = rig(&["db"], Limits::default(), Sim::new());
+    r.root();
+    r.advance(5);
+    let c = r.connect();
+    let changed = frames().replace("/bin/db", "/bin/db2");
+    let fd = memfd(&database(&changed, &["db"]));
+    // The sender left the shared file offset at the end.
+    let mut file = std::fs::File::from(fd.try_clone().unwrap());
+    let end = file.seek(SeekFrom::End(0)).unwrap();
+    refresh(&mut r, &c, &fd);
+    assert!(read(&c, |rep| matches!(rep, Rep::Accepted)).unwrap());
+    // And the server's read did not move it.
+    assert_eq!(file.stream_position().unwrap(), end);
+}
+
+#[test]
+fn a_client_that_never_reads_is_closed_and_the_server_never_blocks() {
+    let mut r = rig(&["db"], Limits::default(), Sim::new());
+    r.root();
+    let c = r.connect();
+    // Replies pile up unread; once the client's queue is full the connection is dropped.
+    for _ in 0..100_000 {
+        if r.driver.server.connections() == 0 {
+            break;
+        }
+        send_msg(&c, &Msg::Req(Req::Status { target: "db" }), &[]);
+        r.pump();
+    }
+    assert_eq!(r.driver.server.connections(), 0);
 }
 
 #[test]

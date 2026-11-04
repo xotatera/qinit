@@ -388,12 +388,17 @@ impl<E: Effects> Colony<E> {
         }
     }
 
-    /// Registers a wait with its deadline; `Err` if the effects layer could not arm it.
+    /// Registers a wait with its deadline; one the effects layer could not arm ends at once.
     fn park(&mut self, id: WaitId, what: What, wait_ms: u32, h: &mut Handled) {
-        if let Err(e) = self.effects.arm_wait(id.0, wait_ms) {
-            h.outcome.errors.push(Error::Effect(0, e));
-        }
+        let armed = self.effects.arm_wait(id.0, wait_ms);
         self.waits.push(WaitRec { id, what });
+        if let Err(e) = armed {
+            // A wait with no deadline would be unbounded: it ends now, as if the time were up.
+            h.outcome.errors.push(Error::Effect(0, e));
+            let expired = self.on_wait_deadline(id, 0);
+            h.outcome.replies.extend(expired.replies);
+            return;
+        }
         h.waiting = true;
     }
 
@@ -402,23 +407,32 @@ impl<E: Effects> Colony<E> {
         h.outcome.replies.push((id, rep));
     }
 
-    /// Answers every wait on node `name` as superseded.
-    fn supersede_node(&mut self, name: &str, out: &mut Outcome) {
+    /// Takes every wait on node `name` out of the table, timers still armed: the caller decides
+    /// whether the request that supersedes them was accepted ([`Self::supersede`]) or refused
+    /// ([`Self::restore`]).
+    fn take_waits_on(&mut self, name: &str) -> Vec<WaitRec> {
+        let (hit, keep) = std::mem::take(&mut self.waits)
+            .into_iter()
+            .partition(|w| matches!(&w.what, What::Up(n) | What::Down(n) if n == name));
+        self.waits = keep;
+        hit
+    }
+
+    /// Answers the taken waits as superseded, with the state `name` is in now.
+    fn supersede(&mut self, name: &str, taken: Vec<WaitRec>, out: &mut Outcome) {
         let state = self
             .node_index(name)
             .and_then(|i| self.state(i))
             .map_or(state_word(State::Off), state_word);
-        let mut keep = Vec::new();
-        for w in std::mem::take(&mut self.waits) {
-            let hit = matches!(&w.what, What::Up(n) | What::Down(n) if n == name);
-            if hit {
-                self.effects.cancel_wait(w.id.0);
-                out.replies.push((w.id, OwnedRep::Superseded(state)));
-            } else {
-                keep.push(w);
-            }
+        for w in taken {
+            self.effects.cancel_wait(w.id.0);
+            out.replies.push((w.id, OwnedRep::Superseded(state)));
         }
-        self.waits = keep;
+    }
+
+    /// Puts taken waits back: the request was refused, so nothing changed under them.
+    fn restore(&mut self, taken: Vec<WaitRec>) {
+        self.waits.extend(taken);
     }
 
     fn change(
@@ -439,7 +453,7 @@ impl<E: Effects> Colony<E> {
             return;
         };
         let name = target.to_owned();
-        self.supersede_node(&name, &mut h.outcome);
+        let taken = self.take_waits_on(&name);
         let was_ready =
             self.nodes[node as usize].state == State::Ready && !self.nodes[node as usize].to_stop;
         let req = match action {
@@ -459,9 +473,11 @@ impl<E: Effects> Colony<E> {
         h.outcome.replies.extend(out.replies);
         let state = self.nodes[node as usize].state;
         if refused {
+            self.restore(taken);
             h.reply = error(ErrorCode::NotNow, state_word(state).state);
             return;
         }
+        self.supersede(&name, taken, &mut h.outcome);
         h.reply = OwnedRep::Accepted;
         let Some(ms) = wait_ms else {
             return;

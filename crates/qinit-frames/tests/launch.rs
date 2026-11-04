@@ -84,6 +84,14 @@ fn reload_on_a_brood_is_an_error() {
 }
 
 #[test]
+fn reload_on_a_forager_is_an_error() {
+    refused(
+        "[forager.a]\nexec = [\"/a\"]\ncredentials = { uid = \"svc\" }\nreload = \"SIGHUP\"\n",
+        "forager.a.reload",
+    );
+}
+
+#[test]
 fn concurrency_0_and_65_are_errors() {
     refused(
         &forager("concurrency = 0"),

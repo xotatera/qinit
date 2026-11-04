@@ -14,7 +14,7 @@ mod msg;
 mod peer;
 mod sock;
 
-pub use msg::{MAX_FDS, Received, recv, send, send_unchecked};
+pub use msg::{MAX_FDS, Received, recv, send, send_nowait, send_unchecked};
 pub use peer::{PeerCred, peer_cred, peer_pidfd};
 pub use sock::{accept, connect_seqpacket, listen_seqpacket, seqpacket_pair, unix_address};
 

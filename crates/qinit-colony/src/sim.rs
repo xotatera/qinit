@@ -87,6 +87,8 @@ pub struct Sim {
     pub paths: HashSet<String>,
     /// Starts of these nodes fail with ENOENT before spawning.
     pub fail_start: HashSet<u32>,
+    /// `arm_wait` fails with errno 11: the effects layer cannot give a wait a deadline.
+    pub fail_arm_wait: bool,
     /// What every instance does once started; a test sets it before it launches.
     pub instance_script: Script,
     /// Instance slots that have a cell.
@@ -333,6 +335,9 @@ impl Effects for Sim {
 
     fn arm_wait(&mut self, wait: u64, ms: u32) -> Result<(), Errno> {
         self.calls.push(Call::ArmWait(wait, ms));
+        if self.fail_arm_wait {
+            return Err(Errno(11));
+        }
         let key = self.schedule(self.now + u64::from(ms), Due::Wait(wait));
         self.wait_timers.insert(wait, key);
         Ok(())

@@ -45,7 +45,7 @@ impl<E: Effects> Colony<E> {
                         let (_, e) = target.or_else(|| g.edges.iter().enumerate().next())?;
                         let text = match &e.target {
                             Target::Node(t) => self.model.nodes[*t as usize].name.clone(),
-                            Target::Path(p) => p.clone(),
+                            Target::Path(p) => clip_name(p),
                         };
                         return Some((u32::try_from(k).unwrap_or(u32::MAX), text));
                     }
@@ -120,4 +120,14 @@ impl<E: Effects> Colony<E> {
             .map(|(i, _)| u32::try_from(i).unwrap_or(u32::MAX));
         (entries, next)
     }
+}
+
+/// The longest prefix of `text` that is a legal wire name (at most 96 bytes, whole characters):
+/// a long path target is shown clipped, since the field only tells a person what is awaited.
+fn clip_name(text: &str) -> String {
+    let mut end = text.len().min(qinit_proto_core::MAX_NAME_LEN);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
 }

@@ -26,7 +26,7 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     (`Request::Refresh`), forager instance slots (a proved pool) and launches, the two-phase
     database swap (the proved `remap`), `Colony::handle`, settled waits, shutdown mode and status
     queries, and the VM suite `control` with root and a user other than root.
-  - Frames: the `reload` key and the forager `[launch]` table (`concurrency`, `argv_tail`,
+  - Frames: the `reload` key (workers only; a forager or brood refuses it) and the forager `[launch]` table (`concurrency`, `argv_tail`,
     `env`, `fds`); the node record of the database grows to 36 words.
   - The overseer launch request has a stdin route (the record grows to 35 words).
 - `docs/design-principles.md`: the rules that decide whether a feature belongs in qinit and

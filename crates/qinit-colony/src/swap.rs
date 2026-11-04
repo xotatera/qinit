@@ -43,7 +43,7 @@ pub struct Swap {
     /// Kept nodes sent their reload signal in phase 2.
     reload: Vec<String>,
     /// Changed nodes that were wanted: started again in phase 2.
-    again: Vec<(String, Kind)>,
+    again: Vec<String>,
 }
 
 /// A route by what it names, not by index.
@@ -155,6 +155,8 @@ impl<E: Effects> Colony<E> {
         }
         let model = open(&db).map_err(SwapError::Invalid)?.decode();
         if db == self.db {
+            // Nothing was refreshed: an earlier refresh's set must not decide this wait.
+            self.refresh_set.clear();
             return Ok(Outcome {
                 notices: vec![Notice::Swapped],
                 errors: Vec::new(),
@@ -166,7 +168,7 @@ impl<E: Effects> Colony<E> {
         self.refresh_set = sw
             .again
             .iter()
-            .map(|(name, _)| name.clone())
+            .cloned()
             .chain(sw.reload.iter().cloned())
             .collect();
         let mut out = Outcome::default();
@@ -243,11 +245,11 @@ impl<E: Effects> Colony<E> {
                 } else {
                     sw.waiting.push(j32);
                     if wanted {
-                        sw.again.push((old.name.clone(), old.kind));
+                        sw.again.push(old.name.clone());
                     }
                 }
             } else if !same_machine && wanted {
-                sw.again.push((old.name.clone(), old.kind));
+                sw.again.push(old.name.clone());
             }
         }
         sw
@@ -267,9 +269,9 @@ impl<E: Effects> Colony<E> {
                     sw.waiting.push(j32);
                     sw.reload.retain(|n| *n != node.name);
                     let kept = sw.model.nodes.iter().any(|n| n.name == node.name);
-                    let known = sw.again.iter().any(|(n, _)| *n == node.name);
+                    let known = sw.again.contains(&node.name);
                     if kept && self.nodes[j].wanted && !known {
-                        sw.again.push((node.name.clone(), node.kind));
+                        sw.again.push(node.name.clone());
                     }
                     grew = true;
                 }
@@ -337,17 +339,12 @@ impl<E: Effects> Colony<E> {
         let mut asks: Vec<(u32, Request)> = Vec::new();
         for &i in &self.model.enabled {
             if sw.map[i as usize] == NEW_NODE {
-                asks.push((i, Request::Start));
+                asks.push((i, self.start_request(i)));
             }
         }
-        for (name, kind) in &sw.again {
+        for name in &sw.again {
             if let Some(i) = self.node_index(name) {
-                let req = if *kind == Kind::Forager {
-                    Request::Run
-                } else {
-                    Request::Start
-                };
-                asks.push((i, req));
+                asks.push((i, self.start_request(i)));
             }
         }
         for name in &sw.reload {
@@ -361,6 +358,15 @@ impl<E: Effects> Colony<E> {
             out.errors.extend(o.errors);
         }
         out.notices.push(Notice::Swapped);
+    }
+
+    /// What starts node `i` of the new graph: a forager only runs, a worker or brood starts.
+    fn start_request(&self, i: u32) -> Request {
+        if self.model.nodes[i as usize].kind == Kind::Forager {
+            Request::Run
+        } else {
+            Request::Start
+        }
     }
 
     /// Puts the new database and the carried-over tables in place. Returns, per new node,

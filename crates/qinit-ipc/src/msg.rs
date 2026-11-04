@@ -84,10 +84,31 @@ pub fn send(fd: BorrowedFd<'_>, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> Result<
     send_unchecked(fd, bytes, fds)
 }
 
+/// As [`send`], but never blocks: `EAGAIN` when the peer's receive queue is full. For a server
+/// that must not stall on a client that does not read its replies.
+///
+/// # Errors
+/// `EINVAL` for too many descriptors, `EAGAIN` for a full queue, else the errno of `sendmsg`.
+pub fn send_nowait(fd: BorrowedFd<'_>, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> Result<()> {
+    if fds.len() > MAX_FDS {
+        return Err(Errno(libc::EINVAL));
+    }
+    send_flags(fd, bytes, fds, libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT)
+}
+
 /// As [`send`], without the limit of [`MAX_FDS`] (up to eight descriptors fit): for tests of
 /// a receiver that must refuse a sender that ignores the limit.
-#[allow(clippy::unnecessary_cast, clippy::cast_possible_truncation)] // the field types differ between glibc and musl; the values are small
 pub fn send_unchecked(fd: BorrowedFd<'_>, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> Result<()> {
+    send_flags(fd, bytes, fds, libc::MSG_NOSIGNAL)
+}
+
+#[allow(clippy::unnecessary_cast, clippy::cast_possible_truncation)] // the field types differ between glibc and musl; the values are small
+fn send_flags(
+    fd: BorrowedFd<'_>,
+    bytes: &[u8],
+    fds: &[BorrowedFd<'_>],
+    flags: libc::c_int,
+) -> Result<()> {
     if fds.len() > 8 {
         return Err(Errno(libc::EINVAL));
     }
@@ -118,8 +139,7 @@ pub fn send_unchecked(fd: BorrowedFd<'_>, bytes: &[u8], fds: &[BorrowedFd<'_>]) 
         }
     }
     // SAFETY: msg points at valid iovec and control buffers for the call.
-    let sent =
-        check_long(unsafe { libc::sendmsg(fd.as_raw_fd(), &raw const msg, libc::MSG_NOSIGNAL) })?;
+    let sent = check_long(unsafe { libc::sendmsg(fd.as_raw_fd(), &raw const msg, flags) })?;
     if sent == bytes.len() {
         Ok(())
     } else {

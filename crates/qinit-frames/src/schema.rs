@@ -174,6 +174,8 @@ pub(crate) fn check_kind(kind: &str, f: &Frame, base: &str) -> Result<(), Error>
     if kind == "forager" {
         banned.push(("restart", f.restart.is_some()));
         banned.push(("instances", f.instances.is_some()));
+        // A forager never becomes ready, so it has no running process to signal.
+        banned.push(("reload", f.reload.is_some()));
     }
     if kind == "brood" {
         banned.extend([

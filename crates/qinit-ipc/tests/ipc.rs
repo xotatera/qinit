@@ -3,7 +3,7 @@
 
 use qinit_ipc::{
     Errno, MAX_FDS, accept, connect_seqpacket, listen_seqpacket, peer_cred, peer_pidfd, recv, send,
-    seqpacket_pair,
+    send_nowait, seqpacket_pair,
 };
 use std::ffi::CString;
 use std::io::{Read, Write};
@@ -146,4 +146,22 @@ fn a_received_fd_beyond_the_buffer_sets_ctrunc() {
     let got = recv(b.as_fd(), &mut buf).unwrap();
     assert!(got.ctrunc);
     assert!(got.fds.len() <= MAX_FDS);
+}
+
+#[test]
+fn send_nowait_reports_a_full_queue_instead_of_blocking() {
+    let (a, b) = seqpacket_pair().unwrap();
+    let mut full = false;
+    for _ in 0..100_000 {
+        match send_nowait(a.as_fd(), &[0u8; 1024], &[]) {
+            Ok(()) => {}
+            Err(e) => {
+                assert_eq!(e, Errno(libc::EAGAIN));
+                full = true;
+                break;
+            }
+        }
+    }
+    assert!(full, "the queue never filled");
+    drop(b);
 }

@@ -38,8 +38,10 @@ A request the peer may not make gets `Error(Denied)` and the connection stays op
 ## The conversation
 
 - **One request in flight per connection.** A client sends a request and reads replies until the
-  last one for that request. A second request before the last reply is a protocol error and
-  closes the connection. A client that wants parallel work opens several connections.
+  last one for that request. A second request before the last reply is answered
+  `Error(BadRequest)` with detail 6 (`Consistency`), and the connection is closed. A client that
+  wants parallel work opens several connections. A client that does not read its replies is
+  closed when its receive queue is full: the server never waits for it.
 - **No handshake.** Every message carries the protocol version in its header (1). A server that
   does not speak the version answers `Error(Version)`, with the version it speaks in the error's
   `version` word, and closes the connection.
@@ -77,7 +79,8 @@ and, with the length, inside `total_len`. Strings are UTF-8. A *list* is a strin
 elements separated by one NUL byte, with no empty element and no NUL first or last; the empty
 string is the empty list. A name is 1 to 96 bytes. A *target* names a node (a name) or an
 instance, `<frame>#<n>` with `n` in decimal without leading zeros and below 2^32, and is 1 to
-107 bytes; a name never contains `#`.
+107 bytes. The decoder checks only the length; a name that is not in the database, or an
+instance that is not running, is answered `Error(UnknownNode)`.
 
 Strings are laid out in the order the record names them, one after the other, so one value has
 one encoding. An empty string takes the next offset with length 0.
@@ -173,7 +176,7 @@ cursor, not an error.
 | 3 | `settled` | 0 reply on acceptance, 1 reply again when the node settles |
 | 4 | `wait_ms` | 1 to 600000 when `settled`, otherwise 0 |
 
-No descriptors. `refresh` restarts the node, or sends it its reload signal if the frame declares
+No descriptors. A target that is an instance accepts only `stop`; any other action is answered `Error(BadRequest)` with detail 6. `refresh` restarts the node, or sends it its reload signal if the frame declares
 one; either way the `refresh` edges of the nodes that depend on it fire. Reply: `Accepted`, or
 `Error` (`UnknownNode`, `NotNow` with the node's state when the request does nothing in that
 state, `ShuttingDown`); and if `settled`, then `Settled`, `Pending` or `Superseded`, each with
@@ -205,7 +208,8 @@ outcome is read with `Status` on `<frame>#<id>`.
 | 1 | `wait_ms` | 1 to 600000 when `settled`, otherwise 0 |
 
 One descriptor: a regular file or a memfd holding the new compiled database. Colony reads it
-whole (at most 8 MiB), validates it, and swaps only if it is valid. Reply: `Accepted`, or
+whole from offset 0 whatever the descriptor's current offset, and leaves the offset as it was
+(at most 8 MiB), validates it, and swaps only if it is valid. Reply: `Accepted`, or
 `Error(Invalid)` with the reason, or `Error(Busy)` while an earlier refresh is stopping nodes,
 or `Error(ShuttingDown)`; and if `settled`, then `Settled` once the new graph is live and the
 nodes that were running are back in their wanted state or have failed, or `Pending`.
@@ -241,9 +245,9 @@ No descriptors. Colony stops every instance and then the whole graph in order. A
 | 2 | `kind` | 0 worker, 1 forager, 2 brood |
 | 3, 4 | `state`, `detail` | the state and its detail |
 | 5 | `group` | the index of the first unsatisfied dependency group, or `0xFFFFFFFF` for none |
-| 6, 7 | `target_off`, `target_len` | the first unsatisfied target of that group (a name or a path); length 0 exactly when `group` is `0xFFFFFFFF` |
+| 6, 7 | `target_off`, `target_len` | the first unsatisfied target of that group (a name or a path, a path clipped to its first 96 bytes at a character boundary); length 0 exactly when `group` is `0xFFFFFFFF` |
 | 8 | `backoff_ms` | the restart back-off remaining |
-| 9, 10 | `since_lo`, `since_hi` | milliseconds in this state, low and high half |
+| 9, 10 | `since_lo`, `since_hi` | milliseconds in this state, low and high half; 0 for a node that is off, done or quarantined, which keeps no timestamp |
 | 11 | `restarts` | restarts since the database was loaded |
 | 12 | `pid` | the main process, 0 for none |
 
