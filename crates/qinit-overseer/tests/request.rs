@@ -17,7 +17,11 @@ fn full() -> RequestSpec {
         env: vec!["A=1".into(), "EMPTY=".into()],
         cwd: "/srv".into(),
         umask: 0o077,
-        nofile: 1024,
+        rlimits: {
+            let mut l = [None; 16];
+            l[7] = Some(1024);
+            l
+        },
         user: "svc".into(),
         caps: (1 << 10) | (1 << 40),
         securebits: Securebits::NorootLocked,
@@ -54,7 +58,8 @@ fn a_request_spec_round_trips_through_decode() {
     );
     assert_eq!(text(&b, Q_STDOUT_A, Q_STDOUT_B), "/var/log/out");
     assert_eq!(req(&b, Q_UMASK), 0o077);
-    assert_eq!(req(&b, Q_NOFILE), 1024);
+    assert_eq!(req(&b, Q_RLIMIT_MASK), 1 << 7);
+    assert_eq!(req(&b, Q_RLIMIT_BASE + 2 * 7), 1024);
     assert_eq!((req(&b, Q_CAPS_LO), req(&b, Q_CAPS_HI)), (1 << 10, 1 << 8));
     assert_eq!(req(&b, Q_SECUREBITS), 2);
     assert_eq!(req(&b, Q_NNP), 1);
@@ -125,7 +130,7 @@ fn from_model_on_the_golden_tree_decodes() {
     let logd = m.nodes.iter().find(|n| n.name == "logd").unwrap();
     let spec = from_model(logd, &m, &routed, 30_000).unwrap();
     assert_eq!(spec.env, ["LOGD_DIR=/var/log/qinit", "LOGD_LEVEL=debug"]);
-    assert_eq!((spec.umask, spec.nofile), (0o077, 1024));
+    assert_eq!((spec.umask, spec.rlimits[7]), (0o077, Some(1024)));
     assert_eq!(spec.cwd, "/var/log/qinit");
     assert_eq!(spec.user, "logd");
     assert_eq!(spec.ns, 0b01100);
@@ -391,5 +396,59 @@ fn a_caller_stdout_replaces_the_frames_pipe_route() {
     assert_eq!(
         from_instance(piped, &m, &missing, &[], &[], 1000).unwrap_err(),
         BuildError::MissingFd
+    );
+}
+
+#[test]
+#[allow(clippy::cast_possible_truncation)] // a limit's low and high words
+fn from_model_carries_every_limit_into_the_record() {
+    let mut m = golden();
+    let at = m.nodes.iter().position(|n| n.name == "logd").unwrap();
+    let want: [Option<u64>; 16] = std::array::from_fn(|r| {
+        (r != 4).then_some(match r {
+            7 => 4096,
+            13 | 14 => 9,
+            6 => u64::MAX,
+            _ => (7u64 << 32) | (r as u64 + 1),
+        })
+    });
+    m.nodes[at].rlimits = want;
+    let routed = Routed {
+        stdin: None,
+        stdout: Some(5),
+        stderr: None,
+        ready: Some(6),
+    };
+    let spec = from_model(&m.nodes[at], &m, &routed, 30_000).unwrap();
+    let b = spec.bytes().unwrap();
+    assert_eq!(decode(&b), Ok(()));
+    let mask = (0..16)
+        .filter(|r| want[*r].is_some())
+        .fold(0, |m, r| m | (1u32 << r));
+    assert_eq!(req(&b, Q_RLIMIT_MASK), mask);
+    for (r, v) in want.iter().enumerate() {
+        let v = v.unwrap_or(0);
+        assert_eq!(req(&b, Q_RLIMIT_BASE + 2 * r), v as u32, "low {r}");
+        assert_eq!(
+            req(&b, Q_RLIMIT_BASE + 2 * r + 1),
+            (v >> 32) as u32,
+            "high {r}"
+        );
+    }
+}
+
+#[test]
+fn a_limit_step_is_named_after_its_resource() {
+    assert_eq!(
+        qinit_overseer::status::name(Step::Rlimit(7, 1)),
+        "rlimit-nofile"
+    );
+    assert_eq!(
+        qinit_overseer::status::name(Step::Rlimit(8, 1)),
+        "rlimit-memlock"
+    );
+    assert_eq!(
+        qinit_overseer::status::name(Step::RlimitCore0),
+        "rlimit-core"
     );
 }

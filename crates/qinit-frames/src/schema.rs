@@ -3,7 +3,8 @@
 //! The strict frame schema (spec §5). Unknown keys are errors; per-kind rules and value checks
 //! live in `parse_frame`.
 use crate::error::{Code, Error};
-use crate::units::{duration_ms, size_kib};
+use crate::units::{duration_ms, size_bytes, size_kib};
+use qinit_db::RLIMIT_KEYS;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -42,11 +43,115 @@ pub struct LaunchCfg {
     pub fds: Option<Vec<String>>,
 }
 
-/// Resource limits applied before exec.
+/// Resource limits applied before exec: every kernel resource but `core`, which is always off.
+/// A value is a number, `"infinity"`, or for the byte limits a size such as `"64M"`.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rlimits {
-    pub nofile: Option<u32>,
+    pub cpu: Option<RlimitValue>,
+    pub fsize: Option<RlimitValue>,
+    pub data: Option<RlimitValue>,
+    pub stack: Option<RlimitValue>,
+    pub rss: Option<RlimitValue>,
+    pub nproc: Option<RlimitValue>,
+    pub nofile: Option<RlimitValue>,
+    pub memlock: Option<RlimitValue>,
+    #[serde(rename = "as")]
+    pub address_space: Option<RlimitValue>,
+    pub locks: Option<RlimitValue>,
+    pub sigpending: Option<RlimitValue>,
+    pub msgqueue: Option<RlimitValue>,
+    pub nice: Option<RlimitValue>,
+    pub rtprio: Option<RlimitValue>,
+    pub rttime: Option<RlimitValue>,
+}
+
+impl Rlimits {
+    /// The value written for kernel resource number `resource` (`RLIMIT_KEYS` order); `None`
+    /// when unset, and always for `core`.
+    #[must_use]
+    pub fn get(&self, resource: usize) -> Option<&RlimitValue> {
+        [
+            &self.cpu,
+            &self.fsize,
+            &self.data,
+            &self.stack,
+            &None,
+            &self.rss,
+            &self.nproc,
+            &self.nofile,
+            &self.memlock,
+            &self.address_space,
+            &self.locks,
+            &self.sigpending,
+            &self.msgqueue,
+            &self.nice,
+            &self.rtprio,
+            &self.rttime,
+        ]
+        .get(resource)
+        .and_then(|v| v.as_ref())
+    }
+}
+
+/// One limit as written: a number or a string (`"infinity"` or a size).
+#[derive(Clone, Debug)]
+pub enum RlimitValue {
+    Number(u64),
+    Text(String),
+}
+
+impl<'de> Deserialize<'de> for RlimitValue {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::{Error, Unexpected, Visitor};
+        struct V;
+        impl Visitor<'_> for V {
+            type Value = RlimitValue;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a limit: a whole number, a size like \"64M\" or \"infinity\"")
+            }
+            fn visit_u64<E: Error>(self, n: u64) -> Result<RlimitValue, E> {
+                Ok(RlimitValue::Number(n))
+            }
+            fn visit_i64<E: Error>(self, n: i64) -> Result<RlimitValue, E> {
+                u64::try_from(n)
+                    .map(RlimitValue::Number)
+                    .map_err(|_| E::invalid_value(Unexpected::Signed(n), &self))
+            }
+            fn visit_str<E: Error>(self, t: &str) -> Result<RlimitValue, E> {
+                Ok(RlimitValue::Text(t.to_owned()))
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+/// The limits that count bytes and so take a size string.
+const BYTE_LIMITS: [&str; 7] = ["as", "data", "fsize", "memlock", "msgqueue", "rss", "stack"];
+
+/// The value of limit `key` as the kernel takes it (`u64::MAX` is infinity), or why it is not
+/// one.
+///
+/// # Errors
+/// A string that is neither `"infinity"` nor (for a byte limit) a size, `nofile` of 0 or
+/// infinity, `nice` above 40, or `rtprio` above 99.
+pub fn rlimit_value(key: &str, v: &RlimitValue) -> Result<u64, String> {
+    let n = match v {
+        RlimitValue::Number(n) => *n,
+        RlimitValue::Text(t) if t == "infinity" => u64::MAX,
+        RlimitValue::Text(t) if BYTE_LIMITS.contains(&key) => {
+            size_bytes(t).ok_or_else(|| format!("`{t}` is not a size like 64M or \"infinity\""))?
+        }
+        RlimitValue::Text(t) => {
+            return Err(format!("`{t}` is not a number or \"infinity\""));
+        }
+    };
+    match key {
+        "nofile" if n == 0 || n == u64::MAX => Err("must be at least 1 and finite".to_owned()),
+        "nice" if n > 40 => Err("must be at most 40".to_owned()),
+        "rtprio" if n > 99 => Err("must be at most 99".to_owned()),
+        _ => Ok(n),
+    }
 }
 
 /// How a worker signals readiness: `"pipe"`, `"exit"`, a socket or a path.
@@ -251,8 +356,13 @@ fn check_launch(f: &Frame, base: &str) -> Result<(), Error> {
     if let Some(u) = f.umask.filter(|u| *u > MAX_UMASK) {
         return Err(bad(base, "umask", format!("0o{u:o} must be at most 0o777")));
     }
-    if f.rlimits.as_ref().and_then(|r| r.nofile) == Some(0) {
-        return Err(bad(base, "rlimits.nofile", "must be at least 1"));
+    for (r, key) in RLIMIT_KEYS.iter().enumerate() {
+        let Some(v) = f.rlimits.as_ref().and_then(|l| l.get(r)) else {
+            continue;
+        };
+        if let Err(why) = rlimit_value(key, v) {
+            return Err(bad(base, &format!("rlimits.{key}"), why));
+        }
     }
     Ok(())
 }
@@ -484,7 +594,26 @@ const TABLE_KEYS: [(&str, &[&str]); 7] = [
     ("cell", &["memory_max", "pids_max"]),
     ("credentials", &["uid", "caps", "nnp", "securebits"]),
     ("sandbox", &["namespaces", "seccomp", "landlock"]),
-    ("rlimits", &["nofile"]),
+    (
+        "rlimits",
+        &[
+            "cpu",
+            "fsize",
+            "data",
+            "stack",
+            "rss",
+            "nproc",
+            "nofile",
+            "memlock",
+            "as",
+            "locks",
+            "sigpending",
+            "msgqueue",
+            "nice",
+            "rtprio",
+            "rttime",
+        ],
+    ),
     ("launch", &["concurrency", "argv_tail", "env", "fds"]),
 ];
 const GROUP_KEYS: [&str; 2] = ["group", "edges"];

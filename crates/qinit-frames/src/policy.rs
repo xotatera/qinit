@@ -13,19 +13,33 @@
 //! no credential set and is never checked. Every other node (root, a capability, or `nnp =
 //! false`) is checked against the first matching rule, or refused by `default = "deny"`.
 //!
+//! Resource limits are bounded too. A limit above its ceiling counts as privilege (the overseer
+//! applies limits as root, so a frame could otherwise grant itself the effect of `CAP_SYS_NICE`,
+//! `CAP_IPC_LOCK` or `CAP_SYS_RESOURCE`). The built-in ceiling is the kernel's boot hard limits:
+//! `as cpu data fsize locks rss rttime stack` infinity, `nofile` 4096, `memlock` 8388608,
+//! `msgqueue` 819200, `nice` 0, `rtprio` 0, and `nproc` and `sigpending` none (any value needs
+//! a rule). A node with a limit above it is checked like a privileged one. A rule's
+//! `rlimits_max = { <key> = <value> }` (the frame syntax) replaces the ceiling of the keys it
+//! lists for the nodes it matches; a top-level `rlimits_max` replaces the built-in ceiling the
+//! same way. `infinity` compares above every number. A limit above the ceiling of the matching
+//! rule is refused with the key `rule[i].rlimits_max`.
+//!
 //! `users` lists the user names a rule allows. Omitting `users` allows any user; `users = []`
 //! allows no user, so every matching node is refused.
 use crate::error::{Code, Error};
 use crate::expand::kind_name;
 use crate::resolve::{cap_bit, cap_name};
-use qinit_db::{Cred, Model, Node, Seccomp};
+use crate::schema::{Rlimits, rlimit_value};
+use qinit_db::{Cred, Model, Node, RLIMIT_COUNT, RLIMIT_KEYS, Seccomp};
 use serde::Deserialize;
-use std::path::Path;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawPolicy {
     default: Option<String>,
+    rlimits_max: Option<Rlimits>,
     #[serde(default)]
     rule: Vec<RawRule>,
 }
@@ -39,10 +53,33 @@ struct RawRule {
     caps_max: Option<Vec<String>>,
     require_nnp: Option<bool>,
     require_seccomp: Option<bool>,
+    rlimits_max: Option<Rlimits>,
 }
+
+/// The kernel's boot hard limits by resource number (`include/asm-generic/resource.h`,
+/// `INIT_RLIMITS`): `None` is no ceiling, so any set value is above it.
+const BOOT_CEILING: [Option<u64>; RLIMIT_COUNT] = [
+    Some(u64::MAX),  // cpu
+    Some(u64::MAX),  // fsize
+    Some(u64::MAX),  // data
+    Some(u64::MAX),  // stack
+    None,            // core: never set
+    Some(u64::MAX),  // rss
+    None,            // nproc
+    Some(4096),      // nofile
+    Some(8_388_608), // memlock
+    Some(u64::MAX),  // as
+    Some(u64::MAX),  // locks
+    None,            // sigpending
+    Some(819_200),   // msgqueue
+    Some(0),         // nice
+    Some(0),         // rtprio
+    Some(u64::MAX),  // rttime
+];
 
 #[derive(Clone, Debug)]
 struct Rule {
+    rlimits: [Option<u64>; RLIMIT_COUNT],
     pattern: String,
     users: Option<Vec<String>>,
     ceiling: u64,
@@ -53,6 +90,8 @@ struct Rule {
 /// A parsed policy.
 #[derive(Clone, Debug)]
 pub struct Policy {
+    path: PathBuf,
+    ceiling: [Option<u64>; RLIMIT_COUNT],
     allow_by_default: bool,
     rules: Vec<Rule>,
 }
@@ -88,42 +127,67 @@ pub fn glob_match(pattern: &str, name: &str) -> bool {
     p[pi..].iter().all(|c| *c == b'*')
 }
 
-/// The bare key at the end of `before` when it is a `key = ` prefix of a line, else `None`.
-fn key_before_value(before: &str) -> Option<&str> {
-    let line = before.rsplit('\n').next()?;
-    let (key, _) = line.split_once('=')?;
-    let key = key.trim();
-    let bare = !key.is_empty()
-        && key
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-    bare.then_some(key)
-}
-
 /// The text between the first pair of backticks of `msg` after `prefix`.
 fn quoted<'a>(msg: &'a str, prefix: &str) -> Option<&'a str> {
     let rest = msg.strip_prefix(prefix)?;
     rest.split_once('`').map(|(f, _)| f)
 }
 
-/// The index of the `[[rule]]` table that contains byte `at`: the last `[[rule]]` header line at
-/// or before it. This is a line scan, not a TOML parse, so a `[[rule]]` line inside a
-/// multi-line string, rules written as an inline `rule = [...]` array, and a header with inner
-/// spaces such as `[[ rule ]]` are not recognised, so the error is keyed by the last recognised
-/// `[[rule]]` before it (or by the bare field when none precedes it).
-fn rule_at(text: &str, at: usize) -> Option<usize> {
-    let mut headers = 0usize;
-    let mut offset = 0usize;
-    for line in text.split_inclusive('\n') {
-        if offset > at {
-            break;
-        }
-        if line.trim_start().starts_with("[[rule]]") {
-            headers += 1;
-        }
-        offset += line.len();
+/// The key path of the entry of `text` that contains byte `at`, from a TOML parse: `rule[i]`
+/// for the `i`-th `[[rule]]` element, then the keys below it (`rule[1].rlimits_max.core`,
+/// `rlimits_max.nofile`), and whether the walk reached a leaf value (`false`: it stopped at a
+/// table or element, so a missing field belongs under it). An inline table owns its braces; a
+/// header table owns the text up to the next entry that starts after it (the parser spans only
+/// the header). `None` when `text` does not parse or `at` precedes every key.
+fn path_at(text: &str, at: usize) -> Option<(String, bool)> {
+    use toml::de::DeValue;
+    type Table<'a> = toml::de::DeTable<'a>;
+    /// The entry of `t` whose text holds `at`: the last key starting at or before it.
+    fn entry<'t, 'i>(
+        t: &'t Table<'i>,
+        at: usize,
+    ) -> Option<(&'t str, &'t toml::Spanned<DeValue<'i>>)> {
+        // A header entry starts at its first element's `[[`, before its key.
+        let start = |k: &toml::Spanned<_>, v: &toml::Spanned<DeValue<'_>>| {
+            k.span().start.min(v.span().start)
+        };
+        t.iter()
+            .filter(|(k, v)| start(k, v) <= at)
+            .max_by_key(|(k, v)| start(k, v))
+            .map(|(k, v)| (k.get_ref().as_ref(), v))
     }
-    headers.checked_sub(1)
+    fn walk(t: &Table<'_>, at: usize, out: &mut String) -> bool {
+        let Some((key, value)) = entry(t, at) else {
+            return false;
+        };
+        if !out.is_empty() {
+            out.push('.');
+        }
+        out.push_str(key);
+        match value.get_ref() {
+            DeValue::Table(sub) => walk(sub, at, out),
+            DeValue::Array(items) => {
+                // Elements are ordered; the one holding `at` is the last starting at or before it.
+                let Some((i, item)) = items
+                    .iter()
+                    .enumerate()
+                    .rfind(|(_, v)| v.span().start <= at)
+                else {
+                    return false;
+                };
+                let _ = write!(out, "[{i}]");
+                match item.get_ref() {
+                    DeValue::Table(sub) => walk(sub, at, out),
+                    _ => true,
+                }
+            }
+            _ => true,
+        }
+    }
+    let table = toml::de::DeTable::parse(text).ok()?;
+    let mut out = String::new();
+    let leaf = walk(table.get_ref(), at, &mut out);
+    (!out.is_empty()).then_some((out, leaf))
 }
 
 /// The error for a policy whose TOML is valid but whose shape is not.
@@ -131,20 +195,19 @@ fn rule_at(text: &str, at: usize) -> Option<usize> {
 /// The key is `rule[i].<field>` inside the `i`-th `[[rule]]` table, the bare field at top level
 /// (`default`, or an unknown key), and `policy` when neither the rule nor the field can be told.
 /// Both come from the error's byte span: the field is the unknown or missing field the message
-/// names, else the key on the span's line; the rule is found by [`rule_at`], so the limits
-/// documented there apply: an unrecognised header is keyed by the last recognised `[[rule]]`
-/// before it, or by the bare field when none precedes it. An unknown field is an `UnknownKey`, anything else a `BadValue`.
+/// names, else the key on the span's line; the rule is the `rule` element containing the span
+/// ([`rule_at`]). An unknown field is an `UnknownKey`, anything else a `BadValue`.
 fn serde_error(path: &Path, text: &str, e: &toml::de::Error) -> Error {
     let msg = e.message();
     let unknown = quoted(msg, "unknown field `");
+    let missing = quoted(msg, "missing field `");
     let start = e.span().map(|s| s.start.min(text.len()));
-    let field = unknown
-        .or_else(|| quoted(msg, "missing field `"))
-        .or_else(|| key_before_value(text.get(..start?)?));
-    let rule = start.and_then(|at| rule_at(text, at));
-    let key = match (rule, field) {
-        (Some(i), Some(f)) => format!("rule[{i}].{f}"),
-        (Some(i), None) => format!("rule[{i}]"),
+    let at = start.and_then(|at| path_at(text, at));
+    let key = match (at, unknown.or(missing)) {
+        // An unknown field is spanned at its own key, so the path already ends in it.
+        (Some((p, _)), Some(_)) if unknown.is_some() => p,
+        (Some((p, false)), Some(f)) => format!("{p}.{f}"),
+        (Some((p, _)), _) => p,
         (None, Some(f)) => f.to_string(),
         (None, None) => "policy".to_string(),
     };
@@ -154,6 +217,26 @@ fn serde_error(path: &Path, text: &str, e: &toml::de::Error) -> Error {
         Code::BadValue
     };
     Error::new(code, key, msg).in_file(path)
+}
+
+/// The limits listed in an `rlimits_max` table, by resource number; `scope` is its key prefix.
+fn ceilings(
+    path: &Path,
+    scope: &str,
+    set: Option<&Rlimits>,
+    errs: &mut Vec<Error>,
+) -> [Option<u64>; RLIMIT_COUNT] {
+    std::array::from_fn(|r| {
+        let v = set?.get(r)?;
+        let key = RLIMIT_KEYS[r];
+        match rlimit_value(key, v) {
+            Ok(n) => Some(n),
+            Err(why) => {
+                errs.push(Error::new(Code::BadValue, format!("{scope}.{key}"), why).in_file(path));
+                None
+            }
+        }
+    })
 }
 
 fn build_rule(path: &Path, i: usize, r: RawRule, errs: &mut Vec<Error>) -> Rule {
@@ -172,6 +255,12 @@ fn build_rule(path: &Path, i: usize, r: RawRule, errs: &mut Vec<Error>) -> Rule 
         }
     }
     Rule {
+        rlimits: ceilings(
+            path,
+            &format!("rule[{i}].rlimits_max"),
+            r.rlimits_max.as_ref(),
+            errs,
+        ),
         pattern: r.pattern,
         users: r.users,
         ceiling,
@@ -213,8 +302,12 @@ pub fn load_policy(path: &Path) -> Result<Policy, Vec<Error>> {
         .enumerate()
         .map(|(i, r)| build_rule(path, i, r, &mut errs))
         .collect();
+    let listed = ceilings(path, "rlimits_max", raw.rlimits_max.as_ref(), &mut errs);
+    let ceiling = std::array::from_fn(|r| listed[r].or(BOOT_CEILING[r]));
     if errs.is_empty() {
         Ok(Policy {
+            path: path.to_path_buf(),
+            ceiling,
             allow_by_default,
             rules,
         })
@@ -236,7 +329,15 @@ fn cap_names(bits: u64) -> String {
         .join(", ")
 }
 
-fn check_rule(rule: &Rule, node: &Node, cred: &Cred, errs: &mut Vec<(usize, Error)>, i: usize) {
+fn check_rule(
+    policy: &Policy,
+    ri: usize,
+    node: &Node,
+    cred: &Cred,
+    errs: &mut Vec<(usize, Error)>,
+    i: usize,
+) {
+    let rule = &policy.rules[ri];
     if let Some(users) = &rule.users
         && !users.contains(&cred.user)
     {
@@ -263,11 +364,39 @@ fn check_rule(rule: &Rule, node: &Node, cred: &Cred, errs: &mut Vec<(usize, Erro
         let why = format!("seccomp required by rule `{}`", rule.pattern);
         errs.push((i, violation(node, why)));
     }
+    let over = raised(node, &policy.ceiling, Some(&rule.rlimits));
+    if !over.is_empty() {
+        let why = format!(
+            "{} `{}` sets limits above the ceiling of rule `{}`: {}",
+            kind_name(node.kind),
+            node.name,
+            rule.pattern,
+            over.join(", ")
+        );
+        let key = format!("rule[{ri}].rlimits_max");
+        errs.push((i, Error::new(Code::Policy, key, why).in_file(&policy.path)));
+    }
 }
 
 /// A credential set that holds no privilege: not root, no capabilities, no-new-privileges on.
 fn unprivileged(c: &Cred) -> bool {
     c.user != "root" && c.caps == 0 && c.nnp
+}
+
+/// The names of the limits `node` sets above `ceiling` (`None` there: any value is above it),
+/// where `listed` replaces the ceiling of the keys it holds.
+fn raised(
+    node: &Node,
+    ceiling: &[Option<u64>; RLIMIT_COUNT],
+    listed: Option<&[Option<u64>; RLIMIT_COUNT]>,
+) -> Vec<&'static str> {
+    (0..RLIMIT_COUNT)
+        .filter(|&r| {
+            let max = listed.and_then(|l| l[r]).or(ceiling[r]);
+            node.rlimits[r].is_some_and(|v| max.is_none_or(|m| v > m))
+        })
+        .map(|r| RLIMIT_KEYS[r])
+        .collect()
 }
 
 /// Every violation of `policy` by `model`, with the index of the offending node.
@@ -280,20 +409,24 @@ pub(crate) fn violations(policy: &Policy, model: &Model) -> Vec<(usize, Error)> 
         else {
             continue;
         };
-        if unprivileged(cred) {
+        let over = raised(node, &policy.ceiling, None);
+        if unprivileged(cred) && over.is_empty() {
             continue;
         }
         match policy
             .rules
             .iter()
-            .find(|r| glob_match(&r.pattern, &node.name))
+            .position(|r| glob_match(&r.pattern, &node.name))
         {
-            Some(rule) => check_rule(rule, node, cred, &mut errs, i),
+            Some(ri) => check_rule(policy, ri, node, cred, &mut errs, i),
             None if policy.allow_by_default => {}
-            None => errs.push((
-                i,
-                violation(node, "no rule matches and the default is deny".to_string()),
-            )),
+            None => {
+                let mut why = "no rule matches and the default is deny".to_string();
+                if !over.is_empty() {
+                    why = format!("{why}; limits above the ceiling: {}", over.join(", "));
+                }
+                errs.push((i, violation(node, why)));
+            }
         }
     }
     errs

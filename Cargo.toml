@@ -75,6 +75,8 @@ timeout = "45s"
 # 17.4-21.7 s run (25.2-29.6 s CPU), 0.9-1.0 GB peak; warm 3.4 s (3.1 s CPU), 370 MB peak.
 # After the spec split: 142 verified, cold 14.9-15.4 s (21.1-21.6 s CPU), 0.94-0.95 GB peak.
 # 60s covers 2x the slowest measured 29.6s CPU.
+# Group 1 (2026-11-04, one graph labelling, pool UTF-8 once, rlimit words): 223 verified, 14-16 s
+# (21.6 s CPU) after a source change, warm 4.1 s; the timeout stands.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-db-core"
 kind = "verus"
@@ -96,6 +98,7 @@ timeout = "90s"
 # Measured 2026-11-04: 134 verified, 5.0-5.3 s (4.8-5.1 s CPU), 308 MB peak; 6.9 s (6.6 s CPU) in
 # the SP6 gate run, where it once took 20 s under load. All warm: a cold build adds 15-20 s CPU
 # (inferred), so 45s.
+# Group 1 (2026-11-04, one step per rlimit): 139 verified, 6.0 s (5.8 s CPU) warm; 45s stands.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-overseer-core"
 kind = "verus"

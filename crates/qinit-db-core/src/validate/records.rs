@@ -23,6 +23,45 @@ fn index_or_none_ok(v: u32, n: u32) -> (r: bool)
     v == NONE || v < n
 }
 
+/// Every limit of node `i` is [`rlimit_ok`] (`mask` is its `rlimit_mask`).
+#[allow(clippy::cast_possible_truncation)]  // `k < RLIMIT_COUNT`, so the shift count fits
+fn check_rlimits(b: &[u8], i: usize, mask: u32) -> (r: Result<(), DbError>)
+    requires
+        v1(b@),
+        i < nodes(b@),
+        mask == nf(b@, i as int, N_RLIMIT_MASK) as u32,
+    ensures
+        r is Ok ==> forall|k: usize| k < RLIMIT_COUNT ==> #[trigger] rlimit_ok(b@, i as int, k),
+{
+    let t = T_NODES;
+    let mut k: usize = 0;
+    while k < RLIMIT_COUNT
+        invariant
+            v1(b@),
+            i < nodes(b@),
+            mask == nf(b@, i as int, N_RLIMIT_MASK) as u32,
+            k <= RLIMIT_COUNT,
+            t == T_NODES,
+            forall|j: usize| j < k ==> #[trigger] rlimit_ok(b@, i as int, j),
+        decreases RLIMIT_COUNT - k,
+    {
+        let lo = field(b, t, i, N_RLIMIT_BASE + 2 * k);
+        let hi = field(b, t, i, N_RLIMIT_BASE + 2 * k + 1);
+        let bad = if (mask >> (k as u32)) & 1 == 0 {
+            lo != 0 || hi != 0
+        } else {
+            (k == RLIMIT_NOFILE as usize && ((lo == 0 && hi == 0) || (lo == u32::MAX && hi
+                == u32::MAX))) || (k == RLIMIT_NICE as usize && (hi != 0 || lo > MAX_RLIMIT_NICE))
+                || (k == RLIMIT_RTPRIO as usize && (hi != 0 || lo > MAX_RLIMIT_RTPRIO))
+        };
+        if bad {
+            return Err(DbError::Consistency { table: tid(t), record: rid(i) });
+        }
+        k += 1;
+    }
+    Ok(())
+}
+
 fn check_node(b: &[u8], i: usize) -> (r: Result<(), DbError>)
     requires
         v1(b@),
@@ -58,6 +97,11 @@ fn check_node(b: &[u8], i: usize) -> (r: Result<(), DbError>)
     ) > 7 {
         return Err(DbError::Enum { table: tid(t), record: rid(i) });
     }
+    let mask = field(b, t, i, N_RLIMIT_MASK);
+    if mask & !RLIMIT_MASK_ALLOWED != 0 {
+        return Err(DbError::Enum { table: tid(t), record: rid(i) });
+    }
+    check_rlimits(b, i, mask)?;
     let cred = field(b, t, i, N_CRED);
     if (kind <= 1 && cred == NONE) || (kind == 2 && cred != NONE) {
         return Err(DbError::Consistency { table: tid(t), record: rid(i) });

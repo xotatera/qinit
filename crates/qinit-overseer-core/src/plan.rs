@@ -76,8 +76,9 @@ pub enum Step {
     RouteReady(u32),
     /// `umask(mask)`.
     Umask(u32),
-    /// `RLIMIT_NOFILE` to this value.
-    RlimitNofile(u32),
+    /// The limit of this kernel resource number (soft and hard) to this value; `u64::MAX` is
+    /// infinity.
+    Rlimit(u32, u64),
     /// `RLIMIT_CORE` to 0.
     RlimitCore0,
     /// `setgroups` of the resolved supplementary groups.
@@ -129,7 +130,7 @@ pub open spec fn phase(s: Step) -> int {
         Step::OpenStderr => 4,
         Step::RouteReady(_) => 4,
         Step::Umask(_) => 5,
-        Step::RlimitNofile(_) => 5,
+        Step::Rlimit(_, _) => 5,
         Step::RlimitCore0 => 5,
         Step::Setgroups => 6,
         Step::Setgid => 6,
@@ -159,8 +160,8 @@ pub open spec fn sub(s: Step) -> int {
         Step::OpenStdout => 1,
         Step::OpenStderr => 2,
         Step::RouteReady(_) => 3,
-        Step::RlimitNofile(_) => 1,
-        Step::RlimitCore0 => 2,
+        Step::Rlimit(r, _) => 1 + r as int,
+        Step::RlimitCore0 => 17,
         Step::Setgid => 1,
         Step::DropBounding(c) => if c == CAP_SETPCAP {
             41
@@ -254,6 +255,17 @@ pub open spec fn landlock_elems(b: Seq<u8>) -> int {
     elems(field_slice(b, Q_LANDLOCK_OFF, Q_LANDLOCK_LEN))
 }
 
+/// Bit `r` of the request's limit mask.
+pub open spec fn rlimit_set(b: Seq<u8>, r: int) -> bool {
+    ((qw(b, Q_RLIMIT_MASK) as u32) >> (r as u32)) & 1u32 == 1u32
+}
+
+/// The value of limit `r` of the request: its low word plus its high word times 2^32.
+pub open spec fn rlimit_value(b: Seq<u8>, r: int) -> int {
+    qw(b, (Q_RLIMIT_BASE + 2 * r) as usize) + qw(b, (Q_RLIMIT_BASE + 2 * r + 1) as usize)
+        * 0x1_0000_0000
+}
+
 /// A step the request calls for: a payload that is a request field or a named constant, and
 /// a presence the request's flags allow.
 pub open spec fn step_ok(b: Seq<u8>, x: Step) -> bool {
@@ -266,7 +278,8 @@ pub open spec fn step_ok(b: Seq<u8>, x: Step) -> bool {
         Step::ArmDeadline(d) => d as int == qw(b, Q_DEADLINE_MS),
         Step::RouteReady(fd) => qw(b, Q_READY_KIND) == READY_PIPE && fd as int == qw(b, Q_READY_FD),
         Step::Umask(m) => m as int == qw(b, Q_UMASK),
-        Step::RlimitNofile(v) => qw(b, Q_NOFILE) != 0 && v as int == qw(b, Q_NOFILE),
+        Step::Rlimit(r, v) => r < RLIMIT_COUNT as u32 && rlimit_set(b, r as int) && v as int
+            == rlimit_value(b, r as int),
         Step::Securebits(v) => v as int == sb_value(qw(b, Q_SECUREBITS)),
         Step::DropBounding(c) => c <= CAP_LAST && !cap_has(b, c as int),
         Step::AmbientRaise(c) => c <= CAP_LAST && cap_has(b, c as int),
@@ -314,7 +327,11 @@ pub open spec fn present_fds(b: Seq<u8>, s: Seq<Step>) -> bool {
 /// The mask, limits, groups and securebits.
 pub open spec fn present_env(b: Seq<u8>, s: Seq<Step>) -> bool {
     &&& has(s, Step::Umask(qw(b, Q_UMASK) as u32))
-    &&& (qw(b, Q_NOFILE) != 0 ==> has(s, Step::RlimitNofile(qw(b, Q_NOFILE) as u32)))
+    &&& forall|r: int|
+        0 <= r < RLIMIT_COUNT && rlimit_set(b, r) ==> #[trigger] has(
+            s,
+            Step::Rlimit(r as u32, rlimit_value(b, r) as u64),
+        )
     &&& has(s, Step::RlimitCore0)
     &&& has(s, Step::Setgroups)
     &&& has(s, Step::Setgid)
@@ -611,6 +628,7 @@ fn sec_fds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 }
 
 /// Phases 5 to 7: the mask, limits, groups and securebits.
+#[allow(clippy::cast_possible_truncation, clippy::cast_lossless)]  // `r < RLIMIT_COUNT`; `u64::from` is not available inside `verus!`
 fn sec_env(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
@@ -619,7 +637,7 @@ fn sec_env(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 5, 0),
     ensures
-        n0 < m <= n0 + 6,
+        n0 < m <= n0 + 21,
         final(out)@.len() == old(out)@.len(),
         sorted(final(out)@.take(m as int)),
         faithful(b@, final(out)@.take(m as int)),
@@ -627,7 +645,6 @@ fn sec_env(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
         ext(old(out)@.take(n0 as int), final(out)@.take(m as int)),
         present_env(b@, final(out)@.take(m as int)),
 {
-    let nofile = req(b, Q_NOFILE);
     let sbv = SECBIT_KEEP_CAPS + (if req(b, Q_SECUREBITS) >= 1 {
         SECBIT_NOROOT
     } else {
@@ -640,14 +657,64 @@ fn sec_env(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     assert(sbv as int == sb_value(qw(b@, Q_SECUREBITS)));
     let mut n = n0;
     n = emit(b, out, n, Step::Umask(req(b, Q_UMASK)));
-    if nofile != 0 {
-        n = emit(b, out, n, Step::RlimitNofile(nofile));
+    let mask = req(b, Q_RLIMIT_MASK);
+    let mut r: usize = 0;
+    while r < RLIMIT_COUNT
+        invariant
+            accepted(b@),
+            r <= RLIMIT_COUNT,
+            n0 + 1 <= n <= n0 + 1 + r,
+            n0 <= 11,
+            mask as int == qw(b@, Q_RLIMIT_MASK),
+            out@.len() == old(out)@.len(),
+            sorted(out@.take(n as int)),
+            faithful(b@, out@.take(n as int)),
+            ext(old(out)@.take(n0 as int), out@.take(n as int)),
+            has(out@.take(n as int), Step::Umask(qw(b@, Q_UMASK) as u32)),
+            phase(out@[n - 1]) < 5 || (phase(out@[n - 1]) == 5 && sub(out@[n - 1]) < 1 + r),
+            forall|j: int|
+                0 <= j < r && rlimit_set(b@, j) ==> #[trigger] has(
+                    out@.take(n as int),
+                    Step::Rlimit(j as u32, rlimit_value(b@, j) as u64),
+                ),
+        decreases RLIMIT_COUNT - r,
+    {
+        if (mask >> (r as u32)) & 1 == 1 {
+            let lo = req(b, Q_RLIMIT_BASE + 2 * r);
+            let hi = req(b, Q_RLIMIT_BASE + 2 * r + 1);
+            let v: u64 = (hi as u64) * 0x1_0000_0000u64 + (lo as u64);
+            assert(v as int == rlimit_value(b@, r as int));
+            n = emit(b, out, n, Step::Rlimit(r as u32, v));
+        }
+        r += 1;
     }
-    assert(below(out@, n as int, 5, 2));
+    assert(below(out@, n as int, 5, 17));
+    let ghost t_limits = out@.take(n as int);
     n = emit(b, out, n, Step::RlimitCore0);
+    let ghost t_core = out@.take(n as int);
     n = emit(b, out, n, Step::Setgroups);
+    let ghost t_groups = out@.take(n as int);
     n = emit(b, out, n, Step::Setgid);
+    let ghost t_gid = out@.take(n as int);
     n = emit(b, out, n, Step::Securebits(sbv));
+    proof {
+        let t = out@.take(n as int);
+        let um = Step::Umask(qw(b@, Q_UMASK) as u32);
+        assert(has(t_limits, um));
+        assert(has(t_core, um));
+        assert(has(t_groups, um));
+        assert(has(t_gid, um));
+        assert forall|j: int| 0 <= j < RLIMIT_COUNT && rlimit_set(b@, j) implies #[trigger] has(
+            t,
+            Step::Rlimit(j as u32, rlimit_value(b@, j) as u64),
+        ) by {
+            let x = Step::Rlimit(j as u32, rlimit_value(b@, j) as u64);
+            assert(has(t_limits, x));
+            assert(has(t_core, x));
+            assert(has(t_groups, x));
+            assert(has(t_gid, x));
+        }
+    }
     n
 }
 
@@ -656,7 +723,7 @@ fn sec_env(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_drops(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 17,
+        n0 <= 32,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 8, 0),
@@ -676,8 +743,8 @@ fn sec_drops(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
             accepted(b@),
             c <= CAP_LAST + 1,
             n0 <= n <= n0 + c,
-            n0 <= 17,
-            n <= 17 + 41,
+            n0 <= 32,
+            n <= 32 + 41,
             out@.len() == old(out)@.len(),
             sorted(out@.take(n as int)),
             faithful(b@, out@.take(n as int)),
@@ -706,7 +773,7 @@ fn sec_drops(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_creds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 59,
+        n0 <= 74,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 9, 0),
@@ -731,8 +798,8 @@ fn sec_creds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
             c <= CAP_LAST + 1,
             base <= n <= base + c,
             base == n0 + 2,
-            n0 <= 59,
-            n <= 59 + 2 + 41,
+            n0 <= 74,
+            n <= 74 + 2 + 41,
             out@.len() == old(out)@.len(),
             sorted(out@.take(n as int)),
             faithful(b@, out@.take(n as int)),
@@ -760,7 +827,7 @@ fn sec_creds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_tail(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 102,
+        n0 <= 117,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 12, 0),
@@ -790,7 +857,7 @@ fn sec_tail(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_landlock(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 105,
+        n0 <= 120,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 15, 0),
@@ -824,8 +891,8 @@ fn sec_landlock(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
                 i <= ll_rules,
                 base <= n <= base + i,
                 base == n0 + 1,
-                n0 <= 105,
-                n <= 105 + 1 + 64,
+                n0 <= 120,
+                n <= 120 + 1 + 64,
                 out@.len() == old(out)@.len(),
                 sorted(out@.take(n as int)),
                 faithful(b@, out@.take(n as int)),
@@ -853,7 +920,7 @@ fn sec_landlock(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_finish(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 171,
+        n0 <= 186,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
         below(old(out)@, n0 as int, 18, 0),

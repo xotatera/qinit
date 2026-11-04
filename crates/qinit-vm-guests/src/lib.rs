@@ -841,6 +841,26 @@ fn launch_helper(role: &str, args: &[String]) -> Option<i32> {
     })
 }
 
+/// The resource names of `show`'s `rlimit_<name>` lines, by kernel resource number.
+pub const RLIMIT_NAMES: [&str; 16] = [
+    "cpu",
+    "fsize",
+    "data",
+    "stack",
+    "core",
+    "rss",
+    "nproc",
+    "nofile",
+    "memlock",
+    "as",
+    "locks",
+    "sigpending",
+    "msgqueue",
+    "nice",
+    "rtprio",
+    "rttime",
+];
+
 /// The `show` helper: what the launch gave this process.
 fn show() -> i32 {
     let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
@@ -871,6 +891,18 @@ fn show() -> i32 {
     env.sort();
     for entry in env {
         let _ = writeln!(out, "env: {entry}");
+    }
+    for (r, name) in RLIMIT_NAMES.iter().enumerate() {
+        let resource = libc::c_int::try_from(r).unwrap_or(-1);
+        let (soft, hard) = qinit_sys::limits::get_rlimit(resource).unwrap_or((0, 0));
+        let text = |v: u64| {
+            if v == u64::MAX {
+                "inf".to_string()
+            } else {
+                v.to_string()
+            }
+        };
+        let _ = writeln!(out, "rlimit_{name}: {} {}", text(soft), text(hard));
     }
     eprintln!("err");
     if std::io::stdout().write_all(out.as_bytes()).is_ok() {

@@ -6,29 +6,95 @@ use super::DbError;
 use super::header::{field, header_word};
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use super::spec::*;
-use super::utf8::utf8_ok;
+use super::utf8::utf8_check;
+use super::{rid, tid};
 #[allow(clippy::wildcard_imports)] // the layout constants, used throughout
 use crate::layout::*;
 use vstd::prelude::*;
 
 verus! {
 
-/// Checks one pool reference.
-pub(crate) fn pool_ref_ok(b: &[u8], off: u32, len: u32) -> (r: Result<(), DbError>)
+/// A reference starting or ending at pool offset `x` falls between two characters of the pool.
+#[allow(clippy::manual_range_contains)]  // `RangeInclusive::contains` is not available inside `verus!`
+fn boundary_ok(b: &[u8], x: u32) -> (ok: bool)
     requires
         v1(b@),
+        pool_valid(b@),
+        x <= tcnt(b@, T_POOL as int),
     ensures
-        r is Ok ==> pool_ref(b@, off as int, len as int),
+        ok ==> vstd::utf8::is_char_boundary(pool_seq(b@), x as int),
 {
     assert(table_ok(b@, T_POOL as int));
     let start = header_word(b, 4 + 2 * T_POOL) as usize;
     let size = header_word(b, 5 + 2 * T_POOL);
-    if len > size || off > size - len {
-        return Err(DbError::Pool);
+    proof {
+        vstd::utf8::is_char_boundary_start_end_of_seq(pool_seq(b@));
     }
-    let a = start + off as usize;
-    if !utf8_ok(b, a, a + len as usize) {
-        return Err(DbError::Utf8);
+    if x == 0 || x == size {
+        return true;
+    }
+    let c = b[start + x as usize];
+    proof {
+        assert(pool_seq(b@)[x as int] == b@[start + x]);
+        vstd::utf8::is_char_boundary_iff_not_is_continuation_byte(pool_seq(b@), x as int);
+    }
+    c < 0x80 || c > 0xbf
+}
+
+/// A valid pool is cut at character boundaries into valid references.
+proof fn lemma_ref_utf8(b: Seq<u8>, off: int, len: int)
+    requires
+        table_ok(b, T_POOL as int),
+        pool_valid(b),
+        0 <= off,
+        0 <= len,
+        off + len <= tcnt(b, T_POOL as int),
+        vstd::utf8::is_char_boundary(pool_seq(b), off),
+        vstd::utf8::is_char_boundary(pool_seq(b), off + len),
+    ensures
+        vstd::utf8::valid_utf8(pool_slice(b, off, len)),
+{
+    let p = pool_seq(b);
+    let j = off + len;
+    vstd::utf8::valid_utf8_split(p, j);
+    let q = p.subrange(0, j);
+    assert(q =~= p[..j]);
+    if len == 0 {
+        assert(pool_slice(b, off, len) =~= Seq::<u8>::empty());
+    } else {
+        if off == 0 {
+            assert(pool_slice(b, off, len) =~= q);
+        } else {
+            vstd::utf8::is_char_boundary_iff_not_is_continuation_byte(p, off);
+            vstd::utf8::is_char_boundary_iff_not_is_continuation_byte(q, off);
+            assert(q[off] == p[off]);
+            vstd::utf8::valid_utf8_split(q, off);
+            assert(pool_slice(b, off, len) =~= q[off..]);
+        }
+    }
+}
+
+/// Checks one pool reference of record `record` of table `table`.
+pub(crate) fn pool_ref_ok(b: &[u8], off: u32, len: u32, table: u8, record: u32) -> (r: Result<
+    (),
+    DbError,
+>)
+    requires
+        v1(b@),
+        pool_valid(b@),
+    ensures
+        r is Ok ==> pool_ref(b@, off as int, len as int),
+{
+    assert(table_ok(b@, T_POOL as int));
+    let size = header_word(b, 5 + 2 * T_POOL);
+    if len > size || off > size - len {
+        return Err(DbError::Pool { table, record });
+    }
+    if !boundary_ok(b, off) || !boundary_ok(b, off + len) {
+        return Err(DbError::Pool { table, record });
+    }
+    proof {
+        lemma_ref_utf8(b@, off as int, len as int);
     }
     Ok(())
 }
@@ -68,65 +134,70 @@ pub fn nul_list_ok(b: &[u8], start: usize, end: usize) -> (ok: bool)
 }
 
 /// Checks a list: a pool reference whose bytes are NUL-separated non-empty elements.
-fn list_ok(b: &[u8], off: u32, len: u32) -> (r: Result<(), DbError>)
+fn list_ok(b: &[u8], off: u32, len: u32, table: u8, record: u32) -> (r: Result<(), DbError>)
     requires
         v1(b@),
+        pool_valid(b@),
     ensures
         r is Ok ==> list_ref(b@, off as int, len as int),
 {
-    pool_ref_ok(b, off, len)?;
+    pool_ref_ok(b, off, len, table, record)?;
     assert(table_ok(b@, T_POOL as int));
     let a = header_word(b, 4 + 2 * T_POOL) as usize + off as usize;
     if !nul_list_ok(b, a, a + len as usize) {
-        return Err(DbError::Pool);
+        return Err(DbError::Pool { table, record });
     }
     Ok(())
 }
 
 /// Checks a name: a pool reference of 1 to `MAX_NAME_LEN` bytes.
-fn name_ok(b: &[u8], off: u32, len: u32) -> (r: Result<(), DbError>)
+fn name_ok(b: &[u8], off: u32, len: u32, table: u8, record: u32) -> (r: Result<(), DbError>)
     requires
         v1(b@),
+        pool_valid(b@),
     ensures
         r is Ok ==> name_ref(b@, off as int, len as int),
 {
     if len == 0 || len as usize > MAX_NAME_LEN {
-        return Err(DbError::Pool);
+        return Err(DbError::Pool { table, record });
     }
-    pool_ref_ok(b, off, len)
+    pool_ref_ok(b, off, len, table, record)
 }
 
 fn check_node_pool(b: &[u8], i: usize) -> (r: Result<(), DbError>)
     requires
         v1(b@),
+        pool_valid(b@),
         i < nodes(b@),
     ensures
         r is Ok ==> node_pool_ok(b@, i as int),
 {
     let t = T_NODES;
-    name_ok(b, field(b, t, i, N_NAME_OFF), field(b, t, i, N_NAME_LEN))?;
-    list_ok(b, field(b, t, i, N_EXEC_OFF), field(b, t, i, N_EXEC_LEN))?;
-    pool_ref_ok(b, field(b, t, i, N_READY_OFF), field(b, t, i, N_READY_LEN))?;
+    let (tb, rec) = (tid(t), rid(i));
+    name_ok(b, field(b, t, i, N_NAME_OFF), field(b, t, i, N_NAME_LEN), tb, rec)?;
+    list_ok(b, field(b, t, i, N_EXEC_OFF), field(b, t, i, N_EXEC_LEN), tb, rec)?;
+    pool_ref_ok(b, field(b, t, i, N_READY_OFF), field(b, t, i, N_READY_LEN), tb, rec)?;
     let of_len = field(b, t, i, N_INSTANCE_OF_LEN);
     if of_len as usize > MAX_NAME_LEN {
-        return Err(DbError::Pool);
+        return Err(DbError::Pool { table: tb, record: rec });
     }
-    pool_ref_ok(b, field(b, t, i, N_INSTANCE_OF_OFF), of_len)?;
-    list_ok(b, field(b, t, i, N_ENV_OFF), field(b, t, i, N_ENV_LEN))?;
-    pool_ref_ok(b, field(b, t, i, N_CWD_OFF), field(b, t, i, N_CWD_LEN))?;
-    list_ok(b, field(b, t, i, N_LAUNCH_ENV_OFF), field(b, t, i, N_LAUNCH_ENV_LEN))
+    pool_ref_ok(b, field(b, t, i, N_INSTANCE_OF_OFF), of_len, tb, rec)?;
+    list_ok(b, field(b, t, i, N_ENV_OFF), field(b, t, i, N_ENV_LEN), tb, rec)?;
+    pool_ref_ok(b, field(b, t, i, N_CWD_OFF), field(b, t, i, N_CWD_LEN), tb, rec)?;
+    list_ok(b, field(b, t, i, N_LAUNCH_ENV_OFF), field(b, t, i, N_LAUNCH_ENV_LEN), tb, rec)
 }
 
 fn check_edge_pool(b: &[u8], x: usize) -> (r: Result<(), DbError>)
     requires
         v1(b@),
+        pool_valid(b@),
         x < tcnt(b@, T_EDGES as int),
     ensures
         r is Ok ==> edge_pool_ok(b@, x as int),
 {
     let t = T_EDGES;
     if field(b, t, x, E_TARGET_KIND) == 1 {
-        pool_ref_ok(b, field(b, t, x, E_TARGET), field(b, t, x, E_TARGET_LEN))
+        pool_ref_ok(b, field(b, t, x, E_TARGET), field(b, t, x, E_TARGET_LEN), tid(t), rid(x))
     } else {
         Ok(())
     }
@@ -135,26 +206,29 @@ fn check_edge_pool(b: &[u8], x: usize) -> (r: Result<(), DbError>)
 fn check_cred_pool(b: &[u8], c: usize) -> (r: Result<(), DbError>)
     requires
         v1(b@),
+        pool_valid(b@),
         c < tcnt(b@, T_CREDS as int),
     ensures
         r is Ok ==> cred_pool_ok(b@, c as int),
 {
     let t = T_CREDS;
-    pool_ref_ok(b, field(b, t, c, C_USER_OFF), field(b, t, c, C_USER_LEN))?;
-    list_ok(b, field(b, t, c, C_LANDLOCK_OFF), field(b, t, c, C_LANDLOCK_LEN))?;
-    list_ok(b, field(b, t, c, C_SECCOMP_OFF), field(b, t, c, C_SECCOMP_LEN))
+    let (tb, rec) = (tid(t), rid(c));
+    pool_ref_ok(b, field(b, t, c, C_USER_OFF), field(b, t, c, C_USER_LEN), tb, rec)?;
+    list_ok(b, field(b, t, c, C_LANDLOCK_OFF), field(b, t, c, C_LANDLOCK_LEN), tb, rec)?;
+    list_ok(b, field(b, t, c, C_SECCOMP_OFF), field(b, t, c, C_SECCOMP_LEN), tb, rec)
 }
 
 fn check_route_pool(b: &[u8], r: usize) -> (res: Result<(), DbError>)
     requires
         v1(b@),
+        pool_valid(b@),
         r < tcnt(b@, T_ROUTES as int),
     ensures
         res is Ok ==> route_pool_ok(b@, r as int),
 {
     let t = T_ROUTES;
     if field(b, t, r, R_KIND) == 0 {
-        pool_ref_ok(b, field(b, t, r, R_A), field(b, t, r, R_B))
+        pool_ref_ok(b, field(b, t, r, R_A), field(b, t, r, R_B), tid(t), rid(r))
     } else {
         Ok(())
     }
@@ -477,11 +551,19 @@ pub(crate) fn check_pool_refs(b: &[u8]) -> (r: Result<(), DbError>)
     ensures
         r is Ok ==> v2(b@),
 {
+    assert(table_ok(b@, T_POOL as int));
+    let start = header_word(b, 4 + 2 * T_POOL) as usize;
+    let size = header_word(b, 5 + 2 * T_POOL) as usize;
+    if let Err(at) = utf8_check(b, start, start + size) {
+        return Err(DbError::Utf8 { offset: rid(at - start) });
+    }
+    assert(pool_valid(b@));
     let n = header_word(b, 5 + 2 * T_NODES) as usize;
     let mut i: usize = 0;
     while i < n
         invariant
             v1(b@),
+            pool_valid(b@),
             n == nodes(b@),
             i <= n,
             forall|j: int| 0 <= j < i ==> #[trigger] node_pool_ok(b@, j),
@@ -495,6 +577,7 @@ pub(crate) fn check_pool_refs(b: &[u8]) -> (r: Result<(), DbError>)
     while i < n
         invariant
             v1(b@),
+            pool_valid(b@),
             n == tcnt(b@, T_EDGES as int),
             i <= n,
             forall|j: int| 0 <= j < i ==> #[trigger] edge_pool_ok(b@, j),
@@ -508,6 +591,7 @@ pub(crate) fn check_pool_refs(b: &[u8]) -> (r: Result<(), DbError>)
     while i < n
         invariant
             v1(b@),
+            pool_valid(b@),
             n == tcnt(b@, T_CREDS as int),
             i <= n,
             forall|j: int| 0 <= j < i ==> #[trigger] cred_pool_ok(b@, j),
@@ -521,6 +605,7 @@ pub(crate) fn check_pool_refs(b: &[u8]) -> (r: Result<(), DbError>)
     while i < n
         invariant
             v1(b@),
+            pool_valid(b@),
             n == tcnt(b@, T_ROUTES as int),
             i <= n,
             forall|j: int| 0 <= j < i ==> #[trigger] route_pool_ok(b@, j),

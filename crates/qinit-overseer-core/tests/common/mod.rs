@@ -21,7 +21,8 @@ pub struct ReqSpec {
     pub env: &'static str,
     pub cwd: &'static str,
     pub umask: u32,
-    pub nofile: u32,
+    /// The resource limits, by kernel resource number; `u64::MAX` is infinity.
+    pub rlimits: [Option<u64>; 16],
     pub user: &'static str,
     pub caps: u64,
     pub securebits: u32,
@@ -46,7 +47,7 @@ pub fn minimal() -> ReqSpec {
         env: "",
         cwd: "/",
         umask: 0o027,
-        nofile: 0,
+        rlimits: [None; 16],
         user: "svc",
         caps: 0,
         securebits: 0,
@@ -69,6 +70,7 @@ fn n32(x: usize) -> u32 {
 }
 
 /// Lays out `spec` as a request.
+#[allow(clippy::cast_possible_truncation)] // a limit's low and high words
 pub fn build(spec: &ReqSpec) -> Vec<u8> {
     let mut pool: Vec<u8> = Vec::new();
     let mut intern = |s: &str| {
@@ -106,7 +108,13 @@ pub fn build(spec: &ReqSpec) -> Vec<u8> {
     rec[Q_CWD_OFF] = cwd.0;
     rec[Q_CWD_LEN] = cwd.1;
     rec[Q_UMASK] = spec.umask;
-    rec[Q_NOFILE] = spec.nofile;
+    for (r, limit) in spec.rlimits.iter().enumerate() {
+        if let Some(v) = limit {
+            rec[Q_RLIMIT_MASK] |= 1 << r;
+            rec[Q_RLIMIT_BASE + 2 * r] = *v as u32;
+            rec[Q_RLIMIT_BASE + 2 * r + 1] = (*v >> 32) as u32;
+        }
+    }
     rec[Q_USER_OFF] = user.0;
     rec[Q_USER_LEN] = user.1;
     rec[Q_CAPS_LO] = n32(usize::try_from(spec.caps & 0xffff_ffff).unwrap());

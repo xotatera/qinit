@@ -15,6 +15,17 @@ pub open spec fn pool_slice(b: Seq<u8>, off: int, len: int) -> Seq<u8> {
     b.subrange(toff(b, T_POOL as int) + off, toff(b, T_POOL as int) + off + len)
 }
 
+/// The whole pool.
+pub open spec fn pool_seq(b: Seq<u8>) -> Seq<u8> {
+    pool_slice(b, 0, tcnt(b, T_POOL as int))
+}
+
+/// The whole pool is valid UTF-8, so a reference is valid when it starts and ends on character
+/// boundaries.
+pub open spec fn pool_valid(b: Seq<u8>) -> bool {
+    vstd::utf8::valid_utf8(pool_seq(b))
+}
+
 /// V2 for one reference: inside the pool and valid UTF-8.
 pub open spec fn pool_ref(b: Seq<u8>, off: int, len: int) -> bool {
     &&& 0 <= off

@@ -8,9 +8,9 @@ use crate::model::{
     RestartOn, RestartPolicy, Route, Seccomp, Securebits, Stop, StopMode, Target,
 };
 use qinit_db_core::{
-    DbError, H_CRC32, HEADER_WORDS, MAX_EDGES, MAX_NODES, NONE, SECCOMP_DEFAULT, SECCOMP_DENY,
-    SECCOMP_NONE, T_CREDS, T_EDGES, T_ENABLED, T_GROUPS, T_NODES, T_POOL, T_PRESYSLOG, T_ROUTES,
-    WORDS, validate, word,
+    DbError, H_CRC32, HEADER_WORDS, MAX_EDGES, MAX_NODES, N_RLIMIT_BASE, NONE, SECCOMP_DEFAULT,
+    SECCOMP_DENY, SECCOMP_NONE, T_CREDS, T_EDGES, T_ENABLED, T_GROUPS, T_NODES, T_POOL,
+    T_PRESYSLOG, T_ROUTES, WORDS, validate, word,
 };
 use qinit_graph_core::GEdge;
 
@@ -157,7 +157,12 @@ impl Reader<'_> {
             env: self.list(f(24), f(25)),
             cwd: self.string(f(26), f(27)).to_owned(),
             umask: f(28),
-            rlimit_nofile: f(29),
+            rlimits: std::array::from_fn(|r| {
+                (f(29) >> r & 1 != 0).then(|| {
+                    u64::from(f(N_RLIMIT_BASE + 2 * r))
+                        | u64::from(f(N_RLIMIT_BASE + 2 * r + 1)) << 32
+                })
+            }),
             reload: match f(30) {
                 0 => None,
                 1 => Some(Reload::Hup),

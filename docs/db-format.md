@@ -48,7 +48,7 @@ limits of `qinit-graph-core`.
 
 ## Records
 
-### Node (36 words)
+### Node (68 words)
 
 | Word | Name | Meaning |
 | --- | --- | --- |
@@ -74,12 +74,25 @@ limits of `qinit-graph-core`.
 | 24, 25 | `N_ENV_OFF`, `N_ENV_LEN` | environment entries `KEY=VALUE` in the pool, NUL-separated, sorted by key; length 0 for none |
 | 26, 27 | `N_CWD_OFF`, `N_CWD_LEN` | working directory in the pool, a non-empty absolute path |
 | 28 | `N_UMASK` | file-mode creation mask, at most `MAX_UMASK` |
-| 29 | `N_RLIMIT_NOFILE` | `RLIMIT_NOFILE` soft and hard limit; 0 keeps the kernel default |
+| 29 | `N_RLIMIT_MASK` | the resource limits that are set: bit `r` for kernel resource number `r` (cpu 0, fsize 1, data 2, stack 3, core 4, rss 5, nproc 6, nofile 7, memlock 8, as 9, locks 10, sigpending 11, msgqueue 12, nice 13, rtprio 14, rttime 15); bit 4 (`core`) and bits above 15 are never set |
 | 30 | `N_RELOAD` | the signal that makes the process re-read its configuration: 0 none, 1 `SIGHUP`, 2 `SIGUSR1`, 3 `SIGUSR2`; at most 3 |
 | 31 | `N_LAUNCH_CONCURRENCY` | instances of a forager at once, 1 to `MAX_LAUNCH_CONCURRENCY` (64); 0 for a node that cannot be launched, which every node but a forager must be |
 | 32 | `N_LAUNCH_ARGV_TAIL` | extra argv elements a caller may append, at most `MAX_ARGV_TAIL` (64); 0 when `N_LAUNCH_CONCURRENCY` is 0 |
 | 33, 34 | `N_LAUNCH_ENV_OFF`, `N_LAUNCH_ENV_LEN` | the environment keys a caller may set, in the pool, NUL-separated: no key is empty or holds `=`, and the keys ascend strictly bytewise (so none repeats); length 0 for none, and always 0 when `N_LAUNCH_CONCURRENCY` is 0 |
 | 35 | `N_LAUNCH_FDS` | the standard descriptors a caller may supply: a mask of `FD_STDIN` (1), `FD_STDOUT` (2) and `FD_STDERR` (4); at most 7, and 0 when `N_LAUNCH_CONCURRENCY` is 0 |
+| 36–67 | `N_RLIMIT_BASE` + 2`r`, + 2`r` + 1 | the low and high word of resource `r`'s limit (soft and hard are both set to it); both 0 when bit `r` of `N_RLIMIT_MASK` is clear; all ones is infinity; `nofile` is at least 1 and finite, `nice` at most 40, `rtprio` at most 99 |
+
+#### Resource limits at launch
+
+The overseer sets each limit with soft equal to hard, in resource order, and `core` to 0 always.
+Three kernel facts decide what a value means:
+
+- `nice` is the kernel's ceiling value, `20 - nice`: the limit 40 allows a nice of -20, 0 allows 20.
+- `rss` is accepted and ignored by the kernel.
+- `nofile` above `fs.nr_open` fails at launch, at the step `rlimit-nofile`.
+
+A limit that stops the executor's own later steps (a small `nofile`, `as` or `nproc`) fails at that
+later step, not at the limit's own.
 
 ### Group (3 words)
 
@@ -151,7 +164,7 @@ requires it.
 The validator is total and never panics. It accepts a database only if all of the following hold:
 
 1. **V1** Header fields, offsets and counts are in bounds and within the limits, and tables do not overlap.
-2. **V2** Every pool reference is an in-bounds slice, valid UTF-8, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, environment entries, Landlock entries, seccomp lists) holds no empty element. `N_INSTANCE_OF` may be empty, but at most `MAX_NAME_LEN` bytes.
+2. **V2** The pool is valid UTF-8, and every pool reference is an in-bounds slice between two character boundaries, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, environment entries, Landlock entries, seccomp lists) holds no empty element. `N_INSTANCE_OF` may be empty, but at most `MAX_NAME_LEN` bytes.
 3. **V3** Every cross-table index is `NONE` or in range of its table.
 4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline). A node's `stop_mode` is 0 or 1, its `restart_delay_ms` and `stop_grace_ms` are at least 100, `restart_max > 0` implies `restart_window_ms > 0`, and its `umask` is at most `MAX_UMASK`. A worker or forager has a credential and a brood has none; the working directory is non-empty and starts with `/`; every environment entry has a non-empty key before its first `=`. A credential's user is non-empty, `seccomp` is at most 3 and its list is non-empty exactly when `seccomp` is 2 or 3; every list entry is a canonical decimal below `MAX_SYSCALL`; `nnp` 0 with a Landlock list or a seccomp filter requires `CAP_SYS_ADMIN` in `caps_lo`.
 5. **V5** The ordering-edge graph is acyclic.
@@ -168,11 +181,13 @@ functions `v1` to `v8` in `crates/qinit-db-core/src/validate/spec/`, and
   first after the header). Every table but the pool starts on a 4-byte boundary.
 - Every pool reference (names, argv, readiness arguments, instanced-frame names, environment
   entries, working directories, path targets, users, Landlock entries, seccomp lists, launch keys, route
-  paths) is in the pool and valid UTF-8, as
-  `core::str::from_utf8` defines it. Node names are 1 to `MAX_NAME_LEN` bytes and strictly ascending, bytewise.
+  paths) is in the pool and starts and ends on a character boundary of the pool, which as a whole
+  is valid UTF-8 as `core::str::from_utf8` defines it (`DbError::Utf8 { offset }` names the first
+  bad pool offset; `DbError::Pool { table, record }` names the record whose reference leaves the
+  pool or splits a character). Node names are 1 to `MAX_NAME_LEN` bytes and strictly ascending, bytewise.
 - The argv, environment, Landlock and seccomp lists are either empty (length 0) or have no NUL
   as their first or last byte and no two NULs in a row, so every element is non-empty
-  (`DbError::Pool` otherwise). The content of environment and seccomp entries and of the working
+  (`DbError::Pool { table, record }` otherwise). The content of environment and seccomp entries and of the working
   directory is a V4 rule (`DbError::Consistency`), checked after V2 has placed the bytes in the
   pool. So is the launch key list: each key is non-empty and holds no `=`, and each key sorts
   strictly after the one before it.

@@ -18,7 +18,7 @@ use qinit_overseer_core::{
 use qinit_sys::landlock::{
     LANDLOCK_ACCESS_FS_ALL_V3, LANDLOCK_ACCESS_FS_READ, add_path_rule, restrict_self, ruleset,
 };
-use qinit_sys::limits::{RLIMIT_CORE, RLIMIT_NOFILE, chdir, set_rlimit, umask};
+use qinit_sys::limits::{RLIMIT_CORE, chdir, set_rlimit, umask};
 use qinit_sys::{Errno, Result, cred, fd, memfd, ns, proc, seccomp, spawn, timer};
 use std::ffi::{CStr, CString};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
@@ -237,7 +237,11 @@ impl<'a> Run<'a> {
                 let _ = umask(m);
                 Ok(())
             }
-            Step::RlimitNofile(n) => set_rlimit(RLIMIT_NOFILE, u64::from(n), u64::from(n)),
+            Step::Rlimit(r, v) => set_rlimit(
+                libc::c_int::try_from(r).map_err(|_| Errno(libc::EINVAL))?,
+                v,
+                v,
+            ),
             Step::RlimitCore0 => set_rlimit(RLIMIT_CORE, 0, 0),
             Step::Setgroups => cred::setgroups(&self.id.groups),
             Step::Setgid => cred::setresgid(self.id.gid),

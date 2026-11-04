@@ -261,6 +261,31 @@ fn a_missing_policy_file_is_an_io_error() {
     assert_eq!(es[0].file.as_deref(), Some(path.as_path()));
 }
 
+fn bad_key(tag: &str, body: &str) -> String {
+    let es = policy(tag, body).expect_err("refused");
+    assert_eq!(es.len(), 1, "{es:?}");
+    es[0].key.clone()
+}
+
+#[test]
+fn an_inline_rule_array_is_indexed() {
+    let body =
+        "default = \"deny\"\nrule = [{ match = \"a\" }, { match = \"b\", caps_max = \"x\" }]\n";
+    assert_eq!(bad_key("inline-rules", body), "rule[1].caps_max");
+}
+
+#[test]
+fn a_spaced_header_is_indexed() {
+    let body = "default = \"deny\"\n[[ rule ]]\nmatch = \"a\"\n[[ rule ]]\nmatch = \"b\"\ncaps_max = \"x\"\n";
+    assert_eq!(bad_key("spaced-header", body), "rule[1].caps_max");
+}
+
+#[test]
+fn a_header_inside_a_multiline_string_is_not_a_rule() {
+    let body = "default = \"deny\"\n[[rule]]\nmatch = \"\"\"\n[[rule]]\n\"\"\"\n[[rule]]\nmatch = \"b\"\ncaps_max = \"x\"\n";
+    assert_eq!(bad_key("string-header", body), "rule[1].caps_max");
+}
+
 #[test]
 fn shape_errors_name_the_rule_and_field() {
     let key = |tag: &str, body: &str| {
@@ -354,4 +379,197 @@ fn require_seccomp_refuses_none() {
     )
     .expect_err("refused");
     assert_eq!(e[0].key, "rule[0].require_seccomp");
+}
+
+/// A model with one unprivileged worker `name` holding `limits`.
+fn limited(name: &str, limits: &str) -> Model {
+    model(&format!(
+        "[worker.{name}]\nexec = [\"/x\"]\ncredentials = {{ uid = \"svc\" }}\nrlimits = {{ {limits} }}\n"
+    ))
+}
+
+const DENY: &str = "default = \"deny\"\n";
+
+#[test]
+fn limits_within_the_boot_ceiling_need_no_rule() {
+    let m = limited(
+        "a",
+        "nofile = 4096, memlock = \"8M\", msgqueue = 819200, stack = \"infinity\", fsize = 0, \
+         nice = 0, rtprio = 0, cpu = \"infinity\", as = \"infinity\"",
+    );
+    assert_eq!(check(&pol("rl-within", DENY), &m), Ok(()));
+}
+
+#[test]
+fn one_above_each_ceiling_needs_a_rule() {
+    for limit in [
+        "nofile = 4097",
+        "memlock = 8388609",
+        "msgqueue = 819201",
+        "nice = 1",
+        "rtprio = 1",
+        "nproc = 1",
+        "sigpending = 1",
+    ] {
+        let es = check(&pol("rl-above", DENY), &limited("a", limit)).expect_err(limit);
+        assert_eq!(es.len(), 1, "{limit}: {es:?}");
+        assert_eq!(es[0].code, Code::Policy, "{limit}");
+        assert_eq!(es[0].key, "worker.a.credentials", "{limit}");
+        let name = limit.split(' ').next().unwrap();
+        assert!(es[0].detail.contains(name), "{limit}: {}", es[0].detail);
+    }
+}
+
+#[test]
+fn a_rule_raises_only_the_keys_it_lists() {
+    let p = pol(
+        "rl-rule",
+        "default = \"deny\"\n[[rule]]\nmatch = \"audio\"\nrlimits_max = { rtprio = 95, memlock = \"infinity\" }\n",
+    );
+    let ok = limited(
+        "audio",
+        "rtprio = 95, memlock = \"infinity\", nofile = 4096",
+    );
+    assert_eq!(check(&p, &ok), Ok(()));
+    let es = check(&p, &limited("audio", "rtprio = 95, nofile = 4097")).expect_err("nofile");
+    assert_eq!(es.len(), 1, "{es:?}");
+    assert_eq!(
+        (es[0].code, es[0].key.as_str()),
+        (Code::Policy, "rule[0].rlimits_max")
+    );
+    assert!(es[0].detail.contains("nofile"), "{}", es[0].detail);
+    let es = check(&p, &limited("audio", "rtprio = 96")).expect_err("rtprio");
+    assert_eq!(es[0].key, "rule[0].rlimits_max");
+}
+
+#[test]
+fn a_rule_without_rlimits_max_applies_the_ceiling() {
+    let p = pol("rl-sshd", RULE);
+    let sshd = |l: &str| {
+        model(&format!(
+            "[worker.sshd]\nexec = [\"/sshd\"]\ncredentials = {{ uid = \"sshd\", caps = [\"net_bind_service\"], nnp = true }}\nrlimits = {{ {l} }}\n"
+        ))
+    };
+    assert_eq!(check(&p, &sshd("nofile = 4096")), Ok(()));
+    let es = check(&p, &sshd("nofile = 8192")).expect_err("above");
+    assert_eq!((es.len(), es[0].key.as_str()), (1, "rule[0].rlimits_max"));
+}
+
+#[test]
+fn a_top_level_rlimits_max_replaces_the_built_in_ceiling() {
+    let p = pol(
+        "rl-top",
+        "default = \"deny\"\nrlimits_max = { nofile = 65536 }\n",
+    );
+    assert_eq!(check(&p, &limited("web", "nofile = 65536")), Ok(()));
+    assert!(check(&p, &limited("web", "nofile = 65537")).is_err());
+    // Unlisted keys keep the built-in ceiling.
+    assert!(check(&p, &limited("web", "rtprio = 1")).is_err());
+}
+
+#[test]
+fn allow_default_still_bounds_matched_rules() {
+    let p = pol(
+        "rl-allow",
+        "default = \"allow\"\n[[rule]]\nmatch = \"capped\"\nrlimits_max = { nproc = 100 }\n",
+    );
+    assert_eq!(check(&p, &limited("free", "nproc = \"infinity\"")), Ok(()));
+    assert_eq!(check(&p, &limited("capped", "nproc = 100")), Ok(()));
+    let es = check(&p, &limited("capped", "nproc = 101")).expect_err("above");
+    assert_eq!(es[0].key, "rule[0].rlimits_max");
+}
+
+#[test]
+fn a_bad_rlimits_max_value_is_a_bad_value() {
+    let es = policy(
+        "rl-bad",
+        "default = \"deny\"\nrlimits_max = { nofile = \"infinity\" }\n",
+    )
+    .expect_err("refused");
+    assert_eq!(
+        (es[0].code, es[0].key.as_str()),
+        (Code::BadValue, "rlimits_max.nofile")
+    );
+    let es = policy(
+        "rl-bad2",
+        "default = \"deny\"\n[[rule]]\nmatch = \"a\"\nrlimits_max = { nice = 41 }\n",
+    )
+    .expect_err("refused");
+    assert_eq!(es[0].key, "rule[0].rlimits_max.nice");
+    let es = policy(
+        "rl-core",
+        "default = \"deny\"\nrlimits_max = { core = 0 }\n",
+    )
+    .expect_err("core");
+    assert_eq!(es[0].code, Code::UnknownKey);
+}
+
+#[test]
+fn a_top_level_table_after_the_rules_is_not_blamed_on_the_last_rule() {
+    let head = "default = \"deny\"\n[[rule]]\nmatch = \"a\"\n";
+    assert_eq!(
+        bad_key("after-rl", &format!("{head}[rlimits_max]\nnofile = 1.5\n")),
+        "rlimits_max.nofile"
+    );
+    assert_eq!(
+        bad_key("after-foo", &format!("{head}[foo]\nx = 1\n")),
+        "foo"
+    );
+}
+
+#[test]
+fn a_ceiling_violation_names_the_node_and_the_policy_file() {
+    let dir = TempDir::new("viol-node");
+    let path = dir.join("policy.toml");
+    std::fs::write(
+        &path,
+        "default = \"deny\"\n[[rule]]\nmatch = \"*\"\nrlimits_max = { nofile = 4096 }\n",
+    )
+    .expect("write");
+    let p = load_policy(&path).expect("loads");
+    let m = model(
+        "[worker.one]\nexec = [\"/x\"]\ncredentials = { uid = \"svc\" }\nrlimits = { nofile = 5000 }\n\
+         [worker.two]\nexec = [\"/x\"]\ncredentials = { uid = \"svc\" }\nrlimits = { nofile = 6000 }\n",
+    );
+    let es = check(&p, &m).expect_err("refused");
+    assert_eq!(es.len(), 2, "{es:?}");
+    assert!(es[0].detail.contains("worker `one`"), "{es:?}");
+    assert!(es[1].detail.contains("worker `two`"), "{es:?}");
+    assert_eq!(es[0].file.as_deref(), Some(path.as_path()), "{es:?}");
+}
+
+#[test]
+fn nested_policy_keys_keep_their_whole_path() {
+    let head = "default = \"deny\"\n[[rule]]\nmatch = \"a\"\n";
+    let two = format!("{head}[[rule]]\nmatch = \"b\"\n");
+    assert_eq!(
+        bad_key("n-inline", &format!("{two}rlimits_max = {{ core = 0 }}\n")),
+        "rule[1].rlimits_max.core"
+    );
+    assert_eq!(
+        bad_key("n-sub", &format!("{two}[rule.rlimits_max]\nnofile = -1\n")),
+        "rule[1].rlimits_max.nofile"
+    );
+    assert_eq!(
+        bad_key("n-dotted", &format!("{head}rlimits_max.nofile = 1.5\n")),
+        "rule[0].rlimits_max.nofile"
+    );
+    assert_eq!(
+        bad_key(
+            "n-eq",
+            "default = \"deny\"\nrule = [{ match = \"a\", users = [\"a=b\", 1] }]\n"
+        ),
+        "rule[0].users[1]"
+    );
+}
+
+#[test]
+fn a_limit_of_the_wrong_shape_is_not_reported_as_an_enum() {
+    let es = policy(
+        "shape-msg",
+        "default = \"deny\"\nrlimits_max = { nice = -1 }\n",
+    )
+    .expect_err("refused");
+    assert!(!es[0].detail.contains("untagged enum"), "{es:?}");
+    assert!(es[0].detail.contains("limit"), "{es:?}");
 }

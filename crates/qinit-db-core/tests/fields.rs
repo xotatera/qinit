@@ -355,10 +355,11 @@ fn the_cascade_flag_is_accepted_and_bit_2_is_not() {
 }
 
 #[test]
-fn a_node_record_has_36_words_and_a_credential_12() {
-    assert_eq!(WORDS[T_NODES], 36);
-    assert_eq!(N_LAUNCH_FDS + 1, WORDS[T_NODES]);
-    assert_eq!(N_RELOAD, N_RLIMIT_NOFILE + 1);
+fn a_node_record_has_68_words_and_a_credential_12() {
+    assert_eq!(WORDS[T_NODES], 68);
+    assert_eq!(N_RLIMIT_BASE, N_LAUNCH_FDS + 1);
+    assert_eq!(N_RLIMIT_BASE + 2 * RLIMIT_COUNT, WORDS[T_NODES]);
+    assert_eq!(N_RELOAD, N_RLIMIT_MASK + 1);
     assert_eq!(WORDS[T_CREDS], 12);
     assert_eq!(C_SECCOMP_LEN + 1, WORDS[T_CREDS]);
 }
@@ -454,7 +455,13 @@ fn an_env_entry_without_a_key_or_without_an_equals_sign_is_a_consistency_error()
 fn an_env_list_with_an_empty_element_is_a_pool_error() {
     let mut spec = minimal_spec();
     spec.nodes[0].env = "A=1\0\0B=2";
-    assert_eq!(check(&build(&spec)), Err(DbError::Pool));
+    assert_eq!(
+        check(&build(&spec)),
+        Err(DbError::Pool {
+            table: tid(T_NODES),
+            record: 0
+        })
+    );
 }
 
 fn forager_with(launch: LaunchSpec) -> Vec<u8> {
@@ -552,5 +559,85 @@ fn a_launch_env_key_may_not_hold_an_equals_sign() {
     assert_eq!(
         check(&forager_with(launch(1, 0, "A=1", 0))),
         Err(node_error("consistency", 1))
+    );
+}
+
+/// The minimal database with node 0's limit mask `mask` and the low and high words of the
+/// limits in `values` (resource, low, high).
+fn with_limits(mask: u32, values: &[(usize, u32, u32)]) -> Vec<u8> {
+    with(&valid_minimal(), |w| {
+        let m = at(w, T_NODES, 0, N_RLIMIT_MASK);
+        w[m] = mask;
+        for &(r, lo, hi) in values {
+            let i = at(w, T_NODES, 0, N_RLIMIT_BASE + 2 * r);
+            w[i] = lo;
+            w[i + 1] = hi;
+        }
+    })
+}
+
+fn consistency() -> Result<(), DbError> {
+    Err(DbError::Consistency {
+        table: tid(T_NODES),
+        record: 0,
+    })
+}
+
+fn enum_error() -> Result<(), DbError> {
+    Err(DbError::Enum {
+        table: tid(T_NODES),
+        record: 0,
+    })
+}
+
+#[test]
+fn core_bit_set_is_enum() {
+    assert_eq!(check(&with_limits(1 << 4, &[(4, 0, 0)])), enum_error());
+}
+
+#[test]
+fn bit_16_set_is_enum() {
+    assert_eq!(check(&with_limits(1 << 16, &[])), enum_error());
+}
+
+#[test]
+fn unset_limit_with_a_value_is_consistency() {
+    assert_eq!(check(&with_limits(0, &[(6, 5, 0)])), consistency());
+    assert_eq!(check(&with_limits(0, &[(6, 0, 1)])), consistency());
+}
+
+#[test]
+fn nofile_zero_is_consistency() {
+    assert_eq!(check(&with_limits(1 << 7, &[(7, 0, 0)])), consistency());
+}
+
+#[test]
+fn nofile_infinity_is_consistency() {
+    let db = with_limits(1 << 7, &[(7, u32::MAX, u32::MAX)]);
+    assert_eq!(check(&db), consistency());
+}
+
+#[test]
+fn nice_41_is_consistency() {
+    assert_eq!(check(&with_limits(1 << 13, &[(13, 41, 0)])), consistency());
+    assert_eq!(check(&with_limits(1 << 13, &[(13, 0, 1)])), consistency());
+}
+
+#[test]
+fn rtprio_100_is_consistency() {
+    assert_eq!(check(&with_limits(1 << 14, &[(14, 100, 0)])), consistency());
+}
+
+#[test]
+fn nice_40_rtprio_99_nproc_infinity_are_valid() {
+    let mask = (1 << 13) | (1 << 14) | (1 << 6) | (1 << 7);
+    let db = with_limits(
+        mask,
+        &[(13, 40, 0), (14, 99, 0), (6, u32::MAX, u32::MAX), (7, 1, 1)],
+    );
+    assert_eq!(check(&db), Ok(()));
+    assert_eq!(
+        check(&with_limits(RLIMIT_MASK_ALLOWED, &[(13, 0, 0)])),
+        consistency()
     );
 }

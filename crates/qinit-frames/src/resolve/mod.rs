@@ -21,7 +21,7 @@
 //!   `sandbox` table too (see `docs/db-format.md`, "Credentials are required"). A brood has no
 //!   record.
 //! - `env` is stored as sorted `KEY=VALUE` entries; `cwd` defaults to `/`, `umask` to `0o027`
-//!   and `rlimits.nofile` to 0 (the kernel default).
+//!   and every resource limit unset (the inherited limit).
 mod closure;
 mod cred;
 mod deps;
@@ -32,11 +32,12 @@ use crate::expand::{Expanded, kind_name};
 use crate::layers::Enable;
 use crate::provenance::{locate, locate_all};
 use crate::schema::{Frame, LaunchCfg, Output, Ready as SReady};
+use crate::schema::{Rlimits, rlimit_value};
 use crate::units::{duration_ms, size_kib};
 pub(crate) use cred::{cap_bit, cap_name, ns_name};
 use qinit_db::{
-    Group, GroupKind, Kind, Launch, Model, Node, Ready, Reload, Restart, RestartPolicy, Route,
-    Stop, StopMode,
+    Group, GroupKind, Kind, Launch, Model, Node, RLIMIT_COUNT, RLIMIT_KEYS, Ready, Reload, Restart,
+    RestartPolicy, Route, Stop, StopMode,
 };
 use qinit_db_core::{FD_STDERR, FD_STDIN, FD_STDOUT, MAX_NODES};
 use std::collections::BTreeMap;
@@ -387,7 +388,7 @@ fn node(
         env,
         cwd: f.cwd.clone().unwrap_or_else(|| "/".to_owned()),
         umask: f.umask.unwrap_or(DEFAULT_UMASK),
-        rlimit_nofile: f.rlimits.as_ref().and_then(|r| r.nofile).unwrap_or(0),
+        rlimits: rlimits(cx, &base, f.rlimits.as_ref()),
         reload: f.reload.as_deref().map(reload_of),
         launch: f.launch.as_ref().map(launch_of),
     }
@@ -482,4 +483,15 @@ pub fn resolve(expanded: &Expanded, enable: &Enable) -> Result<Resolved, Vec<Err
     } else {
         Err(cx.errs)
     }
+}
+
+/// The limits of a frame by kernel resource number; an unset one keeps the inherited limit.
+fn rlimits(cx: &mut Cx, base: &str, set: Option<&Rlimits>) -> [Option<u64>; RLIMIT_COUNT] {
+    std::array::from_fn(|r| {
+        let v = set?.get(r)?;
+        let key = RLIMIT_KEYS[r];
+        rlimit_value(key, v)
+            .map_err(|why| cx.bad(format!("{base}.rlimits.{key}"), why))
+            .ok()
+    })
 }

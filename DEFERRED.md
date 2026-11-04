@@ -128,6 +128,13 @@ observed node states and `qinit-colony` runs it against simulated cells.
 `qinit-frames` is a library: it has no command-line front end. The `qctl`
 compiler and administrative CLI, which will call it, is a later sub-project.
 
+### D42 — Implicit defaults are not written back to frame and policy TOML · `OPEN`
+
+A frame or policy that leaves a key out gets the compiler's default (`cwd = "/"`, `umask`, no
+limits, the built-in rlimit ceiling), and nothing shows the effective value in the file. Writing
+the implicit defaults back into the frame and policy TOML, before or after compilation, would make
+them visible. Home: `qctl` (D16).
+
 ### D17 — Policy signature verification · `OPEN`
 
 The policy file given to the compiler is read as is. Verifying a signature on
@@ -144,18 +151,20 @@ Accepted as is: a service that is already gone when readiness is read cannot
 be supervised as ready. The maintainer decided to revisit this in the colony
 sub-project (sub-project 4), which owns service state.
 
-### D19 — Validator worst-case cost · `ACCEPTED`
+### D19 — Validator worst-case cost · `RESOLVED`
 
-`pool_ref_ok` checks UTF-8 by rescanning the pool bytes for every reference.
-The validator is still total and bounded, but a crafted maximal database costs
-about 6.9e10 byte steps. Optional future work: validate the pool once, then
-prove that each reference starts and ends on a character boundary.
+`pool_ref_ok` used to check UTF-8 by rescanning the pool bytes for every reference (about
+6.9e10 byte steps for a crafted maximal database). `check_pool_refs` now scans the whole pool
+once and each reference needs only two boundary tests, proved to give a valid slice
+(`lemma_ref_utf8`): the worst case is one pass over at most `MAX_POOL` bytes plus a constant per
+reference. A pool holding unreferenced garbage is now refused too.
 
-### D20 — Policy error rule index by line scan · `ACCEPTED`
+### D20 — Policy error rule index by line scan · `RESOLVED`
 
-`qinit-frames` finds the `[[rule]]` index of a policy shape error by scanning
-for `[[rule]]` header lines, not by parsing TOML. The limits of that scan are
-documented in `crates/qinit-frames/src/policy.rs`.
+`qinit-frames` used to find the `[[rule]]` index of a policy shape error by scanning for
+`[[rule]]` header lines. It now takes the index from a `toml::de::DeTable` parse: the `rule`
+element whose span holds the error, so inline arrays, `[[ rule ]]` and header-like lines in
+strings are indexed correctly.
 
 ### D21 — Overseer runs undeclared workers unprivileged · `RESOLVED`
 
@@ -173,20 +182,19 @@ no-new-privileges on; it has to write `nnp = false` to opt out. A policy rule wi
 The validator now holds `N_INSTANCE_OF` to `MAX_NAME_LEN` (an empty name is still allowed),
 proved with V2. Readers can rely on the bound.
 
-### D24 — Second graph pass in the validator · `ACCEPTED`
+### D24 — Second graph pass in the validator · `RESOLVED`
 
 The scratch-length precondition of `qinit_db_core::validate` is now a run-time check that
 returns `DbError::Scratch`, so there is nothing left for a caller to break. The second `levels`
 call in `check_graph` (stop order, honouring `stop = "parallel"`) is logically redundant once
 the first succeeded: honouring the opt-outs only drops constraints, so the first pass's
 labelling also satisfies the second, and the hard-parallel check is the same in both. A lemma
-stating that could halve the worst-case graph cost (about 134 million steps).
+stating that halves the worst-case graph cost (about 134 million steps): `check_graph` now runs `levels` once and proves the labelling serves both orders.
 
-### D25 — Pool and UTF-8 errors carry no position · `ACCEPTED`
+### D25 — Pool and UTF-8 errors carry no position · `RESOLVED`
 
-`DbError::Pool` and `DbError::Utf8` name no table or record, unlike the
-record errors. The validator rejects the database either way; a position
-would only help someone debugging a corrupt file.
+`DbError::Pool { table, record }` names the record whose reference failed and
+`DbError::Utf8 { offset }` the first bad pool offset, like the record errors.
 
 ### D26 — No ownership or mode check on policy and layers · `ACCEPTED`
 
@@ -241,10 +249,15 @@ restriction. A view built from bind mounts of only what a service needs is defer
 The overseer starts services as the uid they declare and offers no `user` namespace. A service
 that wants to be root in a namespace only needs a sandbox design of its own.
 
-### D34 — Other rlimits · `OPEN`
+### D34 — Other rlimits · `RESOLVED`
 
-Only `RLIMIT_NOFILE` is configurable (and `RLIMIT_CORE` is always 0). Other limits are added on
-demand.
+Every kernel resource but `core` (always 0) is a frame key: `cpu fsize data stack rss nproc
+nofile memlock as locks sigpending msgqueue nice rtprio rttime`, as a number, `"infinity"` or for
+the byte limits a size. Soft and hard are both set to the value. The node record grows to 68
+words, the launch request to 67, and the overseer plan has one proved `Rlimit` step per set
+limit. The policy bounds them at the kernel's boot hard limits (`rlimits_max` on a rule, or at
+the top level, raises a ceiling). A low `nofile` or `nproc` can make a later launch step fail;
+the step name says which. `nofile` above `fs.nr_open` fails at launch with `EPERM`.
 
 ### D35 — Dumpable after exec · `ACCEPTED`
 

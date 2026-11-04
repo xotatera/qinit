@@ -94,6 +94,26 @@ fn nnp_off_without_sys_admin() -> Result<(), String> {
     }
 }
 
+fn tiny_nofile() -> Result<(), String> {
+    // With three descriptors allowed, creating the Landlock ruleset (a new descriptor) fails.
+    let mut request = spec("svc", "exit-0", &[]);
+    request.rlimits[7] = Some(3);
+    request.landlock = vec!["ro:/etc".into()];
+    let (got, step) = failed("f8", request)?;
+    if step != "rlimit-nofile"
+        && step != "decode"
+        && step != "identity"
+        && got.errno == libc::EMFILE
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "failed at {step} with {}, want EMFILE after rlimit-nofile",
+            got.errno
+        ))
+    }
+}
+
 fn main() {
     run(
         "fail",
@@ -110,6 +130,7 @@ fn main() {
                 missing_landlock_path,
             ),
             ("an_unpassed_routed_fd_fails_the_launch", unpassed_fd),
+            ("a_tiny_nofile_fails_after_its_step", tiny_nofile),
             (
                 "nnp_off_without_sys_admin_fails_at_decode",
                 nnp_off_without_sys_admin,

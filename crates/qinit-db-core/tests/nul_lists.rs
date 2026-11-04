@@ -5,6 +5,10 @@ mod common;
 
 use common::*;
 use qinit_db_core::*;
+
+fn tid(t: usize) -> u8 {
+    u8::try_from(t).unwrap()
+}
 use std::ops::Range;
 
 /// The pool bytes of the string at words `off_w` and `len_w` of record `r` in table `t`.
@@ -62,37 +66,73 @@ fn the_lists_under_test_are_nine_bytes_and_valid() {
 #[test]
 fn a_leading_nul_in_argv_is_a_pool_error() {
     let (db, r) = argv_db();
-    assert_eq!(check(&nul_at(&db, &r, &[0])), Err(DbError::Pool));
+    assert_eq!(
+        check(&nul_at(&db, &r, &[0])),
+        Err(DbError::Pool {
+            table: tid(T_NODES),
+            record: 0
+        })
+    );
 }
 
 #[test]
 fn a_trailing_nul_in_argv_is_a_pool_error() {
     let (db, r) = argv_db();
-    assert_eq!(check(&nul_at(&db, &r, &[8])), Err(DbError::Pool));
+    assert_eq!(
+        check(&nul_at(&db, &r, &[8])),
+        Err(DbError::Pool {
+            table: tid(T_NODES),
+            record: 0
+        })
+    );
 }
 
 #[test]
 fn a_double_nul_in_argv_is_a_pool_error() {
     let (db, r) = argv_db();
-    assert_eq!(check(&nul_at(&db, &r, &[4, 5])), Err(DbError::Pool));
+    assert_eq!(
+        check(&nul_at(&db, &r, &[4, 5])),
+        Err(DbError::Pool {
+            table: tid(T_NODES),
+            record: 0
+        })
+    );
 }
 
 #[test]
 fn a_leading_nul_in_landlock_is_a_pool_error() {
     let (db, r) = landlock_db();
-    assert_eq!(check(&nul_at(&db, &r, &[0])), Err(DbError::Pool));
+    assert_eq!(
+        check(&nul_at(&db, &r, &[0])),
+        Err(DbError::Pool {
+            table: tid(T_CREDS),
+            record: 0
+        })
+    );
 }
 
 #[test]
 fn a_trailing_nul_in_landlock_is_a_pool_error() {
     let (db, r) = landlock_db();
-    assert_eq!(check(&nul_at(&db, &r, &[8])), Err(DbError::Pool));
+    assert_eq!(
+        check(&nul_at(&db, &r, &[8])),
+        Err(DbError::Pool {
+            table: tid(T_CREDS),
+            record: 0
+        })
+    );
 }
 
 #[test]
 fn a_double_nul_in_landlock_is_a_pool_error() {
     let (db, r) = landlock_db();
-    assert_eq!(check(&nul_at(&db, &r, &[4, 5])), Err(DbError::Pool));
+    assert_eq!(
+        check(&nul_at(&db, &r, &[4, 5])),
+        Err(DbError::Pool {
+            table: tid(T_CREDS),
+            record: 0
+        })
+    );
 }
 
 #[test]

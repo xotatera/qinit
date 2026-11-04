@@ -96,6 +96,27 @@ pub open spec fn enums_ok(b: Seq<u8>) -> bool {
     &&& qw(b, Q_FLAGS) <= FLAG_DIE_WITH_PARENT
     &&& qw(b, Q_RESERVED_0) == 0
     &&& qw(b, Q_RESERVED_1) == 0
+    &&& (qw(b, Q_RLIMIT_MASK) as u32) & !RLIMIT_MASK_ALLOWED == 0
+}
+
+/// Resource limit `r` of the request: both words 0 when unset; `nofile` at least 1 and finite;
+/// `nice` and `rtprio` within their ceilings (the rules of the database's node record).
+pub open spec fn req_rlimit_ok(b: Seq<u8>, r: usize) -> bool {
+    let lo = qw(b, (Q_RLIMIT_BASE + 2 * r) as usize);
+    let hi = qw(b, (Q_RLIMIT_BASE + 2 * r + 1) as usize);
+    if ((qw(b, Q_RLIMIT_MASK) as u32) >> (r as u32)) & 1 == 0 {
+        lo == 0 && hi == 0
+    } else {
+        &&& (r == RLIMIT_NOFILE as usize ==> !(lo == 0 && hi == 0) && !(lo == u32::MAX as int && hi
+            == u32::MAX as int))
+        &&& (r == RLIMIT_NICE as usize ==> hi == 0 && lo <= MAX_RLIMIT_NICE as int)
+        &&& (r == RLIMIT_RTPRIO as usize ==> hi == 0 && lo <= MAX_RLIMIT_RTPRIO as int)
+    }
+}
+
+/// Every limit of the request is [`req_rlimit_ok`].
+pub open spec fn req_rlimits_ok(b: Seq<u8>) -> bool {
+    forall|r: usize| r < RLIMIT_COUNT ==> #[trigger] req_rlimit_ok(b, r)
 }
 
 /// A routed descriptor number.
@@ -151,12 +172,13 @@ pub open spec fn req_has_sys_admin(b: Seq<u8>) -> bool {
 }
 
 /// The content rules: a non-empty argv and user, the working directory, the lists' entries
-/// and counts, a positive deadline, and `nnp` off with a Landlock list or seccomp only with
+/// and counts, a positive deadline, the limits, and `nnp` off with a Landlock list or seccomp only with
 /// `CAP_SYS_ADMIN`.
 pub open spec fn content_ok(b: Seq<u8>) -> bool {
     &&& qw(b, Q_ARGV_LEN) >= 1
     &&& 1 <= qw(b, Q_USER_LEN) <= MAX_NAME_LEN
     &&& qw(b, Q_DEADLINE_MS) >= 1
+    &&& req_rlimits_ok(b)
     &&& req_cwd_ok(b)
     &&& env_list_ok(field_slice(b, Q_ENV_OFF, Q_ENV_LEN))
     &&& elems(field_slice(b, Q_ENV_OFF, Q_ENV_LEN)) <= MAX_ENV_ENTRIES

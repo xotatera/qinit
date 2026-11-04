@@ -41,3 +41,16 @@ pub fn size_kib(s: &str) -> Option<u32> {
     };
     u32::try_from(n.checked_mul(factor)?).ok()
 }
+
+/// Parse `512K`, `512M` or `2G` into bytes; `None` on any other shape or overflow of `u64`.
+#[must_use]
+pub fn size_bytes(s: &str) -> Option<u64> {
+    let (n, unit) = split(s)?;
+    let factor: u64 = match unit {
+        "K" => 1 << 10,
+        "M" => 1 << 20,
+        "G" => 1 << 30,
+        _ => return None,
+    };
+    n.checked_mul(factor)
+}

@@ -199,7 +199,7 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
         let (env_off, env_len) = intern(&mut pool, n.env.as_bytes());
         let (cwd_off, cwd_len) = intern(&mut pool, n.cwd.as_bytes());
         let (launch_env_off, launch_env_len) = intern(&mut pool, n.launch.env.as_bytes());
-        let mut rec = [0u32; 36];
+        let mut rec = [0u32; WORDS[T_NODES]];
         rec[N_RELOAD] = n.reload;
         rec[N_LAUNCH_CONCURRENCY] = n.launch.concurrency;
         rec[N_LAUNCH_ARGV_TAIL] = n.launch.argv_tail;

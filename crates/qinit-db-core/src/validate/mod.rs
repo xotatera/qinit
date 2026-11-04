@@ -13,7 +13,7 @@ mod utf8;
 pub use pool::{count_elements, elements_ok, nul_list_ok};
 #[allow(unused_imports)] // the specs only; Verus erases them outside verification
 pub use spec::*;
-pub use utf8::utf8_ok;
+pub use utf8::{utf8_check, utf8_ok};
 
 #[allow(clippy::wildcard_imports)] // the layout constants, used throughout
 use crate::layout::*;
@@ -43,11 +43,12 @@ pub enum DbError {
     Overlap,
     /// Table `t` holds more records than its limit.
     Count(u8),
-    /// A string reference leaves the pool, a name is empty or too long, or a list has an empty
-    /// element.
-    Pool,
-    /// A string is not UTF-8.
-    Utf8,
+    /// A string reference of a record leaves the pool or splits a character, a name is empty or
+    /// too long, or a list has an empty element.
+    Pool { table: u8, record: u32 },
+    /// The pool is not UTF-8; `offset` is the pool offset of the first byte that starts no
+    /// character.
+    Utf8 { offset: u32 },
     /// A cross-table index is out of range.
     Index { table: u8, record: u32 },
     /// An enum is out of range or a reserved bit is set.

@@ -70,7 +70,7 @@ pub const T_PRESYSLOG: usize = 6;
 pub const T_POOL: usize = 7;
 
 /// Words per record, tables 0..=6.
-pub const WORDS: [usize; 7] = [36, 3, 7, 12, 3, 1, 1];
+pub const WORDS: [usize; 7] = [68, 3, 7, 12, 3, 1, 1];
 
 /// Header word: magic.
 pub const H_MAGIC: usize = 0;
@@ -171,8 +171,9 @@ pub const N_CWD_LEN: usize = 27;
 /// Node record word 28: `umask`, at most `MAX_UMASK`.
 pub const N_UMASK: usize = 28;
 
-/// Node record word 29: `rlimit_nofile`, 0 for the kernel default.
-pub const N_RLIMIT_NOFILE: usize = 29;
+/// Node record word 29: `rlimit_mask`, the resource limits that are set: bit `r` for the
+/// resource numbered `r` (`RLIMIT_COUNT` of them), only the bits of `RLIMIT_MASK_ALLOWED`.
+pub const N_RLIMIT_MASK: usize = 29;
 
 /// Node record word 30: `reload`, the signal that re-reads configuration: 0 none, 1 `SIGHUP`,
 /// 2 `SIGUSR1`, 3 `SIGUSR2`.
@@ -196,6 +197,37 @@ pub const N_LAUNCH_ENV_LEN: usize = 34;
 /// Node record word 35: `launch_fds`, the standard descriptors a caller may supply: a mask of
 /// `FD_STDIN`, `FD_STDOUT` and `FD_STDERR`.
 pub const N_LAUNCH_FDS: usize = 35;
+
+/// Node record word 36: the first of `RLIMIT_COUNT` limit values. Resource `r` has its low word
+/// at `N_RLIMIT_BASE + 2 * r` and its high word at `N_RLIMIT_BASE + 2 * r + 1`; both are 0 unless
+/// bit `r` of `rlimit_mask` is set, and all ones is infinity.
+pub const N_RLIMIT_BASE: usize = 36;
+
+/// Resources with a limit slot, in kernel numbering: cpu 0, fsize 1, data 2, stack 3, core 4,
+/// rss 5, nproc 6, nofile 7, memlock 8, as 9, locks 10, sigpending 11, msgqueue 12, nice 13,
+/// rtprio 14, rttime 15.
+pub const RLIMIT_COUNT: usize = 16;
+
+/// The `core` resource, which is never set (the overseer always disables core dumps).
+pub const RLIMIT_CORE: u32 = 4;
+
+/// The `nofile` resource: a set value is at least 1 and finite.
+pub const RLIMIT_NOFILE: u32 = 7;
+
+/// The `nice` resource: a set value is at most `MAX_RLIMIT_NICE`.
+pub const RLIMIT_NICE: u32 = 13;
+
+/// The `rtprio` resource: a set value is at most `MAX_RLIMIT_RTPRIO`.
+pub const RLIMIT_RTPRIO: u32 = 14;
+
+/// Ceiling of a `nice` limit.
+pub const MAX_RLIMIT_NICE: u32 = 40;
+
+/// Ceiling of an `rtprio` limit.
+pub const MAX_RLIMIT_RTPRIO: u32 = 99;
+
+/// The `rlimit_mask` bits that may be set: every resource but `core`.
+pub const RLIMIT_MASK_ALLOWED: u32 = 0xFFEF;
 
 /// `launch_fds` bit: the caller may supply stdin.
 pub const FD_STDIN: u32 = 1;
