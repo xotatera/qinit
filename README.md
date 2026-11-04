@@ -29,6 +29,8 @@ A feature belongs in qinit only if it is about one of those things **and** canno
 outside it (it needs PID 1, ownership of the cgroup tree, or the fd store). Everything else is a
 separate program that uses qinit's open control protocol. The set of programs above is fixed;
 adding one is a design decision, not a patch.
+The reasoning behind these limits, and how to apply it to a proposal, is in
+[docs/design-principles.md](docs/design-principles.md).
 
 ### Cells
 

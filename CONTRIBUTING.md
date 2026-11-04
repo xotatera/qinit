@@ -2,6 +2,7 @@
 
 qinit is in early design and has a single maintainer. Please open an issue before you start work on a
 patch.
+Check the proposal against the [design principles](docs/design-principles.md) first.
 
 ## Licensing
 
