@@ -144,12 +144,13 @@ Accepted as is: a service that is already gone when readiness is read cannot
 be supervised as ready. The maintainer decided to revisit this in the colony
 sub-project (sub-project 4), which owns service state.
 
-### D19 — Validator worst-case cost · `ACCEPTED`
+### D19 — Validator worst-case cost · `RESOLVED`
 
-`pool_ref_ok` checks UTF-8 by rescanning the pool bytes for every reference.
-The validator is still total and bounded, but a crafted maximal database costs
-about 6.9e10 byte steps. Optional future work: validate the pool once, then
-prove that each reference starts and ends on a character boundary.
+`pool_ref_ok` used to check UTF-8 by rescanning the pool bytes for every reference (about
+6.9e10 byte steps for a crafted maximal database). `check_pool_refs` now scans the whole pool
+once and each reference needs only two boundary tests, proved to give a valid slice
+(`lemma_ref_utf8`): the worst case is one pass over at most `MAX_POOL` bytes plus a constant per
+reference. A pool holding unreferenced garbage is now refused too.
 
 ### D20 — Policy error rule index by line scan · `ACCEPTED`
 
@@ -182,11 +183,10 @@ the first succeeded: honouring the opt-outs only drops constraints, so the first
 labelling also satisfies the second, and the hard-parallel check is the same in both. A lemma
 stating that halves the worst-case graph cost (about 134 million steps): `check_graph` now runs `levels` once and proves the labelling serves both orders.
 
-### D25 — Pool and UTF-8 errors carry no position · `ACCEPTED`
+### D25 — Pool and UTF-8 errors carry no position · `RESOLVED`
 
-`DbError::Pool` and `DbError::Utf8` name no table or record, unlike the
-record errors. The validator rejects the database either way; a position
-would only help someone debugging a corrupt file.
+`DbError::Pool { table, record }` names the record whose reference failed and
+`DbError::Utf8 { offset }` the first bad pool offset, like the record errors.
 
 ### D26 — No ownership or mode check on policy and layers · `ACCEPTED`
 

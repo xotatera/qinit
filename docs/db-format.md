@@ -151,7 +151,7 @@ requires it.
 The validator is total and never panics. It accepts a database only if all of the following hold:
 
 1. **V1** Header fields, offsets and counts are in bounds and within the limits, and tables do not overlap.
-2. **V2** Every pool reference is an in-bounds slice, valid UTF-8, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, environment entries, Landlock entries, seccomp lists) holds no empty element. `N_INSTANCE_OF` may be empty, but at most `MAX_NAME_LEN` bytes.
+2. **V2** The pool is valid UTF-8, and every pool reference is an in-bounds slice between two character boundaries, and within `MAX_NAME_LEN` where it names something. A NUL-separated list (argv, environment entries, Landlock entries, seccomp lists) holds no empty element. `N_INSTANCE_OF` may be empty, but at most `MAX_NAME_LEN` bytes.
 3. **V3** Every cross-table index is `NONE` or in range of its table.
 4. **V4** Enums are in range, reserved bits are zero, and sync/async fields are consistent (a sync edge has no deadline). A node's `stop_mode` is 0 or 1, its `restart_delay_ms` and `stop_grace_ms` are at least 100, `restart_max > 0` implies `restart_window_ms > 0`, and its `umask` is at most `MAX_UMASK`. A worker or forager has a credential and a brood has none; the working directory is non-empty and starts with `/`; every environment entry has a non-empty key before its first `=`. A credential's user is non-empty, `seccomp` is at most 3 and its list is non-empty exactly when `seccomp` is 2 or 3; every list entry is a canonical decimal below `MAX_SYSCALL`; `nnp` 0 with a Landlock list or a seccomp filter requires `CAP_SYS_ADMIN` in `caps_lo`.
 5. **V5** The ordering-edge graph is acyclic.
@@ -168,11 +168,13 @@ functions `v1` to `v8` in `crates/qinit-db-core/src/validate/spec/`, and
   first after the header). Every table but the pool starts on a 4-byte boundary.
 - Every pool reference (names, argv, readiness arguments, instanced-frame names, environment
   entries, working directories, path targets, users, Landlock entries, seccomp lists, launch keys, route
-  paths) is in the pool and valid UTF-8, as
-  `core::str::from_utf8` defines it. Node names are 1 to `MAX_NAME_LEN` bytes and strictly ascending, bytewise.
+  paths) is in the pool and starts and ends on a character boundary of the pool, which as a whole
+  is valid UTF-8 as `core::str::from_utf8` defines it (`DbError::Utf8 { offset }` names the first
+  bad pool offset; `DbError::Pool { table, record }` names the record whose reference leaves the
+  pool or splits a character). Node names are 1 to `MAX_NAME_LEN` bytes and strictly ascending, bytewise.
 - The argv, environment, Landlock and seccomp lists are either empty (length 0) or have no NUL
   as their first or last byte and no two NULs in a row, so every element is non-empty
-  (`DbError::Pool` otherwise). The content of environment and seccomp entries and of the working
+  (`DbError::Pool { table, record }` otherwise). The content of environment and seccomp entries and of the working
   directory is a V4 rule (`DbError::Consistency`), checked after V2 has placed the bytes in the
   pool. So is the launch key list: each key is non-empty and holds no `=`, and each key sorts
   strictly after the one before it.

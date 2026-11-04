@@ -87,13 +87,13 @@ fn scalar_len(b: &[u8], i: usize, end: usize) -> (n: usize)
     0
 }
 
-/// `b[start..end]` is valid UTF-8.
-#[must_use]
-pub fn utf8_ok(b: &[u8], start: usize, end: usize) -> (ok: bool)
+/// `b[start..end]` is valid UTF-8, or the index of the first byte that starts no scalar.
+pub fn utf8_check(b: &[u8], start: usize, end: usize) -> (r: Result<(), usize>)
     requires
         start <= end <= b@.len(),
     ensures
-        ok ==> valid_utf8(b@.subrange(start as int, end as int)),
+        r is Ok ==> valid_utf8(b@.subrange(start as int, end as int)),
+        r is Err ==> start <= r->Err_0 < end,
 {
     let ghost s = b@.subrange(start as int, end as int);
     let mut i = start;
@@ -107,7 +107,7 @@ pub fn utf8_ok(b: &[u8], start: usize, end: usize) -> (ok: bool)
     {
         let n = scalar_len(b, i, end);
         if n == 0 {
-            return false;
+            return Err(i);
         }
         proof {
             assert(s.subrange(i - start, s.len() as int) =~= b@.subrange(i as int, end as int));
@@ -116,7 +116,21 @@ pub fn utf8_ok(b: &[u8], start: usize, end: usize) -> (ok: bool)
         i += n;
     }
     assert(s.subrange(0, s.len() as int) =~= s);
-    true
+    Ok(())
+}
+
+/// `b[start..end]` is valid UTF-8.
+#[must_use]
+pub fn utf8_ok(b: &[u8], start: usize, end: usize) -> (ok: bool)
+    requires
+        start <= end <= b@.len(),
+    ensures
+        ok ==> valid_utf8(b@.subrange(start as int, end as int)),
+{
+    match utf8_check(b, start, end) {
+        Ok(()) => true,
+        Err(_) => false,
+    }
 }
 
 } // verus!

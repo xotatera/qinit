@@ -454,7 +454,13 @@ fn an_env_entry_without_a_key_or_without_an_equals_sign_is_a_consistency_error()
 fn an_env_list_with_an_empty_element_is_a_pool_error() {
     let mut spec = minimal_spec();
     spec.nodes[0].env = "A=1\0\0B=2";
-    assert_eq!(check(&build(&spec)), Err(DbError::Pool));
+    assert_eq!(
+        check(&build(&spec)),
+        Err(DbError::Pool {
+            table: tid(T_NODES),
+            record: 0
+        })
+    );
 }
 
 fn forager_with(launch: LaunchSpec) -> Vec<u8> {

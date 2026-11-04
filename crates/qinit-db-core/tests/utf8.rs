@@ -16,7 +16,7 @@ fn accepts(scratch: &mut Scratch, name: &[u8]) -> bool {
     };
     match scratch.check(&build(&spec)) {
         Ok(()) => true,
-        Err(qinit_db_core::DbError::Utf8) => false,
+        Err(qinit_db_core::DbError::Utf8 { .. }) => false,
         Err(e) => panic!("{name:x?}: {e:?}"),
     }
 }

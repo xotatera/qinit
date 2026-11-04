@@ -7,18 +7,29 @@ mod common;
 use common::*;
 use qinit_db_core::*;
 
+fn tid(t: usize) -> u8 {
+    u8::try_from(t).unwrap()
+}
+
+fn pool(table: usize, record: u32) -> DbError {
+    DbError::Pool {
+        table: tid(table),
+        record,
+    }
+}
+
 #[test]
 fn a_name_that_leaves_the_pool_is_refused() {
     let db = with(&valid_minimal(), |w| {
         let i = at(w, T_NODES, 1, N_NAME_LEN);
         w[i] = 1000;
     });
-    assert_eq!(check(&db), Err(DbError::Pool));
+    assert_eq!(check(&db), Err(pool(T_NODES, 1)));
     let db = with(&valid_minimal(), |w| {
         let i = at(w, T_NODES, 0, N_NAME_OFF);
         w[i] = u32::MAX;
     });
-    assert_eq!(check(&db), Err(DbError::Pool));
+    assert_eq!(check(&db), Err(pool(T_NODES, 0)));
 }
 
 #[test]
@@ -27,7 +38,7 @@ fn a_name_that_is_not_utf8_is_refused() {
     let i = pool_at(&db, 0);
     assert_eq!(db[i], b'a');
     db[i] = 0xff;
-    assert_eq!(check(&db), Err(DbError::Utf8));
+    assert_eq!(check(&db), Err(DbError::Utf8 { offset: 0 }));
 }
 
 #[test]
@@ -38,18 +49,19 @@ fn a_path_that_is_not_utf8_is_refused() {
     let total = db.len();
     // The path is the last string in the pool.
     db[total - 1] = 0xc0;
-    assert_eq!(check(&db), Err(DbError::Utf8));
+    let offset = u32::try_from(total - 1 - pool_at(&db, 0)).unwrap();
+    assert_eq!(check(&db), Err(DbError::Utf8 { offset }));
 }
 
 #[test]
 fn a_name_over_the_limit_is_refused() {
     let mut spec = minimal_spec();
     spec.nodes[0].name = vec![b'a'; MAX_NAME_LEN + 1];
-    assert_eq!(check(&build(&spec)), Err(DbError::Pool));
+    assert_eq!(check(&build(&spec)), Err(pool(T_NODES, 0)));
     spec.nodes[0].name = vec![b'a'; MAX_NAME_LEN];
     assert_eq!(check(&build(&spec)), Ok(()));
     spec.nodes[0].name = vec![];
-    assert_eq!(check(&build(&spec)), Err(DbError::Pool));
+    assert_eq!(check(&build(&spec)), Err(pool(T_NODES, 0)));
 }
 
 #[test]
@@ -76,7 +88,10 @@ fn an_instance_of_name_over_the_limit_is_refused() {
     for (len, expected) in [
         (0, Ok(())),
         (u32::try_from(MAX_NAME_LEN).unwrap(), Ok(())),
-        (u32::try_from(MAX_NAME_LEN + 1).unwrap(), Err(DbError::Pool)),
+        (
+            u32::try_from(MAX_NAME_LEN + 1).unwrap(),
+            Err(pool(T_NODES, 1)),
+        ),
     ] {
         let patched = with(&db, |w| {
             let off = at(w, T_NODES, 1, N_INSTANCE_OF_OFF);
