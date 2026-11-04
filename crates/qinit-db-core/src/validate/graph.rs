@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! V5-V7: the ordering edges go through `qinit_graph_core::levels`, once for the start
-//! order (every ordering edge) and once for the stop order (parallel edges skipped).
+//! V5-V7: the ordering edges go through `qinit_graph_core::levels`, once: the
+//! labelling that sends every ordering edge up serves both the start order and the stop order
+//! (which skips parallel edges).
 #![allow(clippy::many_single_char_names)] // `b`, `n`, `i`, `g`, `x`, `k` follow the spec names
 
 use super::header::{field, header_word};
@@ -206,21 +207,14 @@ pub(crate) fn check_graph(b: &[u8], edges: &mut [GEdge], lv: &mut [u32]) -> (r: 
         },
     }
     proof {
+        // A labelling that sends every edge up also serves the order that skips parallel edges.
+        assert(qinit_graph_core::labelled(lv@, head@, true)) by {
+            assert forall|i: int| #![trigger head@[i]] 0 <= i < head@.len() implies ((true
+                && head@[i].parallel) || lv@[head@[i].from as int] < lv@[head@[i].to as int]) by {
+                assert(lv@[head@[i].from as int] < lv@[head@[i].to as int]);
+            }
+        }
         lemma_labellable(n as int, head@, lv@, false);
-    }
-    match qinit_graph_core::levels(n, head, lv, true) {
-        Ok(()) => {},
-        Err(GraphError::Cycle) => {
-            return Err(DbError::Cycle);
-        },
-        Err(GraphError::HardParallel) => {
-            return Err(DbError::HardParallel);
-        },
-        Err(GraphError::BadIndex) => {
-            return Err(DbError::Index { table: tid(T_EDGES), record: 0 });
-        },
-    }
-    proof {
         lemma_labellable(n as int, head@, lv@, true);
     }
     Ok(())

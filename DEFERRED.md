@@ -173,14 +173,14 @@ no-new-privileges on; it has to write `nnp = false` to opt out. A policy rule wi
 The validator now holds `N_INSTANCE_OF` to `MAX_NAME_LEN` (an empty name is still allowed),
 proved with V2. Readers can rely on the bound.
 
-### D24 — Second graph pass in the validator · `ACCEPTED`
+### D24 — Second graph pass in the validator · `RESOLVED`
 
 The scratch-length precondition of `qinit_db_core::validate` is now a run-time check that
 returns `DbError::Scratch`, so there is nothing left for a caller to break. The second `levels`
 call in `check_graph` (stop order, honouring `stop = "parallel"`) is logically redundant once
 the first succeeded: honouring the opt-outs only drops constraints, so the first pass's
 labelling also satisfies the second, and the hard-parallel check is the same in both. A lemma
-stating that could halve the worst-case graph cost (about 134 million steps).
+stating that halves the worst-case graph cost (about 134 million steps): `check_graph` now runs `levels` once and proves the labelling serves both orders.
 
 ### D25 — Pool and UTF-8 errors carry no position · `ACCEPTED`
 
