@@ -84,7 +84,7 @@ fn serve_while(client: impl FnOnce() -> i32) -> Result<(), String> {
     let _ = std::fs::remove_file(SOCKET);
     let path = CString::new(SOCKET).map_err(|e| e.to_string())?;
     // connect(2) needs write permission on the socket file: let the unprivileged clients in.
-    qinit_sys::limits::umask(0);
+    let _ = qinit_sys::limits::umask(0);
     let listener = listen_seqpacket(&path, 16).map_err(|e| format!("listen: {e}"))?;
     let mut colony = world()?;
     let mut driver = Driver::new(listener, Limits::default()).map_err(|e| format!("{e}"))?;
