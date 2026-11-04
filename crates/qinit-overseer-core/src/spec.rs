@@ -185,6 +185,14 @@ pub open spec fn content_ok(b: Seq<u8>) -> bool {
     &&& elems(field_slice(b, Q_SECCOMP_OFF, Q_SECCOMP_LEN)) <= MAX_SECCOMP_LIST
     &&& paths_list_ok(field_slice(b, Q_PATHS_OFF, Q_PATHS_LEN))
     &&& elems(field_slice(b, Q_PATHS_OFF, Q_PATHS_LEN)) <= MAX_PATH_ENTRIES
+    &&& paths_shape_ok(field_slice(b, Q_PATHS_OFF, Q_PATHS_LEN), qw(b, Q_NS) as u32)
+    &&& forall|e: Seq<u8>|
+        #![trigger is_first(field_slice(b, Q_ARGV_OFF, Q_ARGV_LEN), e)]
+        is_first(field_slice(b, Q_ARGV_OFF, Q_ARGV_LEN), e) ==> paths_cover_ok(
+            field_slice(b, Q_PATHS_OFF, Q_PATHS_LEN),
+            e,
+            field_slice(b, Q_CWD_OFF, Q_CWD_LEN),
+        )
     &&& (qw(b, Q_NNP) == 0 && (qw(b, Q_PATHS_LEN) > 0 || qw(b, Q_SECCOMP) != 0)
         ==> req_has_sys_admin(b))
 }

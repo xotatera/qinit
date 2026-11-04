@@ -6,7 +6,10 @@
 
 use super::header::{field, header_word};
 use super::keys::launch_keys_exec;
-use super::pool::{cwd_ok_exec, env_list_ok_exec, paths_list_ok_exec, seccomp_list_ok_exec};
+use super::paths::{first_elem_len, paths_cover_exec, paths_shape_exec};
+use super::pool::{
+    cwd_ok_exec, env_list_ok_exec, paths_list_ok_exec, pool_bytes, seccomp_list_ok_exec,
+};
 #[allow(unused_imports, clippy::wildcard_imports)] // spec-only items; Verus erases them
 use super::spec::*;
 use super::{DbError, rid, tid};
@@ -197,6 +200,55 @@ fn check_cred(b: &[u8], c: usize) -> (r: Result<(), DbError>)
     }
     if !paths_list_ok_exec(b, field(b, t, c, C_PATHS_OFF), field(b, t, c, C_PATHS_LEN)) {
         return Err(DbError::Consistency { table: tid(t), record: rid(c) });
+    }
+    let paths = pool_bytes(b, field(b, t, c, C_PATHS_OFF), field(b, t, c, C_PATHS_LEN));
+    if !paths_shape_exec(paths, field(b, t, c, C_NS)) {
+        return Err(DbError::Consistency { table: tid(t), record: rid(c) });
+    }
+    Ok(())
+}
+
+/// A node with credentials runs inside its credential's path list (checked after the credentials).
+fn check_node_paths(b: &[u8], i: usize) -> (r: Result<(), DbError>)
+    requires
+        v1(b@),
+        v2(b@),
+        i < nodes(b@),
+        node_index_ok(b@, i as int),
+        forall|c: int| 0 <= c < tcnt(b@, T_CREDS as int) ==> #[trigger] cred_enum_ok(b@, c),
+    ensures
+        r is Ok ==> node_paths_ok(b@, i as int),
+{
+    let t = T_NODES;
+    assert(node_pool_ok(b@, i as int));
+    let cred = field(b, t, i, N_CRED);
+    if cred == NONE {
+        return Ok(());
+    }
+    assert(cred < tcnt(b@, T_CREDS as int));
+    assert(cred_pool_ok(b@, cred as int));
+    assert(cred_enum_ok(b@, cred as int));
+    let c = cred as usize;
+    let paths = pool_bytes(b, field(b, T_CREDS, c, C_PATHS_OFF), field(b, T_CREDS, c, C_PATHS_LEN));
+    let exec = pool_bytes(b, field(b, t, i, N_EXEC_OFF), field(b, t, i, N_EXEC_LEN));
+    let cwd = pool_bytes(b, field(b, t, i, N_CWD_OFF), field(b, t, i, N_CWD_LEN));
+    let m = first_elem_len(exec);
+    let exec0 = vstd::slice::slice_subrange(exec, 0, m);
+    if !paths_cover_exec(paths, exec0, cwd) {
+        return Err(DbError::Consistency { table: tid(t), record: rid(i) });
+    }
+    assert forall|e: Seq<u8>| is_first(exec@, e) implies paths_cover_ok(paths@, e, cwd@) by {
+        if is_first(exec@, e) {
+            if e.len() < m {
+                assert(exec@[e.len() as int] != 0);
+            }
+            if e.len() > m {
+                assert(e[m as int] != 0);
+                assert(e[m as int] == exec@[m as int]);
+            }
+            assert(e.len() == m);
+            assert(e =~= exec0@);
+        }
     }
     Ok(())
 }
@@ -403,6 +455,21 @@ pub(crate) fn check_records(b: &[u8]) -> (r: Result<(), DbError>)
     {
         check_cred(b, c)?;
         c += 1;
+    }
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            v1(b@),
+            v2(b@),
+            n == nodes(b@),
+            i <= n,
+            forall|j: int| 0 <= j < nodes(b@) ==> #[trigger] node_index_ok(b@, j),
+            forall|j: int| 0 <= j < tcnt(b@, T_CREDS as int) ==> #[trigger] cred_enum_ok(b@, j),
+            forall|j: int| 0 <= j < i ==> #[trigger] node_paths_ok(b@, j),
+        decreases n - i,
+    {
+        check_node_paths(b, i)?;
+        i += 1;
     }
     let routes = header_word(b, 5 + 2 * T_ROUTES) as usize;
     let mut r: usize = 0;

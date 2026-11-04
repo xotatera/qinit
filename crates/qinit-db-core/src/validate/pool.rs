@@ -534,6 +534,19 @@ pub(crate) fn cwd_ok_exec(b: &[u8], off: u32, len: u32) -> (ok: bool)
     ok
 }
 
+/// The pool bytes `off..off + len`.
+pub(crate) fn pool_bytes(b: &[u8], off: u32, len: u32) -> (s: &[u8])
+    requires
+        v1(b@),
+        pool_ref(b@, off as int, len as int),
+    ensures
+        s@ == pool_slice(b@, off as int, len as int),
+{
+    assert(table_ok(b@, T_POOL as int));
+    let a = header_word(b, 4 + 2 * T_POOL) as usize + off as usize;
+    vstd::slice::slice_subrange(b, a, a + len as usize)
+}
+
 /// The pool list `off..off + len` holds only [`path_entry_ok`] entries (V4).
 pub(crate) fn paths_list_ok_exec(b: &[u8], off: u32, len: u32) -> (ok: bool)
     requires

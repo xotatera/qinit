@@ -33,6 +33,10 @@ fn argv_db() -> (Vec<u8>, Range<usize>) {
 fn landlock_db() -> (Vec<u8>, Range<usize>) {
     let mut spec = minimal_spec();
     spec.creds[0].user = "ro:/ro:/a";
+    spec.creds[0].ns = 1;
+    for n in &mut spec.nodes {
+        n.exec = "/ro:/a";
+    }
     let db = with(&build(&spec), |w| {
         let (uo, ul) = (at(w, T_CREDS, 0, C_USER_OFF), at(w, T_CREDS, 0, C_USER_LEN));
         let (lo, ll) = (

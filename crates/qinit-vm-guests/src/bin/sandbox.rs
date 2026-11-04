@@ -13,6 +13,7 @@ use qinit_vm_guests::{
 /// `CAP_SYS_ADMIN`, for the calls the kernel would otherwise refuse the `svc` user.
 const SYS_ADMIN: u64 = 1 << 21;
 /// Namespace bits of the request: mount, pid, ipc, uts, net.
+const NS_MOUNT: u32 = 1;
 const NS_PID: u32 = 1 << 1;
 const NS_UTS: u32 = 1 << 3;
 const NS_NET: u32 = 1 << 4;
@@ -28,6 +29,7 @@ fn want<T: PartialEq + std::fmt::Debug>(got: T, expected: T, what: &str) -> Resu
 
 fn probe_path(name: &str, path: &str, mode: &str, paths: &[&str]) -> Result<i32, String> {
     let mut request = spec("svc", "probe-path", &[path, mode]);
+    request.ns = NS_MOUNT;
     request.paths = paths.iter().map(ToString::to_string).collect();
     let o = run_to_end(name, request, false)?;
     if let Some(f) = o.failure {
@@ -39,7 +41,7 @@ fn probe_path(name: &str, path: &str, mode: &str, paths: &[&str]) -> Result<i32,
 fn landlock() -> Result<(), String> {
     e(std::fs::create_dir_all("/tmp/ll"))?;
     e(qinit_sys::fd::chown(c"/tmp/ll", 1000, 1000).map_err(|x| x.to_string()))?;
-    let rules = ["ro:/etc", "rw:/tmp/ll", "ro:/init"];
+    let rules = ["ro:/etc", "ro:/init", "rw:/tmp/ll"];
     let eacces = libc::EACCES;
     want(
         probe_path("ll1", "/etc/passwd", "r", &rules)?,

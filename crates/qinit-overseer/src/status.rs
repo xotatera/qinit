@@ -61,6 +61,7 @@ pub fn name(s: Step) -> &'static str {
         Step::LoopbackUp => "loopback-up",
         Step::Fork => "fork",
         Step::ArmDeadline(_) => "arm-deadline",
+        Step::RearmDeadline => "rearm-deadline",
         Step::OpenStdin => "open-stdin",
         Step::OpenStdout => "open-stdout",
         Step::OpenStderr => "open-stderr",

@@ -64,7 +64,8 @@ fn e_dir(path: &str) -> Result<(), String> {
 
 fn missing_landlock_path() -> Result<(), String> {
     let mut request = spec("svc", "exit-0", &[]);
-    request.paths = vec!["ro:/nonexistent".into()];
+    request.ns = 1;
+    request.paths = vec!["ro:/init".into(), "ro:/nonexistent".into()];
     at("f5", request, "landlock-rule", libc::ENOENT)
 }
 
@@ -79,7 +80,8 @@ fn nnp_off_without_sys_admin() -> Result<(), String> {
         argv: vec!["/init".into()],
         user: "root".into(),
         nnp: false,
-        paths: vec!["ro:/etc".into()],
+        ns: 1,
+        paths: vec!["ro:/init".into()],
         ..RequestSpec::default()
     };
     let o = run_to_end("f7", request, false)?;
@@ -98,7 +100,8 @@ fn tiny_nofile() -> Result<(), String> {
     // With three descriptors allowed, creating the Landlock ruleset (a new descriptor) fails.
     let mut request = spec("svc", "exit-0", &[]);
     request.rlimits[7] = Some(3);
-    request.paths = vec!["ro:/etc".into()];
+    request.ns = 1;
+    request.paths = vec!["ro:/init".into()];
     let (got, step) = failed("f8", request)?;
     if step != "rlimit-nofile"
         && step != "decode"

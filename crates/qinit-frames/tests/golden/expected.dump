@@ -77,9 +77,9 @@ worker logd
   credentials.caps = []  # default
   credentials.nnp = true  # default
   credentials.securebits = "none"  # default
-  sandbox.namespaces = ["ipc", "uts"]  # vendor
+  sandbox.namespaces = ["mount", "ipc", "uts"]  # vendor
   sandbox.seccomp = "default"  # vendor
-  sandbox.paths = ["ro:/etc/logd", "rw:/var/log/qinit"]  # vendor
+  sandbox.paths = ["ro:/etc/logd", "ro:/usr/lib/qinit", "rw:/var/log/qinit"]  # vendor
   deps[0].group = "require_all"  # vendor
   deps[0].edges[0] = { to = "syslog-ng", mode = "sync", restart_on = "restart" }  # vendor
 

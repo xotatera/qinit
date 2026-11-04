@@ -11,7 +11,7 @@ use qinit_sys::limits::{RLIMIT_NOFILE, set_rlimit, umask};
 use qinit_sys::memfd::{self, sealed, seals};
 use qinit_sys::seccomp::{Insn, install};
 use qinit_sys::sock::connect_unix;
-use qinit_sys::timer::arm_alarm;
+use qinit_sys::timer::{arm_alarm_at, now_monotonic_ns};
 use qinit_sys::{Errno, fd, proc, spawn};
 use std::ffi::{CString, OsStr};
 use std::io::{Read, Write};
@@ -95,7 +95,7 @@ fn role(name: &str) -> i32 {
             i32::from(!no_new_privs().unwrap())
         }
         "alarm" => {
-            arm_alarm(50).unwrap();
+            arm_alarm_at(now_monotonic_ns() + 50_000_000).unwrap();
             loop {
                 proc::pause();
             }

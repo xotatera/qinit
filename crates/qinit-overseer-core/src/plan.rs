@@ -16,7 +16,7 @@ use vstd::prelude::*;
 verus! {
 
 /// Steps a plan holds at most.
-pub const MAX_STEPS: usize = 256;
+pub const MAX_STEPS: usize = 320;
 
 /// The highest capability number (`CAP_CHECKPOINT_RESTORE`).
 pub const CAP_LAST: u32 = 40;
@@ -66,6 +66,9 @@ pub enum Step {
     Fork,
     /// Arm the deadline timer, in milliseconds.
     ArmDeadline(u32),
+    /// Arm the deadline timer again at the same instant, in the new pid namespace's child (the
+    /// timer is not inherited across the fork).
+    RearmDeadline,
     /// Standard input from `/dev/null`.
     OpenStdin,
     /// Standard output from the request's stream.
@@ -119,35 +122,36 @@ pub enum Step {
 pub open spec fn phase(s: Step) -> int {
     match s {
         Step::Setsid => 0,
-        Step::Unshare(_) => 1,
-        Step::MountSlaveRoot => 1,
-        Step::MountTmp => 1,
-        Step::LoopbackUp => 1,
-        Step::Fork => 2,
-        Step::ArmDeadline(_) => 3,
-        Step::OpenStdin => 4,
-        Step::OpenStdout => 4,
-        Step::OpenStderr => 4,
-        Step::RouteReady(_) => 4,
-        Step::Umask(_) => 5,
-        Step::Rlimit(_, _) => 5,
-        Step::RlimitCore0 => 5,
-        Step::Setgroups => 6,
-        Step::Setgid => 6,
-        Step::Securebits(_) => 7,
-        Step::DropBounding(_) => 8,
-        Step::Setuid => 9,
-        Step::Capset => 10,
-        Step::AmbientRaise(_) => 11,
-        Step::Pdeathsig => 12,
-        Step::NoNewPrivs => 13,
-        Step::Chdir => 14,
-        Step::LandlockRuleset => 15,
-        Step::LandlockRule(_) => 16,
-        Step::LandlockRestrict => 17,
-        Step::Seccomp => 18,
-        Step::CloseRange => 19,
-        Step::Exec => 20,
+        Step::ArmDeadline(_) => 1,
+        Step::OpenStdin => 2,
+        Step::OpenStdout => 2,
+        Step::OpenStderr => 2,
+        Step::RouteReady(_) => 2,
+        Step::Umask(_) => 3,
+        Step::Rlimit(_, _) => 3,
+        Step::RlimitCore0 => 3,
+        Step::Unshare(_) => 4,
+        Step::MountSlaveRoot => 4,
+        Step::MountTmp => 4,
+        Step::Fork => 5,
+        Step::RearmDeadline => 6,
+        Step::LoopbackUp => 9,
+        Step::Setgroups => 10,
+        Step::Setgid => 10,
+        Step::Securebits(_) => 11,
+        Step::DropBounding(_) => 12,
+        Step::Setuid => 13,
+        Step::Capset => 14,
+        Step::AmbientRaise(_) => 15,
+        Step::Pdeathsig => 16,
+        Step::NoNewPrivs => 17,
+        Step::Chdir => 18,
+        Step::LandlockRuleset => 19,
+        Step::LandlockRule(_) => 20,
+        Step::LandlockRestrict => 21,
+        Step::Seccomp => 22,
+        Step::CloseRange => 23,
+        Step::Exec => 24,
     }
 }
 
@@ -156,7 +160,6 @@ pub open spec fn sub(s: Step) -> int {
     match s {
         Step::MountSlaveRoot => 1,
         Step::MountTmp => 2,
-        Step::LoopbackUp => 3,
         Step::OpenStdout => 1,
         Step::OpenStderr => 2,
         Step::RouteReady(_) => 3,
@@ -193,15 +196,24 @@ pub open spec fn well_ordered(s: Seq<Step>) -> bool {
     &&& s.last() == Step::Exec
 }
 
-/// The clauses of spec §7.2, each read off the phase table: outputs before any credential
-/// step; securebits and drops before `setresuid`; `capset` and the raises after it; the
-/// death signal after the last credential step; no-new-privs after the credentials and before
-/// Landlock; Landlock before seccomp; `chdir` after `setresuid`; the fork before the deadline
-/// and the outputs; `execve` last.
-pub proof fn lemma_phase_table(c: u32, i: u32, f: u32)
+/// The clauses of spec §7.2, each read off the phase table: the deadline before the outputs;
+/// the outputs and limits before any namespace; the fork before the new deadline; every
+/// namespace step before the loopback and the credentials; securebits and drops before
+/// `setresuid`; `capset` and the raises after it; the death signal after the last credential
+/// step; no-new-privs after the credentials and before Landlock; Landlock before seccomp;
+/// `chdir` after `setresuid`; `execve` last.
+pub proof fn lemma_phase_table(c: u32, i: u32, f: u32, r: u32, v: u64)
     ensures
-        phase(Step::Fork) < phase(Step::ArmDeadline(f)),
+        phase(Step::Setsid) < phase(Step::ArmDeadline(f)),
         phase(Step::ArmDeadline(f)) < phase(Step::OpenStdout),
+        phase(Step::OpenStdout) < phase(Step::Umask(f)),
+        phase(Step::Rlimit(r, v)) < phase(Step::Unshare(f)),
+        phase(Step::RlimitCore0) < phase(Step::Unshare(f)),
+        phase(Step::Unshare(f)) < phase(Step::Fork),
+        phase(Step::MountTmp) < phase(Step::Fork),
+        phase(Step::Fork) < phase(Step::RearmDeadline),
+        phase(Step::RearmDeadline) < phase(Step::LoopbackUp),
+        phase(Step::LoopbackUp) < phase(Step::Setgroups),
         phase(Step::OpenStdout) < phase(Step::Setgroups),
         phase(Step::Setgid) < phase(Step::Securebits(f)),
         phase(Step::Securebits(f)) < phase(Step::Setuid),
@@ -272,9 +284,10 @@ pub open spec fn step_ok(b: Seq<u8>, x: Step) -> bool {
     match x {
         Step::Unshare(f) => qw(b, Q_NS) != 0 && f as int == ns_flags(qw(b, Q_NS) as u32),
         Step::MountSlaveRoot => ((qw(b, Q_NS) as u32) & 1u32) != 0u32,
-        Step::MountTmp => ((qw(b, Q_NS) as u32) & 1u32) != 0u32,
+        Step::MountTmp => ((qw(b, Q_NS) as u32) & 1u32) != 0u32 && qw(b, Q_PATHS_LEN) == 0,
         Step::LoopbackUp => ((qw(b, Q_NS) as u32) & 16u32) != 0u32,
         Step::Fork => ((qw(b, Q_NS) as u32) & 2u32) != 0u32,
+        Step::RearmDeadline => ((qw(b, Q_NS) as u32) & 2u32) != 0u32,
         Step::ArmDeadline(d) => d as int == qw(b, Q_DEADLINE_MS),
         Step::RouteReady(fd) => qw(b, Q_READY_KIND) == READY_PIPE && fd as int == qw(b, Q_READY_FD),
         Step::Umask(m) => m as int == qw(b, Q_UMASK),
@@ -303,20 +316,9 @@ pub open spec fn ext(s: Seq<Step>, t: Seq<Step>) -> bool {
     forall|y: Step| has(s, y) ==> #[trigger] has(t, y)
 }
 
-/// Namespaces: the unshare, the mount steps, the fork and the loopback.
-pub open spec fn present_ns(b: Seq<u8>, s: Seq<Step>) -> bool {
+/// The session, the deadline and the descriptors.
+pub open spec fn present_early(b: Seq<u8>, s: Seq<Step>) -> bool {
     &&& has(s, Step::Setsid)
-    &&& (qw(b, Q_NS) != 0 ==> has(s, Step::Unshare(ns_flags(qw(b, Q_NS) as u32) as u32)))
-    &&& (((qw(b, Q_NS) as u32) & 1u32) != 0u32 ==> has(s, Step::MountSlaveRoot) && has(
-        s,
-        Step::MountTmp,
-    ))
-    &&& (((qw(b, Q_NS) as u32) & 2u32) != 0u32 ==> has(s, Step::Fork))
-    &&& (((qw(b, Q_NS) as u32) & 16u32) != 0u32 ==> has(s, Step::LoopbackUp))
-}
-
-/// The deadline and the descriptors.
-pub open spec fn present_fds(b: Seq<u8>, s: Seq<Step>) -> bool {
     &&& has(s, Step::ArmDeadline(qw(b, Q_DEADLINE_MS) as u32))
     &&& has(s, Step::OpenStdin)
     &&& has(s, Step::OpenStdout)
@@ -324,7 +326,7 @@ pub open spec fn present_fds(b: Seq<u8>, s: Seq<Step>) -> bool {
     &&& (qw(b, Q_READY_KIND) == READY_PIPE ==> has(s, Step::RouteReady(qw(b, Q_READY_FD) as u32)))
 }
 
-/// The mask, limits, groups and securebits.
+/// The mask and the limits.
 pub open spec fn present_env(b: Seq<u8>, s: Seq<Step>) -> bool {
     &&& has(s, Step::Umask(qw(b, Q_UMASK) as u32))
     &&& forall|r: int|
@@ -333,6 +335,25 @@ pub open spec fn present_env(b: Seq<u8>, s: Seq<Step>) -> bool {
             Step::Rlimit(r as u32, rlimit_value(b, r) as u64),
         )
     &&& has(s, Step::RlimitCore0)
+}
+
+/// The namespaces: the unshare, the mount steps, the fork and the second deadline.
+pub open spec fn present_ns(b: Seq<u8>, s: Seq<Step>) -> bool {
+    &&& (qw(b, Q_NS) != 0 ==> has(s, Step::Unshare(ns_flags(qw(b, Q_NS) as u32) as u32)))
+    &&& (((qw(b, Q_NS) as u32) & 1u32) != 0u32 ==> has(s, Step::MountSlaveRoot))
+    &&& (((qw(b, Q_NS) as u32) & 1u32) != 0u32 && qw(b, Q_PATHS_LEN) == 0 ==> has(
+        s,
+        Step::MountTmp,
+    ))
+    &&& (((qw(b, Q_NS) as u32) & 2u32) != 0u32 ==> has(s, Step::Fork) && has(
+        s,
+        Step::RearmDeadline,
+    ))
+}
+
+/// The loopback, the groups and the securebits.
+pub open spec fn present_ids(b: Seq<u8>, s: Seq<Step>) -> bool {
+    &&& (((qw(b, Q_NS) as u32) & 16u32) != 0u32 ==> has(s, Step::LoopbackUp))
     &&& has(s, Step::Setgroups)
     &&& has(s, Step::Setgid)
     &&& has(s, Step::Securebits(sb_value(qw(b, Q_SECUREBITS)) as u32))
@@ -374,9 +395,10 @@ pub open spec fn present_finish(b: Seq<u8>, s: Seq<Step>) -> bool {
 
 /// Everything the request calls for occurs in `s`.
 pub open spec fn present(b: Seq<u8>, s: Seq<Step>) -> bool {
-    &&& present_ns(b, s)
-    &&& present_fds(b, s)
+    &&& present_early(b, s)
     &&& present_env(b, s)
+    &&& present_ns(b, s)
+    &&& present_ids(b, s)
     &&& present_drops(b, s)
     &&& present_creds(b, s)
     &&& present_tail(b, s)
@@ -389,9 +411,10 @@ pub proof fn lemma_present_mono(b: Seq<u8>, s: Seq<Step>, t: Seq<Step>)
     requires
         ext(s, t),
     ensures
-        present_ns(b, s) ==> present_ns(b, t),
-        present_fds(b, s) ==> present_fds(b, t),
+        present_early(b, s) ==> present_early(b, t),
         present_env(b, s) ==> present_env(b, t),
+        present_ns(b, s) ==> present_ns(b, t),
+        present_ids(b, s) ==> present_ids(b, t),
         present_drops(b, s) ==> present_drops(b, t),
         present_creds(b, s) ==> present_creds(b, t),
         present_tail(b, s) ==> present_tail(b, t),
@@ -557,8 +580,8 @@ fn flags_of(ns: u32) -> (f: u32)
     a + p + i + u + n
 }
 
-/// Phases 0 to 2: `setsid`, the namespaces and the fork.
-fn sec_ns(b: &[u8], out: &mut [Step; MAX_STEPS]) -> (m: usize)
+/// Phases 0 to 2: `setsid`, the deadline and the descriptors.
+fn sec_early(b: &[u8], out: &mut [Step; MAX_STEPS]) -> (m: usize)
     requires
         accepted(b@),
     ensures
@@ -567,52 +590,12 @@ fn sec_ns(b: &[u8], out: &mut [Step; MAX_STEPS]) -> (m: usize)
         sorted(final(out)@.take(m as int)),
         faithful(b@, final(out)@.take(m as int)),
         below(final(out)@, m as int, 3, 0),
-        present_ns(b@, final(out)@.take(m as int)),
+        present_early(b@, final(out)@.take(m as int)),
 {
-    let ns = req(b, Q_NS);
-    assert(ns <= 0x1f);
-    let flags = flags_of(ns);
     let mut n: usize = 0;
     assert(sorted(out@.take(0)));
     assert(faithful(b@, out@.take(0)));
     n = emit(b, out, n, Step::Setsid);
-    if ns != 0 {
-        n = emit(b, out, n, Step::Unshare(flags));
-    }
-    assert(below(out@, n as int, 1, 1));
-    if ns & 1 != 0 {
-        n = emit(b, out, n, Step::MountSlaveRoot);
-        n = emit(b, out, n, Step::MountTmp);
-    }
-    assert(below(out@, n as int, 1, 3));
-    if ns & 16 != 0 {
-        n = emit(b, out, n, Step::LoopbackUp);
-    }
-    assert(below(out@, n as int, 1, 4));
-    if ns & 2 != 0 {
-        n = emit(b, out, n, Step::Fork);
-    }
-    n
-}
-
-/// Phases 3 and 4: the deadline and the descriptors.
-fn sec_fds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
-    requires
-        accepted(b@),
-        n0 <= 6,
-        sorted(old(out)@.take(n0 as int)),
-        faithful(b@, old(out)@.take(n0 as int)),
-        below(old(out)@, n0 as int, 3, 0),
-    ensures
-        n0 < m <= n0 + 5,
-        final(out)@.len() == old(out)@.len(),
-        sorted(final(out)@.take(m as int)),
-        faithful(b@, final(out)@.take(m as int)),
-        below(final(out)@, m as int, 5, 0),
-        ext(old(out)@.take(n0 as int), final(out)@.take(m as int)),
-        present_fds(b@, final(out)@.take(m as int)),
-{
-    let mut n = n0;
     n = emit(b, out, n, Step::ArmDeadline(req(b, Q_DEADLINE_MS)));
     n = emit(b, out, n, Step::OpenStdin);
     n = emit(b, out, n, Step::OpenStdout);
@@ -623,34 +606,24 @@ fn sec_fds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     n
 }
 
-/// Phases 5 to 7: the mask, limits, groups and securebits.
+/// Phase 3: the mask and the limits.
 #[allow(clippy::cast_possible_truncation, clippy::cast_lossless)]  // `r < RLIMIT_COUNT`; `u64::from` is not available inside `verus!`
 fn sec_env(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 11,
+        n0 <= 6,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
-        below(old(out)@, n0 as int, 5, 0),
+        below(old(out)@, n0 as int, 3, 0),
     ensures
-        n0 < m <= n0 + 21,
+        n0 < m <= n0 + 18,
         final(out)@.len() == old(out)@.len(),
         sorted(final(out)@.take(m as int)),
         faithful(b@, final(out)@.take(m as int)),
-        below(final(out)@, m as int, 8, 0),
+        below(final(out)@, m as int, 4, 0),
         ext(old(out)@.take(n0 as int), final(out)@.take(m as int)),
         present_env(b@, final(out)@.take(m as int)),
 {
-    let sbv = SECBIT_KEEP_CAPS + (if req(b, Q_SECUREBITS) >= 1 {
-        SECBIT_NOROOT
-    } else {
-        0
-    }) + (if req(b, Q_SECUREBITS) == 2 {
-        SECBIT_NOROOT_LOCKED
-    } else {
-        0
-    });
-    assert(sbv as int == sb_value(qw(b@, Q_SECUREBITS)));
     let mut n = n0;
     n = emit(b, out, n, Step::Umask(req(b, Q_UMASK)));
     let mask = req(b, Q_RLIMIT_MASK);
@@ -660,14 +633,14 @@ fn sec_env(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
             accepted(b@),
             r <= RLIMIT_COUNT,
             n0 + 1 <= n <= n0 + 1 + r,
-            n0 <= 11,
+            n0 <= 6,
             mask as int == qw(b@, Q_RLIMIT_MASK),
             out@.len() == old(out)@.len(),
             sorted(out@.take(n as int)),
             faithful(b@, out@.take(n as int)),
             ext(old(out)@.take(n0 as int), out@.take(n as int)),
             has(out@.take(n as int), Step::Umask(qw(b@, Q_UMASK) as u32)),
-            phase(out@[n - 1]) < 5 || (phase(out@[n - 1]) == 5 && sub(out@[n - 1]) < 1 + r),
+            phase(out@[n - 1]) < 3 || (phase(out@[n - 1]) == 3 && sub(out@[n - 1]) < 1 + r),
             forall|j: int|
                 0 <= j < r && rlimit_set(b@, j) ==> #[trigger] has(
                     out@.take(n as int),
@@ -684,31 +657,105 @@ fn sec_env(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
         }
         r += 1;
     }
-    assert(below(out@, n as int, 5, 17));
+    assert(below(out@, n as int, 3, 17));
     let ghost t_limits = out@.take(n as int);
     n = emit(b, out, n, Step::RlimitCore0);
-    let ghost t_core = out@.take(n as int);
-    n = emit(b, out, n, Step::Setgroups);
-    let ghost t_groups = out@.take(n as int);
-    n = emit(b, out, n, Step::Setgid);
-    let ghost t_gid = out@.take(n as int);
-    n = emit(b, out, n, Step::Securebits(sbv));
     proof {
         let t = out@.take(n as int);
         let um = Step::Umask(qw(b@, Q_UMASK) as u32);
         assert(has(t_limits, um));
-        assert(has(t_core, um));
-        assert(has(t_groups, um));
-        assert(has(t_gid, um));
         assert forall|j: int| 0 <= j < RLIMIT_COUNT && rlimit_set(b@, j) implies #[trigger] has(
             t,
             Step::Rlimit(j as u32, rlimit_value(b@, j) as u64),
         ) by {
             let x = Step::Rlimit(j as u32, rlimit_value(b@, j) as u64);
             assert(has(t_limits, x));
-            assert(has(t_core, x));
-            assert(has(t_groups, x));
-            assert(has(t_gid, x));
+        }
+    }
+    n
+}
+
+/// Phases 4 to 6: the namespaces, the fork and the second deadline.
+fn sec_ns(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
+    requires
+        accepted(b@),
+        n0 <= 24,
+        sorted(old(out)@.take(n0 as int)),
+        faithful(b@, old(out)@.take(n0 as int)),
+        below(old(out)@, n0 as int, 4, 0),
+    ensures
+        n0 <= m <= n0 + 5,
+        final(out)@.len() == old(out)@.len(),
+        sorted(final(out)@.take(m as int)),
+        faithful(b@, final(out)@.take(m as int)),
+        below(final(out)@, m as int, 7, 0),
+        ext(old(out)@.take(n0 as int), final(out)@.take(m as int)),
+        present_ns(b@, final(out)@.take(m as int)),
+{
+    let ns = req(b, Q_NS);
+    assert(ns <= 0x1f);
+    let flags = flags_of(ns);
+    let mut n = n0;
+    if ns != 0 {
+        n = emit(b, out, n, Step::Unshare(flags));
+    }
+    assert(below(out@, n as int, 4, 1));
+    if ns & 1 != 0 {
+        n = emit(b, out, n, Step::MountSlaveRoot);
+        if req(b, Q_PATHS_LEN) == 0 {
+            n = emit(b, out, n, Step::MountTmp);
+        }
+    }
+    assert(below(out@, n as int, 4, 3));
+    if ns & 2 != 0 {
+        n = emit(b, out, n, Step::Fork);
+        n = emit(b, out, n, Step::RearmDeadline);
+    }
+    n
+}
+
+/// Phases 9 to 11: the loopback, the groups and the securebits.
+fn sec_ids(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
+    requires
+        accepted(b@),
+        n0 <= 29,
+        sorted(old(out)@.take(n0 as int)),
+        faithful(b@, old(out)@.take(n0 as int)),
+        below(old(out)@, n0 as int, 7, 0),
+    ensures
+        n0 + 3 <= m <= n0 + 4,
+        final(out)@.len() == old(out)@.len(),
+        sorted(final(out)@.take(m as int)),
+        faithful(b@, final(out)@.take(m as int)),
+        below(final(out)@, m as int, 12, 0),
+        ext(old(out)@.take(n0 as int), final(out)@.take(m as int)),
+        present_ids(b@, final(out)@.take(m as int)),
+{
+    let sbv = SECBIT_KEEP_CAPS + (if req(b, Q_SECUREBITS) >= 1 {
+        SECBIT_NOROOT
+    } else {
+        0
+    }) + (if req(b, Q_SECUREBITS) == 2 {
+        SECBIT_NOROOT_LOCKED
+    } else {
+        0
+    });
+    assert(sbv as int == sb_value(qw(b@, Q_SECUREBITS)));
+    let mut n = n0;
+    if req(b, Q_NS) & 16 != 0 {
+        n = emit(b, out, n, Step::LoopbackUp);
+    }
+    let ghost t_lo = out@.take(n as int);
+    n = emit(b, out, n, Step::Setgroups);
+    let ghost t_groups = out@.take(n as int);
+    n = emit(b, out, n, Step::Setgid);
+    let ghost t_gid = out@.take(n as int);
+    n = emit(b, out, n, Step::Securebits(sbv));
+    proof {
+        if qw(b@, Q_NS) as u32 & 16u32 != 0u32 {
+            assert(has(t_lo, Step::LoopbackUp));
+            assert(has(t_groups, Step::LoopbackUp));
+            assert(has(t_gid, Step::LoopbackUp));
         }
     }
     n
@@ -719,16 +766,16 @@ fn sec_env(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 fn sec_drops(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 32,
+        n0 <= 33,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
-        below(old(out)@, n0 as int, 8, 0),
+        below(old(out)@, n0 as int, 12, 0),
     ensures
         n0 <= m <= n0 + 42,
         final(out)@.len() == old(out)@.len(),
         sorted(final(out)@.take(m as int)),
         faithful(b@, final(out)@.take(m as int)),
-        below(final(out)@, m as int, 9, 0),
+        below(final(out)@, m as int, 13, 0),
         ext(old(out)@.take(n0 as int), final(out)@.take(m as int)),
         present_drops(b@, final(out)@.take(m as int)),
 {
@@ -739,14 +786,14 @@ fn sec_drops(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
             accepted(b@),
             c <= CAP_LAST + 1,
             n0 <= n <= n0 + c,
-            n0 <= 32,
-            n <= 32 + 41,
+            n0 <= 33,
+            n <= 33 + 41,
             out@.len() == old(out)@.len(),
             sorted(out@.take(n as int)),
             faithful(b@, out@.take(n as int)),
             ext(old(out)@.take(n0 as int), out@.take(n as int)),
             n > 0,
-            phase(out@[n - 1]) < 8 || (phase(out@[n - 1]) == 8 && sub(out@[n - 1]) < c as int),
+            phase(out@[n - 1]) < 12 || (phase(out@[n - 1]) == 12 && sub(out@[n - 1]) < c as int),
             forall|d: int|
                 0 <= d < c as int && d != CAP_SETPCAP as int && !cap_has(b@, d) ==> #[trigger] has(
                     out@.take(n as int),
@@ -765,20 +812,20 @@ fn sec_drops(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     n
 }
 
-/// Phases 9 to 11: the user change, `capset` and the ambient raises.
+/// Phases 13 to 15: the user change, `capset` and the ambient raises.
 fn sec_creds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 74,
+        n0 <= 75,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
-        below(old(out)@, n0 as int, 9, 0),
+        below(old(out)@, n0 as int, 13, 0),
     ensures
         n0 + 2 <= m <= n0 + 43,
         final(out)@.len() == old(out)@.len(),
         sorted(final(out)@.take(m as int)),
         faithful(b@, final(out)@.take(m as int)),
-        below(final(out)@, m as int, 12, 0),
+        below(final(out)@, m as int, 16, 0),
         ext(old(out)@.take(n0 as int), final(out)@.take(m as int)),
         present_creds(b@, final(out)@.take(m as int)),
 {
@@ -794,8 +841,8 @@ fn sec_creds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
             c <= CAP_LAST + 1,
             base <= n <= base + c,
             base == n0 + 2,
-            n0 <= 74,
-            n <= 74 + 2 + 41,
+            n0 <= 75,
+            n <= 75 + 2 + 41,
             out@.len() == old(out)@.len(),
             sorted(out@.take(n as int)),
             faithful(b@, out@.take(n as int)),
@@ -803,7 +850,7 @@ fn sec_creds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
             n > 0,
             has(out@.take(n as int), Step::Setuid),
             has(out@.take(n as int), Step::Capset),
-            phase(out@[n - 1]) < 11 || (phase(out@[n - 1]) == 11 && sub(out@[n - 1]) < c as int),
+            phase(out@[n - 1]) < 15 || (phase(out@[n - 1]) == 15 && sub(out@[n - 1]) < c as int),
             forall|d: int|
                 0 <= d < c as int && cap_has(b@, d) ==> #[trigger] has(
                     out@.take(n as int),
@@ -819,20 +866,20 @@ fn sec_creds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     n
 }
 
-/// Phases 12 to 14: the death signal, no-new-privs and `chdir`.
+/// Phases 16 to 18: the death signal, no-new-privs and `chdir`.
 fn sec_tail(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 117,
+        n0 <= 118,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
-        below(old(out)@, n0 as int, 12, 0),
+        below(old(out)@, n0 as int, 16, 0),
     ensures
         n0 < m <= n0 + 3,
         final(out)@.len() == old(out)@.len(),
         sorted(final(out)@.take(m as int)),
         faithful(b@, final(out)@.take(m as int)),
-        below(final(out)@, m as int, 15, 0),
+        below(final(out)@, m as int, 19, 0),
         ext(old(out)@.take(n0 as int), final(out)@.take(m as int)),
         present_tail(b@, final(out)@.take(m as int)),
 {
@@ -840,7 +887,7 @@ fn sec_tail(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     if req(b, Q_FLAGS) & 1 != 0 {
         n = emit(b, out, n, Step::Pdeathsig);
     }
-    assert(below(out@, n as int, 13, 0));
+    assert(below(out@, n as int, 17, 0));
     if req(b, Q_NNP) == 1 {
         n = emit(b, out, n, Step::NoNewPrivs);
     }
@@ -848,21 +895,21 @@ fn sec_tail(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     n
 }
 
-/// Phases 15 to 17: the Landlock ruleset, one rule per entry, the restriction.
+/// Phases 19 to 21: the Landlock ruleset, one rule per entry, the restriction.
 #[allow(clippy::cast_possible_truncation)]  // the index is below MAX_PATH_ENTRIES
 fn sec_landlock(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 120,
+        n0 <= 121,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
-        below(old(out)@, n0 as int, 15, 0),
+        below(old(out)@, n0 as int, 19, 0),
     ensures
         n0 <= m <= n0 + 66,
         final(out)@.len() == old(out)@.len(),
         sorted(final(out)@.take(m as int)),
         faithful(b@, final(out)@.take(m as int)),
-        below(final(out)@, m as int, 18, 0),
+        below(final(out)@, m as int, 22, 0),
         ext(old(out)@.take(n0 as int), final(out)@.take(m as int)),
         present_landlock(b@, final(out)@.take(m as int)),
 {
@@ -887,15 +934,15 @@ fn sec_landlock(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
                 i <= ll_rules,
                 base <= n <= base + i,
                 base == n0 + 1,
-                n0 <= 120,
-                n <= 120 + 1 + 64,
+                n0 <= 121,
+                n <= 121 + 1 + 64,
                 out@.len() == old(out)@.len(),
                 sorted(out@.take(n as int)),
                 faithful(b@, out@.take(n as int)),
                 ext(old(out)@.take(n0 as int), out@.take(n as int)),
                 has(out@.take(n as int), Step::LandlockRuleset),
                 n > 0,
-                phase(out@[n - 1]) < 16 || (phase(out@[n - 1]) == 16 && sub(out@[n - 1])
+                phase(out@[n - 1]) < 20 || (phase(out@[n - 1]) == 20 && sub(out@[n - 1])
                     < i as int),
                 forall|d: int|
                     0 <= d < i as int ==> #[trigger] has(
@@ -912,14 +959,14 @@ fn sec_landlock(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     n
 }
 
-/// Phases 18 to 20: seccomp, `close_range` and `execve`.
+/// Phases 22 to 24: seccomp, `close_range` and `execve`.
 fn sec_finish(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),
-        n0 <= 186,
+        n0 <= 187,
         sorted(old(out)@.take(n0 as int)),
         faithful(b@, old(out)@.take(n0 as int)),
-        below(old(out)@, n0 as int, 18, 0),
+        below(old(out)@, n0 as int, 22, 0),
     ensures
         n0 + 2 <= m <= n0 + 3,
         final(out)@.len() == old(out)@.len(),
@@ -950,55 +997,43 @@ pub fn plan(b: &[u8], out: &mut [Step; MAX_STEPS]) -> (n: usize)
         well_ordered(final(out)@.take(n as int)),
         complete(b@, final(out)@.take(n as int)),
 {
-    let n1 = sec_ns(b, out);
+    let n0 = sec_early(b, out);
+    let ghost t0 = out@.take(n0 as int);
+    let n1 = sec_env(b, out, n0);
     let ghost t1 = out@.take(n1 as int);
-    let n1b = sec_fds(b, out, n1);
-    let ghost t1b = out@.take(n1b as int);
-    let n2 = sec_env(b, out, n1b);
+    let n2 = sec_ns(b, out, n1);
     let ghost t2 = out@.take(n2 as int);
-    let n3 = sec_drops(b, out, n2);
+    let n3 = sec_ids(b, out, n2);
     let ghost t3 = out@.take(n3 as int);
-    let n4 = sec_creds(b, out, n3);
+    let n4 = sec_drops(b, out, n3);
     let ghost t4 = out@.take(n4 as int);
-    let n5 = sec_tail(b, out, n4);
+    let n5 = sec_creds(b, out, n4);
     let ghost t5 = out@.take(n5 as int);
-    let n6 = sec_landlock(b, out, n5);
+    let n6 = sec_tail(b, out, n5);
     let ghost t6 = out@.take(n6 as int);
-    let n7 = sec_finish(b, out, n6);
+    let n7 = sec_landlock(b, out, n6);
     let ghost t7 = out@.take(n7 as int);
+    let n8 = sec_finish(b, out, n7);
+    let ghost t8 = out@.take(n8 as int);
     proof {
-        lemma_ext_trans(t1, t1b, t2);
-        lemma_ext_trans(t1b, t2, t3);
-        lemma_ext_trans(t1b, t3, t4);
-        lemma_ext_trans(t1b, t4, t5);
-        lemma_ext_trans(t1b, t5, t6);
-        lemma_ext_trans(t1b, t6, t7);
-        lemma_present_mono(b@, t1b, t7);
-        lemma_ext_trans(t1, t1b, t7);
-        lemma_ext_trans(t1, t2, t3);
-        lemma_ext_trans(t1, t3, t4);
-        lemma_ext_trans(t1, t4, t5);
-        lemma_ext_trans(t1, t5, t6);
-        lemma_ext_trans(t1, t6, t7);
-        lemma_ext_trans(t2, t3, t4);
-        lemma_ext_trans(t2, t4, t5);
-        lemma_ext_trans(t2, t5, t6);
-        lemma_ext_trans(t2, t6, t7);
-        lemma_ext_trans(t3, t4, t5);
-        lemma_ext_trans(t3, t5, t6);
-        lemma_ext_trans(t3, t6, t7);
-        lemma_ext_trans(t4, t5, t6);
-        lemma_ext_trans(t4, t6, t7);
-        lemma_ext_trans(t5, t6, t7);
-        lemma_present_mono(b@, t1, t7);
-        lemma_present_mono(b@, t2, t7);
-        lemma_present_mono(b@, t3, t7);
-        lemma_present_mono(b@, t4, t7);
-        lemma_present_mono(b@, t5, t7);
-        lemma_present_mono(b@, t6, t7);
-        assert(t7.last() == out@[n7 - 1]);
+        lemma_ext_trans(t6, t7, t8);
+        lemma_ext_trans(t5, t6, t8);
+        lemma_ext_trans(t4, t5, t8);
+        lemma_ext_trans(t3, t4, t8);
+        lemma_ext_trans(t2, t3, t8);
+        lemma_ext_trans(t1, t2, t8);
+        lemma_ext_trans(t0, t1, t8);
+        lemma_present_mono(b@, t0, t8);
+        lemma_present_mono(b@, t1, t8);
+        lemma_present_mono(b@, t2, t8);
+        lemma_present_mono(b@, t3, t8);
+        lemma_present_mono(b@, t4, t8);
+        lemma_present_mono(b@, t5, t8);
+        lemma_present_mono(b@, t6, t8);
+        lemma_present_mono(b@, t7, t8);
+        assert(t8.last() == out@[n8 - 1]);
     }
-    n7
+    n8
 }
 
 } // verus!

@@ -19,7 +19,8 @@ use qinit_sys::landlock::{
     LANDLOCK_ACCESS_FS_ALL_V3, LANDLOCK_ACCESS_FS_READ, add_path_rule, restrict_self, ruleset,
 };
 use qinit_sys::limits::{RLIMIT_CORE, chdir, set_rlimit, umask};
-use qinit_sys::{Errno, Result, cred, fd, memfd, ns, proc, seccomp, spawn, timer};
+use qinit_sys::timer::{Alarm, arm_alarm_at, now_monotonic_ns};
+use qinit_sys::{Errno, Result, cred, fd, memfd, ns, proc, seccomp, spawn};
 use std::ffi::{CStr, CString};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 
@@ -89,6 +90,11 @@ struct Run<'a> {
     prepared: Option<(Vec<CString>, Vec<CString>)>,
     /// Whether the capabilities above `CAP_LAST` of a newer kernel are out of the bounding set.
     extra_dropped: bool,
+    /// The deadline as an absolute `CLOCK_MONOTONIC` instant, kept so that the process after a
+    /// pid-namespace fork can arm the same instant again.
+    deadline_ns: u64,
+    /// The armed deadline timer; a pid-namespace fork leaves it with the supervisor outside.
+    alarm: Option<Alarm>,
 }
 
 impl<'a> Run<'a> {
@@ -222,7 +228,16 @@ impl<'a> Run<'a> {
             Step::MountTmp => ns::mount_private_tmp(),
             Step::LoopbackUp => ns::loopback_up(),
             Step::Fork => Err(Errno(libc::EINVAL)),
-            Step::ArmDeadline(ms) => timer::arm_alarm(ms),
+            Step::ArmDeadline(ms) => {
+                self.deadline_ns = now_monotonic_ns().saturating_add(u64::from(ms) * 1_000_000);
+                self.alarm = Some(arm_alarm_at(self.deadline_ns)?);
+                Ok(())
+            }
+            Step::RearmDeadline => {
+                // Timers are not inherited across a fork: this is a new one at the same instant.
+                self.alarm = Some(arm_alarm_at(self.deadline_ns)?);
+                Ok(())
+            }
             Step::OpenStdin => match req(self.b, Q_STDIN_KIND) {
                 STREAM_PATH => {
                     let opened = open_input(&cstring(self.text(Q_STDIN_A, Q_STDIN_B)?)?);
@@ -294,12 +309,17 @@ fn identity_errno(e: IdentityError) -> i32 {
 /// second its only child, which goes on to run the service. The original process and the init
 /// each become a supervisor of the child they forked, so a signal reaches the service from a
 /// process inside its namespace and the init reaps what the service orphans.
-fn fork_supervised(id: &Identity, status: &mut Option<OwnedFd>, step: u32) -> Result<()> {
+fn fork_supervised(
+    id: &Identity,
+    status: &mut Option<OwnedFd>,
+    step: u32,
+    alarm: &mut Option<Alarm>,
+) -> Result<()> {
     for outside in [true, false] {
         match proc::fork()? {
             0 => {}
             child => match status.take() {
-                Some(pipe) => supervise(child, id, pipe, step, outside),
+                Some(pipe) => supervise(child, id, pipe, step, outside, alarm.take()),
                 None => proc::exit_now(127),
             },
         }
@@ -346,6 +366,8 @@ pub fn launch() -> ! {
         ruleset: None,
         prepared: None,
         extra_dropped: false,
+        deadline_ns: 0,
+        alarm: None,
     };
     let user = match run.text(Q_USER_OFF, Q_USER_LEN) {
         Ok(u) => u,
@@ -363,7 +385,7 @@ pub fn launch() -> ! {
     for (i, step) in steps[..n].iter().enumerate() {
         let index = u32::try_from(i).unwrap_or(u32::MAX);
         let result = if *step == Step::Fork {
-            fork_supervised(&id, &mut status, index)
+            fork_supervised(&id, &mut status, index, &mut run.alarm)
         } else {
             run.perform(*step)
         };

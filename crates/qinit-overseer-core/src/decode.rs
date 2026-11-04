@@ -313,6 +313,31 @@ fn check_content(b: &[u8]) -> (r: Result<(), LaunchError>)
     if !elements_ok(paths, 2) || count_elements(paths) > MAX_PATH_ENTRIES {
         return Err(LaunchError::Consistency);
     }
+    let ns = rword(b, Q_NS);
+    if !paths_shape_exec(paths, ns) {
+        return Err(LaunchError::Consistency);
+    }
+    let argv = field(b, rword(b, Q_ARGV_OFF), rword(b, Q_ARGV_LEN));
+    let m = first_elem_len(argv);
+    let argv0 = vstd::slice::slice_subrange(argv, 0, m);
+    if !paths_cover_exec(paths, argv0, cwd) {
+        return Err(LaunchError::Consistency);
+    }
+    proof {
+        assert forall|e: Seq<u8>| is_first(argv@, e) implies paths_cover_ok(paths@, e, cwd@) by {
+            if is_first(argv@, e) {
+                if e.len() < m {
+                    assert(argv@[e.len() as int] != 0);
+                }
+                if e.len() > m {
+                    assert(e[m as int] != 0);
+                    assert(e[m as int] == argv@[m as int]);
+                }
+                assert(e.len() == m);
+                assert(e =~= argv0@);
+            }
+        }
+    }
     if rword(b, Q_NNP) == 0 && (rword(b, Q_PATHS_LEN) > 0 || rword(b, Q_SECCOMP) != 0) && rword(
         b,
         Q_CAPS_LO,

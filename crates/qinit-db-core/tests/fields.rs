@@ -470,8 +470,77 @@ fn a_non_canonical_path_entry_is_consistency() {
             "{bad:?}"
         );
     }
+    let spec = with_paths("ro:/a/b\0ro:/bin\0rw:/c/.d/..e/f.", 1);
+    assert_eq!(check(&build(&spec)), Ok(()));
+}
+
+fn with_paths(paths: &'static str, ns: u32) -> DbSpec {
     let mut spec = minimal_spec();
-    spec.creds[0].paths = "ro:/\0rw:/a/.b/..c/d.\0ro:/a/b";
+    spec.creds[0].paths = paths;
+    spec.creds[0].ns = ns;
+    spec
+}
+
+fn cred_consistency() -> Result<(), DbError> {
+    Err(DbError::Consistency {
+        table: tid(T_CREDS),
+        record: 0,
+    })
+}
+
+#[test]
+fn an_unsorted_list_is_consistency() {
+    for bad in [
+        "ro:/b\0ro:/a",
+        "ro:/a\0rw:/a",
+        "ro:/a/b\0ro:/a",
+        "ro:/b\0ro:/b",
+    ] {
+        assert_eq!(
+            check(&build(&with_paths(bad, 1))),
+            cred_consistency(),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn a_list_without_the_mount_bit_is_consistency() {
+    assert_eq!(check(&build(&with_paths("ro:/bin", 0))), cred_consistency());
+    assert_eq!(check(&build(&with_paths("ro:/bin", 1))), Ok(()));
+}
+
+#[test]
+fn a_forbidden_entry_is_consistency() {
+    for bad in [
+        "ro:/",
+        "rw:/dev",
+        "ro:/tmp",
+        "rw:/proc",
+        "ro:/bin\0rw:/proc",
+    ] {
+        assert_eq!(
+            check(&build(&with_paths(bad, 1))),
+            cred_consistency(),
+            "{bad:?}"
+        );
+    }
+    assert_eq!(
+        check(&build(&with_paths("ro:/bin\0ro:/dev/null\0ro:/proc", 1))),
+        Ok(())
+    );
+}
+
+#[test]
+fn exec_outside_the_list_is_consistency() {
+    let mut spec = with_paths("ro:/opt", 1);
+    // The minimal node runs `/bin/true`.
+    assert_eq!(check(&build(&spec)), consistency());
+    spec = with_paths("ro:/bin", 1);
+    assert_eq!(check(&build(&spec)), Ok(()));
+    spec.nodes[0].cwd = "/srv";
+    assert_eq!(check(&build(&spec)), consistency());
+    spec.creds[0].paths = "ro:/bin\0ro:/srv";
     assert_eq!(check(&build(&spec)), Ok(()));
 }
 

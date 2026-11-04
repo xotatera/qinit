@@ -140,14 +140,14 @@ mod tests {
             ready = { socket = "/run/s" }
             output = "/var/log/shared"
             credentials = { uid = "u" }
-            sandbox = { paths = ["ro:/etc"] }
+            sandbox = { paths = ["ro:/bin", "ro:/etc"] }
             [worker.b]
             exec = ["/bin/a"]
             ready = { path = "/run/s" }
             output = "/var/log/shared"
             errors = "/var/log/shared"
             credentials = { uid = "u" }
-            sandbox = { paths = ["ro:/etc"] }
+            sandbox = { paths = ["ro:/bin", "ro:/etc"] }
             deps = [{ group = "require_all", edges = [{ path = "/run/s" }] }]
             [worker.c]
             exec = ["/x"]

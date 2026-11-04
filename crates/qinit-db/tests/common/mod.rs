@@ -132,7 +132,7 @@ pub fn sample() -> Model {
                 nnp: true,
                 ns: 0b10101,
                 seccomp: Seccomp::Deny(vec![101, 310]),
-                paths: vec!["ro:/etc".into(), "rw:/run/sshd".into()],
+                paths: vec!["ro:/bin".into(), "ro:/etc".into(), "rw:/run/sshd".into()],
             },
             svc(),
         ],

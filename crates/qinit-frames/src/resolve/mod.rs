@@ -355,7 +355,11 @@ fn node(
             "cwd must be a canonical absolute path (no empty, . or .. component)",
         );
     }
-    let cred = cred::cred(cx, &base, f.credentials.as_ref(), f.sandbox.as_ref()).map(|c| {
+    let cred = cred::cred(cx, &base, f.credentials.as_ref(), f.sandbox.as_ref());
+    if let Some(c) = &cred {
+        cred::check_inside_paths(cx, &base, c, &exec, f.cwd.as_deref().unwrap_or("/"));
+    }
+    let cred = cred.map(|c| {
         creds.push(c);
         u32::try_from(creds.len() - 1).unwrap_or(u32::MAX)
     });

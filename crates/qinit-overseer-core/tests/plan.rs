@@ -54,24 +54,108 @@ fn the_plan_of_a_minimal_request_is_the_fixed_skeleton() {
 }
 
 #[test]
-fn a_pid_namespace_puts_fork_before_the_deadline_and_outputs() {
+fn a_pid_namespace_rearms_after_the_fork() {
     let mut spec = minimal();
     spec.ns = 0b00011; // mount + pid
     let s = steps(&spec);
     let flags = 0x0002_0000 | 0x2000_0000;
     assert_eq!(
-        &s[..5],
+        &s[..12],
         &[
             Step::Setsid,
+            Step::ArmDeadline(1000),
+            Step::OpenStdin,
+            Step::OpenStdout,
+            Step::OpenStderr,
+            Step::Umask(0o27),
+            Step::RlimitCore0,
             Step::Unshare(flags),
             Step::MountSlaveRoot,
             Step::MountTmp,
             Step::Fork,
+            Step::RearmDeadline,
         ]
     );
-    assert!(pos(&s, Step::Fork) < pos(&s, Step::ArmDeadline(1000)));
-    assert!(pos(&s, Step::ArmDeadline(1000)) < pos(&s, Step::OpenStdout));
     assert!(!s.contains(&Step::LoopbackUp));
+}
+
+#[test]
+fn no_pid_namespace_means_no_rearm() {
+    let mut spec = minimal();
+    spec.ns = 0b00100;
+    assert!(!steps(&spec).contains(&Step::RearmDeadline));
+}
+
+#[test]
+fn the_deadline_precedes_every_output() {
+    let mut spec = minimal();
+    spec.ns = 0b11111;
+    spec.ready = Some(7);
+    let s = steps(&spec);
+    let arm = pos(&s, Step::ArmDeadline(1000));
+    assert!(arm < pos(&s, Step::OpenStdin));
+    assert!(arm < pos(&s, Step::OpenStdout));
+    assert!(arm < pos(&s, Step::OpenStderr));
+    assert!(arm < pos(&s, Step::RouteReady(7)));
+    assert_eq!(arm, 1, "only setsid comes before the deadline");
+}
+
+#[test]
+fn outputs_and_rlimits_precede_every_unshare() {
+    let mut spec = minimal();
+    spec.ns = 0b11111;
+    spec.rlimits[7] = Some(64);
+    let s = steps(&spec);
+    let unshare = s
+        .iter()
+        .position(|x| matches!(x, Step::Unshare(_)))
+        .expect("an unshare");
+    for early in [
+        Step::OpenStdin,
+        Step::OpenStdout,
+        Step::OpenStderr,
+        Step::Umask(0o27),
+        Step::Rlimit(7, 64),
+        Step::RlimitCore0,
+    ] {
+        assert!(pos(&s, early) < unshare, "{early:?}");
+    }
+}
+
+#[test]
+fn mount_without_paths_keeps_the_host_copy() {
+    let mut spec = minimal();
+    spec.ns = 1;
+    let s = steps(&spec);
+    assert!(pos(&s, Step::MountSlaveRoot) < pos(&s, Step::MountTmp));
+    // With a list the view builds /tmp itself.
+    spec.paths = "ro:/bin";
+    spec.argv = "/bin/true";
+    let s = steps(&spec);
+    assert!(s.contains(&Step::MountSlaveRoot) && !s.contains(&Step::MountTmp));
+}
+
+#[test]
+fn loopback_follows_every_namespace_step() {
+    let mut spec = minimal();
+    spec.ns = 0b11111;
+    let s = steps(&spec);
+    let lo = pos(&s, Step::LoopbackUp);
+    for x in [
+        Step::MountSlaveRoot,
+        Step::MountTmp,
+        Step::Fork,
+        Step::RearmDeadline,
+    ] {
+        assert!(pos(&s, x) < lo, "{x:?}");
+    }
+    assert!(
+        s.iter()
+            .position(|x| matches!(x, Step::Unshare(_)))
+            .unwrap()
+            < lo
+    );
+    assert!(lo < pos(&s, Step::Setgid));
 }
 
 #[test]
@@ -115,6 +199,8 @@ fn a_high_capability_comes_from_the_second_word() {
 fn landlock_entries_follow_nnp_and_precede_seccomp() {
     let mut spec = minimal();
     spec.paths = "ro:/etc\0rw:/run/x\0ro:/usr";
+    spec.argv = "/etc/x";
+    spec.ns = 1;
     spec.seccomp = 1;
     let s = steps(&spec);
     let i = pos(&s, Step::LandlockRuleset);
@@ -195,6 +281,7 @@ fn rlimits_umask_ready_and_deadline_come_from_the_request() {
 fn exec_is_last_and_occurs_once() {
     let mut spec = minimal();
     spec.paths = "ro:/etc";
+    spec.argv = "/etc/x";
     spec.seccomp = 1;
     spec.ns = 0b11111;
     let s = steps(&spec);
@@ -207,7 +294,7 @@ fn exec_is_last_and_occurs_once() {
 fn the_plan_never_exceeds_max_steps() {
     let paths: &'static str = Box::leak(
         (0..64)
-            .map(|i| format!("ro:/p{i}"))
+            .map(|i| format!("ro:/p{i:02}"))
             .collect::<Vec<_>>()
             .join("\0")
             .into_boxed_str(),
@@ -215,6 +302,7 @@ fn the_plan_never_exceeds_max_steps() {
     let mut spec = minimal();
     spec.caps = (1u64 << 41) - 1;
     spec.paths = paths;
+    spec.argv = "/p00/x";
     spec.seccomp = 1;
     spec.ns = 0b11111;
     spec.flags = FLAG_DIE_WITH_PARENT;

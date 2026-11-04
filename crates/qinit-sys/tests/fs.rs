@@ -5,7 +5,7 @@
 //! re-runs itself with `QINIT_SYS_ROLE` set, and `child_roles` dispatches the role.
 use qinit_sys::fs::{Kind, create_file, lstat_kind, mkdir_all, readlink, symlink};
 use qinit_sys::timer::{arm_alarm_at, now_monotonic_ns};
-use qinit_sys::{Errno, proc};
+use qinit_sys::{Errno, fd, proc};
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::ExitStatus;
@@ -104,4 +104,20 @@ fn an_absolute_alarm_in_the_past_fires_at_once() {
 #[test]
 fn a_deleted_alarm_never_fires() {
     assert_eq!(child_status("alarm-deleted").code(), Some(0));
+}
+
+#[test]
+fn close_range_closes_only_its_range() {
+    use std::os::fd::{AsFd, AsRawFd};
+    let (r, w) = fd::pipe(0).unwrap();
+    let low = fd::dup_above(r.as_fd(), 800).unwrap();
+    let high = fd::dup_above(w.as_fd(), 900).unwrap();
+    let (l, h) = (low.as_raw_fd(), high.as_raw_fd());
+    assert!(l < h);
+    fd::close_range(l, l).unwrap();
+    assert!(!fd::is_open(l) && fd::is_open(h));
+    std::mem::forget(low);
+    fd::close_range(h, h).unwrap();
+    assert!(!fd::is_open(h));
+    std::mem::forget(high);
 }

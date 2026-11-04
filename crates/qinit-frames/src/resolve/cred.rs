@@ -102,6 +102,68 @@ fn path_entry(s: &str) -> bool {
         .is_some_and(canonical)
 }
 
+/// `e` is an entry a list may not hold: `/`, `/dev`, `/tmp`, or `/proc` writable.
+fn forbidden(e: &str) -> bool {
+    let path = &e[3..];
+    matches!(path, "/" | "/dev" | "/tmp") || (e.starts_with("rw:") && path == "/proc")
+}
+
+/// The entries ordered by path, bytewise; a forbidden or repeated path is refused (and the
+/// list kept as given, since the error ends the compile).
+fn sorted_paths(cx: &mut Cx, base: &str, mut paths: Vec<String>) -> Vec<String> {
+    let key = format!("{base}.sandbox.paths");
+    if !paths.iter().all(|e| path_entry(e)) {
+        return paths;
+    }
+    if let Some(bad) = paths.iter().find(|e| forbidden(e)) {
+        let why = format!("path entry {bad:?} is built by the view itself and cannot be listed");
+        cx.bad(&key, why);
+        return paths;
+    }
+    paths.sort_by(|a, b| a[3..].cmp(&b[3..]));
+    if let Some(w) = paths.windows(2).find(|w| w[0][3..] == w[1][3..]) {
+        let why = format!(
+            "path {:?} is listed twice ({:?} and {:?})",
+            &w[0][3..],
+            w[0],
+            w[1]
+        );
+        cx.bad(&key, why);
+    }
+    paths
+}
+
+/// `path` is `entry` or below it, by whole components.
+fn at_or_below(path: &str, entry: &str) -> bool {
+    path == entry
+        || path
+            .strip_prefix(entry)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// With a path list, the program and the working directory are inside it: `exec[0]` is
+/// absolute and at or below an entry, and `cwd` is `/` or at or below an entry.
+pub(crate) fn check_inside_paths(cx: &mut Cx, base: &str, c: &Cred, exec: &[String], cwd: &str) {
+    if c.paths.is_empty() || !c.paths.iter().all(|e| path_entry(e)) {
+        return;
+    }
+    let covered = |p: &str| c.paths.iter().any(|e| at_or_below(p, &e[3..]));
+    if let Some(program) = exec.first() {
+        if !program.starts_with('/') {
+            let why =
+                format!("with sandbox.paths the program {program:?} must be an absolute path");
+            cx.bad(format!("{base}.exec"), why);
+        } else if !covered(program) {
+            let why = format!("the program {program:?} is not inside any sandbox.paths entry");
+            cx.bad(format!("{base}.exec"), why);
+        }
+    }
+    if cwd != "/" && canonical(cwd) && !covered(cwd) {
+        let why = format!("the working directory {cwd:?} is not inside any sandbox.paths entry");
+        cx.bad(format!("{base}.cwd"), why);
+    }
+}
+
 fn from_creds(cx: &mut Cx, base: &str, c: &Creds, out: &mut Cred) {
     if cx.text(&format!("{base}.credentials.uid"), &c.uid) {
         out.user.clone_from(&c.uid);
@@ -132,7 +194,11 @@ fn from_sandbox(cx: &mut Cx, base: &str, s: &Sandbox, out: &mut Cred) {
         let why = format!("path entry {bad:?} must be ro: or rw: and a canonical absolute path");
         cx.bad(format!("{base}.sandbox.paths"), why);
     }
-    out.paths = paths;
+    out.paths = sorted_paths(cx, base, paths);
+    if !out.paths.is_empty() {
+        // A path list is a view: it needs its own mount namespace.
+        out.ns |= 1;
+    }
     let key = format!("{base}.sandbox.seccomp");
     out.seccomp = match &s.seccomp {
         None => Seccomp::None,

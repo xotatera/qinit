@@ -54,6 +54,8 @@ pub struct NodeSpec {
     pub cred: u32,
     /// The environment, raw NUL-joined `KEY=VALUE` entries.
     pub env: &'static str,
+    /// The program (the first element of the argument list).
+    pub exec: &'static str,
     /// The working directory.
     pub cwd: &'static str,
     /// The file-mode creation mask.
@@ -92,6 +94,8 @@ pub struct CredSpec {
     pub seccomp_list: &'static str,
     /// The path list, raw NUL-joined `ro:`/`rw:` entries.
     pub paths: &'static str,
+    /// Namespace bits.
+    pub ns: u32,
 }
 
 /// A credential for `user`: no caps, `no_new_privs` on, no seccomp.
@@ -103,6 +107,7 @@ pub fn cred(user: &'static str) -> CredSpec {
         seccomp: 0,
         seccomp_list: "",
         paths: "",
+        ns: 0,
     }
 }
 
@@ -134,6 +139,7 @@ pub fn node(name: &str, groups: Vec<GroupSpec>) -> NodeSpec {
         output: NONE,
         cred: 0,
         env: "",
+        exec: "/bin/true",
         cwd: "/",
         umask: 0o027,
         reload: 0,
@@ -197,7 +203,7 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
         let (exec_off, exec_len) = if n.kind == 2 {
             (0, 0)
         } else {
-            intern(&mut pool, b"/bin/true")
+            intern(&mut pool, n.exec.as_bytes())
         };
         let (env_off, env_len) = intern(&mut pool, n.env.as_bytes());
         let (cwd_off, cwd_len) = intern(&mut pool, n.cwd.as_bytes());
@@ -263,6 +269,7 @@ pub fn build(spec: &DbSpec) -> Vec<u8> {
         rec[C_SECCOMP] = c.seccomp;
         rec[C_SECCOMP_OFF] = so;
         rec[C_SECCOMP_LEN] = sl;
+        rec[C_NS] = c.ns;
         rec[C_PATHS_OFF] = po;
         rec[C_PATHS_LEN] = pl;
         rec[C_CAPS_LO] = n32(usize::try_from(c.caps & 0xffff_ffff).unwrap());

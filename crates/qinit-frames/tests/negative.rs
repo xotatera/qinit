@@ -237,7 +237,7 @@ fn nnp_off_with_a_sandbox_needs_sys_admin() {
             "[worker.a]\nexec = [\"/a\"]\ncredentials = {{ uid = \"root\", nnp = false{caps} }}\nsandbox = {{ {sandbox} }}\n"
         )
     };
-    for sandbox in ["paths = [\"ro:/etc\"]", "seccomp = \"default\""] {
+    for sandbox in ["paths = [\"ro:/a\"]", "seccomp = \"default\""] {
         let es = refuse("neg-nnp", &body("", sandbox));
         one(&es, Code::BadValue, "worker.a.credentials.nnp");
         ok(&body(", caps = [\"sys_admin\"]", sandbox));

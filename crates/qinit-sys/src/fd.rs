@@ -115,6 +115,15 @@ pub fn close_from(first: RawFd) -> Result<()> {
     Ok(())
 }
 
+/// `close_range(first, last, 0)`: closes every descriptor numbered `first` to `last`.
+pub fn close_range(first: RawFd, last: RawFd) -> Result<()> {
+    let first = libc::c_uint::try_from(first).map_err(|_| crate::Errno(libc::EINVAL))?;
+    let last = libc::c_uint::try_from(last).map_err(|_| crate::Errno(libc::EINVAL))?;
+    // SAFETY: close_range takes integers.
+    crate::check_long(unsafe { libc::syscall(libc::SYS_close_range, first, last, 0) })?;
+    Ok(())
+}
+
 /// Takes ownership of descriptor number `n`, which the program that started this one
 /// guarantees is open and used by nothing else (the overseer's request and status
 /// descriptors). `EBADF` when `n` is not open.

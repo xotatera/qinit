@@ -9,6 +9,7 @@ use qinit_sys::cred::{
     cap_last, capbset_drop, capset, set_dumpable, set_no_new_privs, setgroups, setresgid, setresuid,
 };
 use qinit_sys::event::{epoll, epoll_add, epoll_wait, read_signal, signalfd_blocking};
+use qinit_sys::timer::Alarm;
 use qinit_sys::{Errno, Result, fd, proc, signal};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 
@@ -103,9 +104,22 @@ fn watch(child: libc::pid_t, decode: bool) -> Result<()> {
 /// carries the failure record of `step` (the plan's `Fork`) when the supervisor cannot drop
 /// its privileges, and is closed once they are dropped, so that EOF on it is the child's exec
 /// and nothing else. Every other inherited descriptor is closed at once: they are the
-/// parent's, and holding them would keep its pipes from ever reaching EOF. `decode`: see
-/// [`relay`].
-pub fn supervise(child: libc::pid_t, id: &Identity, status: OwnedFd, step: u32, decode: bool) -> ! {
+/// parent's, and holding them would keep its pipes from ever reaching EOF: the standard streams
+/// and the readiness pipe are open by now, because the outputs are opened before the fork, and
+/// they belong to the service. `alarm`, the outside supervisor's deadline timer, is deleted: the
+/// service has its own, armed again after the fork. `decode`: see [`relay`].
+pub fn supervise(
+    child: libc::pid_t,
+    id: &Identity,
+    status: OwnedFd,
+    step: u32,
+    decode: bool,
+    alarm: Option<Alarm>,
+) -> ! {
+    if let Some(a) = alarm {
+        let _ = a.delete();
+    }
+    let _ = fd::close_range(0, 3);
     let _ = fd::close_from(5);
     if let Err(e) = drop_privileges(id) {
         let _ = proc::kill(child, libc::SIGKILL);
@@ -113,7 +127,7 @@ pub fn supervise(child: libc::pid_t, id: &Identity, status: OwnedFd, step: u32, 
         proc::exit_now(127);
     }
     drop(status);
-    let _ = fd::close_from(3);
+    let _ = fd::close_from(0);
     let _ = watch(child, decode);
     let _ = proc::kill(child, libc::SIGKILL);
     proc::exit_now(127)

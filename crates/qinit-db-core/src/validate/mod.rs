@@ -11,7 +11,9 @@ mod records;
 mod spec;
 mod utf8;
 
-pub use paths::{canonical_exec, path_entry_ok_exec};
+pub use paths::{
+    canonical_exec, first_elem_len, path_entry_ok_exec, paths_cover_exec, paths_shape_exec,
+};
 pub use pool::{count_elements, elements_ok, nul_list_ok};
 #[allow(unused_imports)] // the specs only; Verus erases them outside verification
 pub use spec::*;
