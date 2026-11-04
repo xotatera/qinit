@@ -201,8 +201,11 @@ fn node_words(
     words[..head.len()].copy_from_slice(&head);
     for (r, limit) in n.rlimits.iter().enumerate() {
         let v = limit.unwrap_or(0);
-        words[N_RLIMIT_BASE + 2 * r] = v as u32;
-        words[N_RLIMIT_BASE + 2 * r + 1] = (v >> 32) as u32;
+        #[allow(clippy::cast_possible_truncation)] // the low word, then the high word
+        {
+            words[N_RLIMIT_BASE + 2 * r] = v as u32;
+            words[N_RLIMIT_BASE + 2 * r + 1] = (v >> 32) as u32;
+        }
     }
     Ok(words)
 }

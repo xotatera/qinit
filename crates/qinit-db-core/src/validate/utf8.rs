@@ -88,6 +88,9 @@ fn scalar_len(b: &[u8], i: usize, end: usize) -> (n: usize)
 }
 
 /// `b[start..end]` is valid UTF-8, or the index of the first byte that starts no scalar.
+///
+/// # Errors
+/// The index in `b` of the first byte that starts no valid scalar.
 pub fn utf8_check(b: &[u8], start: usize, end: usize) -> (r: Result<(), usize>)
     requires
         start <= end <= b@.len(),

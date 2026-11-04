@@ -893,7 +893,8 @@ fn show() -> i32 {
         let _ = writeln!(out, "env: {entry}");
     }
     for (r, name) in RLIMIT_NAMES.iter().enumerate() {
-        let (soft, hard) = qinit_sys::limits::get_rlimit(r as libc::c_int).unwrap_or((0, 0));
+        let resource = libc::c_int::try_from(r).unwrap_or(-1);
+        let (soft, hard) = qinit_sys::limits::get_rlimit(resource).unwrap_or((0, 0));
         let text = |v: u64| {
             if v == u64::MAX {
                 "inf".to_string()

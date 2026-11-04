@@ -628,6 +628,7 @@ fn sec_fds(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
 }
 
 /// Phases 5 to 7: the mask, limits, groups and securebits.
+#[allow(clippy::cast_possible_truncation, clippy::cast_lossless)]  // `r < RLIMIT_COUNT`; `u64::from` is not available inside `verus!`
 fn sec_env(b: &[u8], out: &mut [Step; MAX_STEPS], n0: usize) -> (m: usize)
     requires
         accepted(b@),

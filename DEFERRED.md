@@ -128,6 +128,13 @@ observed node states and `qinit-colony` runs it against simulated cells.
 `qinit-frames` is a library: it has no command-line front end. The `qctl`
 compiler and administrative CLI, which will call it, is a later sub-project.
 
+### D42 — Implicit defaults are not written back to frame and policy TOML · `OPEN`
+
+A frame or policy that leaves a key out gets the compiler's default (`cwd = "/"`, `umask`, no
+limits, the built-in rlimit ceiling), and nothing shows the effective value in the file. Writing
+the implicit defaults back into the frame and policy TOML, before or after compilation, would make
+them visible. Home: `qctl` (D16).
+
 ### D17 — Policy signature verification · `OPEN`
 
 The policy file given to the compiler is read as is. Verifying a signature on
@@ -242,10 +249,15 @@ restriction. A view built from bind mounts of only what a service needs is defer
 The overseer starts services as the uid they declare and offers no `user` namespace. A service
 that wants to be root in a namespace only needs a sandbox design of its own.
 
-### D34 — Other rlimits · `OPEN`
+### D34 — Other rlimits · `RESOLVED`
 
-Only `RLIMIT_NOFILE` is configurable (and `RLIMIT_CORE` is always 0). Other limits are added on
-demand.
+Every kernel resource but `core` (always 0) is a frame key: `cpu fsize data stack rss nproc
+nofile memlock as locks sigpending msgqueue nice rtprio rttime`, as a number, `"infinity"` or for
+the byte limits a size. Soft and hard are both set to the value. The node record grows to 68
+words, the launch request to 67, and the overseer plan has one proved `Rlimit` step per set
+limit. The policy bounds them at the kernel's boot hard limits (`rlimits_max` on a rule, or at
+the top level, raises a ceiling). A low `nofile` or `nproc` can make a later launch step fail;
+the step name says which. `nofile` above `fs.nr_open` fails at launch with `EPERM`.
 
 ### D35 — Dumpable after exec · `ACCEPTED`
 

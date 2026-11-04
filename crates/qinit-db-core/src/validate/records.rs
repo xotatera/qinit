@@ -24,6 +24,7 @@ fn index_or_none_ok(v: u32, n: u32) -> (r: bool)
 }
 
 /// Every limit of node `i` is [`rlimit_ok`] (`mask` is its `rlimit_mask`).
+#[allow(clippy::cast_possible_truncation)]  // `k < RLIMIT_COUNT`, so the shift count fits
 fn check_rlimits(b: &[u8], i: usize, mask: u32) -> (r: Result<(), DbError>)
     requires
         v1(b@),

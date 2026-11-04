@@ -12,6 +12,13 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Every kernel resource limit but `core` is a frame key under `rlimits` (`cpu fsize data stack rss
+  nproc nofile memlock as locks sigpending msgqueue nice rtprio rttime`): a number, `"infinity"`
+  or, for the byte limits, a size such as `"64M"`. The policy bounds them at the kernel's boot hard
+  limits; a rule or the top level raises a ceiling with `rlimits_max`. `rlimits.nofile = 0` and
+  `"infinity"` are now refused.
+- Validator: `DbError::Pool { table, record }` and `DbError::Utf8 { offset }` carry their position.
+
 - The control protocol (sub-project 6), `docs/control-protocol.md`: one `SOCK_SEQPACKET` socket,
   peer identity from `SO_PEERCRED` and `SO_PEERPIDFD`, status and list for every user and
   change, forager launch, refresh and shutdown for root, with settled waits that always end.
@@ -152,6 +159,15 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a README "Requirements" section listing them.
 
 ### Changed
+
+- The database node record is 68 words (a limit mask and 32 limit words) and the launch request
+  67; the overseer plan has one `Rlimit` step per set limit instead of `RlimitNofile`.
+- The validator checks the pool's UTF-8 once and each reference only for character boundaries, and
+  labels the ordering graph once; a pool with a byte that starts no character is refused even when
+  no reference uses it.
+- A policy shape error is keyed by the `[[rule]]` the TOML parser finds, so inline `rule = [...]`
+  arrays and `[[ rule ]]` headers are indexed.
+- The compiled dump lists only the limits a frame sets.
 
 - Format amendment (database `VERSION` stays 1): the node record has 30 words (`env`, `cwd`,
   `umask`, `rlimits.nofile`) and the credential record 12 (seccomp mode and syscall list). Every

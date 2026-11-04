@@ -172,6 +172,7 @@ fn check_enums(b: &[u8]) -> (r: Result<(), LaunchError>)
 }
 
 /// Every limit of the request is [`req_rlimit_ok`].
+#[allow(clippy::cast_possible_truncation)]  // `k < RLIMIT_COUNT`, so the shift count fits
 fn check_rlimits(b: &[u8]) -> (r: Result<(), LaunchError>)
     requires
         req_header_ok(b@),

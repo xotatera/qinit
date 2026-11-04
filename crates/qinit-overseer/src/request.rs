@@ -163,8 +163,11 @@ impl RequestSpec {
             if let Some(v) = limit {
                 rec[Q_RLIMIT_MASK] |= 1 << r;
                 // Low word, then high word.
-                rec[Q_RLIMIT_BASE + 2 * r] = *v as u32;
-                rec[Q_RLIMIT_BASE + 2 * r + 1] = (*v >> 32) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    rec[Q_RLIMIT_BASE + 2 * r] = *v as u32;
+                    rec[Q_RLIMIT_BASE + 2 * r + 1] = (*v >> 32) as u32;
+                }
             }
         }
         rec[Q_CAPS_LO] =

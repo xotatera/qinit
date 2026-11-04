@@ -70,6 +70,7 @@ fn n32(x: usize) -> u32 {
 }
 
 /// Lays out `spec` as a request.
+#[allow(clippy::cast_possible_truncation)] // a limit's low and high words
 pub fn build(spec: &ReqSpec) -> Vec<u8> {
     let mut pool: Vec<u8> = Vec::new();
     let mut intern = |s: &str| {

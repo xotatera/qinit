@@ -400,6 +400,7 @@ fn a_caller_stdout_replaces_the_frames_pipe_route() {
 }
 
 #[test]
+#[allow(clippy::cast_possible_truncation)] // a limit's low and high words
 fn from_model_carries_every_limit_into_the_record() {
     let mut m = golden();
     let at = m.nodes.iter().position(|n| n.name == "logd").unwrap();

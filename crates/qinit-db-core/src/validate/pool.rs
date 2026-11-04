@@ -15,6 +15,7 @@ use vstd::prelude::*;
 verus! {
 
 /// A reference starting or ending at pool offset `x` falls between two characters of the pool.
+#[allow(clippy::manual_range_contains)]  // `RangeInclusive::contains` is not available inside `verus!`
 fn boundary_ok(b: &[u8], x: u32) -> (ok: bool)
     requires
         v1(b@),
