@@ -5,7 +5,7 @@
 //! touched, and nothing sleeps.
 
 use crate::effects::{Effects, Errno, NodeSpec};
-use crate::engine::{Colony, Notice};
+use crate::engine::{Colony, Notice, Outcome};
 use qinit_cell_core::{Failure, Report as CellPhase};
 use qinit_colony_core::{StopMode, TimerKind};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -50,6 +50,7 @@ pub enum Call {
     Watch(String),
     Arm(u32, TimerKind, u32),
     Cancel(u32, TimerKind),
+    Signal(u32, i32),
 }
 
 /// A timer kind as a map key.
@@ -136,7 +137,8 @@ impl Sim {
                 | Call::Stop(n, _, _)
                 | Call::Release(n)
                 | Call::Arm(n, _, _)
-                | Call::Cancel(n, _) => *n == node,
+                | Call::Cancel(n, _)
+                | Call::Signal(n, _) => *n == node,
                 Call::Watch(_) => false,
             })
             .cloned()
@@ -210,6 +212,11 @@ impl Effects for Sim {
         Ok(())
     }
 
+    fn signal(&mut self, node: u32, sig: i32) -> Result<(), Errno> {
+        self.calls.push(Call::Signal(node, sig));
+        Ok(())
+    }
+
     fn cancel(&mut self, node: u32, timer: TimerKind) -> Result<(), Errno> {
         self.calls.push(Call::Cancel(node, timer));
         if let Some(key) = self.timers.remove(&(node, timer_id(timer))) {
@@ -219,29 +226,32 @@ impl Effects for Sim {
     }
 }
 
+/// Delivers the earliest timer or cell event due at or before `target` to `colony`, moving the
+/// clock to its time. `None` when none is due.
+pub fn deliver_next(colony: &mut Colony<Sim>, target: u64) -> Option<Outcome> {
+    let key = colony
+        .effects
+        .due
+        .range(..=(target, u64::MAX))
+        .next()
+        .map(|(k, _)| *k)?;
+    let what = colony.effects.due.remove(&key)?;
+    colony.effects.now = key.0;
+    Some(match what {
+        Due::Timer(node, timer) => {
+            colony.effects.timers.remove(&(node, timer_id(timer)));
+            colony.on_deadline(node, timer, key.0)
+        }
+        Due::Cell(node, report) => colony.on_cell(node, report, key.0),
+    })
+}
+
 /// Moves virtual time forward by `ms`, delivering every timer and cell event that falls due, in
 /// order, to `colony`. Returns the notices they produced.
 pub fn advance(colony: &mut Colony<Sim>, ms: u64) -> Vec<Notice> {
     let target = colony.effects.now + ms;
     let mut notices = Vec::new();
-    while let Some(key) = colony
-        .effects
-        .due
-        .range(..=(target, u64::MAX))
-        .next()
-        .map(|(k, _)| *k)
-    {
-        let Some(what) = colony.effects.due.remove(&key) else {
-            break;
-        };
-        colony.effects.now = key.0;
-        let out = match what {
-            Due::Timer(node, timer) => {
-                colony.effects.timers.remove(&(node, timer_id(timer)));
-                colony.on_deadline(node, timer, key.0)
-            }
-            Due::Cell(node, report) => colony.on_cell(node, report, key.0),
-        };
+    while let Some(out) = deliver_next(colony, target) {
         notices.extend(out.notices);
     }
     colony.effects.now = target;

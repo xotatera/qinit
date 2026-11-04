@@ -16,6 +16,7 @@ fn worker(policy: u32, max: u32, window_ms: u32, delay_ms: u32) -> Params {
         stop_mode: 0,
         grace_ms: 10_000,
         start_timeout_ms: 90_000,
+        reload: 0,
     }
 }
 
@@ -482,4 +483,64 @@ fn a_slow_stop_does_not_count_as_a_long_run() {
     let s = cell(s, p, CellReport::MainExited(Some(1)), due + 1);
     let s = cell(s, p, CellReport::Empty, due + 10_001);
     assert_eq!(s.backoff_exp, 2, "the exponent keeps growing");
+}
+
+fn reloadable() -> Params {
+    Params {
+        reload: 2,
+        ..worker(0, 0, 0, 1000)
+    }
+}
+
+#[test]
+fn refresh_on_a_ready_worker_with_a_reload_signal_reports_reload_and_marks_the_refresh() {
+    let p = reloadable();
+    let s = ready_at(p, 0);
+    let r = step(s, p, NodeInput::Req(Request::Refresh), 10);
+    assert_eq!(r.state, State::Ready);
+    assert!(!r.to_stop && !r.restart_after);
+    assert_eq!(r.left, Left::Refresh);
+    assert_eq!(r.report_a, Some(Report::Reload));
+    assert_eq!(r.report_b, None);
+}
+
+#[test]
+fn refresh_on_a_ready_worker_without_a_reload_signal_restarts_it() {
+    let p = worker(0, 0, 0, 1000);
+    let s = ready_at(p, 0);
+    let r = step(s, p, NodeInput::Req(Request::Refresh), 10);
+    assert!(r.to_stop && r.restart_after && r.wanted);
+    assert_eq!(r.left, Left::Restart);
+    assert_eq!(r.report_a, None);
+}
+
+#[test]
+fn refresh_on_a_starting_worker_restarts_it_even_with_a_reload_signal() {
+    let p = reloadable();
+    let s = begin_start(
+        NodeState {
+            wanted: true,
+            ..off()
+        },
+        p,
+        0,
+    );
+    let r = step(s, p, NodeInput::Req(Request::Refresh), 1);
+    assert!(r.to_stop && r.restart_after);
+    assert_eq!(r.report_a, None);
+}
+
+#[test]
+fn refresh_is_refused_by_a_forager_an_idle_node_a_pending_stop_and_shutdown() {
+    let p = reloadable();
+    let refused = |r: NodeState| assert_eq!(r.report_a, Some(Report::Refused), "{r:?}");
+    refused(step(off(), p, NodeInput::Req(Request::Refresh), 0));
+    let ready = ready_at(p, 0);
+    let stopping = step(ready, p, NodeInput::Req(Request::Stop), 1);
+    assert!(stopping.to_stop);
+    refused(step(stopping, p, NodeInput::Req(Request::Refresh), 2));
+    let f = forager();
+    refused(step(ready_at(f, 0), f, NodeInput::Req(Request::Refresh), 3));
+    let sd = node_step(quiet(ready), p, true, NodeInput::Req(Request::Refresh), 4);
+    assert_eq!(sd.report_a, Some(Report::Refused));
 }

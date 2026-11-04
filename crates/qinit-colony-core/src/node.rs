@@ -4,7 +4,6 @@
 //! `node_step` never starts or stops anything itself: it records a stop (`to_stop`) and the
 //! scheduler issues it in hard-dependency order. It owns the failure accounting: the breaker
 //! (obligation 3), the back-off (obligation 4) and the forager rule (obligation 10).
-
 #[allow(clippy::wildcard_imports)] // the shared types, used throughout
 use crate::*;
 use vstd::prelude::*;
@@ -571,6 +570,42 @@ fn on_restart(ns: NodeState, p: Params, shutdown: bool) -> (r: NodeState)
     }
 }
 
+/// `Refresh`: a ready worker that declares a reload signal is sent it and stays ready (its
+/// `refresh` dependents restart through `Left::Refresh`); any other running node restarts, as for
+/// `Restart`; a node that is not running, a forager, a node whose stop is pending, and any node
+/// during shutdown refuse.
+fn on_refresh(ns: NodeState, p: Params, shutdown: bool) -> (r: NodeState)
+    requires
+        inv_node(ns, p),
+    ensures
+        inv_node(r, p),
+        keeps_emits(r, ns),
+        r.state == State::Quarantined(Reason::Cascade) ==> ns.state == State::Quarantined(
+            Reason::Cascade,
+        ),
+        r.emit_arm == ns.emit_arm,
+        shutdown ==> (r.wanted ==> ns.wanted),
+{
+    if shutdown || p.kind == 1 || ns.to_stop {
+        return refused(ns);
+    }
+    match ns.state {
+        State::Ready => {
+            if p.reload != 0 && p.kind == 0 {
+                push_report(NodeState { left: Left::Refresh, ..ns }, Report::Reload)
+            } else {
+                let n = NodeState { wanted: true, restart_after: true, ..ns };
+                mark_stop(n, Left::Restart)
+            }
+        },
+        State::Starting => {
+            let n = NodeState { wanted: true, restart_after: true, ..ns };
+            mark_stop(n, Left::Restart)
+        },
+        _ => refused(ns),
+    }
+}
+
 /// `Clear`: leave quarantine with fresh counters.
 #[allow(unused_variables)]  // `p` appears only in the specification
 fn on_clear(ns: NodeState, p: Params) -> (r: NodeState)
@@ -836,6 +871,7 @@ pub fn node_step(ns: NodeState, p: Params, shutdown: bool, input: NodeInput, now
         NodeInput::Req(Request::Restart) => on_restart(ns, p, shutdown),
         NodeInput::Req(Request::Clear) => on_clear(ns, p),
         NodeInput::Req(Request::Run) => on_run(ns, p, shutdown),
+        NodeInput::Req(Request::Refresh) => on_refresh(ns, p, shutdown),
         NodeInput::Cell(rep) => on_cell(ns, p, shutdown, rep, now),
         NodeInput::Deadline(t) => on_deadline(ns, p, t, now),
         NodeInput::Shutdown => on_shutdown(ns, p),

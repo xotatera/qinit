@@ -349,6 +349,12 @@ impl<E: Effects> Colony<E> {
                     }
                 }
             }
+            Action::Signal(node, sig) => {
+                let number = i32::try_from(sig).unwrap_or(i32::MAX);
+                if let Err(e) = self.effects.signal(node, number) {
+                    out.errors.push(Error::Effect(node, e));
+                }
+            }
             Action::Report(node, r) => out.notices.push(Notice::Node(node, r)),
         }
     }

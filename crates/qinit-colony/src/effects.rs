@@ -43,4 +43,6 @@ pub trait Effects {
     fn arm(&mut self, node: u32, timer: TimerKind, ms: u32) -> Result<(), Errno>;
     /// Cancels the node's timer of that kind, if armed.
     fn cancel(&mut self, node: u32, timer: TimerKind) -> Result<(), Errno>;
+    /// Sends the node's main process the Linux signal `sig` (its reload signal).
+    fn signal(&mut self, node: u32, sig: i32) -> Result<(), Errno>;
 }

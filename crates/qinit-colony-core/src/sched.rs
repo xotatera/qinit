@@ -67,6 +67,7 @@ pub fn params(db: &[u8], i: usize) -> (p: Params)
         stop_mode: node_word(db, i, N_STOP_MODE),
         grace_ms: node_word(db, i, N_STOP_GRACE_MS),
         start_timeout_ms: node_word(db, i, N_START_TIMEOUT_MS),
+        reload: node_word(db, i, N_RELOAD),
     }
 }
 
@@ -984,6 +985,10 @@ fn scan_running(db: &[u8], tbl: &[NodeState], paths: &[bool], late: &mut [bool],
                         }
                     } else if !ready && (on >= 2 || (on == 1 && matches!(tn.left, Left::Error))) {
                         trig = true;
+                    } else if ready && matches!(tn.left, Left::Refresh) && on == 3 {
+                        // The target was sent its reload signal and stays ready: only a
+                        // `refresh` edge asks its dependent to restart.
+                        trig = true;
                     }
                 }
             }
@@ -1398,6 +1403,41 @@ pub fn reconcile(
     false
 }
 
+/// Puts `Left::Restart` back on every node marked `Left::Refresh`, once the table has settled.
+fn clear_refreshed(tbl: &mut [NodeState])
+    ensures
+        final(tbl)@.len() == old(tbl)@.len(),
+        forall|k: int|
+            0 <= k < old(tbl)@.len() ==> final(tbl)@[k] == (if old(tbl)@[k].left == Left::Refresh {
+                NodeState { left: Left::Restart, ..old(tbl)@[k] }
+            } else {
+                old(tbl)@[k]
+            }),
+{
+    let n = tbl.len();
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            i <= n,
+            n == tbl@.len(),
+            n == old(tbl)@.len(),
+            forall|k: int|
+                0 <= k < i ==> tbl@[k] == (if old(tbl)@[k].left == Left::Refresh {
+                    NodeState { left: Left::Restart, ..old(tbl)@[k] }
+                } else {
+                    old(tbl)@[k]
+                }),
+            forall|k: int| i <= k < n ==> tbl@[k] == old(tbl)@[k],
+        decreases n - i,
+    {
+        let ns = tbl[i];
+        if matches!(ns.left, Left::Refresh) {
+            tbl[i] = NodeState { left: Left::Restart, ..ns };
+        }
+        i += 1;
+    }
+}
+
 // ---- one input ----
 /// Applies `input` to node `i`'s machine.
 fn apply_node(
@@ -1530,7 +1570,22 @@ pub fn step(
         }
     }
     let converged = reconcile(db, tbl, paths, late, meta.shutdown, now);
+    let ghost t2a = tbl@;
+    clear_refreshed(tbl);
     let ghost t2 = tbl@;
+    proof {
+        assert forall|k: int| 0 <= k < t2.len() implies inv_node(
+            #[trigger] t2[k],
+            params_of(db@, k),
+        ) by {
+            assert(inv_node(t2a[k], params_of(db@, k)));
+        }
+        if quiet {
+            lemma_quiet_trans(t2a, t1, t0);
+            assert(quiet_emits(t2, t2a));
+            lemma_quiet_trans(t2, t2a, t0);
+        }
+    }
     report_shutdown(db, tbl, meta);
     proof {
         if quiet {
@@ -1796,6 +1851,19 @@ pub fn next_action(db: &[u8], tbl: &mut [NodeState], meta: &mut Meta) -> (r: Opt
                             Action::Stop(jj, mode, p.grace_ms)
                         },
                         Pending::Start => Action::Start(jj),
+                        Pending::Report(Report::Reload) => {
+                            let p = params(db, j);
+                            Action::Signal(
+                                jj,
+                                if p.reload == 2 {
+                                    10
+                                } else if p.reload == 3 {
+                                    12
+                                } else {
+                                    1
+                                },
+                            )
+                        },
                         Pending::Report(rep) => Action::Report(jj, rep),
                     },
                 );
