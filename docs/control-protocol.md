@@ -190,9 +190,10 @@ the state the node reached or is in.
 | 7 | `wait_ms` | 1 to 600000 |
 
 One descriptor per role set. Reply: `Launched` with the instance id, or `LaunchFailed` (the
-overseer step that failed and its errno), or `Error` (`UnknownNode`, `NotLaunchable`,
-`Unsatisfied`, `NoSlot`, `NotNow`, `ShuttingDown`, `Invalid` for a request that breaks the
-frame's launch table); after `Launched`, `Exited` with the wait status when the instance ends,
+step that failed and its errno; step 0 is the creation of the instance's cell), or `Error`
+(`UnknownNode`, `NotLaunchable`, `Unsatisfied`, `NoSlot`, `ShuttingDown`, and `Denied` for a
+request that breaks the frame's launch table: too long an argument tail, an environment key or
+a descriptor role the frame does not list); after `Launched`, `Exited` with the wait status when the instance ends,
 or `Pending` with the instance's state at `wait_ms`, after which the connection is idle and the
 outcome is read with `Status` on `<frame>#<id>`.
 
@@ -309,7 +310,7 @@ effect. `Superseded`: another request changed what the wait waited for, or a ref
 
 | Word | Name | Meaning |
 | --- | --- | --- |
-| 0 | `status` | the wait status of the instance's main process, as a signed word |
+| 0 | `status` | the wait status of the instance's main process, as a signed word; -1 when its exit was not seen (the cell was emptied first, for example by a stop) |
 
 ## Examples
 

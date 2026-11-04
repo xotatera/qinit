@@ -84,7 +84,8 @@ timeout = "60s"
 
 # Measured 2026-11-02: 131 verified; warm 12.0-12.2 s (11.6-11.8 s CPU), 0.39-0.48 GB peak. A cold
 # build (vstd included, as in a container) adds the 15-20 s the other crates show. 90s covers
-# about 2.5x the expected cold CPU.
+# about 2.5x the expected cold CPU. SP6 gate run 2026-11-04: warm 16.4 s (16.0 s CPU), so cold is
+# about 36 s CPU; 90s still covers 2.5x.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-colony-core"
 kind = "verus"
@@ -92,19 +93,21 @@ package = "qinit-colony-core"
 memory = "4G"
 timeout = "90s"
 
-# Measured 2026-11-04: 134 verified, 5.0-5.3 s (4.8-5.1 s CPU), 308 MB peak. 20s leaves room
-# for a slower container run.
+# Measured 2026-11-04: 134 verified, 5.0-5.3 s (4.8-5.1 s CPU), 308 MB peak; 6.9 s (6.6 s CPU) in
+# the SP6 gate run, where it once took 20 s under load. All warm: a cold build adds 15-20 s CPU
+# (inferred), so 45s.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-overseer-core"
 kind = "verus"
 package = "qinit-overseer-core"
 memory = "4G"
-timeout = "20s"
+timeout = "45s"
 
-# Not measured yet; Task 13 of the SP6 plan sets the figures.
+# Measured 2026-11-04: 169 verified, warm 1.4-1.5 s (1.2 s CPU). A cold build (vstd included)
+# adds the 15-20 s the other crates show (inferred, not measured cold); 45s covers about 2x that.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-proto-core"
 kind = "verus"
 package = "qinit-proto-core"
 memory = "4G"
-timeout = "60s"
+timeout = "45s"
