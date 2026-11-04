@@ -493,3 +493,237 @@ pub fn decode(b: &[u8], received: usize) -> Result<Msg<'_>, DecodeError> {
         Ok(Msg::Rep(reply(b, t)?))
     }
 }
+
+/// The operation a request asks for.
+#[must_use]
+pub fn op_of(r: &Req<'_>) -> Op {
+    match r {
+        Req::Status { .. } => Op::Status,
+        Req::List { .. } => Op::List,
+        Req::Change { .. } => Op::Change,
+        Req::Launch { .. } => Op::Launch,
+        Req::Refresh { .. } => Op::Refresh,
+        Req::Shutdown { .. } => Op::Shutdown,
+    }
+}
+
+/// The descriptors a message carries: one per role of a launch, one for a refresh, none
+/// otherwise.
+#[must_use]
+pub fn required_fds(m: &Msg<'_>) -> u32 {
+    match m {
+        Msg::Req(Req::Launch { fd_roles, .. }) => {
+            (fd_roles & 1) + ((fd_roles >> 1) & 1) + ((fd_roles >> 2) & 1)
+        }
+        Msg::Req(Req::Refresh { .. }) => 1,
+        _ => 0,
+    }
+}
+
+fn word_of(b: bool) -> u32 {
+    u32::from(b)
+}
+
+/// The pieces of a record being collected.
+struct Rec<'a> {
+    pieces: [Piece<'a>; MAX_PIECES],
+    n: usize,
+}
+
+impl<'a> Rec<'a> {
+    fn new() -> Rec<'a> {
+        Rec {
+            pieces: [Piece::Word(0); MAX_PIECES],
+            n: 0,
+        }
+    }
+
+    fn push(&mut self, p: Piece<'a>) {
+        if let Some(slot) = self.pieces.get_mut(self.n) {
+            *slot = p;
+        }
+        self.n += 1;
+    }
+
+    fn w(&mut self, v: u32) -> &mut Self {
+        self.push(Piece::Word(v));
+        self
+    }
+
+    fn s(&mut self, v: &'a str) -> &mut Self {
+        self.push(Piece::Str(v.as_bytes()));
+        self
+    }
+
+    fn state(&mut self, v: StateWord) -> &mut Self {
+        self.w(v.state).w(v.detail)
+    }
+
+    fn list(&mut self, v: StrList<'a>) -> &mut Self {
+        self.push(Piece::Str(v.as_bytes()));
+        self
+    }
+}
+
+#[allow(clippy::cast_sign_loss)] // the words carry signed values
+fn request_record<'a>(r: &Req<'a>, rec: &mut Rec<'a>) -> u32 {
+    match *r {
+        Req::Status { target } => {
+            rec.s(target);
+            T_STATUS
+        }
+        Req::List { cursor, kind } => {
+            rec.w(cursor).w(kind);
+            T_LIST
+        }
+        Req::Change {
+            target,
+            action,
+            settled,
+            wait_ms,
+        } => {
+            rec.s(target)
+                .w(action.word())
+                .w(word_of(settled))
+                .w(wait_ms);
+            T_CHANGE
+        }
+        Req::Launch {
+            frame,
+            argv_tail,
+            env_add,
+            fd_roles,
+            wait_ms,
+        } => {
+            rec.s(frame)
+                .list(argv_tail)
+                .list(env_add)
+                .w(fd_roles)
+                .w(wait_ms);
+            T_LAUNCH
+        }
+        Req::Refresh { settled, wait_ms } => {
+            rec.w(word_of(settled)).w(wait_ms);
+            T_REFRESH
+        }
+        Req::Shutdown {
+            mode,
+            settled,
+            wait_ms,
+        } => {
+            rec.w(mode.word()).w(word_of(settled)).w(wait_ms);
+            T_SHUTDOWN
+        }
+    }
+}
+
+#[allow(clippy::cast_sign_loss)] // the words carry signed values
+fn reply_record<'a>(r: &Rep<'a>, rec: &mut Rec<'a>) -> u32 {
+    match *r {
+        Rep::Error {
+            code,
+            detail,
+            version,
+        } => {
+            rec.w(code.word()).w(detail).w(version);
+            T_ERROR
+        }
+        Rep::NodeStatus(n) => {
+            let (group, target) = n.blocking.unwrap_or((NONE, ""));
+            rec.s(n.name)
+                .w(n.kind)
+                .state(n.state)
+                .w(group)
+                .s(target)
+                .w(n.backoff_ms)
+                .w((n.since_ms & 0xffff_ffff) as u32)
+                .w((n.since_ms >> 32) as u32)
+                .w(n.restarts)
+                .w(n.pid.map_or(0, |p| p as u32));
+            T_NODE_STATUS
+        }
+        Rep::InstanceStatus(i) => {
+            rec.s(i.frame)
+                .w(i.id)
+                .w(i.state)
+                .w(word_of(i.status.is_some()))
+                .w(i.status.map_or(0, |s| s as u32))
+                .w(i.pid.map_or(0, |p| p as u32));
+            T_INSTANCE_STATUS
+        }
+        Rep::ListPage { entries, next } => {
+            rec.w(u32::try_from(entries.len()).unwrap_or(u32::MAX))
+                .w(next.unwrap_or(NONE));
+            T_LIST_PAGE
+        }
+        Rep::Accepted => T_ACCEPTED,
+        Rep::Settled(s) => {
+            rec.state(s);
+            T_SETTLED
+        }
+        Rep::Pending(s) => {
+            rec.state(s);
+            T_PENDING
+        }
+        Rep::Superseded(s) => {
+            rec.state(s);
+            T_SUPERSEDED
+        }
+        Rep::Launched { id } => {
+            rec.w(id);
+            T_LAUNCHED
+        }
+        Rep::LaunchFailed { step, errno } => {
+            rec.w(step).w(errno);
+            T_LAUNCH_FAILED
+        }
+        Rep::Exited { status } => {
+            rec.w(status as u32);
+            T_EXITED
+        }
+    }
+}
+
+/// Encodes `m` into `out`, declaring `fd_count` descriptors, and returns its length. The bytes
+/// are a message `qinit_proto_core::check` accepts.
+///
+/// # Errors
+/// `TooLarge` when the message does not fit; `Invalid` for a value that breaks a rule of the
+/// format, such as a name of 97 bytes, a list over its cap, a wait of zero when settled, or a
+/// `fd_count` that is not the descriptors the message requires.
+pub fn encode(
+    m: &Msg<'_>,
+    fd_count: u32,
+    out: &mut [u8; MAX_MESSAGE],
+) -> Result<usize, EncodeError> {
+    let mut rec = Rec::new();
+    let t = match m {
+        Msg::Req(r) => request_record(r, &mut rec),
+        Msg::Rep(r) => reply_record(r, &mut rec),
+    };
+    if rec.n > MAX_PIECES {
+        return Err(EncodeError::Invalid);
+    }
+    let mut entries = [EntryIn {
+        name: b"",
+        kind: 0,
+        state: 0,
+        detail: 0,
+    }; MAX_LIST_ENTRIES];
+    let mut count = 0;
+    if let Msg::Rep(Rep::ListPage { entries: given, .. }) = m {
+        if given.len() > MAX_LIST_ENTRIES {
+            return Err(EncodeError::Invalid);
+        }
+        for (slot, e) in entries.iter_mut().zip(given.iter()) {
+            *slot = EntryIn {
+                name: e.name.as_bytes(),
+                kind: e.kind,
+                state: e.state.state,
+                detail: e.state.detail,
+            };
+            count += 1;
+        }
+    }
+    encode_pieces(t, fd_count, &rec.pieces[..rec.n], &entries[..count], out)
+}

@@ -6,13 +6,17 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+mod authz;
 mod decode;
+mod encode;
 mod layout;
 mod lists;
 mod spec;
 mod utf8;
 
+pub use authz::*;
 pub use decode::*;
+pub use encode::*;
 pub use layout::*;
 pub use lists::{count_elements, env_elements_ok, nul_list_ok};
 #[allow(unused_imports)] // the specification is erased outside verification
