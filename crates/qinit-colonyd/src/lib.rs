@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod args;
+pub mod deadlines;
 pub mod exit;
 
 /// Runs colony to the end and returns its exit status.
