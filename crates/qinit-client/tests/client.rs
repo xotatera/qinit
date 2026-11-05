@@ -415,3 +415,37 @@ fn a_watch_of_an_unknown_target_is_unknown_node() {
         Err(ClientError::Server(ErrorCode::UnknownNode, 0))
     ));
 }
+
+#[test]
+fn a_watch_of_everything_keeps_watching_after_an_instance_exit() {
+    let s = Served::start(&["db"], true, instant(Some(0)));
+    // `watch` returns after `Accepted`: the watcher is in place before the launch.
+    let mut w = s.client().watch(Scope::All).unwrap();
+    let got = s
+        .client()
+        .launch("backup", &LaunchArgs::default(), Duration::from_secs(5))
+        .unwrap();
+    assert!(matches!(got, LaunchOutcome::Exited { .. }), "{got:?}");
+    loop {
+        if let Next::Event(Event::Instance {
+            report: Report::Exited,
+            ..
+        }) = w.next(Some(Duration::from_secs(5))).unwrap()
+        {
+            break;
+        }
+    }
+    // The stream goes on: a change after the exit still arrives.
+    s.client().change("db", Action::Stop, Wait::Now).unwrap();
+    loop {
+        match w.next(Some(Duration::from_secs(5))).unwrap() {
+            Next::Event(Event::Node {
+                ref name,
+                report: Report::Stopped,
+                ..
+            }) if name == "db" => break,
+            Next::Timeout => panic!("no notice after the exit"),
+            _ => {}
+        }
+    }
+}

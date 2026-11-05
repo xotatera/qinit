@@ -120,7 +120,12 @@ fn run_sends_a_request_file() {
         "5000",
     ]);
     assert_eq!(code, 0, "{out}{err}");
-    assert!(out.contains("~job#"), "{out}");
+    let target = out
+        .lines()
+        .find_map(|l| l.strip_prefix("started "))
+        .expect("the instance is named");
+    assert!(target.starts_with("~job#"), "{out}");
+    assert_eq!(out, format!("started {target}\nexited {target} code=0\n"));
 }
 
 #[test]

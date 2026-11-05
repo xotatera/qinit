@@ -4,7 +4,7 @@
 //! the stream ends (`ended <state>`, exit 0). A closed connection or an error is exit 1.
 use crate::control::Failure;
 use crate::text;
-use qinit_client::{Client, ClientError, Event, Next, Scope};
+use qinit_client::{Client, ClientError, Event, Next, Scope, Watcher};
 use std::io::Write;
 use std::path::Path;
 
@@ -23,7 +23,20 @@ pub fn run(
     };
     // An instance's stream speaks the instance's state words.
     let instance = !all && target.contains('#');
-    match watch(scope, instance, socket, out) {
+    match Client::connect(socket).and_then(|c| c.watch(scope)) {
+        Ok(w) => follow(w, instance, out, err),
+        Err(e) => exit(Err(e.into()), err),
+    }
+}
+
+/// Print the stream of `w` (an instance's when `instance`) until it ends; returns the exit
+/// code: 0 at the end of the stream, 1 when the connection closed or failed.
+pub fn follow(mut w: Watcher, instance: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    exit(stream(&mut w, instance, out), err)
+}
+
+fn exit(result: Result<(), Failure>, err: &mut dyn Write) -> i32 {
+    match result {
         Ok(()) => 0,
         Err(Failure::Client(ClientError::Unexpected)) => {
             let _ = writeln!(err, "qctl: colony closed the stream");
@@ -33,25 +46,15 @@ pub fn run(
     }
 }
 
-fn watch(
-    scope: Scope<'_>,
-    instance: bool,
-    socket: &Path,
-    out: &mut dyn Write,
-) -> Result<(), Failure> {
-    let mut w = Client::connect(socket)?.watch(scope)?;
+fn stream(w: &mut Watcher, instance: bool, out: &mut dyn Write) -> Result<(), Failure> {
     loop {
         match w.next(None)? {
             Next::Event(e) => {
                 writeln!(out, "{}", line(&e))?;
                 out.flush()?;
-                // An instance's exit is the last notice of its stream.
-                if let Event::Instance {
-                    report: qinit_client::Report::Exited,
-                    state,
-                    ..
-                } = e
-                    && instance
+                // The exit of a watched instance is the last notice of its stream.
+                if let Event::Instance { state, .. } = e
+                    && w.is_spent()
                 {
                     writeln!(out, "ended {}", text::instance_state(state))?;
                     return Ok(());

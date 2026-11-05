@@ -324,6 +324,9 @@ pub enum Next {
 pub struct Watcher {
     client: Client,
     spent: bool,
+    /// The watch is of one instance: its exit ends the stream. A watch of everything, or of a
+    /// node, goes on past an instance's exit.
+    ends_on_exit: bool,
 }
 
 impl AsFd for Watcher {
@@ -333,8 +336,9 @@ impl AsFd for Watcher {
 }
 
 impl Watcher {
-    /// The next event, within `timeout` (`None`: no limit). After the exit of an instance, or
-    /// `Ended`, the watcher is spent and every call returns [`ClientError::Unexpected`].
+    /// The next event, within `timeout` (`None`: no limit). After the exit of a watched
+    /// instance (a watch of everything goes on), or `Ended`, the watcher is spent and every call
+    /// returns [`ClientError::Unexpected`].
     ///
     /// # Errors
     /// [`ClientError`]; `Unexpected` when the server closed the stream or the watcher is spent.
@@ -351,14 +355,16 @@ impl Watcher {
         match self.client.reply()? {
             Reply::Notice(n) => {
                 let event = Self::event(n)?;
-                // The exit ends an instance's stream.
-                if matches!(
-                    event,
-                    Event::Instance {
-                        report: Report::Exited,
-                        ..
-                    }
-                ) {
+                // The exit ends the stream of a watched instance, and only that.
+                if self.ends_on_exit
+                    && matches!(
+                        event,
+                        Event::Instance {
+                            report: Report::Exited,
+                            ..
+                        }
+                    )
+                {
                     self.spent = true;
                 }
                 Ok(Next::Event(event))
@@ -369,6 +375,12 @@ impl Watcher {
             }
             _ => Err(ClientError::Unexpected),
         }
+    }
+
+    /// Whether the stream has ended: after `Ended`, or after the exit of a watched instance.
+    #[must_use]
+    pub fn is_spent(&self) -> bool {
+        self.spent
     }
 
     fn event(n: Notice) -> Result<Event, ClientError> {
@@ -814,6 +826,8 @@ impl Client {
             Reply::Accepted => Ok(Watcher {
                 client: self,
                 spent: false,
+                // Only an instance target (`<frame>#<id>`) carries a `#`.
+                ends_on_exit: matches!(scope, Scope::Target(t) if t.contains('#')),
             }),
             _ => Err(ClientError::Unexpected),
         }

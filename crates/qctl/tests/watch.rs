@@ -102,15 +102,14 @@ fn an_instance_watch_ends_at_the_exit() {
     while let Some(l) = line(&mut lines) {
         seen.push(l);
     }
-    // The exit, if the watch saw it, then the end in the instance's state words.
+    // Colony sends an already-exited instance's exit (report 5, with the status), then the
+    // end in the instance's state words.
     assert_eq!(
-        seen.last().map(String::as_str),
-        Some("ended exited"),
-        "{seen:?}"
-    );
-    assert!(
-        seen.len() == 1 || seen[0] == format!("instance {target} exited exited status=1280"),
-        "{seen:?}"
+        seen,
+        [
+            format!("instance {target} exited exited status=1280"),
+            "ended exited".to_owned()
+        ]
     );
     assert_eq!(thread.join().unwrap().0, 0);
 }
@@ -136,4 +135,50 @@ fn a_watch_whose_server_goes_away_exits_1() {
     let (code, err) = thread.join().unwrap();
     assert_eq!(code, 1);
     assert_eq!(err, "qctl: colony closed the stream\n");
+}
+
+#[test]
+fn watch_all_goes_on_after_an_instance_exit() {
+    let s = Served::start(&["db"], true, instant(Some(0)));
+    let path = s.path.to_str().unwrap().to_owned();
+    // A watch of everything gets no current lines, so the test makes the watcher itself:
+    // `watch` returns after `Accepted`, with the watch in place. `follow` is qctl's loop.
+    let w = qinit_client::Client::connect(&s.path)
+        .unwrap()
+        .watch(qinit_client::Scope::All)
+        .unwrap();
+    let (r, wr) = qinit_sys::fd::pipe(0o2_000_000).unwrap();
+    let thread = std::thread::spawn(move || {
+        let mut out = std::fs::File::from(wr);
+        let mut err = Vec::new();
+        let code = qctl::watch::follow(w, false, &mut out, &mut err);
+        (code, String::from_utf8(err).unwrap())
+    });
+    let mut lines = BufReader::new(std::fs::File::from(r));
+    let (code, out, err) = qctl(&["--socket", &path, "launch", "backup"]);
+    assert_eq!(code, 0, "{err}");
+    let target = out
+        .lines()
+        .find_map(|l| l.strip_prefix("started "))
+        .unwrap()
+        .to_owned();
+    let exited = format!("instance {target} exited exited status=0");
+    let mut seen = Vec::new();
+    while seen.last() != Some(&exited) {
+        seen.push(line(&mut lines).expect("the watch ended before the exit"));
+    }
+    // The line after the exit still arrives: the watch goes on.
+    let (code, _, err) = qctl(&["--socket", &path, "stop", "db"]);
+    assert_eq!(code, 0, "{err}");
+    while seen.last().map(String::as_str) != Some("node db stopped off") {
+        seen.push(line(&mut lines).unwrap_or_else(|| panic!("the watch ended: {seen:?}")));
+    }
+    // It ends only when the server goes away.
+    drop(s.finish());
+    while line(&mut lines).is_some() {}
+    let (code, err) = thread.join().unwrap();
+    assert_eq!(
+        (code, err.as_str()),
+        (1, "qctl: colony closed the stream\n")
+    );
 }
