@@ -204,3 +204,27 @@ pub fn recv(fd: BorrowedFd<'_>, buf: &mut [u8]) -> Result<Received> {
         ctrunc: msg.msg_flags & libc::MSG_CTRUNC != 0,
     })
 }
+
+/// Waits until `fd` is readable (or hung up), at most `timeout_ms` (negative: no limit);
+/// `true` when it is. `EINTR` is retried.
+///
+/// # Errors
+/// The errno of `poll`.
+pub fn poll_readable(fd: BorrowedFd<'_>, timeout_ms: i32) -> Result<bool> {
+    let mut p = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: p is one valid pollfd for the call.
+        let r = unsafe { libc::poll(&raw mut p, 1, timeout_ms) };
+        if r >= 0 {
+            return Ok(r > 0);
+        }
+        let e = Errno::last();
+        if e.0 != libc::EINTR {
+            return Err(e);
+        }
+    }
+}

@@ -6,8 +6,8 @@ mod common;
 
 use common::*;
 use qinit_client::{
-    Action, Begun, Client, ClientError, ErrorCode, LaunchArgs, LaunchOutcome, Mode, Outcome,
-    Started, Status, Wait,
+    Action, Begun, Client, ClientError, ErrorCode, Event, LaunchArgs, LaunchOutcome, Mode, Next,
+    Outcome, Report, Scope, Started, Status, Wait,
 };
 use qinit_colony::sim::{Script, Sim, advance_outcome};
 use qinit_colony::{Colony, Peer};
@@ -404,4 +404,96 @@ fn begin_run_wait_ready_sets_flag_bit_1_and_finish_returns_ready() {
         panic!("not started")
     };
     assert_eq!(c.finish(id).unwrap(), LaunchOutcome::Ready { id });
+}
+
+#[test]
+fn watch_one_node_gets_current_then_the_change() {
+    let s = Served::start(&["db"], true, instant(None));
+    let mut w = s.client().watch(Scope::Target("db")).unwrap();
+    assert!(
+        matches!(w.next(Some(Duration::from_secs(5))).unwrap(), Next::Event(Event::Node { ref name, report: Report::Current, .. }) if name == "db")
+    );
+    s.client().change("db", Action::Stop, Wait::Now).unwrap();
+    let mut saw_stop = false;
+    for _ in 0..8 {
+        if let Next::Event(Event::Node {
+            report: Report::Stopped,
+            ..
+        }) = w.next(Some(Duration::from_secs(5))).unwrap()
+        {
+            saw_stop = true;
+            break;
+        }
+    }
+    assert!(saw_stop);
+}
+
+#[test]
+fn watch_next_times_out_without_an_event() {
+    let s = Served::start(&["db"], true, instant(None));
+    let mut w = s.client().watch(Scope::All).unwrap();
+    // Everything's current state first, then silence.
+    let mut quiet = false;
+    for _ in 0..16 {
+        if matches!(
+            w.next(Some(Duration::from_millis(50))).unwrap(),
+            Next::Timeout
+        ) {
+            quiet = true;
+            break;
+        }
+    }
+    assert!(quiet);
+}
+
+#[test]
+fn an_instance_watch_ends_at_the_exit() {
+    let s = Served::start(&[], true, instant(Some(0)));
+    let mut c = s.client();
+    let Begun::Started(Started { id, .. }) = c
+        .begin_launch(
+            "backup",
+            &LaunchArgs::default(),
+            false,
+            Duration::from_secs(5),
+        )
+        .unwrap()
+    else {
+        panic!("the launch failed");
+    };
+    let mut w = s
+        .client()
+        .watch(Scope::Target(&format!("backup#{id}")))
+        .unwrap();
+    match w.next(Some(Duration::from_secs(5))).unwrap() {
+        // The exit as it happens, or (an instance that had already exited) the current state
+        // saying so; either ends the stream.
+        Next::Event(
+            Event::Instance {
+                report: Report::Exited,
+                status: Some(0),
+                ..
+            }
+            | Event::Instance {
+                report: Report::Current,
+                state: 4,
+                ..
+            },
+        ) => {}
+        Next::Ended(st) => assert_eq!(st.state, 4),
+        other => panic!("unexpected first item {other:?}"),
+    }
+    assert_eq!(
+        w.next(Some(Duration::from_secs(1))).unwrap_err(),
+        ClientError::Unexpected
+    );
+}
+
+#[test]
+fn a_watch_of_an_unknown_target_is_unknown_node() {
+    let s = Served::start(&["db"], true, instant(None));
+    assert!(matches!(
+        s.client().watch(Scope::Target("nope")),
+        Err(ClientError::Server(ErrorCode::UnknownNode, 0))
+    ));
 }

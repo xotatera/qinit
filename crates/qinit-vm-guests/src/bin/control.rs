@@ -7,7 +7,8 @@
 //! cells are sub-project 7's. No threads: the server is this process, and each client is a
 //! forked process whose exit status is the verdict.
 use qinit_client::{
-    Action, Begun, Client, ClientError, ErrorCode, LaunchArgs, Started, Status, Wait,
+    Action, Begun, Client, ClientError, ErrorCode, Event, LaunchArgs, Next, Report, Scope, Started,
+    Status, Wait,
 };
 use qinit_colony::Colony;
 use qinit_colony::sim::{Sim, advance_outcome};
@@ -22,6 +23,7 @@ use qinit_vm_guests::run;
 use std::ffi::CString;
 use std::os::fd::AsFd;
 use std::path::Path;
+use std::time::Duration;
 
 const SOCKET: &str = "/tmp/colony";
 
@@ -376,6 +378,38 @@ fn run_is_refused_without_a_run_rule() -> Result<(), String> {
     })
 }
 
+fn watch_sees_a_change_from_a_second_connection() -> Result<(), String> {
+    serve_while(|| {
+        let Some(mut w) = connect()
+            .ok()
+            .and_then(|c| c.watch(Scope::Target("db")).ok())
+        else {
+            return 1;
+        };
+        let five = Some(Duration::from_secs(5));
+        let current = matches!(
+            w.next(five),
+            Ok(Next::Event(Event::Node {
+                report: Report::Current,
+                ..
+            }))
+        );
+        let stopped = connect().is_ok_and(|mut c| c.change("db", Action::Stop, Wait::Now).is_ok());
+        let saw = (0..8).any(|_| {
+            // Colony's simulated db has not left `starting` when it is stopped, so the stop is
+            // reported as `Done` (the node is idle again), not `Stopped`.
+            matches!(
+                w.next(five),
+                Ok(Next::Event(Event::Node {
+                    report: Report::Stopped | Report::Done,
+                    ..
+                }))
+            )
+        });
+        i32::from(!(current && stopped && saw))
+    })
+}
+
 fn main() {
     run(
         "control",
@@ -401,6 +435,10 @@ fn main() {
             (
                 "run_is_refused_without_a_run_rule",
                 run_is_refused_without_a_run_rule,
+            ),
+            (
+                "watch_sees_a_change_from_a_second_connection",
+                watch_sees_a_change_from_a_second_connection,
             ),
         ],
     )
