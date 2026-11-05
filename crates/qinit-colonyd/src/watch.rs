@@ -52,14 +52,6 @@ pub struct Watcher {
     pub between: Option<Box<dyn FnMut()>>,
 }
 
-fn errno_of(e: qinit_event::Error) -> Errno {
-    match e {
-        qinit_event::Error::Sys { errno, .. } => errno,
-        qinit_event::Error::DuplicateToken(_) => Errno(libc::EEXIST),
-        qinit_event::Error::Empty => Errno(libc::EINVAL),
-    }
-}
-
 fn prefix(names: &[OsString], n: usize) -> PathBuf {
     let mut p = PathBuf::from("/");
     p.extend(&names[..n]);
@@ -96,7 +88,7 @@ impl Watcher {
     ///
     /// The errno of creating or registering the inotify instance.
     pub fn new(l: &mut Loop, token: Token) -> Result<Watcher, Errno> {
-        l.add_inotify_set(token).map_err(errno_of)?;
+        l.add_inotify_set(token).map_err(Errno::from)?;
         Ok(Watcher {
             token,
             entries: BTreeMap::new(),
@@ -219,7 +211,7 @@ impl Watcher {
             .unwrap_or(0);
         let wd = l
             .watch(self.token, &prefix(&names, depth), MASK)
-            .map_err(errno_of)?;
+            .map_err(Errno::from)?;
         if old != Some(wd) {
             if let Some(old) = old {
                 self.detach(l, id, old);

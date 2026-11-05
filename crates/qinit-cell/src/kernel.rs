@@ -63,11 +63,7 @@ const SOURCES: [Source; 6] = [
 ];
 
 fn lp(e: qinit_event::Error) -> Errno {
-    match e {
-        qinit_event::Error::Sys { errno, .. } => errno,
-        qinit_event::Error::DuplicateToken(_) => Errno(libc::EEXIST),
-        qinit_event::Error::Empty => Errno(libc::EINVAL),
-    }
+    Errno::from(e)
 }
 
 fn signo(s: Sig) -> libc::c_int {

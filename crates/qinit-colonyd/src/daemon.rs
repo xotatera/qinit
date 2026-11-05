@@ -89,6 +89,8 @@ pub struct Daemon<C: CellOps> {
     shutdown_done: bool,
     /// The status a completed shutdown ends in, held until the cells it left are gone.
     exit_after: Option<u8>,
+    /// Outcomes whose replies are not yet delivered (see [`Daemon::settle`]).
+    owed: Vec<Outcome>,
     /// The owners whose cell failed (it could not be stopped): waiting for them is pointless.
     failed: BTreeSet<Owner>,
 }
@@ -283,6 +285,7 @@ impl<C: CellOps> Daemon<C> {
             exit: None,
             shutdown_done: false,
             exit_after: None,
+            owed: Vec::new(),
             failed: BTreeSet::new(),
         };
         for (sev, text) in &notes {
@@ -362,13 +365,15 @@ impl<C: CellOps> Daemon<C> {
         }
     }
 
-    /// What an outcome of colony means for everyone: replies to the server (when `deliver`: a
-    /// request's own outcome has been delivered by the server already), notices to syslog, errors
-    /// to syslog, and the work a swap or a completed shutdown calls for.
+    /// What an outcome of colony means for everyone: notices to syslog, errors to syslog, the work
+    /// a swap or a completed shutdown calls for, and, when `deliver` (a request's own outcome has
+    /// been delivered by the server already), the replies it owes parked waits and watchers.
+    ///
+    /// The replies are held until the end of the wake-up, after the log and the state files: a
+    /// client that has seen a change can rely on its log line and on the saved state being there.
     fn settle(&mut self, out: &Outcome, deliver: bool) {
         if deliver {
-            let closed = self.server.on_outcome(out, &mut self.colony);
-            self.forget(&closed);
+            self.owed.push(out.clone());
         }
         for e in &out.errors {
             self.say(Sev::Err, &describe_error(e));
@@ -576,6 +581,7 @@ impl<C: CellOps> Daemon<C> {
         self.pump_cells();
         self.report_faults();
         self.persist();
+        self.flush_replies();
         self.rearm();
     }
 
@@ -649,6 +655,14 @@ impl<C: CellOps> Daemon<C> {
             self.exit = Some(code);
         }
         self.exit
+    }
+
+    /// Delivers the replies held during this wake-up.
+    fn flush_replies(&mut self) {
+        for out in std::mem::take(&mut self.owed) {
+            let closed = self.server.on_outcome(&out, &mut self.colony);
+            self.forget(&closed);
+        }
     }
 
     /// Whether every cell colony made is removed, bar the ones that failed (a cell the cell layer

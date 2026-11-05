@@ -62,6 +62,18 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+impl From<Error> for Errno {
+    /// The errno a caller that speaks errnos reports: the kernel's own for a failed call,
+    /// `EEXIST` for a token registered twice, `EINVAL` for a wait on an empty loop.
+    fn from(e: Error) -> Errno {
+        match e {
+            Error::Sys { errno, .. } => errno,
+            Error::DuplicateToken(_) => Errno(libc::EEXIST),
+            Error::Empty => Errno(libc::EINVAL),
+        }
+    }
+}
+
 fn sys<T>(r: qinit_sys::Result<T>, what: &'static str) -> Result<T, Error> {
     r.map_err(|errno| Error::Sys { what, errno })
 }

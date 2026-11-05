@@ -347,10 +347,10 @@ impl<C: CellOps> RealEffects<C> {
     pub fn take_path_events(&mut self) -> Result<Vec<PathEvent>, Errno> {
         let mut out = Vec::new();
         loop {
-            let batch = self.events.poll().map_err(|e| match e {
-                qinit_event::Error::Sys { errno, .. } => sys(errno),
-                _ => Errno(libc::EINVAL),
-            })?;
+            let batch = self
+                .events
+                .poll()
+                .map_err(|e| sys(qinit_sys::Errno::from(e)))?;
             if batch.is_empty() {
                 return Ok(out);
             }
@@ -714,10 +714,7 @@ impl<C: CellOps> RealEffects<C> {
         qinit_sys::fd::set_nonblocking(&l.status_r).map_err(sys)?;
         self.events
             .add_fd(l.status_r.as_fd(), status_token(l.owner))
-            .map_err(|e| match e {
-                qinit_event::Error::Sys { errno, .. } => sys(errno),
-                _ => Errno(libc::EINVAL),
-            })?;
+            .map_err(|e| sys(qinit_sys::Errno::from(e)))?;
         self.status.insert(
             l.owner,
             LaunchWatch {
