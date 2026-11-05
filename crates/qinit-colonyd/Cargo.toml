@@ -17,6 +17,11 @@ path = "src/lib.rs"
 name = "colony"
 path = "src/main.rs"
 
+[features]
+# What the host tests need of the server: an identity given instead of read from the socket.
+# Never part of the daemon.
+testing = ["qinit-proto/testing"]
+
 [dependencies]
 libc = { workspace = true, features = ["std"] }
 qinit-cell = { path = "../qinit-cell" }
@@ -32,8 +37,11 @@ qinit-proto = { path = "../qinit-proto" }
 qinit-sys = { path = "../qinit-sys" }
 
 [dev-dependencies]
+qinit-colonyd = { path = ".", features = ["testing"] }
 qinit-frames = { path = "../qinit-frames" }
 qinit-overseer-core = { path = "../qinit-overseer-core" }
+qinit-proto-core = { path = "../qinit-proto-core" }
+qinit-wire = { path = "../qinit-wire" }
 
 [lints]
 workspace = true

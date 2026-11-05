@@ -233,3 +233,15 @@ fn an_existing_state_directory_is_kept_and_made_private() {
         "what was there is still there"
     );
 }
+
+#[test]
+fn the_start_time_is_field_22_even_when_the_command_name_holds_spaces_and_brackets() {
+    use qinit_colonyd::state::parse_start_time;
+    let line = "311 (my (odd) name) S 1 311 311 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000 10 \
+                18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 3 0 0 0 0 0";
+    assert_eq!(parse_start_time(line), Some(987_654));
+    assert_eq!(parse_start_time("garbage"), None);
+    assert_eq!(parse_start_time("1 (x) S 1 2"), None, "a short line");
+    // And for a real process.
+    assert!(qinit_colonyd::state::start_time(i32::try_from(std::process::id()).unwrap()).is_some());
+}

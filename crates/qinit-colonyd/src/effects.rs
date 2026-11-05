@@ -19,7 +19,7 @@ use qinit_event::{Loop, Token};
 use qinit_overseer::request::{RequestSpec, Routed, from_instance, from_model};
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
-use std::os::fd::{OwnedFd, RawFd};
+use std::os::fd::{BorrowedFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -68,6 +68,11 @@ pub trait CellOps {
         main: Option<OwnedFd>,
     ) -> Result<CellId, CellError>;
     fn poll(&mut self) -> Result<Vec<Notice>, CellError>;
+    /// A descriptor that is readable while [`CellOps::poll`] has something to do, for a loop to
+    /// wait on; `None` for a layer with no descriptor of its own.
+    fn poll_fd(&self) -> Option<BorrowedFd<'_>> {
+        None
+    }
 }
 
 impl CellOps for qinit_cell::Cells {
@@ -120,6 +125,9 @@ impl CellOps for qinit_cell::Cells {
     }
     fn poll(&mut self) -> Result<Vec<Notice>, CellError> {
         qinit_cell::Cells::poll(self)
+    }
+    fn poll_fd(&self) -> Option<BorrowedFd<'_>> {
+        Some(qinit_cell::Cells::poll_fd(self))
     }
 }
 
@@ -190,6 +198,8 @@ pub struct RealEffects<C: CellOps> {
     inbox: Heard,
     path_ids: BTreeMap<String, u64>,
     path_names: BTreeMap<u64, String>,
+    /// The name of each live cell, for the state file.
+    names: BTreeMap<CellId, String>,
 }
 
 impl<C: CellOps> RealEffects<C> {
@@ -223,6 +233,7 @@ impl<C: CellOps> RealEffects<C> {
             inbox: Heard::default(),
             path_ids: BTreeMap::new(),
             path_names: BTreeMap::new(),
+            names: BTreeMap::new(),
         })
     }
 
@@ -300,6 +311,29 @@ impl<C: CellOps> RealEffects<C> {
         }
     }
 
+    /// One line of the `cells` state file for every cell the effects own: its name, its cgroup
+    /// id, whether `ready` holds its owner, and its main process (pid and start time) if tracked.
+    #[must_use]
+    pub fn cell_lines(
+        &self,
+        ready: &std::collections::BTreeSet<Owner>,
+    ) -> Vec<crate::state::CellLine> {
+        self.routes
+            .cells()
+            .filter_map(|(id, owner)| {
+                let name = self.names.get(&id)?.clone();
+                let pid = self.cells.main_pid(id);
+                Some(crate::state::CellLine {
+                    name,
+                    cgroup_id: self.cells.cgroup_id(id)?,
+                    ready: ready.contains(&owner),
+                    pid: pid.unwrap_or(0),
+                    start_time: pid.and_then(crate::state::start_time).unwrap_or(0),
+                })
+            })
+            .collect()
+    }
+
     /// Removes a cell that must not live on and settles its notices now, while its slot still
     /// means it: a later cell in the same slot must not hear them.
     fn discard(&mut self, id: CellId, owner: Owner) {
@@ -316,6 +350,7 @@ impl<C: CellOps> RealEffects<C> {
                 .push(format!("polling after a removal: {}", errno_of(&e).0)),
         }
         self.routes.unbind(id);
+        self.names.remove(&id);
         self.status.remove(&owner);
         self.watcher
             .remove(&mut self.events, READY_TAG | owner_node(owner));
@@ -496,6 +531,7 @@ impl<C: CellOps> RealEffects<C> {
 
         let id = self.cells.create(&plan.name).map_err(|e| errno_of(&e))?;
         self.routes.bind(id, owner);
+        self.names.insert(id, plan.name.clone());
         self.dirty = true;
         if matches!(self.cells.phase(id), Some(Phase::Failed(_)) | None) {
             // The directory could not be made; the cell layer reports that later, without an

@@ -113,6 +113,22 @@ fn parse_node(text: &str) -> Option<NodeLine> {
     })
 }
 
+/// Field 22 of `/proc/<pid>/stat` (the process's start time in clock ticks since boot), parsed
+/// from the file's text. The command name in field 2 may hold spaces and brackets, so the
+/// fields are counted after the last `)`.
+#[must_use]
+pub fn parse_start_time(stat: &str) -> Option<u64> {
+    let rest = stat.rsplit_once(')')?.1;
+    // The first field after the `)` is field 3 (the state).
+    rest.split_whitespace().nth(22 - 3)?.parse().ok()
+}
+
+/// The start time of process `pid`, if it exists.
+#[must_use]
+pub fn start_time(pid: i32) -> Option<u64> {
+    parse_start_time(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
 impl State {
     /// Opens `<run>/state`, making it (mode 0700) if it is not there. A `state` that is a symlink,
     /// is not a directory or belongs to someone else is refused: its contents would steer

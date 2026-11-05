@@ -253,3 +253,34 @@ impl Drop for Tmp {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+
+/// The database bytes for `frames` (inline TOML) with `enable` as the roots, compiled by the real
+/// frame compiler.
+pub fn database(frames: &str, enable: &[&str]) -> Vec<u8> {
+    use qinit_frames::compile::{CompileInput, compile};
+    use qinit_frames::layers::LayerInput;
+    let tmp = Tmp::new(&format!(
+        "db-{}",
+        std::thread::current()
+            .name()
+            .unwrap_or("t")
+            .replace("::", "-")
+    ));
+    let vendor = tmp.0.join("vendor");
+    std::fs::create_dir_all(&vendor).unwrap();
+    std::fs::write(vendor.join("frames.toml"), frames).unwrap();
+    let list: Vec<String> = enable.iter().map(|e| format!("\"{e}\"")).collect();
+    std::fs::write(
+        vendor.join("enable.toml"),
+        format!("enable = [{}]\n", list.join(", ")),
+    )
+    .unwrap();
+    let input = CompileInput {
+        layers: vec![LayerInput {
+            name: "vendor".to_owned(),
+            dir: vendor,
+        }],
+        policy: None,
+    };
+    compile(&input).expect("the frames compile").bytes
+}

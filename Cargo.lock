@@ -292,6 +292,7 @@ dependencies = [
  "qinit-cell-core",
  "qinit-colony",
  "qinit-colony-core",
+ "qinit-colonyd",
  "qinit-db",
  "qinit-event",
  "qinit-frames",
@@ -300,7 +301,9 @@ dependencies = [
  "qinit-overseer",
  "qinit-overseer-core",
  "qinit-proto",
+ "qinit-proto-core",
  "qinit-sys",
+ "qinit-wire",
 ]
 
 [[package]]
