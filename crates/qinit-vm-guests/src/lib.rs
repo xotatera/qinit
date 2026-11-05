@@ -703,6 +703,26 @@ fn wait_for_term(ignore: bool, ready: bool, note: Option<&str>) -> i32 {
     }
 }
 
+/// Appends `line` and a newline to `file` (created if need be).
+fn append_line(file: &str, line: &str) -> Result<(), std::io::Error> {
+    std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(file)
+        .and_then(|mut f| f.write_all(format!("{line}\n").as_bytes()))
+}
+
+/// The helper `started` and `started-ready`.
+fn started(file: Option<&str>, name: Option<&str>, ready: bool) -> i32 {
+    let (Some(file), Some(name)) = (file, name) else {
+        return 2;
+    };
+    if append_line(file, name).is_err() {
+        return 2;
+    }
+    wait_for_term(false, ready, None)
+}
+
 fn ready_log(file: &str, name: &str) -> i32 {
     let Ok(mut l) = Loop::new() else { return 2 };
     if l.add_signal(&[libc::SIGTERM], 1).is_err() || !write_ready() {
@@ -850,6 +870,38 @@ fn helper(role: &str, args: &[String]) -> i32 {
             (Some(file), Some(name)) => ready_log(file, name),
             _ => 2,
         },
+        // `started <file> <name>`: appends `<name>` to `<file>`, then waits for TERM without ever
+        // writing the readiness byte. `started-ready <file> <name>`: the same, then ready.
+        "started" => started(a0, args.get(1).map(String::as_str), false),
+        "started-ready" => started(a0, args.get(1).map(String::as_str), true),
+        // `log-exit <file> <name>`: appends `<name>` to `<file>` and exits 0.
+        "log-exit" => match (a0, args.get(1)) {
+            (Some(file), Some(name)) => append_line(file, name).map_or(2, |()| 0),
+            _ => 2,
+        },
+        // `bind-socket <path>`: removes whatever is at `<path>`, binds a socket there and waits
+        // for TERM with it open.
+        "bind-socket" => a0.map_or(2, |path| {
+            let _ = std::fs::remove_file(path);
+            match std::os::unix::net::UnixListener::bind(path) {
+                Ok(listener) => {
+                    let code = wait_for_term(false, false, None);
+                    drop(listener);
+                    code
+                }
+                Err(_) => 2,
+            }
+        }),
+        // `recreate <path>`: removes whatever is at `<path>`, makes a regular file there and waits
+        // for TERM.
+        "recreate" => a0.map_or(2, |path| {
+            let _ = std::fs::remove_file(path);
+            if std::fs::write(path, b"x").is_ok() {
+                wait_for_term(false, false, None)
+            } else {
+                2
+            }
+        }),
         "exit-0" => 0,
         "exit-3" => 3,
         _ => launch_helper(role, args).unwrap_or(2),

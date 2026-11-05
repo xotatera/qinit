@@ -407,6 +407,12 @@ impl<C: CellOps> RealEffects<C> {
             .map_err(|e| errno_of(&e))
     }
 
+    /// Whether a leftover cell is still being stopped.
+    #[must_use]
+    pub fn is_clearing(&self) -> bool {
+        !self.clearing.is_empty()
+    }
+
     /// Removes a cleared cell that has emptied.
     pub fn remove_cleared(&mut self, id: CellId) {
         if let Err(e) = self.cells.remove(id) {

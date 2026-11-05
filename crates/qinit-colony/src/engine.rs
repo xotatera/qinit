@@ -258,11 +258,18 @@ impl<E: Effects> Colony<E> {
         self.input(node, Input::Request { node, req }, now_ms)
     }
 
-    /// Starts the ordered shutdown of the whole graph.
+    /// Starts the ordered shutdown of the whole graph: the instances first (nothing depends on
+    /// them), then the nodes in reverse dependency order. Whoever asks, a protocol request or a
+    /// signal, the instances stop.
     pub fn shutdown(&mut self, now_ms: u64) -> Outcome {
         // A swap still stopping nodes is abandoned: the shutdown stops the old graph.
         self.swap = None;
         let mut out = Outcome::default();
+        for slot in 0..self.slots.len() {
+            if self.insts[slot].is_some() && self.slots[slot].state != SlotState::Stopping {
+                self.begin_instance_stop(slot, &mut out);
+            }
+        }
         let mut queue = VecDeque::from([Input::Shutdown]);
         self.run_queue(&mut queue, now_ms, &mut out);
         out

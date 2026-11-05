@@ -87,6 +87,10 @@ pub struct Daemon<C: CellOps> {
     /// The exit status once the daemon is done; `shutdown_done` says whether the graph is down.
     exit: Option<u8>,
     shutdown_done: bool,
+    /// The status a completed shutdown ends in, held until the cells it left are gone.
+    exit_after: Option<u8>,
+    /// The owners whose cell failed (it could not be stopped): waiting for them is pointless.
+    failed: BTreeSet<Owner>,
 }
 
 impl<C: CellOps> Daemon<C> {
@@ -278,6 +282,8 @@ impl<C: CellOps> Daemon<C> {
             now_ms: now,
             exit: None,
             shutdown_done: false,
+            exit_after: None,
+            failed: BTreeSet::new(),
         };
         for (sev, text) in &notes {
             d.say(*sev, text);
@@ -378,8 +384,10 @@ impl<C: CellOps> Daemon<C> {
             match *n {
                 Notice::Swapped => self.swapped(),
                 Notice::Node(_, Report::ShutdownComplete { .. }) => {
+                    // The graph is down. Instances are not part of it: their cells are waited
+                    // for before the daemon leaves, so that it leaves an empty comb.
                     self.shutdown_done = true;
-                    self.exit = Some(exit_of(self.colony.shutdown_mode()));
+                    self.exit_after = Some(exit_of(self.colony.shutdown_mode()));
                 }
                 _ => {}
             }
@@ -453,6 +461,9 @@ impl<C: CellOps> Daemon<C> {
             );
         }
         for (owner, report) in heard.cells {
+            if let CellReport::Failed(_) = report {
+                self.failed.insert(owner);
+            }
             match report {
                 CellReport::Ready => {
                     self.cells_dirty |= self.ready.insert(owner);
@@ -563,8 +574,17 @@ impl<C: CellOps> Daemon<C> {
     fn after_wakeup(&mut self) {
         self.on_timer();
         self.pump_cells();
+        self.report_faults();
         self.persist();
         self.rearm();
+    }
+
+    /// What the effects could not return an error for (a removal that failed, a poll that did):
+    /// logged as errors.
+    fn report_faults(&mut self) {
+        for fault in std::mem::take(&mut self.colony.effects.faults) {
+            self.say(Sev::Err, &fault);
+        }
     }
 
     /// Rewrites the state files whose content changed.
@@ -622,7 +642,24 @@ impl<C: CellOps> Daemon<C> {
             self.on_ready(r);
         }
         self.after_wakeup();
+        if self.exit.is_none()
+            && let Some(code) = self.exit_after
+            && self.cells_are_gone()
+        {
+            self.exit = Some(code);
+        }
         self.exit
+    }
+
+    /// Whether every cell colony made is removed, bar the ones that failed (a cell the cell layer
+    /// gave up on stays where it is, and the daemon cannot wait for it).
+    fn cells_are_gone(&self) -> bool {
+        let effects = &self.colony.effects;
+        effects
+            .routes
+            .cells()
+            .all(|(_, owner)| self.failed.contains(&owner))
+            && !effects.is_clearing()
     }
 
     /// Handles everything that is ready now, without waiting, until nothing is.

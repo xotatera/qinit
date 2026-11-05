@@ -916,12 +916,7 @@ impl<E: Effects> Colony<E> {
                     self.waits.push(w);
                 }
             }
-            // Instances first: nothing depends on them.
-            for slot in 0..self.slots.len() {
-                if self.insts[slot].is_some() && self.slots[slot].state != SlotState::Stopping {
-                    self.begin_instance_stop(slot, &mut h.outcome);
-                }
-            }
+            // Instances first, then the nodes: `shutdown` does both.
             let out = self.shutdown(now);
             h.outcome.notices.extend(out.notices);
             h.outcome.stream.extend(out.stream);

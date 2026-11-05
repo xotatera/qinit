@@ -26,6 +26,8 @@ const SUITES: &[&str] = &[
     "fail",
     "control",
     "daemon",
+    "readiness",
+    "readopt",
 ];
 
 /// The guest's accounts (`/etc/passwd`): `toor` is uid 0 under another name (spec R6).

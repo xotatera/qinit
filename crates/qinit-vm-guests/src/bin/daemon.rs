@@ -4,42 +4,11 @@
 //! The colony program on a real kernel: it boots a graph into real cells, supervises it, limits
 //! it and shuts it down (spec 2026-11-06 §11, suite `daemon`). Workers are the guest's own helper
 //! programs; colony is the real `/colony` binary, and the cases talk to it over its socket.
-use qinit_client::{Action, Client, Event, LaunchArgs, Mode, Next, Outcome, Scope, Status, Wait};
+use qinit_client::{Event, LaunchArgs, Mode, Next, Scope, Wait};
 use qinit_vm_guests::colonyd::{
-    Site, brood, cell_file, comb_is_empty, model, requires, site, worker,
+    brood, cell_file, cgroup_of, comb_is_empty, info, model, requires, settled, up, worker,
 };
 use qinit_vm_guests::{HANG_GUARD, e, run};
-
-/// Starts colony on `model` and connects.
-fn up(tag: &str, m: &qinit_db::Model) -> Result<(Site, Client), String> {
-    let mut s = site(tag)?;
-    s.write_db(m)?;
-    s.start()?;
-    let c = s.client()?;
-    Ok((s, c))
-}
-
-/// Waits until `target` has settled after a start request (a parked reply, not a poll).
-fn settled(c: &mut Client, target: &str) -> Result<u32, String> {
-    match e(c.change(target, Action::Start, Wait::Settled(HANG_GUARD)))? {
-        Outcome::Settled(w) => Ok(w.state),
-        other => Err(format!("{target} did not settle: {other:?}")),
-    }
-}
-
-fn info(c: &mut Client, name: &str) -> Result<qinit_client::NodeInfo, String> {
-    match e(c.status(name))? {
-        Status::Node(n) => Ok(n),
-        other @ Status::Instance(_) => Err(format!("{name} is not a node: {other:?}")),
-    }
-}
-
-/// The cgroup path of process `pid`.
-fn cgroup_of(pid: i32) -> Result<String, String> {
-    Ok(e(std::fs::read_to_string(format!("/proc/{pid}/cgroup")))?
-        .trim()
-        .to_owned())
-}
 
 fn two_branches_boot_ready() -> Result<(), String> {
     // a2 needs a1, b2 needs b1, and `top` needs both ends: two branches that boot in parallel.

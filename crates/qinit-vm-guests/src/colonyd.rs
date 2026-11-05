@@ -6,16 +6,19 @@
 //! guest case when colony is ready for its next step. Nothing here sleeps: a wait is an event
 //! (the socket appearing, a settled reply, a notice, the process ending) with a hang guard.
 use crate::{COMB, HANG_GUARD, HELPER_FLAG, e};
-use qinit_client::Client;
+use qinit_client::{Action, Client, Event, Next, Outcome, Report, Scope, Status, Wait};
 use qinit_db::{
     Cred, Edge, Group, GroupKind, Kind, Mode, Model, Node, Ready, Restart, RestartOn,
     RestartPolicy, Seccomp, Securebits, Stop, StopMode, Target, UserMap,
 };
 use qinit_event::{Loop, Ready as LoopReady};
-use std::os::fd::AsFd;
+use std::collections::HashMap;
+use std::io::Read;
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::Command;
+use std::sync::{Condvar, Mutex, OnceLock};
 
 /// Where the initrd puts the colony program.
 pub const COLONY: &str = "/colony";
@@ -28,12 +31,60 @@ pub struct Site {
     pub syslog: PathBuf,
     pub console: PathBuf,
     log: UnixDatagram,
-    child: Option<Child>,
+    pid: Option<libc::pid_t>,
+}
+
+/// The exit statuses of the guest's own children, reaped by one thread: the guest's init is the
+/// parent of everything a killed colony leaves behind, and a zombie keeps its cell populated.
+struct Reaper {
+    statuses: Mutex<HashMap<libc::pid_t, i32>>,
+    exited: Condvar,
+    /// Written to when children may have appeared while the thread waited for some.
+    wake: OwnedFd,
+}
+
+static REAPER: OnceLock<Reaper> = OnceLock::new();
+
+fn reaper() -> Result<&'static Reaper, String> {
+    if let Some(r) = REAPER.get() {
+        return Ok(r);
+    }
+    let (wake_r, wake_w) = e(qinit_sys::fd::pipe(libc::O_CLOEXEC))?;
+    let r = REAPER.get_or_init(|| Reaper {
+        statuses: Mutex::new(HashMap::new()),
+        exited: Condvar::new(),
+        wake: wake_w,
+    });
+    std::thread::spawn(move || {
+        let mut wake = std::fs::File::from(wake_r);
+        loop {
+            if let Ok(Some((pid, status))) = qinit_sys::proc::wait_any() {
+                if let Ok(mut m) = r.statuses.lock() {
+                    m.insert(pid, status);
+                }
+                r.exited.notify_all();
+            } else {
+                // No children for now: block until a colony is started or killed.
+                let mut byte = [0u8; 1];
+                if wake.read_exact(&mut byte).is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    Ok(r)
+}
+
+impl Reaper {
+    fn poke(&self) {
+        let _ = qinit_sys::fd::write_all(self.wake.as_fd(), b"x");
+    }
 }
 
 /// Makes the site `tag` under `/tmp`, with a syslog receiver bound in it, and gives the comb
 /// the controllers colony hands on to its cells.
 pub fn site(tag: &str) -> Result<Site, String> {
+    reaper()?;
     // The root cgroup may hand its children the controllers; colony does the same for the comb.
     e(std::fs::write(
         "/sys/fs/cgroup/cgroup.subtree_control",
@@ -54,8 +105,39 @@ pub fn site(tag: &str) -> Result<Site, String> {
         console,
         dir,
         log,
-        child: None,
+        pid: None,
     })
+}
+
+impl Drop for Site {
+    /// A case that ended early leaves nothing running: colony is killed and the comb emptied, so
+    /// the next case starts clean.
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid.take() {
+            let _ = qinit_sys::proc::kill(pid, libc::SIGKILL);
+            if let Some(r) = REAPER.get() {
+                r.poke();
+            }
+        }
+        clear_comb();
+    }
+}
+
+/// Kills every cell of the comb and removes it, best effort.
+pub fn clear_comb() {
+    let Ok(entries) = std::fs::read_dir(COMB) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let path = entry.path();
+        let _ = std::fs::write(path.join("cgroup.kill"), b"1");
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let _ = await_unpopulated(&name);
+        let _ = std::fs::remove_dir(&path);
+    }
 }
 
 impl Site {
@@ -71,7 +153,8 @@ impl Site {
         self.run.join("colony")
     }
 
-    /// Starts colony over the test comb.
+    /// Starts colony over the test comb (again, after a kill: the run directory, with its saved
+    /// state, and the comb, with its cells, are as the last colony left them).
     pub fn start(&mut self) -> Result<(), String> {
         let child = e(Command::new(COLONY)
             .arg("--db")
@@ -89,13 +172,15 @@ impl Site {
             .arg("--console")
             .arg(&self.console)
             .spawn())?;
-        self.child = Some(child);
+        self.pid = Some(e(libc::pid_t::try_from(child.id()))?);
+        // The reaper owns the child's exit status; std's handle is not waited on.
+        std::mem::forget(child);
+        reaper()?.poke();
         Ok(())
     }
 
     fn pid(&self) -> Result<libc::pid_t, String> {
-        let child = self.child.as_ref().ok_or("colony was not started")?;
-        e(libc::pid_t::try_from(child.id()))
+        self.pid.ok_or_else(|| "colony was not started".to_owned())
     }
 
     /// Waits for the control socket and connects: an event wait on the run directory, ending
@@ -143,22 +228,61 @@ impl Site {
     /// Waits for colony to exit and returns its exit code (128 + signal when killed).
     pub fn wait_exit(&mut self) -> Result<i32, String> {
         let pid = self.pid()?;
-        let pidfd = e(qinit_sys::proc::pidfd_open(pid))?;
+        let r = reaper()?;
+        let mut seen = r.statuses.lock().map_err(|x| x.to_string())?;
+        let status = loop {
+            if let Some(s) = seen.remove(&pid) {
+                break s;
+            }
+            let (next, timeout) = r
+                .exited
+                .wait_timeout(seen, HANG_GUARD)
+                .map_err(|x| x.to_string())?;
+            seen = next;
+            if timeout.timed_out() && !seen.contains_key(&pid) {
+                return Err("colony did not exit".into());
+            }
+        };
+        drop(seen);
+        self.pid = None;
+        Ok(if libc::WIFEXITED(status) {
+            libc::WEXITSTATUS(status)
+        } else {
+            128 + libc::WTERMSIG(status)
+        })
+    }
+
+    /// Waits until the lines colony has sent to syslog (every one since the last drain, plus
+    /// those that come) satisfy `want`; returns them. An event wait on the syslog socket.
+    pub fn await_log(&self, want: impl Fn(&[String]) -> bool) -> Result<Vec<String>, String> {
         let ms = i32::try_from(HANG_GUARD.as_millis()).unwrap_or(i32::MAX);
-        if !e(qinit_ipc::poll_readable(pidfd.as_fd(), ms))? {
-            return Err("colony did not exit".into());
+        let mut seen = self.lines();
+        while !want(&seen) {
+            if !e(qinit_ipc::poll_readable(self.log.as_fd(), ms))? {
+                return Err(format!("the log never showed it: {seen:?}"));
+            }
+            seen.extend(self.lines());
         }
-        let status = e(self.child.as_mut().ok_or("colony was not started")?.wait())?;
-        self.child = None;
-        Ok(status.code().unwrap_or_else(|| {
-            128 + std::os::unix::process::ExitStatusExt::signal(&status).unwrap_or(0)
-        }))
+        Ok(seen)
     }
 
     /// SIGTERM, then the exit code.
     pub fn terminate(&mut self) -> Result<i32, String> {
         self.signal(libc::SIGTERM)?;
         self.wait_exit()
+    }
+
+    /// SIGKILL: colony dies where it stands, and what it ran runs on. The orphans are the
+    /// guest's to reap.
+    pub fn kill_hard(&mut self) -> Result<(), String> {
+        self.signal(libc::SIGKILL)?;
+        let code = self.wait_exit()?;
+        reaper()?.poke();
+        if code == 128 + libc::SIGKILL {
+            Ok(())
+        } else {
+            Err(format!("colony ended with {code}, not by SIGKILL"))
+        }
     }
 }
 
@@ -290,4 +414,162 @@ pub fn cell_file(cell: &str, file: &str) -> Result<String, String> {
         Path::new(COMB).join(cell).join(file),
     ))?;
     Ok(text.trim().to_owned())
+}
+
+/// Starts colony on `model` in a new site and connects.
+pub fn up(tag: &str, model: &Model) -> Result<(Site, Client), String> {
+    let mut s = site(tag)?;
+    s.write_db(model)?;
+    s.start()?;
+    let c = s.client()?;
+    Ok((s, c))
+}
+
+/// Waits until `target` has settled after a start request (a parked reply, not a poll) and
+/// returns its state word's state.
+pub fn settled(c: &mut Client, target: &str) -> Result<u32, String> {
+    match e(c.change(target, Action::Start, Wait::Settled(HANG_GUARD)))? {
+        Outcome::Settled(w) => Ok(w.state),
+        other => Err(format!("{target} did not settle: {other:?}")),
+    }
+}
+
+/// A node's status.
+pub fn info(c: &mut Client, name: &str) -> Result<qinit_client::NodeInfo, String> {
+    match e(c.status(name))? {
+        Status::Node(n) => Ok(n),
+        other @ Status::Instance(_) => Err(format!("{name} is not a node: {other:?}")),
+    }
+}
+
+/// What a watch of one node saw on its way to a state.
+pub struct Seen {
+    pub detail: u32,
+    pub reports: Vec<Report>,
+}
+
+/// Watches `name` on a new connection until it is in `want` (the watch starts with the state it
+/// is in now, so a state already reached counts).
+pub fn await_state(s: &mut Site, name: &str, want: u32) -> Result<Seen, String> {
+    let c = s.client()?;
+    let mut w = e(c.watch(Scope::Target(name)))?;
+    let mut reports = Vec::new();
+    loop {
+        match e(w.next(Some(HANG_GUARD)))? {
+            Next::Event(Event::Node { state, report, .. }) => {
+                reports.push(report);
+                if state.state == want {
+                    return Ok(Seen {
+                        detail: state.detail,
+                        reports,
+                    });
+                }
+            }
+            Next::Event(_) => {}
+            Next::Timeout => return Err(format!("{name} never reached state {want}: {reports:?}")),
+            Next::Ended(w) => return Err(format!("the watch of {name} ended in {w:?}")),
+        }
+    }
+}
+
+/// The cgroup path of process `pid`.
+pub fn cgroup_of(pid: i32) -> Result<String, String> {
+    Ok(e(std::fs::read_to_string(format!("/proc/{pid}/cgroup")))?
+        .trim()
+        .to_owned())
+}
+
+/// The processes of `cell`, sorted.
+pub fn procs_of(cell: &str) -> Result<Vec<i32>, String> {
+    let text = e(std::fs::read_to_string(
+        Path::new(COMB).join(cell).join("cgroup.procs"),
+    ))?;
+    let mut pids: Vec<i32> = text.lines().filter_map(|l| l.trim().parse().ok()).collect();
+    pids.sort_unstable();
+    Ok(pids)
+}
+
+/// Waits until `file` has at least `n` lines (an inotify wait on its directory).
+pub fn await_lines(file: &Path, n: usize) -> Result<Vec<String>, String> {
+    let mut l = e(Loop::new())?;
+    let dir = file.parent().ok_or("a file without a directory")?;
+    e(l.add_inotify(
+        dir,
+        libc::IN_MODIFY | libc::IN_CREATE | libc::IN_CLOSE_WRITE,
+        1,
+    ))?;
+    e(l.add_deadline(HANG_GUARD, 2))?;
+    loop {
+        let text = std::fs::read_to_string(file).unwrap_or_default();
+        let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        if lines.len() >= n {
+            return Ok(lines);
+        }
+        for r in e(l.wait())? {
+            if matches!(r, LoopReady::Deadline(2)) {
+                return Err(format!("{} never had {n} lines: {lines:?}", file.display()));
+            }
+        }
+    }
+}
+
+/// Waits until the process behind `pidfd` has exited.
+pub fn await_exit(pidfd: &OwnedFd) -> Result<(), String> {
+    let ms = i32::try_from(HANG_GUARD.as_millis()).unwrap_or(i32::MAX);
+    if e(qinit_ipc::poll_readable(pidfd.as_fd(), ms))? {
+        Ok(())
+    } else {
+        Err("a process did not exit".into())
+    }
+}
+
+/// Waits until `cell` has no process (`cgroup.events` `populated 0`), a priority-notification
+/// wait on the file itself.
+pub fn await_unpopulated(cell: &str) -> Result<(), String> {
+    let events = e(std::fs::File::open(
+        Path::new(COMB).join(cell).join("cgroup.events"),
+    ))?;
+    let mut l = e(Loop::new())?;
+    e(l.add_priority(events.as_fd(), 1))?;
+    e(l.add_deadline(HANG_GUARD, 2))?;
+    loop {
+        let (populated, _) = crate::read_events(events.as_fd())?;
+        if !populated {
+            return Ok(());
+        }
+        for r in e(l.wait())? {
+            if matches!(r, LoopReady::Deadline(2)) {
+                return Err(format!("{cell} is still populated"));
+            }
+        }
+    }
+}
+
+/// Whether `pid` still runs: a zombie is dead (it has left its cgroup, and only waits to be
+/// reaped).
+#[must_use]
+pub fn alive(pid: i32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_owned))
+            .is_some_and(|state| state != "Z" && state != "X")
+    })
+}
+
+/// Waits until the directory of `cell` is gone from the comb (an inotify wait on the comb).
+pub fn await_cell_gone(cell: &str) -> Result<(), String> {
+    let mut l = e(Loop::new())?;
+    e(l.add_inotify(Path::new(COMB), libc::IN_DELETE | libc::IN_MOVED_FROM, 1))?;
+    e(l.add_deadline(HANG_GUARD, 2))?;
+    let dir = Path::new(COMB).join(cell);
+    loop {
+        if !dir.exists() {
+            return Ok(());
+        }
+        for r in e(l.wait())? {
+            if matches!(r, LoopReady::Deadline(2)) {
+                return Err(format!("{cell} is still in the comb"));
+            }
+        }
+    }
 }

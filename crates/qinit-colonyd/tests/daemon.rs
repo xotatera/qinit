@@ -598,14 +598,90 @@ fn a_launch_failure_record_is_logged_with_its_step_name() {
 
 #[test]
 fn a_successful_launch_closes_its_status_pipe_quietly() {
+    const GUARD: u64 = u64::MAX - 1;
     let mut r = boot(WORKER, &["db"], "launchok");
     // The overseer's exec closes fd 4: the fake spawn's copy stands in for it.
     let fds = std::mem::take(&mut r.d.colony.effects.cells.spawned[0].fds);
     drop(fds);
-    assert_eq!(r.d.pump(), None);
+    // The end of file arrives when the last copy of the write end is closed. Another test's
+    // `fork` may hold a copy for the moment before its `exec`, so this waits for the event (with
+    // a guard) instead of looking once.
+    r.d.colony
+        .effects
+        .events
+        .add_deadline(std::time::Duration::from_secs(30), GUARD)
+        .unwrap();
+    while !r.d.colony.effects.status.is_empty() {
+        assert_eq!(r.d.serve_once(), Ok(None));
+    }
     assert!(!r.logged().iter().any(|l| l.contains("launch failed")));
-    assert!(
-        r.d.colony.effects.status.is_empty(),
-        "the pipe is closed and forgotten after its end of file"
+}
+
+// ---- the daemon leaves no cell behind (found by the readopt VM suite) ----
+
+const FORAGER: &str = "[forager.backup]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/backup\"]\n\
+                       [forager.backup.launch]\nconcurrency = 2\n";
+
+fn launch_args() -> qinit_colony::LaunchArgs {
+    qinit_colony::LaunchArgs {
+        frame: "backup".into(),
+        argv_tail: Vec::new(),
+        env_add: Vec::new(),
+        fds: [None, None, None],
+    }
+}
+
+#[test]
+fn a_completed_shutdown_waits_for_the_instance_cells_to_be_removed() {
+    let mut r = boot(FORAGER, &[], "instshutdown");
+    let (id, out) = r.d.colony.launch(launch_args(), 0).unwrap();
+    assert_eq!(id, 1);
+    drop(out);
+    qinit_sys::proc::kill_thread_self(libc::SIGTERM).unwrap();
+    assert_eq!(
+        r.d.pump(),
+        None,
+        "the graph is down but an instance cell is still there"
     );
+    assert!(
+        r.d.colony
+            .effects
+            .cells
+            .calls
+            .iter()
+            .any(|c| matches!(c, Call::Stop(0, ..))),
+        "the instance was told to stop: {:?}",
+        r.d.colony.effects.cells.calls
+    );
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::MainExited(Some(0))));
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::Empty));
+    assert_eq!(r.d.turn(Vec::new()), Some(exit::HALT));
+    assert!(
+        r.d.colony.effects.cells.calls.contains(&Call::Remove(0)),
+        "the instance's cell was removed before the daemon left"
+    );
+    qinit_sys::signal::unblock_all().unwrap();
+}
+
+#[test]
+fn a_cell_that_failed_to_stop_does_not_keep_the_daemon_from_leaving() {
+    let mut r = boot(FORAGER, &[], "instfailed");
+    r.d.colony.launch(launch_args(), 0).unwrap();
+    qinit_sys::proc::kill_thread_self(libc::SIGTERM).unwrap();
+    assert_eq!(r.d.pump(), None);
+    // The cell layer gave up on the cell: it is stuck, and colony cannot wait for it for ever.
+    r.d.colony.effects.cells.pending.push(Notice::Cell(
+        CellId(0),
+        Report::Failed(qinit_cell::Failure::Stuck),
+    ));
+    assert_eq!(r.d.turn(Vec::new()), Some(exit::HALT));
+    qinit_sys::signal::unblock_all().unwrap();
 }
