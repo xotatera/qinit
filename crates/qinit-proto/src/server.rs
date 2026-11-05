@@ -61,6 +61,8 @@ enum State {
     Idle,
     /// A reply is parked under this wait.
     Waiting(WaitId),
+    /// The connection streams notices under this wait until it closes or the stream ends.
+    Watching(WaitId),
 }
 
 struct Conn {
@@ -249,7 +251,7 @@ impl Server {
     /// Closes a connection: its parked wait is forgotten.
     pub fn close<E: Effects>(&mut self, conn: ConnId, colony: &mut Colony<E>) {
         if let Some(c) = self.conns.remove(&conn)
-            && let State::Waiting(w) = c.state
+            && let State::Waiting(w) | State::Watching(w) = c.state
         {
             self.waits.remove(&w);
             colony.drop_wait(w);
@@ -320,7 +322,7 @@ impl Server {
         }
         if matches!(
             self.conns.get(&conn).map(|c| &c.state),
-            Some(State::Waiting(_))
+            Some(State::Waiting(_) | State::Watching(_))
         ) {
             // One request in flight (R3): the first one's effect stands.
             self.refuse(
@@ -391,8 +393,15 @@ impl Server {
         // A second reply is owed when the wait was parked, or when the same call already
         // settled it (it then goes out with the outcome below).
         let owed = handled.waiting || handled.outcome.replies.iter().any(|(w, _)| *w == wait);
-        if owed && let Some(c) = self.conns.get_mut(&conn) {
-            c.state = State::Waiting(wait);
+        let watching = matches!(req, Req::Watch { .. }) && handled.reply == OwnedRep::Accepted;
+        if (owed || watching)
+            && let Some(c) = self.conns.get_mut(&conn)
+        {
+            c.state = if watching {
+                State::Watching(wait)
+            } else {
+                State::Waiting(wait)
+            };
             self.waits.insert(wait, conn);
         }
         // A client that cannot be answered is closed, which also forgets its parked wait.
@@ -417,6 +426,21 @@ impl Server {
                 c.state = State::Idle;
             }
             if !self.reply(conn, rep, &[]) {
+                self.close(conn, colony);
+                closed.push(conn);
+            }
+        }
+        for s in &out.stream {
+            let Some(&conn) = self.waits.get(&s.wait) else {
+                continue;
+            };
+            if s.ends {
+                self.waits.remove(&s.wait);
+                if let Some(c) = self.conns.get_mut(&conn) {
+                    c.state = State::Idle;
+                }
+            }
+            if !self.reply(conn, &s.rep, &[]) {
                 self.close(conn, colony);
                 closed.push(conn);
             }

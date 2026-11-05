@@ -11,7 +11,9 @@ use qinit_ipc::{MAX_FDS, connect_seqpacket, listen_seqpacket, recv, send, send_u
 use qinit_proto::testing::Driver;
 use qinit_proto::{Limits, MAX_DB_READ};
 use qinit_proto_core::{H_VERSION, HEADER_WORDS, MAX_MESSAGE};
-use qinit_wire::{Action, ErrorCode, Mode, Msg, Rep, Req, StateWord, StrList, decode, encode};
+use qinit_wire::{
+    Action, ErrorCode, Mode, Msg, Notice, Rep, Req, StateWord, StrList, decode, encode,
+};
 use std::ffi::CString;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsFd, OwnedFd};
@@ -728,4 +730,160 @@ fn a_sealed_request_reaches_colony_and_a_non_root_one_is_denied() {
     r.pump();
     // The server read the bytes; the decoder (colony) refuses them: header error 1.
     assert_eq!(invalid_reason(&root), 1);
+}
+
+/// Every message waiting on `client`, without blocking.
+fn drain(client: &OwnedFd) -> Vec<String> {
+    let mut all = Vec::new();
+    while let Some(s) = read(client, |r| format!("{r:?}")) {
+        all.push(s);
+    }
+    all
+}
+
+#[test]
+fn a_watch_streams_a_change_made_on_another_connection() {
+    let mut r = rig(&["db"], Limits::default(), Sim::new());
+    r.root();
+    let w = r.connect();
+    request(
+        &mut r,
+        &w,
+        Req::Watch {
+            all: false,
+            target: "db",
+        },
+    );
+    assert_eq!(read(&w, |x| matches!(x, Rep::Accepted)), Some(true));
+    assert_eq!(
+        read(&w, |x| matches!(x, Rep::Notice(Notice { report: 0, .. }))),
+        Some(true)
+    );
+    let c = r.connect();
+    request(
+        &mut r,
+        &c,
+        Req::Change {
+            target: "db",
+            action: Action::Stop,
+            settled: false,
+            wait_ms: 0,
+        },
+    );
+    r.advance(20_000);
+    let reps = drain(&w);
+    assert!(
+        reps.iter()
+            .any(|x| x.contains("Notice") && x.contains("report: 4")),
+        "{reps:?}"
+    );
+    // Still watching: the connection is alive and busy.
+    assert_eq!(r.driver.server.connections(), 2);
+}
+
+#[test]
+fn a_second_request_on_a_watching_connection_is_refused_and_closes() {
+    let mut r = rig(&["db"], Limits::default(), Sim::new());
+    let w = r.connect();
+    request(
+        &mut r,
+        &w,
+        Req::Watch {
+            all: false,
+            target: "db",
+        },
+    );
+    assert_eq!(read(&w, |x| matches!(x, Rep::Accepted)), Some(true));
+    assert_eq!(read(&w, |x| matches!(x, Rep::Notice(_))), Some(true));
+    request(&mut r, &w, status("db"));
+    let (code, detail, _) = error_of(&w);
+    assert_eq!((code, detail), (ErrorCode::BadRequest, 6));
+    assert!(closed(&w));
+    assert_eq!(r.driver.server.connections(), 0);
+}
+
+#[test]
+fn a_watcher_that_does_not_read_is_closed_and_the_server_goes_on() {
+    let mut r = rig(&["db"], Limits::default(), Sim::new());
+    r.root();
+    let w = r.connect();
+    request(
+        &mut r,
+        &w,
+        Req::Watch {
+            all: true,
+            target: "",
+        },
+    );
+    let c = r.connect();
+    for i in 0..100_000 {
+        if r.driver.server.connections() == 1 {
+            break;
+        }
+        let action = if i % 2 == 0 {
+            Action::Stop
+        } else {
+            Action::Start
+        };
+        request(
+            &mut r,
+            &c,
+            Req::Change {
+                target: "db",
+                action,
+                settled: false,
+                wait_ms: 0,
+            },
+        );
+        let _ = drain(&c);
+        r.advance(20_000);
+    }
+    assert_eq!(r.driver.server.connections(), 1);
+    request(&mut r, &c, status("db"));
+    assert_eq!(read(&c, |x| matches!(x, Rep::NodeStatus(_))), Some(true));
+}
+
+#[test]
+fn an_ended_stream_leaves_the_connection_usable() {
+    let mut r = rig(&[], Limits::default(), Sim::new());
+    r.root();
+    r.colony.effects.instance_script = Script {
+        exit_after: Some((0, Some(0))),
+        ..Script::default()
+    };
+    let c = r.connect();
+    send_msg(
+        &c,
+        &Msg::Req(Req::Launch {
+            frame: "backup",
+            argv_tail: StrList::new(b""),
+            env_add: StrList::new(b""),
+            fd_roles: 0,
+            wait_ms: 60_000,
+            flags: 0,
+        }),
+        &[],
+    );
+    r.pump();
+    let id = read(&c, |rep| match rep {
+        Rep::Launched { id } => id,
+        other => panic!("{other:?}"),
+    })
+    .unwrap();
+    let w = r.connect();
+    let target = format!("backup#{id}");
+    request(
+        &mut r,
+        &w,
+        Req::Watch {
+            all: false,
+            target: &target,
+        },
+    );
+    r.advance(1_000);
+    let reps = drain(&w);
+    assert!(reps.iter().any(|x| x.contains("Accepted")), "{reps:?}");
+    assert!(reps.iter().any(|x| x.contains("Notice")), "{reps:?}");
+    request(&mut r, &w, status("db"));
+    assert_eq!(read(&w, |x| matches!(x, Rep::NodeStatus(_))), Some(true));
 }
