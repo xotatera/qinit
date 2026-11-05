@@ -78,6 +78,9 @@ pub const T_SHUTDOWN: u32 = 6;
 /// Request: launch a whole request, root only.
 pub const T_RUN: u32 = 7;
 
+/// Request: watch a node, an instance or everything for state notices.
+pub const T_WATCH: u32 = 8;
+
 /// Reply: an error.
 pub const T_ERROR: u32 = 64;
 
@@ -110,6 +113,42 @@ pub const T_LAUNCH_FAILED: u32 = 73;
 
 /// Reply: the instance exited.
 pub const T_EXITED: u32 = 74;
+
+/// Reply: a state notice on a watch stream.
+pub const T_NOTICE: u32 = 75;
+
+/// Watch request word 0: `scope`, 0 one target, 1 everything.
+pub const WA_SCOPE: usize = 0;
+
+/// Watch request word 1: `target_off`.
+pub const WA_TARGET_OFF: usize = 1;
+
+/// Watch request word 2: `target_len`, 1 to `MAX_TARGET_LEN` for scope 0, else 0.
+pub const WA_TARGET_LEN: usize = 2;
+
+/// Notice reply word 0: `kind`, 0 node, 1 instance, 2 overflow, 3 end.
+pub const NO_KIND: usize = 0;
+
+/// Notice reply word 1: `name_off`, the node or the frame; empty for kind 2 and 3.
+pub const NO_NAME_OFF: usize = 1;
+
+/// Notice reply word 2: `name_len`.
+pub const NO_NAME_LEN: usize = 2;
+
+/// Notice reply word 3: `id`, the instance id (kind 1).
+pub const NO_ID: usize = 3;
+
+/// Notice reply word 4: `state`, 0 to 6.
+pub const NO_STATE: usize = 4;
+
+/// Notice reply word 5: `detail`.
+pub const NO_DETAIL: usize = 5;
+
+/// Notice reply word 6: `has_status`, 0 or 1 (kind 1).
+pub const NO_REPORT: usize = 6;
+
+/// Notice reply word 7: `status`, the wait status (kind 1).
+pub const NO_STATUS: usize = 7;
 
 /// Status request word 0: `target_off`.
 pub const ST_TARGET_OFF: usize = 0;
@@ -371,7 +410,7 @@ pub const LF_ERRNO: usize = 1;
 pub const EX_STATUS: usize = 0;
 
 /// Every message type with the words in its fixed record.
-pub const RECORD_WORDS: [(u32, usize); 18] = [
+pub const RECORD_WORDS: [(u32, usize); 20] = [
     (T_STATUS, 2),
     (T_LIST, 2),
     (T_CHANGE, 5),
@@ -379,6 +418,7 @@ pub const RECORD_WORDS: [(u32, usize); 18] = [
     (T_REFRESH, 2),
     (T_SHUTDOWN, 3),
     (T_RUN, 9),
+    (T_WATCH, 3),
     (T_ERROR, 3),
     (T_NODE_STATUS, 13),
     (T_INSTANCE_STATUS, 7),
@@ -390,6 +430,7 @@ pub const RECORD_WORDS: [(u32, usize); 18] = [
     (T_LAUNCHED, 1),
     (T_LAUNCH_FAILED, 2),
     (T_EXITED, 1),
+    (T_NOTICE, 8),
 ];
 
 /// Words in the fixed record of message type `t`, or 0 for a type the format does not know.
@@ -409,6 +450,8 @@ pub open spec fn spec_record_words(t: int) -> int {
         3
     } else if t == 7 {
         9
+    } else if t == 8 {
+        3
     } else if t == 64 {
         3
     } else if t == 65 {
@@ -427,6 +470,8 @@ pub open spec fn spec_record_words(t: int) -> int {
         2
     } else if t == 74 {
         1
+    } else if t == 75 {
+        8
     } else {
         0
     }
@@ -434,7 +479,7 @@ pub open spec fn spec_record_words(t: int) -> int {
 
 /// `t` is a message type of the format.
 pub open spec fn spec_known_type(t: int) -> bool {
-    (1 <= t <= 7) || (64 <= t <= 74)
+    (1 <= t <= 8) || (64 <= t <= 75)
 }
 
 /// Words in the fixed record of message type `t`; `record_words` for an unknown type is 0.
@@ -454,6 +499,10 @@ pub fn record_words(t: u32) -> (n: usize)
         3
     } else if t == T_RUN {
         9
+    } else if t == T_WATCH {
+        3
+    } else if t == T_NOTICE {
+        8
     } else if t == T_ERROR {
         3
     } else if t == T_NODE_STATUS {
@@ -478,7 +527,7 @@ pub fn known_type(t: u32) -> (r: bool)
     ensures
         r == spec_known_type(t as int),
 {
-    (1 <= t && t <= 7) || (64 <= t && t <= 74)
+    (1 <= t && t <= 8) || (64 <= t && t <= 75)
 }
 
 } // verus!

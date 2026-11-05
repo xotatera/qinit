@@ -216,6 +216,10 @@ fn check_refs(b: &[u8], t: u32) -> (r: Result<(), DecodeError>)
         lref_ok(b, rend, rword(b, LA_ENV_OFF), rword(b, LA_ENV_LEN))
     } else if t == T_RUN {
         sref_ok(b, rend, rword(b, RU_NAME_OFF), rword(b, RU_NAME_LEN))
+    } else if t == T_WATCH {
+        sref_ok(b, rend, rword(b, WA_TARGET_OFF), rword(b, WA_TARGET_LEN))
+    } else if t == T_NOTICE {
+        sref_ok(b, rend, rword(b, NO_NAME_OFF), rword(b, NO_NAME_LEN))
     } else if t == T_NODE_STATUS {
         sref_ok(b, rend, rword(b, NS_NAME_OFF), rword(b, NS_NAME_LEN))?;
         sref_ok(b, rend, rword(b, NS_TARGET_OFF), rword(b, NS_TARGET_LEN))
@@ -289,6 +293,14 @@ fn check_enums(b: &[u8], t: u32) -> (r: Result<(), DecodeError>)
             b,
             RU_STOP_MODE,
         ) > 1 {
+            return bad;
+        }
+    } else if t == T_WATCH {
+        if rword(b, WA_SCOPE) > 1 {
+            return bad;
+        }
+    } else if t == T_NOTICE {
+        if rword(b, NO_KIND) > 3 || rword(b, NO_STATE) > 6 {
             return bad;
         }
     } else if t == T_ERROR {
@@ -430,6 +442,18 @@ fn check_content(b: &[u8], t: u32) -> (r: Result<(), DecodeError>)
         let len = rword(b, RU_NAME_LEN);
         if len < 1 || len as usize >= MAX_NAME_LEN || rword(b, RU_STOP_GRACE_MS) < MIN_GRACE_MS
             || !wait_ok_exec(1, rword(b, RU_WAIT_MS)) {
+            return bad;
+        }
+    } else if t == T_WATCH {
+        let scope = rword(b, WA_SCOPE);
+        let tlen = rword(b, WA_TARGET_LEN);
+        if (scope == 0 && !target_len_exec(tlen)) || (scope == 1 && tlen != 0) {
+            return bad;
+        }
+    } else if t == T_NOTICE {
+        let kind = rword(b, NO_KIND);
+        let nlen = rword(b, NO_NAME_LEN);
+        if (kind <= 1 && !name_len_exec(nlen)) || (kind >= 2 && nlen != 0) {
             return bad;
         }
     } else if t == T_REFRESH {

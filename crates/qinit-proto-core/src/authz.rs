@@ -16,6 +16,7 @@ pub enum Op {
     Refresh,
     Shutdown,
     Run,
+    Watch,
 }
 
 /// The identity of the peer that sent a request.
@@ -25,13 +26,13 @@ pub struct PeerId {
     pub uid: u32,
 }
 
-/// Whether `peer` may do `op`: anyone may read status and the list; everything else is root's.
+/// Whether `peer` may do `op`: anyone may read status and the list and watch; everything else is root's.
 #[must_use]
 pub fn authorized(op: Op, peer: PeerId) -> (r: bool)
     ensures
-        r == (peer.uid == 0 || op == Op::Status || op == Op::List),
+        r == (peer.uid == 0 || op == Op::Status || op == Op::List || op == Op::Watch),
 {
-    peer.uid == 0 || matches!(op, Op::Status | Op::List)
+    peer.uid == 0 || matches!(op, Op::Status | Op::List | Op::Watch)
 }
 
 /// The operation a request message type asks for, or `None` for a reply type or an unknown one.
@@ -45,7 +46,8 @@ pub fn op_of_type(t: u32) -> (r: Option<Op>)
         t == 5 ==> r == Some(Op::Refresh),
         t == 6 ==> r == Some(Op::Shutdown),
         t == 7 ==> r == Some(Op::Run),
-        (t == 0 || t > 7) ==> r is None,
+        t == 8 ==> r == Some(Op::Watch),
+        (t == 0 || t > 8) ==> r is None,
 {
     if t == 1 {
         Some(Op::Status)
@@ -61,6 +63,8 @@ pub fn op_of_type(t: u32) -> (r: Option<Op>)
         Some(Op::Shutdown)
     } else if t == 7 {
         Some(Op::Run)
+    } else if t == 8 {
+        Some(Op::Watch)
     } else {
         None
     }

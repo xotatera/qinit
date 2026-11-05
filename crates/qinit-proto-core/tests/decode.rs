@@ -65,7 +65,7 @@ fn n(x: usize) -> u32 {
 #[test]
 fn an_unknown_type_is_type() {
     let (b, fds) = ok(T_LIST);
-    for t in [0, 8, 63, 75, 1000] {
+    for t in [0, 9, 63, 76, 1000] {
         let b = with(&b, |w| w[H_TYPE] = t);
         assert_eq!(check(&b, fds).unwrap_err(), DecodeError::Type, "type {t}");
     }
@@ -360,12 +360,12 @@ fn a_list_entry_with_a_bad_name_is_refused() {
 
 #[test]
 fn the_record_table_matches_the_function() {
-    assert_eq!(RECORD_WORDS.len(), 18);
+    assert_eq!(RECORD_WORDS.len(), 20);
     for (t, n) in RECORD_WORDS {
         assert_eq!(record_words(t), n, "type {t}");
         assert!(known_type(t));
     }
-    assert!(!known_type(0) && !known_type(8) && !known_type(75));
+    assert!(!known_type(0) && !known_type(9) && !known_type(76));
 }
 
 #[test]
@@ -507,6 +507,41 @@ fn launch_flags_bit_1_is_invalid() {
     let (b, fds) = ok(T_LAUNCH);
     assert_eq!(
         check(&with(&b, |x| x[at(LA_FLAGS)] = FLAG_WAIT_READY), fds).unwrap_err(),
+        DecodeError::Enum
+    );
+}
+
+#[test]
+fn a_watch_scope_2_is_enum_and_an_inconsistent_target_is_consistency() {
+    let (b, fds) = ok(T_WATCH);
+    assert_eq!(
+        check(&with(&b, |w| w[at(WA_SCOPE)] = 2), fds).unwrap_err(),
+        DecodeError::Enum
+    );
+    // scope 0 with an empty target
+    assert_eq!(
+        check(&with(&b, |w| w[at(WA_TARGET_LEN)] = 0), fds).unwrap_err(),
+        DecodeError::Consistency
+    );
+    // scope 1 with a target
+    assert_eq!(
+        check(&with(&b, |w| w[at(WA_SCOPE)] = 1), fds).unwrap_err(),
+        DecodeError::Consistency
+    );
+    // scope 1 and no target is accepted
+    let all = build(T_WATCH, 0, &[N(1), S("")], &[]);
+    assert_eq!(check(&all, 0), Ok(()));
+}
+
+#[test]
+fn a_notice_kind_4_or_state_7_is_enum() {
+    let (b, fds) = ok(T_NOTICE);
+    assert_eq!(
+        check(&with(&b, |w| w[at(NO_KIND)] = 4), fds).unwrap_err(),
+        DecodeError::Enum
+    );
+    assert_eq!(
+        check(&with(&b, |w| w[at(NO_STATE)] = 7), fds).unwrap_err(),
         DecodeError::Enum
     );
 }

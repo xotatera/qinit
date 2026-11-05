@@ -106,6 +106,10 @@ pub open spec fn refs_ok(b: Seq<u8>) -> bool {
         &&& lref(b, rw(b, LA_ENV_OFF as int), rw(b, LA_ENV_LEN as int))
     } else if t == T_RUN {
         sref(b, rw(b, RU_NAME_OFF as int), rw(b, RU_NAME_LEN as int))
+    } else if t == T_WATCH {
+        sref(b, rw(b, WA_TARGET_OFF as int), rw(b, WA_TARGET_LEN as int))
+    } else if t == T_NOTICE {
+        sref(b, rw(b, NO_NAME_OFF as int), rw(b, NO_NAME_LEN as int))
     } else if t == T_NODE_STATUS {
         &&& sref(b, rw(b, NS_NAME_OFF as int), rw(b, NS_NAME_LEN as int))
         &&& sref(b, rw(b, NS_TARGET_OFF as int), rw(b, NS_TARGET_LEN as int))
@@ -149,6 +153,11 @@ pub open spec fn enums_ok(b: Seq<u8>) -> bool {
         &&& rw(b, RU_FD_ROLES as int) <= 7
         &&& rw(b, RU_FLAGS as int) <= RUN_FLAGS_MASK as int
         &&& rw(b, RU_STOP_MODE as int) <= 1
+    } else if t == T_WATCH {
+        rw(b, WA_SCOPE as int) <= 1
+    } else if t == T_NOTICE {
+        &&& rw(b, NO_KIND as int) <= 3
+        &&& rw(b, NO_STATE as int) <= 6
     } else if t == T_ERROR {
         1 <= rw(b, ER_CODE as int) <= 12
     } else if t == T_NODE_STATUS {
@@ -211,6 +220,12 @@ pub open spec fn content_ok(b: Seq<u8>) -> bool {
         &&& 1 <= rw(b, RU_NAME_LEN as int) < MAX_NAME_LEN
         &&& rw(b, RU_STOP_GRACE_MS as int) >= MIN_GRACE_MS as int
         &&& wait_ok(1, rw(b, RU_WAIT_MS as int))
+    } else if t == T_WATCH {
+        &&& (rw(b, WA_SCOPE as int) == 0 ==> target_len_ok(rw(b, WA_TARGET_LEN as int)))
+        &&& (rw(b, WA_SCOPE as int) == 1 ==> rw(b, WA_TARGET_LEN as int) == 0)
+    } else if t == T_NOTICE {
+        &&& (rw(b, NO_KIND as int) <= 1 ==> name_len_ok(rw(b, NO_NAME_LEN as int)))
+        &&& (rw(b, NO_KIND as int) >= 2 ==> rw(b, NO_NAME_LEN as int) == 0)
     } else if t == T_REFRESH {
         wait_ok(rw(b, RF_SETTLED as int), rw(b, RF_WAIT_MS as int))
     } else if t == T_SHUTDOWN {

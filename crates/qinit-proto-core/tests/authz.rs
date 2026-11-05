@@ -3,7 +3,7 @@
 //! Who may do what.
 use qinit_proto_core::*;
 
-const OPS: [Op; 7] = [
+const OPS: [Op; 8] = [
     Op::Status,
     Op::List,
     Op::Change,
@@ -11,6 +11,7 @@ const OPS: [Op; 7] = [
     Op::Refresh,
     Op::Shutdown,
     Op::Run,
+    Op::Watch,
 ];
 
 #[test]
@@ -24,7 +25,7 @@ fn root_may_do_everything() {
 fn non_root_may_only_read() {
     for uid in [1, 1000, 65534, u32::MAX] {
         for op in OPS {
-            let want = matches!(op, Op::Status | Op::List);
+            let want = matches!(op, Op::Status | Op::List | Op::Watch);
             assert_eq!(authorized(op, PeerId { uid }), want, "uid {uid} {op:?}");
         }
     }
@@ -48,4 +49,10 @@ fn request_types_map_to_operations_and_replies_to_none() {
     for (t, op) in want {
         assert_eq!(op_of_type(t), op, "type {t}");
     }
+}
+
+#[test]
+fn watch_is_type_8() {
+    assert_eq!(op_of_type(8), Some(Op::Watch));
+    assert_eq!(op_of_type(9), None);
 }
