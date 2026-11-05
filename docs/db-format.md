@@ -57,7 +57,7 @@ limits of `qinit-graph-core`.
 | 0 | `N_KIND` | 0 worker, 1 forager, 2 brood |
 | 1, 2 | `N_NAME_OFF`, `N_NAME_LEN` | name in the pool |
 | 3, 4 | `N_EXEC_OFF`, `N_EXEC_LEN` | argv in the pool, NUL-separated |
-| 5 | `N_READY_KIND` | 0 pipe, 1 exit, 2 socket, 3 path |
+| 5 | `N_READY_KIND` | 0 pipe, 1 exit, 2 socket (a socket created at the path after the start), 3 path (a path created at `PATH` after the start). A path *edge* (`E_TARGET_KIND` 1) means the path exists. A frame with a `launch` table has neither 2 nor 3 |
 | 6, 7 | `N_READY_OFF`, `N_READY_LEN` | readiness argument in the pool |
 | 8 | `N_RESTART_POLICY` | 0 never, 1 on-failure, 2 always |
 | 9 | `N_RESTART_MAX` | restarts allowed in the window |

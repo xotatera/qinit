@@ -217,11 +217,14 @@ and its owner and mode; an effective uid that cannot be read fails closed. Run a
 `qctl` prints a notice that the check is skipped. The library itself still reads what it is given.
 The control suite checks the refusal and the success as root in the guest.
 
-### D27 — Real path watching · `OPEN`
+### D27 — Real path watching · `RESOLVED`
 
 The colony core waits for a path edge through a `WatchPath` action and a `PathAppeared` input.
-Watching a real filesystem path (inotify, with the race between setting the watch and the first
-check) belongs to the colony daemon sub-project.
+Resolved by the colony daemon (SP7, `qinit-colonyd::watch`, `docs/colony.md`): one inotify instance
+watches the nearest existing directory above a path, walks down as components appear and climbs
+back when a directory goes, and sets every watch before the check it protects, so a path made in
+between is seen once. The same watcher serves `ready = { path }` and `ready = { socket }`, which
+mean *created after the start*. The `readiness` VM suite runs it on a real kernel.
 
 ### D28 — Refresh operation · `RESOLVED`
 
@@ -230,14 +233,14 @@ declares `reload` and otherwise restarts it, and `restart_on = "refresh"` edges 
 refreshed target; `restart_on = "restart"` edges do not fire for a reload. A new database is
 swapped in by the `Refresh` request, in two phases (see `docs/control-protocol.md`).
 
-### D29 — Real cells, event loop and re-adoption · `OPEN`
+### D29 — Real cells, event loop and re-adoption · `RESOLVED`
 
-`qinit-colony` runs against a simulated cell layer. Wiring the real `Cells`, the event loop and
-the timers behind its `Effects` trait, and building the list of nodes already running from the
-comb after a colony restart (the `initial` argument of `Colony::load`), belong to the colony
-daemon sub-project. The real `Effects::arm` can fail; the engine reports that as an error and the
-core still believes the timer is armed, so a back-off or start-timeout timer that failed to arm
-leaves its node waiting for good. That sub-project must re-arm or synthesize the deadline.
+`qinit-colony` ran against a simulated cell layer. Resolved by the colony daemon (SP7,
+`docs/colony.md`): `qinit-colonyd` implements `Effects` over the real `Cells`, one `qinit-event`
+loop and a userspace deadline queue behind one timer, so `Effects::arm` cannot fail and the failure
+class this item described no longer exists; and it re-adopts the comb after a restart from the
+`state/` files (verified by pid, start time and cgroup id, with the node table checked against the
+core's invariant first). The `daemon` and `readopt` VM suites run both on a real kernel.
 
 ### D30 — Reconcile worst case · `ACCEPTED`
 
@@ -248,11 +251,13 @@ so the worst case is about `MAX_NODES`² times `MAX_EDGES` steps per input. A lo
 can need that many passes; ordinary graphs need a handful. A reverse-adjacency index would remove
 the edge scans; add it if a real graph makes this visible.
 
-### D31 — Cgroup limits at cell creation · `OPEN`
+### D31 — Cgroup limits at cell creation · `RESOLVED`
 
 `memory.max` and `pids.max` are attributes of the cgroup the colony owns, not of the launch. The
-node record carries them; writing them when the cell is created belongs to the colony daemon
-sub-project (SP7).
+colony daemon (SP7) writes them after the cell is created and before the overseer is spawned, so
+the first instruction of the service runs under them; the comb's `cgroup.subtree_control` gets
+`+memory +pids` at start-up and colony refuses to start without them. The `daemon` VM suite reads
+the values back from the cells.
 
 ### D32 — Bind-built empty-root mount view · `RESOLVED`
 
@@ -486,3 +491,48 @@ Runs of `cargo test` leave directories in `/tmp`: `qinit-sys-fs-*`, `qinit-ipc-*
 `qinit-sys-det-*` are each in the hundreds on the maintainer's host. Their test harnesses
 predate this branch and were not examined; each needs a guard that removes its directory when
 dropped, as the qctl, client and protocol tests now have.
+
+### D62 — Pre-opened sockets · `OPEN`
+
+`ready = { socket }` means a socket is created at the path after the start, and colony watches for
+it. Colony does not bind and listen on the socket itself and hand the descriptor to the service
+(systemd and launchd do; dinit's `socket-listen` does), which would close the gap between the
+service's `bind` and `listen` and let clients connect before the service is up. It needs the fd
+store of queen (a later sub-project) to survive a colony restart.
+
+### D63 — Logger pipes across a colony restart · `OPEN`
+
+Colony holds the logger pipes in its own descriptors, so a colony restart loses them: the new
+colony makes new pipes and restarts every logger and its producers, and what a producer wrote
+between the old colony's death and its own restart is lost. Keeping the pipes needs queen's fd
+store.
+
+### D64 — Re-adoption through queen · `OPEN`
+
+SP7 re-adopts from files in `/run/qinit/state` and a pidfd opened for a recorded pid, checked
+against its start time and cgroup id. The parent design gives queen cell directory descriptors and
+hand-over pidfds, which make the files and the check unnecessary; SP8 replaces them.
+
+### D65 — The exit status of a re-adopted main · `OPEN`
+
+A main that exits after a colony restart is not the new colony's child, so its wait status is
+unknown: colony counts the exit as a failure (`Report::Failed(None)`, as `MainExited(None)` does
+everywhere), and a one-shot that exited 0 after the restart is not told apart from a crash. Queen,
+as the parent through which the status can be passed, ends this (SP8).
+
+### D66 — A re-adopted node has no pid in `Status` · `OPEN`
+
+`Colony::pid` is the pid the effects layer reported when it started the node, so a node colony
+adopted shows no pid in `Status` until it is started again. The `cells` file has the pid of the
+main (and `Cells::main_pid` has it after adoption); passing it to `restore` would fill the field.
+
+### D67 — A request's own reply comes before the state files are rewritten · `OPEN`
+
+The daemon delivers the replies an outcome owes parked waits and watchers after it has logged and
+saved state, so a client that sees a change can rely on both. The reply a request gets for itself
+(`Launched`, `Accepted`, a wait that is already met) is sent by the server inside the request,
+before the `cells` and `nodes` files are rewritten. A client that kills colony the moment it has
+that reply can lose the record of what the request did: an instance launched in that window is
+unknown to the next colony, which leaves its cell running. Instances are transient and the window
+is microseconds, so it is accepted; closing it would make the server hand a request's reply back
+to the daemon instead of sending it.

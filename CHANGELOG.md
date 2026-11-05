@@ -12,6 +12,29 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Sub-project 7, the colony daemon (D27, D29, D31), `docs/colony.md`: `colony` (`qinit-colonyd`,
+  GPL-3.0-or-later) loads a compiled database and runs every node and instance in a real cgroup
+  through the overseer, in one `qinit-event` loop with a userspace deadline queue behind one timer.
+  It writes `memory.max` and `pids.max` before the first instruction of a service (D31); watches
+  paths with one inotify instance that walks down and back up the tree (D27); marks `ready = {
+  socket }` and `ready = { path }` nodes ready when the socket or path is *created after the
+  start*; holds the logger pipes across producer and logger restarts; writes its own messages to
+  syslog (RFC 3164, never blocking, falling back to the console with a kernel-log marker); and
+  after a restart re-adopts the comb from `<run>/state`, recovering each main by pid, start time
+  and cgroup id and checking the node table against the core's invariant first (D29). Exit status
+  0, 10 or 11 for a halt, poweroff or reboot, 2 to 5 for a refusal. Five VM suites run it on a real
+  kernel: `daemon`, `readiness`, `readopt`, `logger` and `syslog`.
+  - The cell machine has `ReadyMode::External` and `Request::MarkReady` (proved); the cell table
+    holds 4352 cells and a cell name is 1 to 255 bytes of `[A-Za-z0-9._@:+#~-]` (the proof is
+    re-run); `Cells` gains `set_limits`, `mark_ready`, `signal_main`, `main_pidfd`, `poll_fd` and
+    `poll`. The event loop gains a shared inotify set, a re-armable timer and a non-blocking
+    `poll`.
+  - The colony core gains `restore` (a saved table without re-enabling the enabled list, so a
+    stopped node stays stopped) and `inv_ok`, an executable `inv_all` proved equal to the spec. The
+    runtime gains `Colony::restore`, `validate_restore`, `db`, `saved`, `seed_instance_ids` and
+    `adopted_exit`.
+  - The compiler refuses a node name whose first dotted part is `cgroup` or a controller name, and
+    `socket` or `path` readiness on a frame with a `launch` table.
 - Group 3, the notice stream (D37): `Watch` (control protocol type 8, any user) on a node, an
   instance `<frame>#<id>` or everything turns the connection into a stream of `Notice` replies
   (type 75: node, instance, database swapped, shutdown complete, each with its state, a report
@@ -218,6 +241,10 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `Effects::start` and `start_instance` are given the database model, and `NodeSpec` carries the
+  node's cgroup limits. `Server::on_readable` returns the connections it closed and the request's
+  outcome (`Served`), so a caller that owns the loop can act on a refresh or a shutdown that
+  completes inside the request.
 - `qinit_frames::Compiled` carries the model it compiled: the frames as the layers merged them,
   the resolved model and the origin of every key (`merged`, `resolved`, `provenance`).
 - `qinit_colony::Outcome` gains `stream`: notices become stream replies as they are pushed, so a
@@ -276,6 +303,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `Colony::shutdown` stops the instances too. Only the protocol's `Shutdown` request did, so a
+  shutdown from a signal left every instance running.
 - `overseer`: an output route never follows a symlink at its last component (a service-writable
   directory could redirect the root-opened file to another one); a pid-namespace supervisor
   cannot miss its child's exit between reaping and waiting, closes the descriptors it inherits,
