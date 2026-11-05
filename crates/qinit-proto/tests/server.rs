@@ -970,15 +970,15 @@ fn on_readable_returns_the_outcome_of_a_refresh_that_completes_at_once() {
         }),
         &[fd.as_fd()],
     );
-    let served = server.on_readable(conn, &mut colony, 0);
-    assert!(served.closed.is_empty());
+    let result = server.on_readable(conn, &mut colony, 0);
+    assert!(result.closed.is_empty());
     assert!(
-        served
+        result
             .outcome
             .notices
             .contains(&qinit_colony::Notice::Swapped),
         "{:?}",
-        served.outcome.notices
+        result.outcome.notices
     );
     assert!(read(&client, |rep| matches!(rep, Rep::Accepted)).unwrap());
 }
@@ -995,21 +995,21 @@ fn on_readable_returns_a_shutdown_that_completes_at_once() {
         }),
         &[],
     );
-    let served = server.on_readable(conn, &mut colony, 0);
-    let done = served.outcome.notices.iter().any(|n| {
+    let result = server.on_readable(conn, &mut colony, 0);
+    let done = result.outcome.notices.iter().any(|n| {
         matches!(
             n,
             qinit_colony::Notice::Node(_, qinit_colony::Report::ShutdownComplete { .. })
         )
     });
-    assert!(done, "{:?}", served.outcome.notices);
+    assert!(done, "{:?}", result.outcome.notices);
 }
 
 #[test]
 fn a_refused_request_returns_an_empty_outcome() {
     let (mut server, conn, client, mut colony) = direct(&[]);
     send_unchecked(client.as_fd(), &[0u8; 3], &[]).unwrap();
-    let served = server.on_readable(conn, &mut colony, 0);
-    assert_eq!(served.outcome, qinit_colony::Outcome::default());
-    assert_eq!(served.closed, [conn], "the malformed request closed it");
+    let result = server.on_readable(conn, &mut colony, 0);
+    assert_eq!(result.outcome, qinit_colony::Outcome::default());
+    assert_eq!(result.closed, [conn], "the malformed request closed it");
 }
