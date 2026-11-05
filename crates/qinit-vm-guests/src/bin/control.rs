@@ -8,7 +8,7 @@
 //! forked process whose exit status is the verdict.
 use qinit_client::{
     Action, Begun, Client, ClientError, ErrorCode, Event, LaunchArgs, Next, Report, Scope, Started,
-    Status, Wait,
+    StateWord, Status, Wait,
 };
 use qinit_colony::Colony;
 use qinit_colony::sim::{Sim, advance_outcome};
@@ -394,19 +394,29 @@ fn watch_sees_a_change_from_a_second_connection() -> Result<(), String> {
                 ..
             }))
         );
+        // Let the start-up notices pass: after a quiet moment only the stop can report.
+        let quiet = Some(Duration::from_millis(300));
+        let drained = loop {
+            match w.next(quiet) {
+                Ok(Next::Timeout) => break true,
+                Ok(Next::Event(_)) => {}
+                _ => break false,
+            }
+        };
         let stopped = connect().is_ok_and(|mut c| c.change("db", Action::Stop, Wait::Now).is_ok());
         let saw = (0..8).any(|_| {
-            // Colony's simulated db has not left `starting` when it is stopped, so the stop is
-            // reported as `Done` (the node is idle again), not `Stopped`.
+            // The simulated db never became ready, so its stop is reported as `Done` (the node
+            // is off again) rather than `Stopped`; the state word says off either way.
             matches!(
                 w.next(five),
                 Ok(Next::Event(Event::Node {
                     report: Report::Stopped | Report::Done,
+                    state: StateWord { state: 4, .. },
                     ..
                 }))
             )
         });
-        i32::from(!(current && stopped && saw))
+        i32::from(!(current && drained && stopped && saw))
     })
 }
 

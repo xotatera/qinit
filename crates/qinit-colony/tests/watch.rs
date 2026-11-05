@@ -221,7 +221,7 @@ fn an_instance_watch_ends_with_the_exit() {
     let h = watch(&mut c, USER, false, &format!("backup#{id2}"), 2);
     assert_eq!(h.reply, OwnedRep::Accepted);
     assert_eq!(h.outcome.stream.len(), 1);
-    assert_eq!(notice(&h.outcome.stream[0]), (1, "backup", id2, 4, 0, 0));
+    assert_eq!(notice(&h.outcome.stream[0]), (1, "backup", id2, 4, 5, 0));
     assert!(h.outcome.stream[0].ends);
 }
 

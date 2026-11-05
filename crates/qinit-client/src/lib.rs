@@ -351,14 +351,13 @@ impl Watcher {
         match self.client.reply()? {
             Reply::Notice(n) => {
                 let event = Self::event(n)?;
-                // The exit ends an instance's stream, whether it is reported as it happens or as
-                // the current state of an instance that had already exited (state 4).
+                // The exit ends an instance's stream.
                 if matches!(
                     event,
                     Event::Instance {
                         report: Report::Exited,
                         ..
-                    } | Event::Instance { state: 4, .. }
+                    }
                 ) {
                     self.spent = true;
                 }

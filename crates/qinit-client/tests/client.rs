@@ -432,7 +432,8 @@ fn watch_one_node_gets_current_then_the_change() {
 fn watch_next_times_out_without_an_event() {
     let s = Served::start(&["db"], true, instant(None));
     let mut w = s.client().watch(Scope::All).unwrap();
-    // Everything's current state first, then silence.
+    // Notices still in flight from the harness's start-up (boot and timer reports) come first,
+    // then silence.
     let mut quiet = false;
     for _ in 0..16 {
         if matches!(
@@ -448,7 +449,7 @@ fn watch_next_times_out_without_an_event() {
 
 #[test]
 fn an_instance_watch_ends_at_the_exit() {
-    let s = Served::start(&[], true, instant(Some(0)));
+    let s = Served::start(&[], true, instant(Some(5)));
     let mut c = s.client();
     let Begun::Started(Started { id, .. }) = c
         .begin_launch(
@@ -466,20 +467,14 @@ fn an_instance_watch_ends_at_the_exit() {
         .watch(Scope::Target(&format!("backup#{id}")))
         .unwrap();
     match w.next(Some(Duration::from_secs(5))).unwrap() {
-        // The exit as it happens, or (an instance that had already exited) the current state
-        // saying so; either ends the stream.
-        Next::Event(
-            Event::Instance {
-                report: Report::Exited,
-                status: Some(0),
-                ..
-            }
-            | Event::Instance {
-                report: Report::Current,
-                state: 4,
-                ..
-            },
-        ) => {}
+        // The exit as it happens, or (an instance that had already exited) at once; either
+        // way the first notice says exited, with the status, and ends the stream.
+        Next::Event(Event::Instance {
+            report: Report::Exited,
+            state: 4,
+            status: Some(5),
+            ..
+        }) => {}
         Next::Ended(st) => assert_eq!(st.state, 4),
         other => panic!("unexpected first item {other:?}"),
     }

@@ -536,16 +536,19 @@ impl<E: Effects> Colony<E> {
             Scope::Instance(id) => {
                 let v = self.instance(*id)?;
                 let (state, _, status) = Self::instance_words(v.state);
+                // An instance that has already exited reports the exit (report 5, with its
+                // status) and ends the stream at once.
+                let exited = matches!(v.state, SlotState::Exited(_));
                 Some((
                     OwnedRep::Notice {
                         kind: 1,
                         name: v.frame_name,
                         id: v.id,
                         state: StateWord { state, detail: 0 },
-                        report: 0,
+                        report: if exited { 5 } else { 0 },
                         status,
                     },
-                    matches!(v.state, SlotState::Exited(_)),
+                    exited,
                 ))
             }
         }
