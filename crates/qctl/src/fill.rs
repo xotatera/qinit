@@ -728,6 +728,44 @@ fn target(t: &str) -> Option<Target> {
         .then(|| Target::Frame(kind.to_owned(), name.to_owned()))
 }
 
+/// The layer `fill` writes: the last given, or the default `etc` layer without `--layer`.
+///
+/// # Errors
+/// The exit code, 1, once the reason is on `err`: `--layer` given once, or (as root) an absent
+/// default `etc` layer below a directory that fails the ownership rule.
+fn last_layer(
+    opts: &FillOpts,
+    layers: &[LayerInput],
+    defaults: &Defaults,
+    err: &mut dyn Write,
+) -> Result<LayerInput, i32> {
+    let last = match layers {
+        [_, .., top] => top.clone(),
+        _ if opts.layers.is_empty() => LayerInput {
+            name: "etc".into(),
+            dir: defaults.etc.clone(),
+        },
+        _ => {
+            let _ = writeln!(
+                err,
+                "qctl: fill: one layer given: fill writes into the last layer above the \
+                 lowest, never into the lowest (the package manager's)"
+            );
+            return Err(1);
+        }
+    };
+    // An absent default etc layer is no root of the ownership check: as root, check where it
+    // would be created before anything is.
+    if defaults.euid == 0
+        && !last.dir.is_dir()
+        && let Err(r) = owner::creatable(&last.dir)
+    {
+        let _ = writeln!(err, "{r}");
+        return Err(1);
+    }
+    Ok(last)
+}
+
 /// Run `qctl fill`; returns the exit code.
 pub fn run(opts: &FillOpts, defaults: &Defaults, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let (mut all, mut policy_wanted, mut named) = (false, false, Vec::new());
@@ -749,30 +787,10 @@ pub fn run(opts: &FillOpts, defaults: &Defaults, out: &mut dyn Write, err: &mut 
         Ok(i) => i,
         Err(code) => return code,
     };
-    let last = match input.layers.as_slice() {
-        [_, .., top] => top.clone(),
-        _ if opts.layers.is_empty() => LayerInput {
-            name: "etc".into(),
-            dir: defaults.etc.clone(),
-        },
-        _ => {
-            let _ = writeln!(
-                err,
-                "qctl: fill: one layer given: fill writes into the last layer above the \
-                 lowest, never into the lowest (the package manager's)"
-            );
-            return 1;
-        }
+    let last = match last_layer(opts, &input.layers, defaults, err) {
+        Ok(l) => l,
+        Err(code) => return code,
     };
-    // An absent default etc layer is no root of the ownership check: as root, check where it
-    // would be created before anything is.
-    if defaults.euid == 0
-        && !last.dir.is_dir()
-        && let Err(r) = owner::creatable(&last.dir)
-    {
-        let _ = writeln!(err, "{r}");
-        return 1;
-    }
     let compiled = match compile(&input) {
         Ok(c) => c,
         Err(errors) => {

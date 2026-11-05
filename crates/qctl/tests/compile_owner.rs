@@ -63,7 +63,7 @@ fn a_root_compile_refuses_a_layer_that_is_not_roots() {
     let (code, err) = run(
         &["compile", "--layer", &l, "--no-policy", "--output", &out],
         0,
-        &dir,
+        dir,
     );
     assert_eq!(code, 1, "{err}");
     assert_eq!(err, expected(&layer));
@@ -88,7 +88,7 @@ fn a_root_compile_refuses_a_policy_file_that_is_not_roots_with_a_clean_layer() {
         "--output",
         &out,
     ];
-    let (code, err) = run(&args, 0, &dir);
+    let (code, err) = run(&args, 0, dir);
     assert_eq!(code, 1, "{err}");
     assert_eq!(err, expected(&policy));
     assert!(!Path::new(&out).exists());
@@ -99,7 +99,7 @@ fn an_unprivileged_compile_prints_the_notice_and_goes_on() {
     let tmp = TempDir::new("cown-user");
     let dir = tmp.path();
     let out = dir.join("colony.db").display().to_string();
-    let (code, err) = run(&["compile", "--no-policy", "--output", &out], 1000, &dir);
+    let (code, err) = run(&["compile", "--no-policy", "--output", &out], 1000, dir);
     assert_eq!(code, 0, "{err}");
     assert!(
         err.contains("qctl: not root: the ownership of the policy and layers is not checked\n")

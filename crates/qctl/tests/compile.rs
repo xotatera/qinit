@@ -53,7 +53,7 @@ fn compile_writes_the_same_bytes_as_the_library() {
         std::fs::read(format!("{GOLDEN}/expected.dump")).unwrap()
     );
     assert_eq!(std::fs::metadata(&out).unwrap().mode() & 0o777, 0o644);
-    let left: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+    let left: Vec<_> = std::fs::read_dir(dir).unwrap().collect();
     assert_eq!(left.len(), 2, "no temporary file is left behind");
 }
 
