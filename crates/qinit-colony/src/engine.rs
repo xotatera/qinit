@@ -36,6 +36,8 @@ pub enum Error {
     Effect(u32, Errno),
     /// The scheduler did not settle within its pass limit (a pathological graph; D30).
     Unconverged,
+    /// A saved node table breaks the scheduler's invariant for this database.
+    Restore,
 }
 
 /// What one call produced: node notices and the errors that were not events.
@@ -108,7 +110,7 @@ pub struct Colony<E: Effects> {
 }
 
 /// The state of a worker colony found already running when it started.
-fn adopted(p: Params, ready: bool, now: u64) -> NodeState {
+pub(crate) fn adopted(p: Params, ready: bool, now: u64) -> NodeState {
     let base = NodeState {
         wanted: true,
         last_start_ms: now,
@@ -163,7 +165,6 @@ impl<E: Effects> Colony<E> {
     ) -> Result<(Self, Outcome), Error> {
         let model = open(&bytes).map_err(Error::Db)?.decode();
         let n = model.nodes.len();
-        let (path_edges, edge) = Self::path_edges_of(&model);
         let mut nodes = vec![off(); n];
         let mut live = vec![false; n];
         for &(node, ready) in initial {
@@ -174,28 +175,7 @@ impl<E: Effects> Colony<E> {
             nodes[i] = adopted(params(&bytes, i), ready, now_ms);
             live[i] = true;
         }
-        let mut c = Colony {
-            effects,
-            nodes,
-            paths: vec![false; edge as usize],
-            late: vec![false; edge as usize],
-            meta: qinit_colony_core::meta(),
-            db: bytes,
-            model,
-            path_edges,
-            pids: vec![None; n],
-            live,
-            slots: vec![free_slot(); MAX_SLOTS],
-            insts: (0..MAX_SLOTS).map(|_| None).collect(),
-            next_id: 1,
-            ring: std::collections::VecDeque::new(),
-            swap: None,
-            starts: vec![0; n],
-            waits: Vec::new(),
-            shutdown_mode: None,
-            refresh_set: Vec::new(),
-            watchers: Vec::new(),
-        };
+        let mut c = Self::assemble(bytes, model, nodes, live, effects);
         let mut out = Outcome::default();
         let converged = qinit_colony_core::load_from(
             &c.db,
@@ -219,6 +199,41 @@ impl<E: Effects> Colony<E> {
         c.drain(&mut queue, &mut out);
         c.run_queue(&mut queue, now_ms, &mut out);
         Ok((c, out))
+    }
+
+    /// A colony over the validated `bytes` and its `model`, with `nodes` as its table and `live`
+    /// marking the nodes that have a cell; nothing is started or watched yet.
+    pub(crate) fn assemble(
+        bytes: Vec<u8>,
+        model: Model,
+        nodes: Vec<NodeState>,
+        live: Vec<bool>,
+        effects: E,
+    ) -> Self {
+        let n = model.nodes.len();
+        let (path_edges, edge) = Self::path_edges_of(&model);
+        Colony {
+            effects,
+            nodes,
+            paths: vec![false; edge as usize],
+            late: vec![false; edge as usize],
+            meta: qinit_colony_core::meta(),
+            db: bytes,
+            model,
+            path_edges,
+            pids: vec![None; n],
+            live,
+            slots: vec![free_slot(); MAX_SLOTS],
+            insts: (0..MAX_SLOTS).map(|_| None).collect(),
+            next_id: 1,
+            ring: std::collections::VecDeque::new(),
+            swap: None,
+            starts: vec![0; n],
+            waits: Vec::new(),
+            shutdown_mode: None,
+            refresh_set: Vec::new(),
+            watchers: Vec::new(),
+        }
     }
 
     /// Per node, its path edges as `(path, global edge index)`, and the number of edges.
@@ -383,6 +398,8 @@ impl<E: Effects> Colony<E> {
             },
             grace_ms: n.stop.grace_ms,
             start_timeout_ms: n.start_timeout_ms,
+            memory_max_kib: n.memory_max_kib,
+            pids_max: n.pids_max,
         }
     }
 
@@ -395,7 +412,7 @@ impl<E: Effects> Colony<E> {
         match action {
             Action::Start(node) => {
                 let spec = self.spec(node);
-                if let Ok(pid) = self.effects.start(node, &spec) {
+                if let Ok(pid) = self.effects.start(node, &spec, &self.model) {
                     self.live[node as usize] = true;
                     self.pids[node as usize] = Some(pid);
                     self.starts[node as usize] = self.starts[node as usize].saturating_add(1);

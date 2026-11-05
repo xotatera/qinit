@@ -219,7 +219,7 @@ impl<E: Effects> Colony<E> {
             ready_fd: None,
         };
         let slot32 = u32::try_from(slot).unwrap_or(u32::MAX);
-        match self.effects.start_instance(slot32, spec) {
+        match self.effects.start_instance(slot32, spec, &self.model) {
             Ok(pid) => {
                 self.next_id = next;
                 self.insts[slot] = Some(Inst {
@@ -298,6 +298,8 @@ impl<E: Effects> Colony<E> {
                 stop: args.stop,
                 grace_ms: args.grace_ms,
                 start_timeout_ms: 0,
+                memory_max_kib: args.memory_max_kib,
+                pids_max: args.pids_max,
             },
             argv_tail: Vec::new(),
             env_add: Vec::new(),
@@ -308,7 +310,7 @@ impl<E: Effects> Colony<E> {
             ready_fd: args.wait_ready.then_some(ready_fd),
         };
         let slot32 = u32::try_from(slot).unwrap_or(u32::MAX);
-        match self.effects.start_instance(slot32, spec) {
+        match self.effects.start_instance(slot32, spec, &self.model) {
             Ok(pid) => {
                 self.next_id = next;
                 self.insts[slot] = Some(Inst {

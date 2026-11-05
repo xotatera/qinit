@@ -597,7 +597,7 @@ impl<E: Effects> Colony<E> {
     }
 
     /// Puts taken waits back: the request was refused, so nothing changed under them.
-    fn restore(&mut self, taken: Vec<WaitRec>) {
+    fn restore_waits(&mut self, taken: Vec<WaitRec>) {
         self.waits.extend(taken);
     }
 
@@ -640,7 +640,7 @@ impl<E: Effects> Colony<E> {
         h.outcome.replies.extend(out.replies);
         let state = self.nodes[node as usize].state;
         if refused {
-            self.restore(taken);
+            self.restore_waits(taken);
             h.reply = error(ErrorCode::NotNow, state_word(state).state);
             return;
         }
