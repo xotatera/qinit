@@ -112,6 +112,7 @@ fn a_missing_named_layer_is_an_error_and_a_missing_default_etc_is_a_notice() {
         vendor: format!("{GOLDEN}/vendor").into(),
         etc: dir.join("no-etc"),
         policy: dir.join("no-policy.toml"),
+        euid: 1000,
     };
     let (mut o, mut e) = (Vec::new(), Vec::new());
     let code = qctl::run_with(

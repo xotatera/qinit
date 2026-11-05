@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! D26: the ownership check.
-use qctl::owner::{Entry, Refusal, check, collect, judge};
+use qctl::owner::{Entry, Refusal, check, collect, euid_from, judge};
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
@@ -134,6 +134,7 @@ fn collect_walks_descendants_and_ancestors() {
     let p = got.iter().find(|e| e.path == policy).unwrap();
     assert_eq!(p.mode & 0o7777, 0o600);
     assert!(!p.symlink);
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
@@ -151,6 +152,7 @@ fn collect_records_symlinks_and_does_not_follow_them() {
     assert!(!got.iter().any(|e| e.path.ends_with("secret.toml")));
     let links: Vec<Entry> = got.into_iter().filter(|e| e.symlink).collect();
     assert!(matches!(judge(&links), Err(Refusal::Symlink(_))));
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
@@ -160,6 +162,7 @@ fn a_symlink_root_is_recorded_as_a_symlink() {
     symlink(d.join("real"), d.join("l")).unwrap();
     let got = collect(&[&d.join("l")]).unwrap();
     assert!(got.iter().any(|e| e.path == d.join("l") && e.symlink));
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
@@ -184,4 +187,44 @@ fn a_missing_root_and_an_unreadable_directory_are_io_refusals() {
             "{r:?}"
         );
     }
+}
+
+#[test]
+fn an_unreadable_proc_self_fails_closed_and_the_check_still_runs() {
+    let failure = Err(std::io::Error::from_raw_os_error(13));
+    let euid = euid_from(failure);
+    assert_eq!(euid, 0, "an unknown euid must be treated as root");
+    let d = temp_dir("failclosed");
+    let mut err = Vec::new();
+    let r = check(&[&d], euid, &mut err);
+    assert!(matches!(r, Err(Refusal::Owner { .. })), "{r:?}");
+    assert!(err.is_empty());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_real_euid_is_the_owner_of_proc_self() {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata("/proc/self");
+    assert_eq!(euid_from(m), std::fs::metadata("/proc/self").unwrap().uid());
+}
+
+#[test]
+fn as_root_a_user_owned_tree_is_refused_without_a_notice() {
+    let d = temp_dir("asroot");
+    std::fs::write(d.join("a.toml"), "").unwrap();
+    let mut err = Vec::new();
+    let r = check(&[&d], 0, &mut err);
+    assert!(matches!(r, Err(Refusal::Owner { .. })), "{r:?}");
+    assert!(err.is_empty(), "{:?}", String::from_utf8_lossy(&err));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn as_root_a_root_owned_path_with_root_owned_ancestors_passes() {
+    let mut err = Vec::new();
+    let p = Path::new("/etc/passwd");
+    let r = check(&[p], 0, &mut err);
+    assert!(r.is_ok(), "{r:?}");
+    assert!(err.is_empty());
 }

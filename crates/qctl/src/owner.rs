@@ -152,8 +152,15 @@ pub fn check(roots: &[&Path], euid: u32, err: &mut dyn Write) -> Result<(), Refu
     judge(&collect(roots)?)
 }
 
-/// The effective user id, read from the owner of `/proc/self` (no `libc`).
+/// The effective user id: the owner of `/proc/self` (no `libc`). Fails closed: when `/proc/self`
+/// cannot be read the user is taken as root, so the ownership check runs rather than being skipped.
 #[must_use]
 pub fn geteuid() -> u32 {
-    std::fs::metadata("/proc/self").map_or(u32::MAX, |m| m.uid())
+    euid_from(std::fs::metadata("/proc/self"))
+}
+
+/// [`geteuid`] over the given `metadata` result; an error gives 0 (root), failing closed.
+#[must_use]
+pub fn euid_from(metadata: io::Result<std::fs::Metadata>) -> u32 {
+    metadata.map_or(0, |m| m.uid())
 }

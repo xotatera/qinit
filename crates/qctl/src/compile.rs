@@ -19,6 +19,8 @@ pub struct Defaults {
     pub etc: PathBuf,
     /// The policy file; used when it exists.
     pub policy: PathBuf,
+    /// The effective user id the ownership check goes by; a test injects it.
+    pub euid: u32,
 }
 
 impl Defaults {
@@ -29,6 +31,7 @@ impl Defaults {
             vendor: "/usr/lib/qinit/frames".into(),
             etc: "/etc/qinit/frames".into(),
             policy: "/etc/qinit/policy.toml".into(),
+            euid: owner::geteuid(),
         }
     }
 }
@@ -125,7 +128,7 @@ pub fn run(
     };
     let mut roots: Vec<&Path> = input.layers.iter().map(|l| l.dir.as_path()).collect();
     roots.extend(input.policy.as_deref());
-    if let Err(r) = owner::check(&roots, owner::geteuid(), err) {
+    if let Err(r) = owner::check(&roots, defaults.euid, err) {
         let _ = writeln!(err, "{r}");
         return 1;
     }
