@@ -7,6 +7,7 @@ use std::io::Write;
 
 pub mod args;
 pub mod compile;
+pub mod fill;
 pub mod owner;
 pub mod report;
 pub mod show;
@@ -41,6 +42,7 @@ pub fn run_with(
     match command {
         Command::Compile(opts) => compile::run(&opts, defaults, out, err),
         Command::Show(opts) => show::run(&opts, defaults, out, err),
+        Command::Fill(opts) => fill::run(&opts, defaults, out, err),
         other => {
             let _ = writeln!(
                 err,

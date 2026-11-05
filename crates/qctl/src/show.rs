@@ -25,7 +25,7 @@ use std::path::Path;
 use toml::{Table, Value};
 
 /// The kind words a frame target may start with.
-const KINDS: [&str; 4] = ["worker", "forager", "brood", "template"];
+pub(crate) const KINDS: [&str; 4] = ["worker", "forager", "brood", "template"];
 
 /// The `user` bit of `Cred::ns`.
 const USER_NS: u32 = 1 << 5;
@@ -103,7 +103,7 @@ pub fn run(opts: &ShowOpts, defaults: &Defaults, out: &mut dyn Write, err: &mut 
 }
 
 /// The table at `kind.name` of the merged frames.
-fn merged_frame<'a>(c: &'a Compiled, kind: &str, name: &str) -> Option<&'a Table> {
+pub(crate) fn merged_frame<'a>(c: &'a Compiled, kind: &str, name: &str) -> Option<&'a Table> {
     c.merged.table.get(kind)?.as_table()?.get(name)?.as_table()
 }
 
@@ -165,10 +165,7 @@ fn frame(c: &Compiled, kind: &str, name: &str) -> Result<String, String> {
             toml_text::string(t)
         );
     }
-    let user_ns = node
-        .cred
-        .and_then(|i| model.creds.get(i as usize))
-        .is_some_and(|cr| cr.ns & USER_NS != 0);
+    let user_ns = user_ns(model, node);
     let lines = dump::lines(&c.resolved, &c.provenance);
     for l in lines.iter().filter(|l| l.node == index) {
         f.line(&mut text, l, user_ns);
@@ -177,7 +174,22 @@ fn frame(c: &Compiled, kind: &str, name: &str) -> Result<String, String> {
     Ok(text)
 }
 
-fn kind_word(n: &qinit_db::Node) -> &'static str {
+/// Whether the default `value` of `key` is one the schema has no word for, so writing it would
+/// fail to compile: `start_timeout` "none" (a node ready on exit) and `sandbox.user_map`
+/// without a user namespace. `show` prints such a default as a comment and `fill` skips it.
+pub(crate) fn unwritable_default(key: &str, value: &str, user_ns: bool) -> bool {
+    (key == "start_timeout" && value == "\"none\"") || (key == "sandbox.user_map" && !user_ns)
+}
+
+/// Whether node `n` runs in a user namespace of its own.
+pub(crate) fn user_ns(model: &qinit_db::Model, n: &qinit_db::Node) -> bool {
+    n.cred
+        .and_then(|i| model.creds.get(i as usize))
+        .is_some_and(|cr| cr.ns & USER_NS != 0)
+}
+
+/// The node's kind word.
+pub(crate) fn kind_word(n: &qinit_db::Node) -> &'static str {
     match n.kind {
         qinit_db::Kind::Worker => "worker",
         qinit_db::Kind::Forager => "forager",
@@ -231,9 +243,7 @@ impl Frame<'_> {
             Some(v) => toml_text::value(v),
             None => l.value.clone(),
         };
-        let unwritable = written.is_none()
-            && ((key == "start_timeout" && value == "\"none\"")
-                || (key == "sandbox.user_map" && !user_ns));
+        let unwritable = written.is_none() && unwritable_default(key, &value, user_ns);
         let hash = if unwritable { "# " } else { "" };
         let _ = writeln!(text, "{hash}{key} = {value}  # {origin}");
     }
