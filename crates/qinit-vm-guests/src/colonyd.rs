@@ -30,7 +30,7 @@ pub struct Site {
     pub db: PathBuf,
     pub syslog: PathBuf,
     pub console: PathBuf,
-    log: UnixDatagram,
+    log: Option<UnixDatagram>,
     pid: Option<libc::pid_t>,
 }
 
@@ -104,7 +104,7 @@ pub fn site(tag: &str) -> Result<Site, String> {
         syslog,
         console,
         dir,
-        log,
+        log: Some(log),
         pid: None,
     })
 }
@@ -121,6 +121,30 @@ impl Drop for Site {
         }
         clear_comb();
     }
+}
+
+/// The kernel log's messages (`/dev/kmsg`), one string per record.
+pub fn kmsg() -> Result<Vec<String>, String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = e(std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open("/dev/kmsg"))?;
+    let mut out = Vec::new();
+    let mut buf = vec![0u8; 8192];
+    // One read returns one record, `<prio>,<seq>,<ts>,<flags>;<text>\n`; EAGAIN ends them.
+    while let Ok(n) = f.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        let rec = String::from_utf8_lossy(&buf[..n]).into_owned();
+        out.push(
+            rec.split_once(';')
+                .map_or(rec.clone(), |(_, t)| t.trim_end().to_owned()),
+        );
+    }
+    Ok(out)
 }
 
 /// Kills every cell of the comb and removes it, best effort.
@@ -214,10 +238,51 @@ impl Site {
     pub fn lines(&self) -> Vec<String> {
         let mut out = Vec::new();
         let mut buf = [0u8; 1024];
-        while let Ok(n) = self.log.recv(&mut buf) {
-            out.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+        if let Some(log) = &self.log {
+            while let Ok(n) = log.recv(&mut buf) {
+                out.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+            }
         }
         out
+    }
+
+    /// Takes the syslog socket away: the receiver is closed and its file removed.
+    pub fn drop_syslog(&mut self) {
+        self.log = None;
+        let _ = std::fs::remove_file(&self.syslog);
+    }
+
+    /// Brings the syslog socket back (a new receiver at the same path).
+    pub fn restore_syslog(&mut self) -> Result<(), String> {
+        let log = e(UnixDatagram::bind(&self.syslog))?;
+        e(log.set_nonblocking(true))?;
+        self.log = Some(log);
+        Ok(())
+    }
+
+    /// Sends datagrams to the syslog socket until its queue is full (`EAGAIN`); how many fit.
+    pub fn fill_syslog(&self) -> Result<usize, String> {
+        let filler = e(UnixDatagram::unbound())?;
+        e(filler.connect(&self.syslog))?;
+        e(filler.set_nonblocking(true))?;
+        let mut sent = 0;
+        while filler.send(b"filler").is_ok() {
+            sent += 1;
+        }
+        Ok(sent)
+    }
+
+    /// Takes one datagram off the syslog socket, making room for one more.
+    pub fn take_one(&self) -> Result<String, String> {
+        let mut buf = [0u8; 1024];
+        let log = self.log.as_ref().ok_or("no syslog receiver")?;
+        let n = e(log.recv(&mut buf))?;
+        Ok(String::from_utf8_lossy(&buf[..n]).into_owned())
+    }
+
+    /// Colony's process id.
+    pub fn colony_pid(&self) -> Result<libc::pid_t, String> {
+        self.pid()
     }
 
     /// Sends colony `sig`.
@@ -256,9 +321,10 @@ impl Site {
     /// those that come) satisfy `want`; returns them. An event wait on the syslog socket.
     pub fn await_log(&self, want: impl Fn(&[String]) -> bool) -> Result<Vec<String>, String> {
         let ms = i32::try_from(HANG_GUARD.as_millis()).unwrap_or(i32::MAX);
+        let log = self.log.as_ref().ok_or("no syslog receiver")?;
         let mut seen = self.lines();
         while !want(&seen) {
-            if !e(qinit_ipc::poll_readable(self.log.as_fd(), ms))? {
+            if !e(qinit_ipc::poll_readable(log.as_fd(), ms))? {
                 return Err(format!("the log never showed it: {seen:?}"));
             }
             seen.extend(self.lines());

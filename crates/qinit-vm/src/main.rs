@@ -28,6 +28,8 @@ const SUITES: &[&str] = &[
     "daemon",
     "readiness",
     "readopt",
+    "logger",
+    "syslog",
 ];
 
 /// The guest's accounts (`/etc/passwd`): `toor` is uid 0 under another name (spec R6).

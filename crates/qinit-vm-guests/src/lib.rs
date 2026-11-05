@@ -712,6 +712,74 @@ fn append_line(file: &str, line: &str) -> Result<(), std::io::Error> {
         .and_then(|mut f| f.write_all(format!("{line}\n").as_bytes()))
 }
 
+/// The helper `emit-ready`: `n` numbered lines on standard output, then ready.
+fn emit(prefix: &str, n: u32) -> i32 {
+    let mut out = std::io::stdout();
+    for i in 1..=n {
+        if writeln!(out, "{prefix} {i}").is_err() {
+            return 2;
+        }
+    }
+    if out.flush().is_err() {
+        return 2;
+    }
+    wait_for_term(false, true, None)
+}
+
+/// The helpers `log-sink` and `log-sink-after`.
+fn log_sink(file: &str, gate: Option<&str>) -> i32 {
+    let Ok(mut l) = Loop::new() else { return 2 };
+    if l.add_signal(&[libc::SIGTERM], 1).is_err() || !write_ready() {
+        return 2;
+    }
+    let stdin = std::io::stdin();
+    let mut reading = false;
+    let gate_dir = gate.and_then(|g| Path::new(g).parent().map(Path::to_path_buf));
+    if let Some(dir) = &gate_dir
+        && l.add_inotify(dir, libc::IN_CREATE | libc::IN_MOVED_TO, 3)
+            .is_err()
+    {
+        return 2;
+    }
+    loop {
+        // Read only once the gate (if any) is open.
+        if !reading && gate.is_none_or(|g| Path::new(g).exists()) {
+            if l.add_fd(stdin.as_fd(), 2).is_err() {
+                return 2;
+            }
+            reading = true;
+        }
+        let Ok(batch) = l.wait() else { return 2 };
+        for r in batch {
+            match r {
+                Ready::Signal(1, _) => return 0,
+                Ready::Readable(2) => {
+                    let mut buf = [0u8; 4096];
+                    match qinit_sys::event::read(stdin.as_fd(), &mut buf) {
+                        Ok(n) if n > 0 => {
+                            let wrote = std::fs::OpenOptions::new()
+                                .append(true)
+                                .create(true)
+                                .open(file)
+                                .and_then(|mut f| f.write_all(&buf[..n]));
+                            if wrote.is_err() {
+                                return 2;
+                            }
+                        }
+                        _ => {
+                            let _ = l.remove(2);
+                        }
+                    }
+                }
+                Ready::Hangup(2) => {
+                    let _ = l.remove(2);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// The helper `started` and `started-ready`.
 fn started(file: Option<&str>, name: Option<&str>, ready: bool) -> i32 {
     let (Some(file), Some(name)) = (file, name) else {
@@ -874,6 +942,19 @@ fn helper(role: &str, args: &[String]) -> i32 {
         // writing the readiness byte. `started-ready <file> <name>`: the same, then ready.
         "started" => started(a0, args.get(1).map(String::as_str), false),
         "started-ready" => started(a0, args.get(1).map(String::as_str), true),
+        // `emit-ready <prefix> <n>`: writes `<prefix> 1` to `<prefix> <n>` on standard output, then
+        // the readiness byte, and waits for TERM.
+        "emit-ready" => match (a0, args.get(1).and_then(|n| n.parse::<u32>().ok())) {
+            (Some(prefix), Some(n)) => emit(prefix, n),
+            _ => 2,
+        },
+        // `log-sink <file>`: the readiness byte, then everything on standard input appended to
+        // `<file>` until TERM. `log-sink-after <gate> <file>` does not read before `<gate>` exists.
+        "log-sink" => a0.map_or(2, |file| log_sink(file, None)),
+        "log-sink-after" => match (a0, args.get(1)) {
+            (Some(gate), Some(file)) => log_sink(file, Some(gate)),
+            _ => 2,
+        },
         // `log-exit <file> <name>`: appends `<name>` to `<file>` and exits 0.
         "log-exit" => match (a0, args.get(1)) {
             (Some(file), Some(name)) => append_line(file, name).map_or(2, |()| 0),
