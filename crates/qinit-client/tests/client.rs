@@ -353,6 +353,42 @@ fn begin_run_sends_the_sealed_request_first() {
 }
 
 #[test]
+fn begin_run_bytes_sends_the_given_bytes_sealed() {
+    use qinit_client::RunArgs;
+    use qinit_launch::RequestSpec;
+    let s = Served::start(&[], true, instant(Some(0)));
+    let mut c = s.client();
+    // The client's descriptor is the socket, idle between calls.
+    assert!(!qinit_ipc::poll_readable(c.as_fd(), 0).unwrap());
+    let bytes = RequestSpec {
+        argv: vec!["/bin/job".into()],
+        user: "svc".into(),
+        ..RequestSpec::default()
+    }
+    .bytes()
+    .unwrap();
+    // The bytes decode: the policy refuses them (clause 1, no policy), as with `begin_run`.
+    let got = c.begin_run_bytes(
+        "job",
+        &bytes,
+        &RunArgs::default(),
+        false,
+        Duration::from_secs(5),
+    );
+    assert_eq!(got.err(), Some(ClientError::Server(ErrorCode::Denied, 1)));
+    // Bytes that are not a request: refused as a header that does not decode (detail 1).
+    let mut c = s.client();
+    let got = c.begin_run_bytes(
+        "job",
+        b"not a request",
+        &RunArgs::default(),
+        false,
+        Duration::from_secs(5),
+    );
+    assert_eq!(got.err(), Some(ClientError::Server(ErrorCode::Invalid, 1)));
+}
+
+#[test]
 fn pidfd_exit_is_exported_and_works_on_a_spawned_child() {
     let mut child = std::process::Command::new("sh")
         .args(["-c", "exit 5"])

@@ -152,7 +152,7 @@ pub enum LaunchOutcome {
 ///
 /// # Errors
 /// The errno of the `PIDFD_GET_INFO` call, other than the kernel not knowing the request.
-pub fn pidfd_exit(fd: &OwnedFd) -> std::io::Result<PidfdExit> {
+pub fn pidfd_exit(fd: impl AsFd) -> std::io::Result<PidfdExit> {
     qinit_ipc::pidfd::pidfd_exit(fd).map_err(std::io::Error::from)
 }
 
@@ -407,6 +407,13 @@ pub struct Client {
     fd: OwnedFd,
     buf: Vec<u8>,
     out: Box<[u8; MAX_MESSAGE]>,
+}
+
+/// The socket, for a caller's own poll loop; the client stays its owner.
+impl AsFd for Client {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
 }
 
 /// A reply, owned.
@@ -722,7 +729,23 @@ impl Client {
         wait: Duration,
     ) -> Result<Begun, ClientError> {
         let bytes = request.bytes().map_err(|_| ClientError::Io(22))?;
-        let memfd = qinit_ipc::memfd::sealed(c"qinit-run", &bytes)?;
+        self.begin_run_bytes(name, &bytes, args, pidfd, wait)
+    }
+
+    /// As [`Client::begin_run`], with the request given as its QLR1 bytes
+    /// (`docs/launch-request.md`): they go in a sealed memfd as they are; colony decodes them.
+    ///
+    /// # Errors
+    /// [`ClientError`]; `Server(Invalid, _)` for bytes that do not decode.
+    pub fn begin_run_bytes(
+        &mut self,
+        name: &str,
+        request: &[u8],
+        args: &RunArgs<'_>,
+        pidfd: bool,
+        wait: Duration,
+    ) -> Result<Begun, ClientError> {
+        let memfd = qinit_ipc::memfd::sealed(c"qinit-run", request)?;
         let mut roles = 0u32;
         let mut fds: Vec<BorrowedFd<'_>> = vec![memfd.as_fd()];
         for (bit, fd) in [(1, args.stdin), (2, args.stdout), (4, args.stderr)] {
