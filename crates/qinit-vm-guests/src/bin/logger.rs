@@ -8,7 +8,7 @@
 use qinit_client::Wait;
 use qinit_db::{Model, Route};
 use qinit_vm_guests::colonyd::{
-    Site, await_lines, comb_is_empty, model, procs_of, requires, settled, up, worker,
+    await_lines, finish, model, procs_of, requires, settled, up, worker,
 };
 use qinit_vm_guests::{HANG_GUARD, e, run};
 use std::os::fd::AsFd;
@@ -22,14 +22,6 @@ fn world(logger_role: &str, logger_args: &[&str], name: &str, n: &str) -> Model 
     let mut m = model(vec![worker("logd", logger_role, logger_args), web], &[0, 1]);
     m.routes = vec![Route::Pipe(0)];
     m
-}
-
-fn finish(mut s: Site) -> Result<(), String> {
-    let code = s.terminate()?;
-    if code != 0 {
-        return Err(format!("colony exited with {code}"));
-    }
-    comb_is_empty()
 }
 
 fn lines_reach_the_logger() -> Result<(), String> {

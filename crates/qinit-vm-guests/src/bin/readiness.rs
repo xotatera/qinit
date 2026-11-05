@@ -6,7 +6,7 @@
 //! files and sockets present at the start, and a start timeout when nothing appears. The workers
 //! are the guest's helpers; the waits are colony's own timers and the client's parked replies.
 use qinit_db::{Edge, Group, GroupKind, Mode, Node, Ready, RestartOn, Target};
-use qinit_vm_guests::colonyd::{await_state, comb_is_empty, info, model, settled, up, worker};
+use qinit_vm_guests::colonyd::{await_state, finish, info, model, settled, up, worker};
 use qinit_vm_guests::{e, run};
 use std::os::unix::net::UnixListener;
 use std::path::Path;
@@ -32,14 +32,6 @@ fn path_edge(path: &str) -> Group {
             cascade: false,
         }],
     }
-}
-
-fn finish(mut s: qinit_vm_guests::colonyd::Site) -> Result<(), String> {
-    let code = s.terminate()?;
-    if code != 0 {
-        return Err(format!("colony exited with {code}"));
-    }
-    comb_is_empty()
 }
 
 fn a_path_edge_waits_for_the_file() -> Result<(), String> {

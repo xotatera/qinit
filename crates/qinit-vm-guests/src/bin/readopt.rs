@@ -8,8 +8,8 @@
 use qinit_client::{Action, Begun, LaunchArgs, Wait};
 use qinit_db::{Kind, Launch, Node, Ready, Route};
 use qinit_vm_guests::colonyd::{
-    Site, alive, await_cell_gone, await_exit, await_lines, await_state, await_unpopulated,
-    comb_is_empty, info, model, procs_of, requires, settled, up, worker,
+    alive, await_cell_gone, await_exit, await_file, await_lines, await_state, await_unpopulated,
+    finish, info, model, procs_of, requires, settled, up, worker,
 };
 use qinit_vm_guests::{COMB, HANG_GUARD, e, run};
 use std::path::Path;
@@ -23,14 +23,6 @@ fn restarting(mut n: Node, max: u32, delay_ms: u32) -> Node {
         delay_ms,
     };
     n
-}
-
-fn finish(mut s: Site) -> Result<(), String> {
-    let code = s.terminate()?;
-    if code != 0 {
-        return Err(format!("colony exited with {code}"));
-    }
-    comb_is_empty().map_err(|why| format!("{why}; colony said {:?}", s.lines()))
 }
 
 fn pidfds(cell: &str) -> Result<Vec<std::os::fd::OwnedFd>, String> {
@@ -193,6 +185,11 @@ fn breaker_counts_span_the_kill() -> Result<(), String> {
     // between them.
     let said = s.await_log(|lines| lines.iter().filter(|l| failed(l)).count() >= 2)?;
     let before = said.iter().filter(|l| failed(l)).count();
+    // The log line comes before the state file: wait for the file to hold the second failure
+    // (field 5 of the `nodes` line is the burst count) before the kill.
+    await_file(&s.run.join("state"), "nodes", |t| {
+        t.lines().any(|l| l.split_whitespace().nth(4) == Some("2"))
+    })?;
     s.kill_hard()?;
     s.start()?;
     let seen = await_state(&mut s, "crashy", 6)?;
@@ -328,6 +325,11 @@ fn an_instance_cell_is_cleared_and_ids_move_past_it() -> Result<(), String> {
         return Err(format!("the first instance is {first}, not 1"));
     }
     let cell = format!("job#{first}");
+    // The server's own reply to the launch comes before the cell map is rewritten (D67): wait for
+    // the file to name the cell before killing colony, or the next colony could not know it.
+    await_file(&s.run.join("state"), "cells", |t| {
+        t.lines().any(|l| l.starts_with(&cell))
+    })?;
     let old = pidfds(&cell)?;
     drop(c);
     s.kill_hard()?;

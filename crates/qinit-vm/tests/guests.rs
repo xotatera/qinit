@@ -29,7 +29,7 @@ fn the_guest_build_ignores_the_callers_cargo_settings() {
 }
 
 #[test]
-fn the_guest_build_includes_the_executor_binary() {
+fn the_guest_build_includes_the_executor_and_the_colony_program() {
     let c = cargo_command(Path::new("/w"));
     let args: Vec<_> = c
         .get_args()
@@ -40,5 +40,9 @@ fn the_guest_build_includes_the_executor_binary() {
         .filter(|w| w[0] == "-p")
         .map(|w| w[1].as_str())
         .collect();
-    assert_eq!(packages, ["qinit-vm-guests", "qinit-overseer"]);
+    assert_eq!(
+        packages,
+        ["qinit-vm-guests", "qinit-overseer", "qinit-colonyd"],
+        "the initrd carries the overseer and the colony program beside the suite"
+    );
 }

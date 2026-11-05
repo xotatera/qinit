@@ -64,7 +64,7 @@ fn reaper() -> Result<&'static Reaper, String> {
                 }
                 r.exited.notify_all();
             } else {
-                // No children for now: block until a colony is started or killed.
+                // No child to wait for: block until a colony is started or killed.
                 let mut byte = [0u8; 1];
                 if wake.read_exact(&mut byte).is_err() {
                     return;
@@ -352,6 +352,19 @@ impl Site {
     }
 }
 
+/// Ends a case: colony is told to stop, must exit 0, and must leave the comb empty. A failure
+/// carries what colony logged.
+pub fn finish(mut s: Site) -> Result<(), String> {
+    let code = s.terminate()?;
+    if code != 0 {
+        return Err(format!(
+            "colony exited with {code}; it said {:?}",
+            s.lines()
+        ));
+    }
+    comb_is_empty().map_err(|why| format!("{why}; colony said {:?}", s.lines()))
+}
+
 /// Fails unless the comb holds no cell (a clean shutdown leaves none).
 pub fn comb_is_empty() -> Result<(), String> {
     // A cgroup directory lists its interface files too: only the sub-directories are cells.
@@ -543,6 +556,29 @@ pub fn cgroup_of(pid: i32) -> Result<String, String> {
     Ok(e(std::fs::read_to_string(format!("/proc/{pid}/cgroup")))?
         .trim()
         .to_owned())
+}
+
+/// Waits until the file `name` in `dir` satisfies `want` (an inotify wait on the directory, for
+/// the renames colony writes its state files with); returns its text.
+pub fn await_file(dir: &Path, name: &str, want: impl Fn(&str) -> bool) -> Result<String, String> {
+    let mut l = e(Loop::new())?;
+    e(l.add_inotify(
+        dir,
+        libc::IN_MOVED_TO | libc::IN_CREATE | libc::IN_CLOSE_WRITE,
+        1,
+    ))?;
+    e(l.add_deadline(HANG_GUARD, 2))?;
+    loop {
+        let text = std::fs::read_to_string(dir.join(name)).unwrap_or_default();
+        if want(&text) {
+            return Ok(text);
+        }
+        for r in e(l.wait())? {
+            if matches!(r, LoopReady::Deadline(2)) {
+                return Err(format!("{name} never showed it: {text:?}"));
+            }
+        }
+    }
 }
 
 /// The processes of `cell`, sorted.
