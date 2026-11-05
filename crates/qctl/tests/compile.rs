@@ -3,7 +3,7 @@
 //! `qctl compile` and the argument grammar.
 use qctl::args::{self, Command, Outcome, PolicyChoice};
 use qctl::compile::Defaults;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 mod common;
 
 use common::TempDir;
@@ -258,4 +258,72 @@ fn the_grammar_parses_every_command() {
         args::parse(&strings(&["run", "r.toml"])).is_err(),
         "--name is required"
     );
+}
+
+fn compile_golden(out: &str, dump: Option<&str>) -> (i32, String) {
+    let vendor = format!("vendor={GOLDEN}/vendor");
+    let mut a = vec![
+        "compile",
+        "--layer",
+        &vendor,
+        "--no-policy",
+        "--output",
+        out,
+    ];
+    if let Some(d) = dump {
+        a.extend(["--dump", d]);
+    }
+    let (code, _, err) = qctl(&a);
+    (code, err)
+}
+
+#[test]
+fn a_symlink_at_the_temporary_name_is_refused_and_its_target_left_alone() {
+    let tmp = TempDir::new("tmplink");
+    let target = tmp.join("target");
+    std::fs::write(&target, "keep").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let out = tmp.join("colony.db");
+    let planted = tmp.join(format!("colony.db.tmp-{}", std::process::id()));
+    std::os::unix::fs::symlink(&target, &planted).unwrap();
+    let (code, err) = compile_golden(out.to_str().unwrap(), None);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.starts_with("qctl: ") && err.contains("colony.db"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+    assert_eq!(std::fs::metadata(&target).unwrap().mode() & 0o777, 0o600);
+    assert!(!out.exists());
+    assert!(std::fs::symlink_metadata(&planted).unwrap().is_symlink());
+}
+
+#[test]
+fn a_dump_that_cannot_be_written_leaves_no_database() {
+    let tmp = TempDir::new("dumpfail");
+    let out = tmp.join("colony.db");
+    let dump = tmp.join("no-such-dir/colony.dump");
+    let (code, err) = compile_golden(out.to_str().unwrap(), Some(dump.to_str().unwrap()));
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("colony.dump"), "{err}");
+    assert!(!out.exists(), "the database is not left without its dump");
+    let left: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[test]
+fn a_root_compile_refuses_an_output_directory_that_is_not_roots() {
+    let tmp = TempDir::new("outowner");
+    let out = tmp.join("colony.db");
+    // A root run reaches the output only past the layer check, and the checked-in golden tree
+    // is the user's: the output is written through `write_output` itself, as root.
+    let mut err = Vec::new();
+    let r = qctl::compile::write_output(&out, b"db", None, 0, &mut err);
+    assert!(r.is_err());
+    let e = String::from_utf8(err).unwrap();
+    assert!(
+        e.starts_with("qctl: ") && e.contains("the output directory must be root's"),
+        "{e}"
+    );
+    assert!(!out.exists());
 }

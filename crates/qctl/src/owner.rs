@@ -137,6 +137,20 @@ pub fn collect(roots: &[&Path]) -> Result<Vec<Entry>, Refusal> {
     Ok(out)
 }
 
+/// `dir` and every ancestor of it up to `/`, by `lstat`, from `/` down; nothing below `dir`.
+///
+/// # Errors
+/// [`Refusal::Io`] for a path that cannot be examined.
+pub fn ancestors(dir: &Path) -> Result<Vec<Entry>, Refusal> {
+    let abs = std::path::absolute(dir).map_err(|e| Refusal::Io(dir.to_owned(), e))?;
+    let mut chain: Vec<&Path> = abs.ancestors().collect();
+    chain.reverse();
+    chain
+        .into_iter()
+        .map(|p| lstat(p).map(|(e, _)| e))
+        .collect()
+}
+
 /// The check: as root, collect and judge; otherwise one notice line and success.
 ///
 /// # Errors

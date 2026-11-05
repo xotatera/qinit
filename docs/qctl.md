@@ -98,8 +98,17 @@ signal that killed it. They exit 0 when the wait ended first.
 error is printed one per line as `<file>:<line>: <key>: <message>`; when the key's line cannot be
 found it is `<file>: <key>: <message>`. All errors are printed, then the exit code is 1 and no
 database is written. A warning is printed as `warning: <key>: <message>` and does not stop the
-compile. The database is written to a temporary file beside the output (mode 0644) and renamed
-over it, so a reader never sees a partial file. `--dump` is written the same way.
+compile. The database is written to a new temporary file beside the output, `<output>.tmp-<pid>`
+(mode 0644, created exclusively: anything already at that name, a symbolic link included, fails
+the write and is left alone), synced and renamed over the output, and then the directory is
+synced, so a reader never sees a partial file. `--dump` is written the same way, and first: when
+the dump cannot be written, the database is not written either. As root, the directory of the
+output and of the dump, and every ancestor of it up to `/`, must pass the rule below, or nothing
+is written:
+
+```
+qctl: <path>: owned by uid <n>, mode <octal>: the output directory must be root's and not writable by group or other
+```
 
 ## Ownership
 
@@ -117,7 +126,11 @@ The first failure refuses the run with exit 1, before anything is read:
 ```
 qctl: <path>: owned by uid <n>, mode <octal>: the policy and the layers must be root's and not writable by group or other
 qctl: <path>: is a symbolic link
+qctl: <path>: <error>
 ```
+
+The last form is a path that cannot be examined or a directory that cannot be listed, with the
+system's error.
 
 When the user is not root the check does not run, and one line goes to standard error:
 

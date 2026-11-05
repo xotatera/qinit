@@ -5,7 +5,7 @@ use crate::args::{CompileOpts, PolicyChoice};
 use crate::{owner, report};
 use qinit_frames::compile::{CompileInput, compile};
 use qinit_frames::layers::LayerInput;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -160,39 +160,87 @@ pub fn run(
     for w in &compiled.warnings {
         let _ = writeln!(err, "{}", report::warning_line(w));
     }
-    let output = &opts.output;
-    if let Err(e) = write_atomic(output, &compiled.bytes) {
-        let _ = writeln!(err, "qctl: {}: {e}", output.display());
-        return 1;
+    let dump = opts.dump.as_deref().map(|d| (d, compiled.dump.as_bytes()));
+    match write_output(&opts.output, &compiled.bytes, dump, defaults.euid, err) {
+        Ok(()) => 0,
+        Err(code) => code,
     }
-    if let Some(dump) = &opts.dump
-        && let Err(e) = write_atomic(dump, compiled.dump.as_bytes())
-    {
-        let _ = writeln!(err, "qctl: {}: {e}", dump.display());
-        return 1;
-    }
-    0
 }
 
-/// Write `bytes` to a temporary file beside `path` (mode 0644) and rename it over.
+/// Write the database to `output` and the dump, when given, to its path, each atomically
+/// ([`write_atomic`]). The dump goes first, so a failed dump leaves no new database behind it.
+/// As root (`euid` 0) the directory of each must be root's and not writable by group or other,
+/// up to `/`, before anything is written there.
 ///
 /// # Errors
-/// Any I/O error; the temporary file is removed.
+/// The exit code, 1, once the reason is on `err`.
+pub fn write_output(
+    output: &Path,
+    bytes: &[u8],
+    dump: Option<(&Path, &[u8])>,
+    euid: u32,
+    err: &mut dyn Write,
+) -> Result<(), i32> {
+    let mut fail = |path: &Path, why: &dyn std::fmt::Display| {
+        let _ = writeln!(err, "qctl: {}: {why}", path.display());
+        1
+    };
+    if euid == 0 {
+        for path in dump.iter().map(|d| d.0).chain([output]) {
+            if let Err(r) = output_dir_ok(path) {
+                return Err(match r {
+                    owner::Refusal::Owner { path, uid, mode } => fail(
+                        &path,
+                        &format_args!(
+                            "owned by uid {uid}, mode {mode:o}: the output directory must be root's and not writable by group or other"
+                        ),
+                    ),
+                    owner::Refusal::Symlink(path) => fail(&path, &"is a symbolic link"),
+                    owner::Refusal::Io(path, e) => fail(&path, &e),
+                });
+            }
+        }
+    }
+    if let Some((path, text)) = dump {
+        write_atomic(path, text).map_err(|e| fail(path, &e))?;
+    }
+    write_atomic(output, bytes).map_err(|e| fail(output, &e))
+}
+
+/// The ownership rule (spec §4.4) on the directory `path` is written into and its ancestors.
+fn output_dir_ok(path: &Path) -> Result<(), owner::Refusal> {
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    owner::judge(&owner::ancestors(dir)?)
+}
+
+/// Write `bytes` to a new temporary file beside `path` (mode 0644, set before the data) and
+/// rename it over, then sync the directory. The temporary file is created with `O_EXCL`, so
+/// nothing already at its name, a symbolic link included, is followed or overwritten.
+///
+/// # Errors
+/// Any I/O error; a temporary file this call created is removed.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".tmp-{}", std::process::id()));
     let tmp = PathBuf::from(tmp);
+    let mut f = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(&tmp)?;
     let result = (|| {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o644)
-            .open(&tmp)?;
-        f.write_all(bytes)?;
         f.set_permissions(std::fs::Permissions::from_mode(0o644))?;
+        f.write_all(bytes)?;
         f.sync_all()?;
-        std::fs::rename(&tmp, path)
+        std::fs::rename(&tmp, path)?;
+        File::open(dir)?.sync_all()
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
