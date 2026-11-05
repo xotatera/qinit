@@ -290,6 +290,13 @@ impl<E: Effects> Colony<E> {
         out
     }
 
+    /// How many watchers colony streams notices to (D37): every accepted `Watch` whose stream
+    /// has not ended and whose connection has not closed.
+    #[must_use]
+    pub fn watchers(&self) -> usize {
+        self.watchers.len()
+    }
+
     /// The state of a node.
     #[must_use]
     pub fn state(&self, node: u32) -> Option<State> {

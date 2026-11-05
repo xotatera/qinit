@@ -32,7 +32,13 @@ struct Rig {
     colony: Colony<Sim>,
     driver: Driver,
     path: CString,
-    _dir: std::path::PathBuf,
+    dir: std::path::PathBuf,
+}
+
+impl Drop for Rig {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 fn rig(enable: &[&str], limits: Limits, sim: Sim) -> Rig {
@@ -54,7 +60,7 @@ fn rig(enable: &[&str], limits: Limits, sim: Sim) -> Rig {
         colony,
         driver,
         path,
-        _dir: dir,
+        dir,
     }
 }
 
@@ -883,7 +889,47 @@ fn an_ended_stream_leaves_the_connection_usable() {
     r.advance(1_000);
     let reps = drain(&w);
     assert!(reps.iter().any(|x| x.contains("Accepted")), "{reps:?}");
-    assert!(reps.iter().any(|x| x.contains("Notice")), "{reps:?}");
+    // The stream ends on the exited notice (report 5).
+    let last = reps.last().expect("replies");
+    assert!(
+        last.contains("Notice") && last.contains("report: 5"),
+        "{reps:?}"
+    );
+    assert_eq!(r.colony.watchers(), 0);
     request(&mut r, &w, status("db"));
     assert_eq!(read(&w, |x| matches!(x, Rep::NodeStatus(_))), Some(true));
+}
+
+#[test]
+fn closing_a_watching_connection_makes_colony_forget_the_watcher() {
+    let mut r = rig(&["db"], Limits::default(), Sim::new());
+    let w = r.connect();
+    let all = r.connect();
+    request(
+        &mut r,
+        &w,
+        Req::Watch {
+            all: false,
+            target: "db",
+        },
+    );
+    request(
+        &mut r,
+        &all,
+        Req::Watch {
+            all: true,
+            target: "",
+        },
+    );
+    assert_eq!(read(&w, |x| matches!(x, Rep::Accepted)), Some(true));
+    assert_eq!(read(&all, |x| matches!(x, Rep::Accepted)), Some(true));
+    assert_eq!(r.colony.watchers(), 2);
+    drop(w);
+    r.pump();
+    assert_eq!(r.colony.watchers(), 1);
+    assert_eq!(r.driver.server.connections(), 1);
+    drop(all);
+    r.pump();
+    assert_eq!(r.colony.watchers(), 0);
+    assert_eq!(r.driver.server.connections(), 0);
 }
