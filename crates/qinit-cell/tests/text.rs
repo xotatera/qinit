@@ -57,8 +57,25 @@ fn a_name_that_leaves_the_comb_is_refused() {
     for good in ["worker", "a.b-c_1", "x"] {
         assert!(valid_name(good), "{good}");
     }
-    for bad in ["", ".", "..", "../x", "a/b", "a\0b", " x", &"x".repeat(65)] {
+    for bad in ["", ".", "..", "../x", "a/b", "a\0b", " x", &"x".repeat(256)] {
         assert!(!valid_name(bad), "{bad:?}");
+    }
+}
+
+#[test]
+fn node_and_instance_names_are_cell_names() {
+    for n in [
+        "getty@tty1",
+        "net:eth0",
+        "a+b",
+        "backup#7",
+        "~adhoc#12",
+        &"x".repeat(255),
+    ] {
+        assert!(valid_name(n), "{n}");
+    }
+    for n in ["", ".", "..", ".hidden", "a/b", "a b", &"x".repeat(256)] {
+        assert!(!valid_name(n), "{n:?}");
     }
 }
 

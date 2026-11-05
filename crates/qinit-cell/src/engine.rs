@@ -49,7 +49,7 @@ impl std::fmt::Display for Error {
             Error::Full => write!(f, "the cell table is full ({CAPACITY} cells)"),
             Error::BadName(n) => write!(
                 f,
-                "{n:?} is not a cell name: 1 to 64 of [A-Za-z0-9._-], not . or .."
+                "{n:?} is not a cell name: 1 to 255 of [A-Za-z0-9._@:+#~-], not starting with ."
             ),
             Error::NoSuchCell(s) => write!(f, "no cell in slot {s}"),
             Error::Floor(m) => write!(f, "{m}"),

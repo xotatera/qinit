@@ -13,8 +13,9 @@ use vstd::prelude::*;
 
 verus! {
 
-/// Cells one table holds.
-pub const CAPACITY: u16 = 64;
+/// Cells one table holds: every node and every instance slot of the largest database
+/// (`MAX_NODES` 4096 + `MAX_SLOTS` 256).
+pub const CAPACITY: u16 = 4352;
 
 /// What a token's event is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,12 +106,12 @@ pub proof fn lemma_route_inverse(t: u64, slot: u16, s: Source)
     ensures
         t == spec_token(slot, s),
 {
-    assert((t >> 3u64) < 64);
+    assert((t >> 3u64) < 4352);
     assert(source_of(t & 7u64) == Some(s));
     assert(kind_of(s) == (t & 7u64));
     assert((((t >> 3u64) as u16) as u64) == (t >> 3u64)) by (bit_vector)
         requires
-            (t >> 3u64) < 64,
+            (t >> 3u64) < 4352,
     ;
     assert(((t >> 3u64) << 3u64) | (t & 7u64) == t) by (bit_vector);
 }
@@ -143,10 +144,10 @@ pub fn token(slot: u16, s: Source) -> (t: u64)
         lemma_roundtrip(slot, s);
         let k = kind_of(s);
         assert(k < 8);
-        assert((CAPACITY as u64) << 3u64 == 512u64) by (bit_vector);
-        assert(((slot as u64) << 3u64) | k < 512u64) by (bit_vector)
+        assert((CAPACITY as u64) << 3u64 == 34816u64) by (bit_vector);
+        assert(((slot as u64) << 3u64) | k < 34816u64) by (bit_vector)
             requires
-                slot < 64,
+                slot < 4352,
                 k < 8,
         ;
     }

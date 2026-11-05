@@ -67,15 +67,15 @@ pub fn kernel_supported(release: &str) -> Result<(), String> {
     }
 }
 
-/// A cell name: 1 to 64 of `[A-Za-z0-9._-]`, not `.` or `..`, so it never leaves the comb.
+/// A cell name: 1 to 255 of `[A-Za-z0-9._@:+#~-]` not starting with `.`, so it never leaves the
+/// comb. The set holds every node name, instance name (`name@inst`) and ad hoc run name.
 #[must_use]
 pub fn valid_name(name: &str) -> bool {
-    (1..=64).contains(&name.len())
-        && name != "."
-        && name != ".."
+    (1..=255).contains(&name.len())
+        && !name.starts_with('.')
         && name
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+            .all(|b| b.is_ascii_alphanumeric() || b"._@:+#~-".contains(&b))
 }
 
 /// Readiness on a pipe: the first newline, in whatever chunk it arrives.
