@@ -402,19 +402,18 @@ fn watch_sees_a_change_from_a_second_connection() -> Result<(), String> {
                 ..
             }))
         );
-        // Let the start-up notices pass: after a quiet moment only the stop can report.
+        // Let the start-up notices pass: after a quiet moment only the stop can report. At most
+        // 64 of them; a stream that never goes quiet fails the case instead of holding it.
         let quiet = Some(Duration::from_millis(300));
-        let drained = loop {
-            match w.next(quiet) {
-                Ok(Next::Timeout) => break true,
-                Ok(Next::Event(_)) => {}
-                _ => break false,
-            }
-        };
+        let drained = (0..64).find_map(|_| match w.next(quiet) {
+            Ok(Next::Timeout) => Some(true),
+            Ok(Next::Event(_)) => None,
+            _ => Some(false),
+        }) == Some(true);
         let stopped = connect().is_ok_and(|mut c| c.change("db", Action::Stop, Wait::Now).is_ok());
         let saw = (0..8).any(|_| {
-            // The simulated db never became ready, so its stop is reported as `Done` (the node
-            // is off again) rather than `Stopped`; the state word says off either way.
+            // db is ready by exit and the simulated process never exits, so the stop leaves
+            // the node done: the report is `Done` (or `Stopped`) and the state word is 4, done.
             matches!(
                 w.next(five),
                 Ok(Next::Event(Event::Node {
