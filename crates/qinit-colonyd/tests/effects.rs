@@ -26,6 +26,11 @@ fn rig(cells: FakeCells, comb: &std::path::Path) -> RealEffects<FakeCells> {
     .unwrap()
 }
 
+/// Whether `needle` occurs in `hay`.
+fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
 #[test]
 fn deadline_ms_follows_r16() {
     assert_eq!(deadline_ms(0), 30_000);
@@ -342,4 +347,188 @@ fn a_cell_the_effects_do_not_own_routes_to_nothing() {
     assert!(heard.cells.is_empty());
     assert_eq!(heard.orphans, [(77, 256)]);
     let _ = Phase::Absent;
+}
+
+// ---- instances (Task 14) ----
+
+use qinit_colony::InstanceSpec;
+use std::os::fd::OwnedFd;
+use std::os::unix::fs::MetadataExt;
+
+fn forager_frame() -> qinit_db::Node {
+    let mut n = worker("backup");
+    n.kind = qinit_db::Kind::Forager;
+    n.ready = Ready::Exit;
+    n.env = vec!["MODE=full".to_owned()];
+    n
+}
+
+fn pipe_write_end() -> OwnedFd {
+    let (r, w) = qinit_sys::fd::pipe(libc::O_CLOEXEC).unwrap();
+    std::mem::forget(r);
+    w
+}
+
+fn ino(fd: &OwnedFd) -> (u64, u64) {
+    let f = std::fs::File::from(fd.try_clone().unwrap());
+    let m = f.metadata().unwrap();
+    (m.dev(), m.ino())
+}
+
+fn frame_instance(m: &qinit_db::Model, fds: [Option<OwnedFd>; 3]) -> InstanceSpec {
+    InstanceSpec {
+        name: "backup#1".into(),
+        frame: 0,
+        node: spec_of(m, 0),
+        argv_tail: vec!["--fast".into()],
+        env_add: vec![
+            ("TARGET".into(), "/srv".into()),
+            ("MODE".into(), "quick".into()),
+        ],
+        fds,
+        request: None,
+        memory_max_kib: 2048,
+        pids_max: 16,
+        ready_fd: None,
+    }
+}
+
+#[test]
+fn a_frame_instance_carries_the_tail_env_and_caller_fds() {
+    let tmp = Tmp::new("inst");
+    let m = model(vec![forager_frame()]);
+    let mut fx = rig(FakeCells::default(), &tmp.0);
+    let out = pipe_write_end();
+    let out_ino = ino(&out);
+    let pid = fx
+        .start_instance(2, frame_instance(&m, [None, Some(out), None]), &m)
+        .unwrap();
+    assert_eq!(pid, 4000);
+    assert_eq!(
+        fx.cells.calls[..3],
+        [
+            Call::Create("backup#1".into()),
+            Call::SetLimits(0, 2048 * 1024, 16),
+            Call::Spawn(0, ReadyMode::Exit),
+        ]
+    );
+    let sp = &fx.cells.spawned[0];
+    let numbers: Vec<i32> = sp.fds.iter().map(|(_, n)| *n).collect();
+    assert_eq!(
+        numbers,
+        [3, 4, 6],
+        "request, status, then the caller's stdout from 6"
+    );
+    assert_eq!(ino(&sp.fds[2].0), out_ino, "the caller's own pipe");
+    let req = qinit_ipc::memfd::read_all(sp.fds[0].0.as_fd(), 1 << 20).unwrap();
+    assert_eq!(qinit_overseer_core::decode(&req), Ok(()));
+    let want = qinit_overseer::request::from_instance(
+        &m.nodes[0],
+        &m,
+        &qinit_overseer::request::Routed {
+            stdin: None,
+            stdout: Some(6),
+            stderr: None,
+            ready: None,
+        },
+        &["--fast".to_owned()],
+        &[
+            ("TARGET".to_owned(), "/srv".to_owned()),
+            ("MODE".to_owned(), "quick".to_owned()),
+        ],
+        deadline_ms(90_000),
+    )
+    .unwrap()
+    .bytes()
+    .unwrap();
+    assert_eq!(req, want);
+    assert!(contains(&req, b"--fast"), "the argv tail");
+    assert!(contains(&req, b"MODE=quick"), "the override");
+    assert!(
+        !contains(&req, b"MODE=full"),
+        "the frame's own value is replaced"
+    );
+    assert_eq!(fx.routes.cell(Owner::Instance(2)), Some(CellId(0)));
+    assert_eq!(fx.status.len(), 1);
+}
+
+#[test]
+fn a_run_instance_passes_the_callers_request_unchanged() {
+    let tmp = Tmp::new("run");
+    let m = model(vec![forager_frame()]);
+    let sealed = qinit_ipc::memfd::sealed(c"mine", b"QLR1 caller bytes").unwrap();
+    let before = ino(&sealed);
+    let mut spec = frame_instance(&m, [None, None, None]);
+    spec.name = "~job#4".into();
+    spec.frame = u32::MAX;
+    spec.request = Some(sealed);
+    let out = pipe_write_end();
+    let err = pipe_write_end();
+    spec.fds = [None, Some(out), Some(err)];
+    let mut fx = rig(FakeCells::default(), &tmp.0);
+    fx.start_instance(0, spec, &m).unwrap();
+    let sp = &fx.cells.spawned[0];
+    let numbers: Vec<i32> = sp.fds.iter().map(|(_, n)| *n).collect();
+    assert_eq!(
+        numbers,
+        [3, 4, 6, 7],
+        "stdout and stderr where the request routes them"
+    );
+    assert_eq!(ino(&sp.fds[0].0), before, "the same file, not a copy");
+    assert_eq!(fx.cells.calls[0], Call::Create("~job#4".into()));
+    assert_eq!(fx.cells.calls[2], Call::Spawn(0, ReadyMode::Exit));
+}
+
+#[test]
+fn a_run_that_waits_for_ready_routes_the_pipe_at_its_number() {
+    let tmp = Tmp::new("runready");
+    let m = model(vec![forager_frame()]);
+    let mut spec = frame_instance(&m, [None, None, None]);
+    spec.name = "~svc#9".into();
+    spec.frame = u32::MAX;
+    spec.request = Some(qinit_ipc::memfd::sealed(c"mine", b"x").unwrap());
+    spec.node.ready = Ready::Pipe;
+    spec.ready_fd = Some(9);
+    let mut fx = rig(FakeCells::default(), &tmp.0);
+    fx.start_instance(1, spec, &m).unwrap();
+    assert_eq!(fx.cells.calls[2], Call::Spawn(0, ReadyMode::Pipe));
+    assert_eq!(fx.cells.spawned[0].ready_fd, 9);
+}
+
+#[test]
+fn an_instance_is_stopped_released_and_given_a_pidfd_like_a_node() {
+    let tmp = Tmp::new("instops");
+    let m = model(vec![forager_frame()]);
+    let mut fx = rig(FakeCells::default(), &tmp.0);
+    fx.start_instance(3, frame_instance(&m, [None, None, None]), &m)
+        .unwrap();
+    assert!(fx.instance_pidfd(3).is_ok());
+    assert_eq!(fx.instance_pidfd(8).err(), Some(Errno(libc::ENOENT)));
+    fx.stop_instance(3, StopMode::Main, 1_000).unwrap();
+    let g = Duration::from_millis(1_000);
+    assert_eq!(
+        fx.cells.calls.last(),
+        Some(&Call::Stop(0, Polite::Main, g, g))
+    );
+    fx.release_instance(3);
+    assert!(fx.cells.calls.contains(&Call::Remove(0)));
+    assert_eq!(fx.routes.cell(Owner::Instance(3)), None);
+    assert!(fx.status.is_empty());
+    fx.release_instance(3); // colony may call it again after a failed start: nothing to do
+}
+
+#[test]
+fn a_failed_instance_start_leaves_nothing_behind() {
+    let tmp = Tmp::new("instfail");
+    let m = model(vec![forager_frame()]);
+    let mut cells = FakeCells::default();
+    cells.limits_fail = Some(libc::EPERM);
+    let mut fx = rig(cells, &tmp.0);
+    assert_eq!(
+        fx.start_instance(0, frame_instance(&m, [None, None, None]), &m)
+            .err(),
+        Some(Errno(libc::EPERM))
+    );
+    assert_eq!(fx.routes.cell(Owner::Instance(0)), None);
+    assert!(fx.status.is_empty());
 }

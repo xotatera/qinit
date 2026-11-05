@@ -15,7 +15,7 @@ use qinit_cell::{CellId, Error as CellError, Notice, Phase, Polite, ReadyMode, R
 use qinit_colony::{Effects, Errno, InstanceSpec, NodeSpec, StopMode, TimerKind};
 use qinit_db::{Model, Ready};
 use qinit_event::{Loop, Token};
-use qinit_overseer::request::{Routed, from_model};
+use qinit_overseer::request::{RequestSpec, Routed, from_instance, from_model};
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::os::fd::{OwnedFd, RawFd};
@@ -318,9 +318,9 @@ impl<C: CellOps> RealEffects<C> {
         self.dirty = true;
     }
 
+    /// The launch of a node.
     fn launch_node(&mut self, node: u32, spec: &NodeSpec, model: &Model) -> Result<i32, Errno> {
         let n = model.nodes.get(node as usize).ok_or(Errno(libc::ENOENT))?;
-        let owner = Owner::Node(node);
         let routed = Routed {
             stdin: None,
             stdout: None,
@@ -329,25 +329,130 @@ impl<C: CellOps> RealEffects<C> {
         };
         let request = from_model(n, model, &routed, deadline_ms(spec.start_timeout_ms))
             .map_err(|_| Errno(libc::EINVAL))?;
-        let bytes = request.bytes().map_err(|_| Errno(libc::E2BIG))?;
-        let request_fd =
-            qinit_ipc::memfd::sealed(c"qinit-launch", &bytes).map_err(|e| Errno(e.0))?;
         let (mode, watch) = match &n.ready {
             Ready::Pipe => (ReadyMode::Pipe, None),
             Ready::Exit => (ReadyMode::Exit, None),
             Ready::Socket(p) => (ReadyMode::External, Some((p.clone(), Want::CreatedSocket))),
             Ready::Path(p) => (ReadyMode::External, Some((p.clone(), Want::Created))),
         };
+        self.run_plan(Plan {
+            owner: Owner::Node(node),
+            name: spec.name.clone(),
+            memory_max_kib: spec.memory_max_kib,
+            pids_max: spec.pids_max,
+            mode,
+            watch,
+            request: Request::Build(Box::new(request)),
+            fds: Vec::new(),
+            ready_fd: READY_FD,
+        })
+    }
+
+    /// The launch of an instance: a frame's, built here, or a `Run`'s, whose request is the
+    /// caller's own sealed file.
+    fn launch_instance(
+        &mut self,
+        slot: u32,
+        spec: InstanceSpec,
+        model: &Model,
+    ) -> Result<i32, Errno> {
+        let [stdin, stdout, stderr] = spec.fds;
+        let plan = if let Some(fd) = spec.request {
+            // The request names its own descriptor numbers: 5, 6 and 7 for stdin, stdout and
+            // stderr; the readiness pipe goes where it says.
+            let fds = [(stdin, 5), (stdout, 6), (stderr, 7)]
+                .into_iter()
+                .filter_map(|(f, n)| f.map(|f| (f, n)))
+                .collect();
+            let wait = spec.ready_fd.is_some();
+            Plan {
+                owner: Owner::Instance(slot),
+                name: spec.name,
+                memory_max_kib: spec.memory_max_kib,
+                pids_max: spec.pids_max,
+                mode: if wait {
+                    ReadyMode::Pipe
+                } else {
+                    ReadyMode::Exit
+                },
+                watch: None,
+                request: Request::Sealed(fd),
+                fds,
+                ready_fd: spec
+                    .ready_fd
+                    .and_then(|n| RawFd::try_from(n).ok())
+                    .unwrap_or(READY_FD),
+            }
+        } else {
+            let n = model
+                .nodes
+                .get(spec.frame as usize)
+                .ok_or(Errno(libc::ENOENT))?;
+            // The caller's descriptors follow the readiness pipe: 6 upward, in the order stdin,
+            // stdout, stderr, as many as were sent.
+            let mut fds = Vec::new();
+            let mut number = READY_FD + 1;
+            let mut place = |fd: Option<OwnedFd>| {
+                fd.map(|fd| {
+                    fds.push((fd, number));
+                    number += 1;
+                    number.unsigned_abs() - 1
+                })
+            };
+            let routed = Routed {
+                stdin: place(stdin),
+                stdout: place(stdout),
+                stderr: place(stderr),
+                ready: matches!(n.ready, Ready::Pipe).then_some(READY_FD.unsigned_abs()),
+            };
+            let request = from_instance(
+                n,
+                model,
+                &routed,
+                &spec.argv_tail,
+                &spec.env_add,
+                deadline_ms(spec.node.start_timeout_ms),
+            )
+            .map_err(|_| Errno(libc::EINVAL))?;
+            Plan {
+                owner: Owner::Instance(slot),
+                name: spec.name,
+                memory_max_kib: spec.memory_max_kib,
+                pids_max: spec.pids_max,
+                mode: if matches!(n.ready, Ready::Pipe) {
+                    ReadyMode::Pipe
+                } else {
+                    ReadyMode::Exit
+                },
+                watch: None,
+                request: Request::Build(Box::new(request)),
+                fds,
+                ready_fd: READY_FD,
+            }
+        };
+        self.run_plan(plan)
+    }
+
+    /// Creates the cell and launches into it; any failure after the cell exists removes it.
+    fn run_plan(&mut self, plan: Plan) -> Result<i32, Errno> {
+        let owner = plan.owner;
+        let request_fd = match plan.request {
+            Request::Sealed(fd) => fd,
+            Request::Build(spec) => {
+                let bytes = spec.bytes().map_err(|_| Errno(libc::E2BIG))?;
+                qinit_ipc::memfd::sealed(c"qinit-launch", &bytes).map_err(|e| Errno(e.0))?
+            }
+        };
         let (status_r, status_w) = qinit_sys::fd::pipe(libc::O_CLOEXEC).map_err(sys)?;
 
-        let id = self.cells.create(&spec.name).map_err(|e| errno_of(&e))?;
+        let id = self.cells.create(&plan.name).map_err(|e| errno_of(&e))?;
         self.routes.bind(id, owner);
         self.dirty = true;
         if matches!(self.cells.phase(id), Some(Phase::Failed(_)) | None) {
             // The directory could not be made; the cell layer reports that later, without an
             // errno. Colony hears of it through this return, so the notice is muted.
             self.routes.mute(id);
-            let errno = if self.comb.join(&spec.name).exists() {
+            let errno = if self.comb.join(&plan.name).exists() {
                 libc::EEXIST
             } else {
                 libc::EIO
@@ -355,8 +460,20 @@ impl<C: CellOps> RealEffects<C> {
             self.discard(id, owner);
             return Err(Errno(errno));
         }
-        let outcome =
-            self.finish_launch(id, owner, spec, mode, watch, request_fd, status_w, status_r);
+        let launched = Launched {
+            id,
+            owner,
+            memory_max_kib: plan.memory_max_kib,
+            pids_max: plan.pids_max,
+            mode: plan.mode,
+            watch: plan.watch,
+            request_fd,
+            fds: plan.fds,
+            ready_fd: plan.ready_fd,
+            status_w,
+            status_r,
+        };
+        let outcome = self.finish_launch(launched);
         if outcome.is_err() {
             self.routes.mute(id);
             self.discard(id, owner);
@@ -364,44 +481,90 @@ impl<C: CellOps> RealEffects<C> {
         outcome
     }
 
-    #[allow(clippy::too_many_arguments)] // the pieces of one launch, each made before the cell
-    fn finish_launch(
-        &mut self,
-        id: CellId,
-        owner: Owner,
-        spec: &NodeSpec,
-        mode: ReadyMode,
-        watch: Option<(String, Want)>,
-        request_fd: OwnedFd,
-        status_w: OwnedFd,
-        status_r: OwnedFd,
-    ) -> Result<i32, Errno> {
+    fn finish_launch(&mut self, l: Launched) -> Result<i32, Errno> {
         self.cells
-            .set_limits(id, u64::from(spec.memory_max_kib) * 1024, spec.pids_max)
+            .set_limits(l.id, u64::from(l.memory_max_kib) * 1024, l.pids_max)
             .map_err(|e| errno_of(&e))?;
-        if let Some((path, want)) = watch {
+        if let Some((path, want)) = l.watch {
             // Before the spawn: what the service makes at once must not be missed.
-            let key = READY_TAG | owner_node(owner);
+            let key = READY_TAG | owner_node(l.owner);
             self.watcher
                 .add(&mut self.events, key, Path::new(&path), want)
                 .map_err(sys)?;
         }
+        let mut fds = vec![(l.request_fd, REQUEST_FD), (l.status_w, STATUS_FD)];
+        fds.extend(l.fds);
         let cmd = Command {
             path: self.overseer.clone(),
             argv: vec![OsString::from("overseer")],
             env: Vec::new(),
-            fds: vec![(request_fd, REQUEST_FD), (status_w, STATUS_FD)],
-            ready_fd: READY_FD,
+            fds,
+            ready_fd: l.ready_fd,
         };
-        self.cells.spawn(id, cmd, mode).map_err(|e| errno_of(&e))?;
+        self.cells
+            .spawn(l.id, cmd, l.mode)
+            .map_err(|e| errno_of(&e))?;
         // The cell layer reports a spawn it could not make as a failed cell, not as an error.
-        let pid = match (self.cells.phase(id), self.cells.main_pid(id)) {
+        let pid = match (self.cells.phase(l.id), self.cells.main_pid(l.id)) {
             (Some(Phase::Failed(_)) | None, _) | (_, None) => return Err(Errno(libc::EIO)),
             (_, Some(pid)) => pid,
         };
-        self.status.insert(owner, status_r);
+        self.status.insert(l.owner, l.status_r);
         Ok(pid)
     }
+
+    fn stop_owner(&mut self, owner: Owner, mode: StopMode, grace_ms: u32) -> Result<(), Errno> {
+        let id = self.routes.cell(owner).ok_or(Errno(libc::ENOENT))?;
+        // The readiness watch ends with the stop.
+        self.watcher
+            .remove(&mut self.events, READY_TAG | owner_node(owner));
+        // A cell adopted without its main has no process to signal politely.
+        let polite = match mode {
+            StopMode::Main if self.cells.main_pid(id).is_some() => Polite::Main,
+            _ => Polite::Cell,
+        };
+        let grace = Duration::from_millis(u64::from(grace_ms));
+        self.cells
+            .stop(id, polite, grace, grace)
+            .map_err(|e| errno_of(&e))
+    }
+}
+
+/// Where a launch request comes from.
+enum Request {
+    /// A request value to encode and seal.
+    Build(Box<RequestSpec>),
+    /// The caller's own sealed file, handed on as it is.
+    Sealed(OwnedFd),
+}
+
+/// Everything one launch needs, before its cell exists.
+struct Plan {
+    owner: Owner,
+    name: String,
+    memory_max_kib: u32,
+    pids_max: u32,
+    mode: ReadyMode,
+    watch: Option<(String, Want)>,
+    request: Request,
+    /// The descriptors routed in beside the request, the status pipe and the readiness pipe.
+    fds: Vec<(OwnedFd, RawFd)>,
+    ready_fd: RawFd,
+}
+
+/// A [`Plan`] whose cell exists.
+struct Launched {
+    id: CellId,
+    owner: Owner,
+    memory_max_kib: u32,
+    pids_max: u32,
+    mode: ReadyMode,
+    watch: Option<(String, Want)>,
+    request_fd: OwnedFd,
+    fds: Vec<(OwnedFd, RawFd)>,
+    ready_fd: RawFd,
+    status_w: OwnedFd,
+    status_r: OwnedFd,
 }
 
 fn owner_node(owner: Owner) -> u64 {
@@ -417,40 +580,34 @@ impl<C: CellOps> Effects for RealEffects<C> {
 
     fn start_instance(
         &mut self,
-        _slot: u32,
-        _spec: InstanceSpec,
-        _model: &Model,
+        slot: u32,
+        spec: InstanceSpec,
+        model: &Model,
     ) -> Result<i32, Errno> {
-        Err(Errno(libc::ENOSYS)) // Task 14
+        self.launch_instance(slot, spec, model)
     }
 
-    fn instance_pidfd(&mut self, _slot: u32) -> Result<OwnedFd, Errno> {
-        Err(Errno(libc::ENOSYS)) // Task 14
-    }
-
-    fn stop_instance(&mut self, _slot: u32, _mode: StopMode, _grace_ms: u32) -> Result<(), Errno> {
-        Err(Errno(libc::ENOSYS)) // Task 14
-    }
-
-    fn release_instance(&mut self, _slot: u32) {} // Task 14
-
-    fn stop(&mut self, node: u32, mode: StopMode, grace_ms: u32) -> Result<(), Errno> {
+    fn instance_pidfd(&mut self, slot: u32) -> Result<OwnedFd, Errno> {
         let id = self
             .routes
-            .cell(Owner::Node(node))
+            .cell(Owner::Instance(slot))
             .ok_or(Errno(libc::ENOENT))?;
-        // The readiness watch ends with the stop.
-        self.watcher
-            .remove(&mut self.events, READY_TAG | u64::from(node));
-        // A cell adopted without its main has no process to signal politely.
-        let polite = match mode {
-            StopMode::Main if self.cells.main_pid(id).is_some() => Polite::Main,
-            _ => Polite::Cell,
-        };
-        let grace = Duration::from_millis(u64::from(grace_ms));
-        self.cells
-            .stop(id, polite, grace, grace)
-            .map_err(|e| errno_of(&e))
+        self.cells.main_pidfd(id).map_err(|e| errno_of(&e))
+    }
+
+    fn stop_instance(&mut self, slot: u32, mode: StopMode, grace_ms: u32) -> Result<(), Errno> {
+        self.stop_owner(Owner::Instance(slot), mode, grace_ms)
+    }
+
+    fn release_instance(&mut self, slot: u32) {
+        let owner = Owner::Instance(slot);
+        if let Some(id) = self.routes.cell(owner) {
+            self.discard(id, owner);
+        }
+    }
+
+    fn stop(&mut self, node: u32, mode: StopMode, grace_ms: u32) -> Result<(), Errno> {
+        self.stop_owner(Owner::Node(node), mode, grace_ms)
     }
 
     fn release(&mut self, node: u32) {
