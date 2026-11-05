@@ -7,6 +7,7 @@
 //! the console and powers the guest off from a child. The same binary is the helper program
 //! the cases spawn: `/init --qinit-helper <role> <args…>`.
 #![allow(clippy::missing_errors_doc)] // every fallible function returns one string naming the step and its cause
+pub mod colonyd;
 use qinit_cell::{CellId, Cells, Notice, ReadyMode, Report};
 use qinit_event::{Loop, Ready, Token};
 use qinit_overseer::request::RequestSpec;
@@ -702,6 +703,28 @@ fn wait_for_term(ignore: bool, ready: bool, note: Option<&str>) -> i32 {
     }
 }
 
+fn ready_log(file: &str, name: &str) -> i32 {
+    let Ok(mut l) = Loop::new() else { return 2 };
+    if l.add_signal(&[libc::SIGTERM], 1).is_err() || !write_ready() {
+        return 2;
+    }
+    loop {
+        match l.wait() {
+            Ok(rs) if rs.iter().any(|r| matches!(r, Ready::Signal(1, _))) => {
+                let line = format!("{name}\n");
+                let logged = std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(file)
+                    .and_then(|mut f| f.write_all(line.as_bytes()));
+                return if logged.is_ok() { 0 } else { 2 };
+            }
+            Ok(_) => {}
+            Err(_) => return 2,
+        }
+    }
+}
+
 fn reexec(role: &str) -> i32 {
     use std::os::unix::process::CommandExt;
     let e = std::process::Command::new("/init")
@@ -820,6 +843,13 @@ fn helper(role: &str, args: &[String]) -> i32 {
                 2
             }
         }
+        // `ready-log <file> <name>`: blocks TERM, writes the readiness byte, and at TERM appends
+        // `<name>` and a newline to `<file>` before exiting 0: the order of such lines in one file
+        // is the order the TERMs were handled in.
+        "ready-log" => match (a0, args.get(1)) {
+            (Some(file), Some(name)) => ready_log(file, name),
+            _ => 2,
+        },
         "exit-0" => 0,
         "exit-3" => 3,
         _ => launch_helper(role, args).unwrap_or(2),

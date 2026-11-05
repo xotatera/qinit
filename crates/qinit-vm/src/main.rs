@@ -25,6 +25,7 @@ const SUITES: &[&str] = &[
     "deadline",
     "fail",
     "control",
+    "daemon",
 ];
 
 /// The guest's accounts (`/etc/passwd`): `toor` is uid 0 under another name (spec R6).
@@ -41,11 +42,13 @@ fn suite_run(
     image: &Path,
     bin: &Path,
     overseer: &Path,
+    colony: &Path,
     out: &Path,
 ) -> Result<usize, String> {
     let data = std::fs::read(bin).map_err(|e| format!("read {}: {e}", bin.display()))?;
     let overseer =
         std::fs::read(overseer).map_err(|e| format!("read {}: {e}", overseer.display()))?;
+    let colony = std::fs::read(colony).map_err(|e| format!("read {}: {e}", colony.display()))?;
     let mut entries: Vec<Entry> = ["dev", "proc", "sys", "tmp", "etc"]
         .iter()
         .map(|d| Entry {
@@ -63,6 +66,11 @@ fn suite_run(
         path: "overseer".to_string(),
         mode: 0o100_755,
         data: overseer,
+    });
+    entries.push(Entry {
+        path: "colony".to_string(),
+        mode: 0o100_755,
+        data: colony,
     });
     for (path, text) in [
         ("etc/passwd", PASSWD),
@@ -103,12 +111,15 @@ fn run(selected: &[String]) -> Result<(), String> {
     let overseer = bins
         .get("overseer")
         .ok_or("no guest binary for the executor")?;
+    let colony = bins
+        .get("colony")
+        .ok_or("no guest binary for the colony program")?;
     let mut failed = Vec::new();
     for s in suites {
         let bin = bins
             .get(s)
             .ok_or_else(|| format!("no guest binary for suite {s}"))?;
-        match suite_run(s, &image, bin, overseer, &out) {
+        match suite_run(s, &image, bin, overseer, colony, &out) {
             Ok(n) => println!("PASS vm/{s} ({n} cases)"),
             Err(e) => {
                 println!("FAIL vm/{s}: {e}");
