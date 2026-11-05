@@ -284,6 +284,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "qinit-colonyd"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "qinit-cell",
+ "qinit-cell-core",
+ "qinit-colony",
+ "qinit-colony-core",
+ "qinit-db",
+ "qinit-event",
+ "qinit-frames",
+ "qinit-ipc",
+ "qinit-launch",
+ "qinit-overseer",
+ "qinit-proto",
+ "qinit-sys",
+]
+
+[[package]]
 name = "qinit-db"
 version = "0.1.0"
 dependencies = [
