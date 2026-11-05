@@ -192,9 +192,10 @@ one; either way the `refresh` edges of the nodes that depend on it fire. Reply: 
 state, `ShuttingDown`); and if `settled`, then `Settled`, `Pending` or `Superseded`, each with
 the state the node reached or is in.
 
-`start` on a node that is done (it ran and its process exited) is `Accepted` and changes nothing:
-the node stays done, no notice goes out, and with `settled` the second reply is `Settled` at once
-with state 4 (done).
+`start` on a worker that is done (ready by exit, and its process exited) is `Accepted` and changes
+nothing: the worker stays done, no notice goes out, and with `settled` the second reply is
+`Settled` at once with state 4 (done). A forager is never started, only run: `start` on one is
+`Error(NotNow)` with its state.
 
 ### `Launch` (type 4), user id 0
 

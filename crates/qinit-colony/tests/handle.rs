@@ -231,6 +231,41 @@ fn start_settled_on_a_node_that_is_already_ready_replies_at_once() {
 }
 
 #[test]
+fn start_on_a_done_worker_is_accepted_and_changes_nothing_and_a_done_forager_refuses_it() {
+    let frames = format!(
+        "{}[worker.once]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/bin/once\"]\nready = \"exit\"\n",
+        frames()
+    );
+    let (probe, _) = boot(&frames, &[], Sim::new());
+    let mut sim = Sim::new();
+    for name in ["once", "plain"] {
+        sim.scripts
+            .insert(idx(&probe, name), script(None, Some((10, 0))));
+    }
+    let (mut c, _) = boot(&frames, &["once"], sim);
+    // A worker ready by exit is done once its process exits 0; so is a forager that ran.
+    let h = handle(&mut c, ROOT, &change("plain", Action::Run, false, 0), 2);
+    assert_eq!(h.reply, OwnedRep::Accepted);
+    run(&mut c, 100);
+    for name in ["once", "plain"] {
+        assert_eq!(
+            c.state(idx(&c, name)),
+            Some(qinit_colony::State::Done),
+            "{name}"
+        );
+    }
+    let h = handle(&mut c, ROOT, &change("once", Action::Start, true, 5000), 3);
+    assert_eq!(h.reply, OwnedRep::Accepted);
+    assert_eq!(replies(&h.outcome), [(3, OwnedRep::Settled(state(4, 0)))]);
+    assert!(h.outcome.notices.is_empty(), "{:?}", h.outcome.notices);
+    assert!(run(&mut c, 1000).notices.is_empty());
+    assert_eq!(c.state(idx(&c, "once")), Some(qinit_colony::State::Done));
+    // A forager is never started, only run.
+    let h = handle(&mut c, ROOT, &change("plain", Action::Start, false, 0), 4);
+    assert_eq!(h.reply, error(ErrorCode::NotNow, 4));
+}
+
+#[test]
 fn start_settled_on_a_failing_node_replies_settled_quarantined() {
     let (probe, _) = boot(&frames(), &[], Sim::new());
     let mut sim = Sim::new();
