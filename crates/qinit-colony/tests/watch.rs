@@ -241,7 +241,15 @@ fn a_refresh_that_removes_the_node_ends_the_watch_with_superseded() {
     let out = run(&mut c, 20_000);
     let seen = for_wait(&h, &out, 1);
     let last = seen.last().expect("entries");
-    assert!(matches!(last.rep, OwnedRep::Superseded(_)), "{seen:?}");
+    // A removed node ends in state off (0, detail 0), whatever its last state was.
+    assert_eq!(
+        last.rep,
+        OwnedRep::Superseded(qinit_wire::StateWord {
+            state: 0,
+            detail: 0
+        }),
+        "{seen:?}"
+    );
     assert!(last.ends);
     assert_eq!(
         seen.iter().filter(|s| s.ends).count(),

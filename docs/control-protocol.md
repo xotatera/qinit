@@ -61,7 +61,7 @@ A request the peer may not make gets `Error(Denied)` and the connection stays op
   the connection busy: `Notice` replies arrive as things happen, and a second request on the
   connection is `Error(BadRequest)` with detail 6 and the close. The stream ends when the client
   closes, when the watched instance's exited notice goes out (the connection is idle again), or
-  when a refresh removes the watched node (`Superseded(state)`, idle again). Nothing is queued
+  when a refresh removes the watched node (`Superseded` with state off, idle again). Nothing is queued
   per watcher beyond the socket's own buffer: a watcher that does not read is closed when its
   receive queue is full. There is no replay.
 - **Closing a connection does not undo anything.** A request that was accepted stays in effect;
@@ -192,6 +192,10 @@ one; either way the `refresh` edges of the nodes that depend on it fire. Reply: 
 state, `ShuttingDown`); and if `settled`, then `Settled`, `Pending` or `Superseded`, each with
 the state the node reached or is in.
 
+`start` on a node that is done (it ran and its process exited) is `Accepted` and changes nothing:
+the node stays done, no notice goes out, and with `settled` the second reply is `Settled` at once
+with state 4 (done).
+
 ### `Launch` (type 4), user id 0
 
 | Word | Name | Meaning |
@@ -296,7 +300,8 @@ server: Settled  state=3                           # the service wrote its byte
 
 No descriptors. A scope other than 0 or 1 is `Error(BadRequest)` with detail 5 (`Enum`); a scope 0
 with an empty target or a scope 1 with a non-empty one is detail 6 (`Consistency`). A target that
-names no node and no live instance gets `Error(UnknownNode)` and the connection stays open.
+names no node and no instance colony knows (one that is live, or that has exited and is still
+remembered, see below) gets `Error(UnknownNode)` and the connection stays open.
 Otherwise the first reply is `Accepted`, and then `Notice` replies follow.
 
 - **Scope 1 (everything):** every node report, every instance state change and readiness, every
@@ -307,8 +312,8 @@ Otherwise the first reply is `Accepted`, and then `Notice` replies follow.
   notice (report 5) ends the stream. An instance that has already exited is a valid target while
   colony still remembers it: its first notice says exited and ends the stream at once. Colony
   forgetting an instance emits nothing.
-- **A refresh that removes a watched node** answers `Superseded(state)` with the node's last
-  state; the connection is idle again. A watcher of everything gets the kind 2 notice and keeps
+- **A refresh that removes a watched node** answers `Superseded` with state 0 (off) and detail 0,
+  whatever the node's last state was; the connection is idle again. A watcher of everything gets the kind 2 notice and keeps
   watching.
 - **Shutdown:** a watcher of everything gets kind 3 when colony's part is done; colony then closes
   its connections as usual. A `Watch` sent during a shutdown is served.
