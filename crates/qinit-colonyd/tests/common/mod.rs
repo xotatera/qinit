@@ -25,6 +25,26 @@ pub enum Call {
     MarkReady(u16),
     Signal(u16, i32),
     Poll,
+    /// `(name, expected cgroup id, a main was handed over)`.
+    Adopt(String, u64, bool),
+}
+
+/// How a scripted adoption ends.
+#[derive(Clone, Copy, Debug)]
+pub struct Adopt {
+    /// The cell's cgroup id is not the recorded one (or its directory is gone).
+    pub mismatch: bool,
+    /// The cell still has processes.
+    pub populated: bool,
+}
+
+impl Default for Adopt {
+    fn default() -> Adopt {
+        Adopt {
+            mismatch: false,
+            populated: true,
+        }
+    }
 }
 
 /// What a spawn was given.
@@ -48,6 +68,8 @@ pub struct FakeCells {
     pub pending: Vec<Notice>,
     /// Runs inside `spawn`, before it returns (a service that acts at once).
     pub on_spawn: Option<Box<dyn FnMut()>>,
+    /// How each adoption by cell name ends; the default is a populated cell with the right id.
+    pub adopt_script: HashMap<String, Adopt>,
     next: u16,
 }
 
@@ -148,10 +170,30 @@ impl CellOps for FakeCells {
     fn adopt(
         &mut self,
         name: &str,
-        _expected_id: u64,
-        _main: Option<OwnedFd>,
+        expected_id: u64,
+        main: Option<OwnedFd>,
     ) -> Result<CellId, Error> {
-        self.create(name)
+        self.calls
+            .push(Call::Adopt(name.to_owned(), expected_id, main.is_some()));
+        let id = self.next;
+        self.next += 1;
+        let how = self.adopt_script.get(name).copied().unwrap_or_default();
+        let (phase, report) = if how.mismatch {
+            (
+                Phase::Failed(qinit_cell::Failure::IdMismatch),
+                qinit_cell::Report::Failed(qinit_cell::Failure::IdMismatch),
+            )
+        } else if how.populated || main.is_some() {
+            (Phase::Running, qinit_cell::Report::Running)
+        } else {
+            (Phase::Empty, qinit_cell::Report::Empty)
+        };
+        self.phases.insert(id, phase);
+        if main.is_some() {
+            self.mains.insert(id, 5000 + i32::from(id));
+        }
+        self.pending.push(Notice::Cell(CellId(id), report));
+        Ok(CellId(id))
     }
 
     fn poll(&mut self) -> Result<Vec<Notice>, Error> {

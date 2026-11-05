@@ -187,6 +187,8 @@ pub enum PathEvent {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Heard {
     pub cells: Vec<(Owner, Report)>,
+    /// Notices of cells being cleared (re-adopted cells that belong to nothing now).
+    pub strays: Vec<(CellId, Report)>,
     /// `(pid, wait status)` of children nobody tracks.
     pub orphans: Vec<(libc::pid_t, i32)>,
 }
@@ -239,6 +241,8 @@ pub struct RealEffects<C: CellOps> {
     comb: PathBuf,
     /// Notices collected out of turn (while a failed cell was being cleaned up), routed.
     inbox: Heard,
+    /// Cells being stopped and removed that no node or instance owns.
+    clearing: std::collections::BTreeSet<CellId>,
     path_ids: BTreeMap<String, u64>,
     path_names: BTreeMap<u64, String>,
     /// The name of each live cell, for the state file.
@@ -274,6 +278,7 @@ impl<C: CellOps> RealEffects<C> {
             overseer,
             comb,
             inbox: Heard::default(),
+            clearing: std::collections::BTreeSet::new(),
             path_ids: BTreeMap::new(),
             path_names: BTreeMap::new(),
             names: BTreeMap::new(),
@@ -285,7 +290,12 @@ impl<C: CellOps> RealEffects<C> {
         for n in notices {
             match n {
                 Notice::Cell(id, report) => {
-                    if let Some(owner) = self.routes.owner(id) {
+                    if self.clearing.contains(&id) {
+                        if report == Report::Removed {
+                            self.clearing.remove(&id);
+                        }
+                        self.inbox.strays.push((id, report));
+                    } else if let Some(owner) = self.routes.owner(id) {
                         self.inbox.cells.push((owner, report));
                     }
                 }
@@ -375,6 +385,34 @@ impl<C: CellOps> RealEffects<C> {
                 })
             })
             .collect()
+    }
+
+    /// A cell found in the comb belongs to `owner` from now on (re-adoption).
+    pub fn adopt_cell(&mut self, id: CellId, owner: Owner, name: &str) {
+        self.routes.bind(id, owner);
+        self.names.insert(id, name.to_owned());
+        self.dirty = true;
+    }
+
+    /// Stops a re-adopted cell that belongs to nothing: every member is asked to go, then killed
+    /// after `grace`. Its reports come back as strays; the daemon removes it when it is empty.
+    ///
+    /// # Errors
+    ///
+    /// The errno of asking the cell to stop.
+    pub fn clear_cell(&mut self, id: CellId, grace: Duration) -> Result<(), Errno> {
+        self.clearing.insert(id);
+        self.cells
+            .stop(id, Polite::Cell, grace, grace)
+            .map_err(|e| errno_of(&e))
+    }
+
+    /// Removes a cleared cell that has emptied.
+    pub fn remove_cleared(&mut self, id: CellId) {
+        if let Err(e) = self.cells.remove(id) {
+            self.faults
+                .push(format!("removing a cleared cell: {}", errno_of(&e).0));
+        }
     }
 
     /// Ends what waits for `owner`'s readiness: its cell is ready, gone or past caring.

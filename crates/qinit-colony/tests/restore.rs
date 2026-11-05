@@ -229,3 +229,31 @@ fn seeded_instance_ids_never_go_back() {
     let (id, _) = c.launch(args, 0).unwrap();
     assert_eq!(id, 50, "a smaller seed does not lower it");
 }
+
+#[test]
+fn validate_restore_agrees_with_restore_and_consumes_nothing() {
+    let (probe, _) = boot("crashy.toml", &["crashy"], Sim::new());
+    let n = idx(&probe, "crashy");
+    let bad = [RestoredNode {
+        node: n,
+        wanted: true,
+        phase: Restored::Quarantined(Reason::Breaker),
+        counters: Counters::default(),
+    }];
+    let bytes = database("crashy.toml", &["crashy"]);
+    assert_eq!(
+        Colony::<Sim>::validate_restore(&bytes, &bad, 0),
+        Err(Error::Restore)
+    );
+    let good = [RestoredNode {
+        node: n,
+        wanted: true,
+        phase: Restored::Off,
+        counters: Counters::default(),
+    }];
+    assert_eq!(Colony::<Sim>::validate_restore(&bytes, &good, 0), Ok(()));
+    assert_eq!(
+        Colony::<Sim>::validate_restore(&bytes, &[RestoredNode { node: 9, ..good[0] }], 0),
+        Err(Error::UnknownNode(9))
+    );
+}

@@ -10,6 +10,7 @@ pub mod effects;
 pub mod exit;
 pub mod notes;
 pub mod pipes;
+pub mod readopt;
 pub mod route;
 pub mod start;
 pub mod state;

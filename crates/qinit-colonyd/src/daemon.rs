@@ -9,11 +9,14 @@ use crate::args::Args;
 use crate::effects::{CellOps, Heard, PathEvent, RealEffects, status_owner};
 use crate::exit;
 use crate::notes::describe;
+use crate::readopt::{self, Plan, Procs, RealProcs};
 use crate::route::Owner;
 use crate::state::{NodeLine, State};
 use crate::syslog::{Sev, Syslog};
 use qinit_cell::Report as CellReport;
-use qinit_colony::{Colony, Error, Notice, Outcome, Report, ShutdownMode, TimerKind, WaitId};
+use qinit_colony::{
+    Colony, Error, Notice, Outcome, Report, Request, Restored, ShutdownMode, TimerKind, WaitId,
+};
 use qinit_event::{Loop, Ready, Token};
 use qinit_ipc::{accept, listen_seqpacket};
 use qinit_proto::{ConnId, Limits, Server};
@@ -35,6 +38,9 @@ const TIMER: Token = BASE | 1;
 const SIGNALS: Token = BASE | 2;
 /// The path watcher's inotify set.
 const INOTIFY: Token = BASE | 3;
+
+/// How long a leftover cell is given to stop before it is killed.
+const CLEAR_GRACE: Duration = Duration::from_secs(5);
 
 /// Where colony's own messages go when syslog is not there: the kernel log.
 pub const KMSG: &str = "/dev/kmsg";
@@ -84,27 +90,75 @@ pub struct Daemon<C: CellOps> {
 }
 
 impl<C: CellOps> Daemon<C> {
-    /// Brings the daemon up over `cells`: the loop and its sources, the logger pipes, the
-    /// database (started, nothing adopted), the control socket and the saved state. Refusals are
-    /// returned as the exit status and logged.
+    /// Brings the daemon up over `cells`, as [`Daemon::boot_with`] does with the real process
+    /// table.
     ///
     /// # Errors
     ///
-    /// `exit::DATABASE` for a database the validator refuses, `exit::STARTUP` for anything else
-    /// that stops it from serving.
+    /// As [`Daemon::boot_with`].
     pub fn boot(
         cells: C,
         args: &Args,
         bytes: &[u8],
         state: State,
-        mut log: Syslog,
+        log: Syslog,
     ) -> Result<Daemon<C>, u8> {
+        Self::boot_with(cells, args, bytes, state, log, &RealProcs)
+    }
+
+    /// Brings the daemon up over `cells`: the loop and its sources, the logger pipes, the
+    /// database, whatever an earlier colony left in the comb (adopted, spec §8), the control
+    /// socket and the saved state. `bytes` is the database of `--db`; a saved copy of the one the
+    /// earlier colony ran takes its place when there are cells to adopt. Refusals are returned as
+    /// the exit status and logged.
+    ///
+    /// # Errors
+    ///
+    /// `exit::DATABASE` for a database the validator refuses, `exit::STARTUP` for anything else
+    /// that stops it from serving.
+    #[allow(clippy::too_many_lines)] // one start-up sequence, in the order the spec gives it
+    pub fn boot_with(
+        cells: C,
+        args: &Args,
+        bytes: &[u8],
+        state: State,
+        mut log: Syslog,
+        procs: &impl Procs,
+    ) -> Result<Daemon<C>, u8> {
+        let mut notes: Vec<(Sev, String)> = Vec::new();
+        // What the earlier colony left: a file that does not parse is as good as none.
+        let left = match state.read_cells() {
+            Ok(lines) => lines,
+            Err(why) => {
+                notes.push((Sev::Err, format!("the saved cell map is refused: {why}")));
+                None
+            }
+        };
+        let mut from_state = false;
+        let mut chosen = bytes.to_vec();
+        if left.is_some() {
+            match state.read_db() {
+                Ok(Some(saved)) if qinit_db::open(&saved).is_ok() => {
+                    chosen = saved;
+                    from_state = true;
+                }
+                Ok(_) => notes.push((
+                    Sev::Err,
+                    "no usable saved database copy: starting from --db, saved node state ignored"
+                        .to_owned(),
+                )),
+                Err(why) => notes.push((
+                    Sev::Err,
+                    format!("the saved database copy is refused ({why}): starting from --db"),
+                )),
+            }
+        }
         let mut refuse = |code: u8, why: String| {
             log.log(Sev::Err, &why);
             eprintln!("colony: {why}");
             code
         };
-        let model = match qinit_db::open(bytes) {
+        let model = match qinit_db::open(&chosen) {
             Ok(db) => db.decode(),
             Err(e) => {
                 return Err(refuse(
@@ -139,8 +193,66 @@ impl<C: CellOps> Daemon<C> {
             .map_err(|e| refuse(exit::STARTUP, format!("logger pipes: {e}")))?;
         let now = now_ms();
         effects.now_ms = now;
-        let (colony, first) = Colony::load(bytes.to_vec(), &[], effects, now)
-            .map_err(|e| refuse(exit::DATABASE, format!("the database is refused: {e:?}")))?;
+
+        let mut plan = Plan::default();
+        let (colony, first) = if let Some(lines) = &left {
+            let saved_nodes = if from_state {
+                match state.read_nodes() {
+                    Ok(n) => n,
+                    Err(why) => {
+                        notes.push((Sev::Err, format!("the saved node state is refused: {why}")));
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            plan = readopt::plan(
+                lines,
+                saved_nodes.as_deref(),
+                &model,
+                &mut effects.cells,
+                procs,
+                now,
+            );
+            notes.append(&mut plan.notes);
+            for a in &plan.adopted {
+                effects.adopt_cell(a.id, a.owner, &a.name);
+            }
+            for id in &plan.clear {
+                if let Err(e) = effects.clear_cell(*id, CLEAR_GRACE) {
+                    notes.push((
+                        Sev::Err,
+                        format!("cannot stop a leftover cell: errno {}", e.0),
+                    ));
+                }
+            }
+            match Colony::<RealEffects<C>>::validate_restore(&chosen, &plan.restored, now) {
+                Ok(()) => Colony::restore(chosen.clone(), &plan.restored, effects, now),
+                Err(e) => {
+                    // A state file from disk is input: one that breaks the scheduler's
+                    // invariant is refused whole, and only the cells are adopted.
+                    notes.push((
+                        Sev::Err,
+                        format!("the saved node state is refused ({e:?}): adopting the cells only"),
+                    ));
+                    let initial: Vec<(u32, bool)> = plan
+                        .restored
+                        .iter()
+                        .filter_map(|r| match r.phase {
+                            Restored::Ready => Some((r.node, true)),
+                            Restored::Starting => Some((r.node, false)),
+                            _ => None,
+                        })
+                        .collect();
+                    Colony::load(chosen.clone(), &initial, effects, now)
+                }
+            }
+        } else {
+            Colony::load(chosen.clone(), &[], effects, now)
+        }
+        .map_err(|e| refuse(exit::DATABASE, format!("the database is refused: {e:?}")))?;
+
         let listener = bind(&args.socket).map_err(|e| {
             refuse(
                 exit::STARTUP,
@@ -154,7 +266,12 @@ impl<C: CellOps> Daemon<C> {
             state,
             log,
             socket: args.socket.clone(),
-            ready: BTreeSet::new(),
+            ready: plan
+                .restored
+                .iter()
+                .filter(|r| r.phase == Restored::Ready)
+                .map(|r| Owner::Node(r.node))
+                .collect(),
             last_nodes: None,
             last_cells: None,
             cells_dirty: true,
@@ -162,7 +279,10 @@ impl<C: CellOps> Daemon<C> {
             exit: None,
             shutdown_done: false,
         };
-        if let Err(e) = d.state.write_db(bytes) {
+        for (sev, text) in &notes {
+            d.say(*sev, text);
+        }
+        if let Err(e) = d.state.write_db(&chosen) {
             d.say(
                 Sev::Err,
                 &format!("cannot save the database copy for a restart: {e}"),
@@ -178,9 +298,26 @@ impl<C: CellOps> Daemon<C> {
             })?;
         d.say(
             Sev::Info,
-            &format!("started with {} nodes", d.colony.model().nodes.len()),
+            &format!(
+                "started with {} nodes, {} cells adopted",
+                d.colony.model().nodes.len(),
+                plan.adopted.len()
+            ),
         );
         d.settle(&first, true);
+        // The exits and restarts adoption calls for come after the table is restored and before
+        // the notices the adoption held are delivered: an exit, then the empty cell it leaves.
+        for node in &plan.exited {
+            let out = d.colony.adopted_exit(*node, now);
+            d.settle(&out, true);
+        }
+        for node in &plan.restart {
+            let out = d.colony.request(*node, Request::Restart, now);
+            d.settle(&out, true);
+        }
+        if plan.next_instance > 1 {
+            d.colony.seed_instance_ids(plan.next_instance);
+        }
         d.after_wakeup();
         Ok(d)
     }
@@ -276,7 +413,7 @@ impl<C: CellOps> Daemon<C> {
                     return;
                 }
             };
-            if heard.cells.is_empty() && heard.orphans.is_empty() {
+            if heard.cells.is_empty() && heard.orphans.is_empty() && heard.strays.is_empty() {
                 return;
             }
             self.on_heard(heard);
@@ -296,6 +433,16 @@ impl<C: CellOps> Daemon<C> {
     }
 
     fn on_heard(&mut self, heard: Heard) {
+        for (id, report) in heard.strays {
+            match report {
+                CellReport::Empty => self.colony.effects.remove_cleared(id),
+                CellReport::Failed(why) => self.say(
+                    Sev::Err,
+                    &format!("a leftover cell could not be cleared: {why:?}"),
+                ),
+                _ => {}
+            }
+        }
         for (pid, status) in heard.orphans {
             self.say(
                 Sev::Debug,
