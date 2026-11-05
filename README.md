@@ -9,7 +9,7 @@ qinit is an init and service-supervision system for Linux. It is one design buil
 - **overseer**: the compartment launcher. It starts process trees in root-owned cgroups with their own
   identity and sandbox, and offers a launch API to other system components.
 - **zero**: one binary with early-boot and final-shutdown modes.
-- **qctl**: the configuration compiler and administrative CLI.
+- **qctl**: the configuration compiler and administrative CLI; see [docs/qctl.md](docs/qctl.md).
 - **client library**: the library for the control protocol.
 
 The compiled service database is described in [docs/db-format.md](docs/db-format.md) and the
