@@ -23,7 +23,7 @@ qinit-frames = { path = "../qinit-frames" }
 qinit-launch = { path = "../qinit-launch" }
 serde.workspace = true
 toml.workspace = true
-toml_edit = { version = "=0.25.17", default-features = false, features = ["parse"] }
+toml_edit = { version = "=0.25.17", default-features = false, features = ["display", "parse"] }
 
 [lints]
 workspace = true

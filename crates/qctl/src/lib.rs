@@ -9,6 +9,8 @@ pub mod args;
 pub mod compile;
 pub mod owner;
 pub mod report;
+pub mod show;
+pub mod toml_text;
 
 use args::{Command, Parsed};
 
@@ -38,6 +40,7 @@ pub fn run_with(
     let Parsed { command, .. } = parsed;
     match command {
         Command::Compile(opts) => compile::run(&opts, defaults, out, err),
+        Command::Show(opts) => show::run(&opts, defaults, out, err),
         other => {
             let _ = writeln!(
                 err,
