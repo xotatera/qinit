@@ -638,6 +638,12 @@ impl<C: CellOps> RealEffects<C> {
         };
         let (status_r, status_w) = qinit_sys::fd::pipe(libc::O_CLOEXEC).map_err(sys)?;
 
+        // A directory of that name that colony did not make (one of its own would be in the
+        // routing table) is somebody else's: it is neither used nor removed, and the start
+        // fails as `mkdir` would have failed.
+        if self.comb.join(&plan.name).exists() {
+            return Err(Errno(libc::EEXIST));
+        }
         let id = self.cells.create(&plan.name).map_err(|e| errno_of(&e))?;
         self.routes.bind(id, owner);
         self.names.insert(id, plan.name.clone());
@@ -646,13 +652,8 @@ impl<C: CellOps> RealEffects<C> {
             // The directory could not be made; the cell layer reports that later, without an
             // errno. Colony hears of it through this return, so the notice is muted.
             self.routes.mute(id);
-            let errno = if self.comb.join(&plan.name).exists() {
-                libc::EEXIST
-            } else {
-                libc::EIO
-            };
             self.discard(id, owner);
-            return Err(Errno(errno));
+            return Err(Errno(libc::EIO));
         }
         let launched = Launched {
             id,

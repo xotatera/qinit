@@ -122,17 +122,34 @@ fn a_limit_that_cannot_be_written_removes_the_cell_and_fails_the_start() {
 }
 
 #[test]
+fn an_existing_directory_fails_the_start_without_touching_it() {
+    // Something else made `db` in the comb: colony never kills or removes what it cannot show is
+    // its own, so it does not even ask the cell layer for a cell of that name.
+    let tmp = Tmp::new("exists");
+    std::fs::create_dir(tmp.0.join("db")).unwrap();
+    let m = model(vec![worker("db")]);
+    let mut fx = rig(FakeCells::default(), &tmp.0);
+    assert_eq!(fx.start(0, &spec_of(&m, 0), &m), Err(Errno(libc::EEXIST)));
+    assert!(fx.cells.calls.is_empty(), "{:?}", fx.cells.calls);
+    assert!(
+        tmp.0.join("db").is_dir(),
+        "the foreign directory is still there"
+    );
+    assert_eq!(fx.routes.cell(Owner::Node(0)), None);
+    assert!(fx.status.is_empty());
+}
+
+#[test]
 fn a_late_create_failure_is_reported_once() {
     let tmp = Tmp::new("late");
-    std::fs::create_dir(tmp.0.join("db")).unwrap();
     let m = model(vec![worker("db")]);
     let mut cells = FakeCells::default();
     cells.create_fails = true;
     let mut fx = rig(cells, &tmp.0);
     assert_eq!(
         fx.start(0, &spec_of(&m, 0), &m),
-        Err(Errno(libc::EEXIST)),
-        "the directory exists"
+        Err(Errno(libc::EIO)),
+        "the cell layer could not make the directory, and there was none before"
     );
     assert!(fx.cells.calls.contains(&Call::Remove(0)));
     assert!(
@@ -146,12 +163,6 @@ fn a_late_create_failure_is_reported_once() {
     // The failure notice the cell layer queued is not delivered a second time.
     let heard = fx.drain_notices().unwrap();
     assert!(heard.cells.is_empty(), "{:?}", heard.cells);
-    // Without the directory, the errno is EIO.
-    let tmp2 = Tmp::new("late2");
-    let mut cells = FakeCells::default();
-    cells.create_fails = true;
-    let mut fx = rig(cells, &tmp2.0);
-    assert_eq!(fx.start(0, &spec_of(&m, 0), &m), Err(Errno(libc::EIO)));
 }
 
 #[test]
