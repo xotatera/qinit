@@ -470,3 +470,19 @@ file or directory`); they passed alone and in the next gate runs. `Fixture::new`
 temporary root by `SystemTime` nanoseconds only. The hypothesis, unproven: two tests running in
 parallel get the same root and one's `Drop` removes it under the other. The candidate fix is the
 process id and an atomic counter in the name.
+
+### D60 — `qctl fill` renames its files one by one · `OPEN`
+
+`qctl fill` edits every file and writes every new text to a temporary file, with the old file's
+owner and mode, before it renames any, so a failed edit, write, `chown` or `chmod` leaves every
+file as it was. The renames themselves then run one after another: a rename that fails after the
+first leaves the earlier files filled and the rest not. Each file is still whole, and a second
+`fill` completes the rest, but the files of one run are not replaced as one. Directories made
+for a new file are not removed when a later file fails.
+
+### D61 — Test directories left in `/tmp` by other crates · `OPEN`
+
+Runs of `cargo test` leave directories in `/tmp`: `qinit-sys-fs-*`, `qinit-ipc-*` and
+`qinit-sys-det-*` are each in the hundreds on the maintainer's host. Their test harnesses
+predate this branch and were not examined; each needs a guard that removes its directory when
+dropped, as the qctl, client and protocol tests now have.

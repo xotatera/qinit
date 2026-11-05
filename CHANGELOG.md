@@ -32,7 +32,10 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unchanged), the control commands (`status`, `list`, `start`/`stop`/`restart`/`clear` with
   `--wait`, `refresh`, `poweroff`/`reboot`/`halt`), `launch`, `run` from a TOML request file, and
   `watch`. Run as root, `compile` and `show` refuse a policy or layer path, or an ancestor
-  directory, that is a symbolic link, not root's or writable by group or other (D26).
+  directory, that is a symbolic link, not root's or writable by group or other (D26); as root,
+  `compile` also refuses such an output directory, and `fill` such a directory to create the
+  `etc` layer in. `compile` writes through an exclusively created temporary file, and `fill`
+  writes every file's temporary file before it renames any (D60).
 - Group 2b, the view and the instance, hardened and finished (D43 to D49):
   - The view is built on `/run/qinit/view` from detached mount clones (`open_tree`,
     `mount_setattr`, `move_mount`), so a read-only host root works and nothing is left behind
