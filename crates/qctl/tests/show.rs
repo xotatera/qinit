@@ -120,7 +120,7 @@ fn show_round_trips_through_the_compiler() {
 }
 
 #[test]
-fn show_marks_origins_and_quotes_instance_names() {
+fn show_marks_origins_and_keeps_substitutions_and_instance_names_as_written() {
     let getty = show(&["worker.getty"]);
     assert!(getty.starts_with("[worker.getty]\n"), "{getty}");
     assert!(getty.contains("instances = ["), "{getty}");
@@ -212,4 +212,42 @@ fn a_root_show_refuses_a_tree_that_is_not_roots() {
         assert!(err.contains("owned by uid"), "{target}: {err}");
         assert!(out.is_empty(), "{target}: {out}");
     }
+}
+
+#[test]
+fn deps_list_the_templates_groups_then_the_frames_own() {
+    let tmp = TempDir::new("deps-order");
+    let layer = tmp.0.join("vendor");
+    std::fs::create_dir_all(&layer).unwrap();
+    let worker = |name: &str| {
+        format!("[worker.{name}]\nexec = [\"/bin/{name}\"]\ncredentials = {{ uid = \"root\" }}\n")
+    };
+    std::fs::write(
+        layer.join("t.toml"),
+        "[template.t]\ndeps = [{ group = \"require_all\", edges = [{ to = \"a\" }] }]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        layer.join("b.toml"),
+        format!(
+            "{}template = \"t\"\ndeps = [{{ group = \"require_any\", edges = [{{ to = \"c\" }}] }}]\n",
+            worker("b")
+        ),
+    )
+    .unwrap();
+    std::fs::write(layer.join("a.toml"), worker("a")).unwrap();
+    std::fs::write(layer.join("c.toml"), worker("c")).unwrap();
+    let l = format!("vendor={}", layer.display());
+    let (code, out, err) = qctl(&["show", "--layer", &l, "--no-policy", "worker.b"]);
+    assert_eq!(code, 0, "{err}");
+    let start = out.find("deps = [\n").expect(&out);
+    let lines: Vec<&str> = out[start..].lines().skip(1).take(2).collect();
+    assert!(
+        lines[0].contains("to = \"a\"") && lines[0].ends_with("# template t"),
+        "{out}"
+    );
+    assert!(
+        lines[1].contains("to = \"c\"") && lines[1].ends_with("# vendor"),
+        "{out}"
+    );
 }
