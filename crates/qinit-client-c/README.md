@@ -35,14 +35,16 @@ A function that can fail returns `int`: 0 on success, otherwise the kind of the 
 | `QINIT_E_ARGUMENT` (5) | a NULL pointer, a string too long or not UTF-8, a word out of range, or a call the client cannot make now; nothing was sent | |
 
 `qinit_last_error(c, &e)` fills `e` for the last call on `c`; with a NULL `c` it gives the failure
-of this thread's last `qinit_connect`, which has no client to keep it. `qinit_watch_next` and
+of this thread's last `qinit_connect`, which has no client to keep it. A call with a NULL client
+is `QINIT_E_ARGUMENT` and records nothing. `qinit_watch_next` and
 `qinit_pidfd_exit` succeed with 0, 1 or 2 and fail with the negated kind (`-QINIT_E_*`).
 
 Strings in are NUL-terminated UTF-8; names out are copied into `QINIT_NAME_MAX + 1` (97) bytes,
 NUL-terminated. Every out-structure is the caller's; the library allocates only the client. A
 client is used from one thread at a time. Descriptors passed in are borrowed for the call; a pidfd
 returned is the caller's to close. After `qinit_watch` the client accepts only
-`qinit_watch_next`, `qinit_fd`, `qinit_last_error` and `qinit_close`.
+`qinit_watch_next`, `qinit_fd`, `qinit_last_error` and `qinit_close`; after a refused one, only the
+last three (every other call is `QINIT_E_ARGUMENT`).
 
 `qinit_status` is both a function and a structure: write `struct qinit_status` for the
 structure. Every other structure also has a typedef of its own name.

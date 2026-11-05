@@ -44,7 +44,8 @@ typedef struct qinit_event qinit_event;
 /**
  * A null pointer where one is required, a string over its length limit or not UTF-8, an enum
  * word out of range, or a call the client cannot make now (anything but `qinit_watch_next`,
- * `qinit_fd`, `qinit_last_error` and `qinit_close` after `qinit_watch`). Nothing was sent.
+ * `qinit_fd`, `qinit_last_error` and `qinit_close` after `qinit_watch`, and anything but the last
+ * three after a refused one). Nothing was sent.
  */
 #define QINIT_E_ARGUMENT 5
 
@@ -454,7 +455,8 @@ uint32_t qinit_abi_version(void);
 
 /**
  * Connects to colony at `path` (NULL: `/run/qinit/colony`) and stores the client in `*out`
- * (NULL on failure; `qinit_last_error(NULL, …)` then gives this thread's connect failure).
+ * (NULL on failure; `qinit_last_error(NULL, …)` then gives this thread's connect failure). A
+ * NULL `out` is `QINIT_E_ARGUMENT` before anything is connected, and is that failure too.
  *
  * # Safety
  * `path` is NULL or a NUL-terminated string; `out` is NULL or writable for a pointer.
@@ -479,7 +481,8 @@ int qinit_fd(const struct qinit_client *c);
 
 /**
  * Fills `*out` with the failure of the last call on `c` (kind 0 when it succeeded); with a NULL
- * `c`, the failure of this thread's last `qinit_connect`. A NULL `out` is ignored.
+ * `c`, the failure of this thread's last `qinit_connect`. A NULL `out` is ignored. A call made
+ * with a NULL client fails with `QINIT_E_ARGUMENT` and records nothing: it changes neither.
  *
  * # Safety
  * `c` is NULL or a live client; `out` is NULL or writable for a `qinit_error`.
@@ -577,8 +580,8 @@ int qinit_run_begin(struct qinit_client *c,
                     struct qinit_begun *out);
 
 /**
- * Reads how the launch or run this client began ends; the client keeps its id.
- * `QINIT_E_ARGUMENT` when none was begun.
+ * Reads how the launch or run this client began ends. The call uses up the begun id whether it
+ * succeeds or fails: a second call is `QINIT_E_ARGUMENT`, as is a call when none was begun.
  *
  * # Safety
  * `c` is NULL or a live client; `out` NULL or writable for a `qinit_finish`.
@@ -600,7 +603,8 @@ int qinit_pidfd_exit(int pidfd, int32_t *status);
  * Turns the connection into a stream of state notices: everything (`all` 1, `target` NULL or
  * empty) or one node or instance (`all` 0, `target` its name or `<frame>#<id>`). From then on
  * the client accepts only `qinit_watch_next`, `qinit_fd`, `qinit_last_error` and `qinit_close`.
- * A refused watch (an unknown target, say) leaves the client without a connection: close it.
+ * A refused watch (an unknown target, say) leaves the client without a connection: every call
+ * on it but `qinit_fd` (-1), `qinit_last_error` and `qinit_close` is then `QINIT_E_ARGUMENT`.
  *
  * # Safety
  * `c` is NULL or a live client; `target` NULL or a NUL-terminated string.

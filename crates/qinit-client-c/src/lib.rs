@@ -7,7 +7,8 @@
 //! `QINIT_E_UNEXPECTED`.
 //!
 //! Conventions: a function that can fail returns 0 or the `QINIT_E_*` kind of its failure, and
-//! `qinit_last_error` gives the kind, code and detail of the last call on that client.
+//! `qinit_last_error` gives the kind, code and detail of the last call on that client (a call
+//! with a NULL client is `QINIT_E_ARGUMENT` and records nothing).
 //! `qinit_watch_next` and `qinit_pidfd_exit`, whose successes are 0, 1 and 2, fail with the
 //! negated kind. Strings in are NUL-terminated UTF-8; names out are copied into
 //! `QINIT_NAME_MAX + 1` bytes, NUL-terminated. Descriptors in are borrowed for the call; a pidfd
@@ -54,8 +55,8 @@ impl qinit_client {
     fn client(&mut self) -> Result<&mut Client, Fail> {
         match &mut self.inner {
             Inner::Client(c) => Ok(c),
-            Inner::Watching(_) => Err(Fail::ARGUMENT),
-            Inner::Spent => Err(Fail::UNEXPECTED),
+            // Not a call this client can make now, whether it watches or its watch was refused.
+            Inner::Watching(_) | Inner::Spent => Err(Fail::ARGUMENT),
         }
     }
 }
@@ -217,12 +218,17 @@ pub unsafe extern "C" fn qinit_abi_version() -> u32 {
 }
 
 /// Connects to colony at `path` (NULL: `/run/qinit/colony`) and stores the client in `*out`
-/// (NULL on failure; `qinit_last_error(NULL, …)` then gives this thread's connect failure).
+/// (NULL on failure; `qinit_last_error(NULL, …)` then gives this thread's connect failure). A
+/// NULL `out` is `QINIT_E_ARGUMENT` before anything is connected, and is that failure too.
 ///
 /// # Safety
 /// `path` is NULL or a NUL-terminated string; `out` is NULL or writable for a pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qinit_connect(path: *const c_char, out: *mut *mut qinit_client) -> c_int {
+    if out.is_null() {
+        CONNECT_ERROR.with(|c| c.set(Fail::ARGUMENT.0));
+        return QINIT_E_ARGUMENT;
+    }
     let r = catch_unwind(AssertUnwindSafe(|| -> Result<*mut qinit_client, Fail> {
         let path = if path.is_null() {
             Path::new(SOCKET)
@@ -243,15 +249,9 @@ pub unsafe extern "C" fn qinit_connect(path: *const c_char, out: *mut *mut qinit
         })))
     }))
     .unwrap_or(Err(Fail::UNEXPECTED));
-    let (ptr, e) = match (out.is_null(), r) {
-        (true, Ok(c)) => {
-            // SAFETY: `c` came from `Box::into_raw` just now and has no other owner.
-            drop(unsafe { Box::from_raw(c) });
-            return QINIT_E_ARGUMENT;
-        }
-        (true, Err(_)) => return QINIT_E_ARGUMENT,
-        (false, Ok(c)) => (c, qinit_error::NONE),
-        (false, Err(Fail(e))) => (std::ptr::null_mut(), e),
+    let (ptr, e) = match r {
+        Ok(c) => (c, qinit_error::NONE),
+        Err(Fail(e)) => (std::ptr::null_mut(), e),
     };
     CONNECT_ERROR.with(|c| c.set(e));
     // SAFETY: `out` is non-null and, by the contract, writable for a pointer.
@@ -287,7 +287,8 @@ pub unsafe extern "C" fn qinit_fd(c: *const qinit_client) -> c_int {
 }
 
 /// Fills `*out` with the failure of the last call on `c` (kind 0 when it succeeded); with a NULL
-/// `c`, the failure of this thread's last `qinit_connect`. A NULL `out` is ignored.
+/// `c`, the failure of this thread's last `qinit_connect`. A NULL `out` is ignored. A call made
+/// with a NULL client fails with `QINIT_E_ARGUMENT` and records nothing: it changes neither.
 ///
 /// # Safety
 /// `c` is NULL or a live client; `out` is NULL or writable for a `qinit_error`.
@@ -615,8 +616,8 @@ pub unsafe extern "C" fn qinit_run_begin(
     unsafe { run(c, body) }
 }
 
-/// Reads how the launch or run this client began ends; the client keeps its id.
-/// `QINIT_E_ARGUMENT` when none was begun.
+/// Reads how the launch or run this client began ends. The call uses up the begun id whether it
+/// succeeds or fails: a second call is `QINIT_E_ARGUMENT`, as is a call when none was begun.
 ///
 /// # Safety
 /// `c` is NULL or a live client; `out` NULL or writable for a `qinit_finish`.

@@ -10,8 +10,9 @@ use std::ptr;
 
 /// A listening socket and the server side of one accepted connection.
 struct Silent {
-    _listener: OwnedFd,
-    conn: OwnedFd,
+    listener: OwnedFd,
+    /// None once the test hung up.
+    conn: Option<OwnedFd>,
     client: *mut qinit_client,
     dir: PathBuf,
 }
@@ -29,8 +30,8 @@ impl Silent {
         assert!(!client.is_null());
         let conn = qinit_ipc::accept(listener.as_fd()).unwrap();
         Silent {
-            _listener: listener,
-            conn,
+            listener,
+            conn: Some(conn),
             client,
             dir,
         }
@@ -49,7 +50,18 @@ impl Silent {
 
     /// Whether the server side has anything to read now.
     fn sent_anything(&self) -> bool {
-        qinit_ipc::poll_readable(self.conn.as_fd(), 0).unwrap()
+        self.sent_within(0)
+    }
+
+    /// Whether the server side has anything to read within `ms`.
+    fn sent_within(&self, ms: i32) -> bool {
+        let conn = self.conn.as_ref().expect("connected");
+        qinit_ipc::poll_readable(conn.as_fd(), ms).unwrap()
+    }
+
+    /// Closes the server side: the client's next read sees the end.
+    fn hang_up(&mut self) {
+        self.conn = None;
     }
 }
 
@@ -116,6 +128,27 @@ fn arguments_are_checked_before_anything_is_sent() {
     let rc = unsafe { qinit_status(c, bad.as_ptr().cast::<c_char>(), status.as_mut_ptr()) };
     assert_argument(&s, rc, "status, non-UTF-8 target");
 
+    // A 108-byte watch target (one over the 107 a target may have).
+    // SAFETY: the client is open and the target NUL-terminated; its length is what is tested.
+    let rc = unsafe { qinit_watch(c, 0, target.as_ptr()) };
+    assert_argument(&s, rc, "watch, 108-byte target");
+
+    // A 96-byte run name (one over QINIT_RUN_NAME_MAX, which leaves room for the `~`).
+    let run_name = CString::new("r".repeat(QINIT_RUN_NAME_MAX as usize + 1)).unwrap();
+    let request = [0u8; 8];
+    let run_args = run_args(&request);
+    // SAFETY: every pointer is valid; the over-long name is what is tested.
+    let rc = unsafe {
+        qinit_run_begin(
+            c,
+            run_name.as_ptr(),
+            &raw const run_args,
+            1000,
+            begun.as_mut_ptr(),
+        )
+    };
+    assert_argument(&s, rc, "run, 96-byte name");
+
     // A scope other than 0 (one target) or 1 (everything).
     // SAFETY: the client is open and the target NUL-terminated; the scope 2 is what is tested.
     let rc = unsafe { qinit_watch(c, 2, db.as_ptr()) };
@@ -144,12 +177,102 @@ fn arguments_are_checked_before_anything_is_sent() {
     assert!(s.sent_anything());
 }
 
+/// Run arguments over `request`, with no descriptors and the smallest grace.
+fn run_args(request: &[u8]) -> qinit_run_args {
+    qinit_run_args {
+        request: request.as_ptr(),
+        request_len: request.len(),
+        stdin_fd: -1,
+        stdout_fd: -1,
+        stderr_fd: -1,
+        want_pidfd: 0,
+        wait_ready: 0,
+        memory_max_kib: 0,
+        pids_max: 0,
+        stop_mode: QINIT_STOP_MAIN,
+        stop_grace_ms: 100,
+    }
+}
+
+/// A raw client pointer moved to the thread that alone uses it until it is joined.
+struct Owned(*mut qinit_client);
+// SAFETY: the pointer is used by one thread at a time: the spawned one, until it is joined.
+unsafe impl Send for Owned {}
+
+#[test]
+fn a_95_byte_run_name_is_sent() {
+    let mut s = Silent::start("run95");
+    let client = Owned(s.client);
+    let call = std::thread::spawn(move || {
+        let client = client;
+        let name = CString::new("r".repeat(QINIT_RUN_NAME_MAX as usize)).unwrap();
+        let request = [0u8; 8];
+        let a = run_args(&request);
+        let mut begun = std::mem::MaybeUninit::<qinit_begun>::uninit();
+        // SAFETY: every pointer is valid for the call, and only this thread uses the client.
+        unsafe {
+            qinit_run_begin(
+                client.0,
+                name.as_ptr(),
+                &raw const a,
+                1000,
+                begun.as_mut_ptr(),
+            )
+        }
+    });
+    assert!(s.sent_within(5000), "the 95-byte name passed the check");
+    s.hang_up();
+    let rc = call.join().unwrap();
+    assert_ne!(rc, QINIT_E_ARGUMENT);
+    assert_ne!(rc, 0);
+}
+
+/// The kind `qinit_last_error(NULL, …)` gives: this thread's last connect failure.
+fn connect_error() -> i32 {
+    let mut e = qinit_error {
+        kind: -1,
+        code: -1,
+        detail: 0,
+    };
+    // SAFETY: a null client asks for the connect failure; `e` is a valid out pointer.
+    unsafe { qinit_last_error(ptr::null(), &raw mut e) };
+    e.kind
+}
+
+/// Records a connect failure (an errno) for this thread.
+fn fail_a_connect() {
+    let mut client = ptr::null_mut();
+    // SAFETY: the path is NUL-terminated and `client` a valid out pointer.
+    let rc = unsafe { qinit_connect(c"/nonexistent/qinit-client-c".as_ptr(), &raw mut client) };
+    assert_eq!(rc, QINIT_E_ERRNO);
+    assert!(client.is_null());
+    assert_eq!(connect_error(), QINIT_E_ERRNO);
+}
+
+#[test]
+fn a_connect_with_a_null_out_connects_nothing_and_is_the_last_connect_failure() {
+    let s = Silent::start("nullout");
+    fail_a_connect();
+    let path = CString::new(s.dir.join("colony").to_str().unwrap()).unwrap();
+    // SAFETY: `path` is NUL-terminated; the null `out` is what is tested.
+    let rc = unsafe { qinit_connect(path.as_ptr(), ptr::null_mut()) };
+    assert_eq!(rc, QINIT_E_ARGUMENT);
+    assert_eq!(connect_error(), QINIT_E_ARGUMENT, "not the stale errno");
+    assert!(
+        !qinit_ipc::poll_readable(s.listener.as_fd(), 0).unwrap(),
+        "no connection was made"
+    );
+}
+
 #[test]
 fn a_null_client_is_an_argument_error() {
+    fail_a_connect();
     let mut status = std::mem::MaybeUninit::<qinit_status>::uninit();
     // SAFETY: a null client is what is tested; the other pointers are valid.
     let rc = unsafe { qinit_status(ptr::null_mut(), c"db".as_ptr(), status.as_mut_ptr()) };
     assert_eq!(rc, QINIT_E_ARGUMENT);
+    // A call with no client records nothing: the connect failure is still the last one.
+    assert_eq!(connect_error(), QINIT_E_ERRNO);
     // SAFETY: a null client is accepted by `qinit_fd` and `qinit_close`.
     assert_eq!(unsafe { qinit_fd(ptr::null()) }, -1);
     // SAFETY: as above.

@@ -63,7 +63,8 @@ fn event(e: Event) -> qinit_event {
 /// Turns the connection into a stream of state notices: everything (`all` 1, `target` NULL or
 /// empty) or one node or instance (`all` 0, `target` its name or `<frame>#<id>`). From then on
 /// the client accepts only `qinit_watch_next`, `qinit_fd`, `qinit_last_error` and `qinit_close`.
-/// A refused watch (an unknown target, say) leaves the client without a connection: close it.
+/// A refused watch (an unknown target, say) leaves the client without a connection: every call
+/// on it but `qinit_fd` (-1), `qinit_last_error` and `qinit_close` is then `QINIT_E_ARGUMENT`.
 ///
 /// # Safety
 /// `c` is NULL or a live client; `target` NULL or a NUL-terminated string.
