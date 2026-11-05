@@ -11,4 +11,4 @@ mod server;
 #[cfg(feature = "testing")]
 pub mod testing;
 
-pub use server::{ConnId, Full, Limits, MAX_DB_READ, Server};
+pub use server::{ConnId, Full, Limits, MAX_DB_READ, Served, Server};

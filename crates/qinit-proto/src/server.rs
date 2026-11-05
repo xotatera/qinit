@@ -73,6 +73,24 @@ struct Conn {
     state: State,
 }
 
+/// What serving one readable connection produced.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Served {
+    /// The connections that were closed (the event loop forgets them).
+    pub closed: Vec<ConnId>,
+    /// The request's outcome; its replies were sent already.
+    pub outcome: Outcome,
+}
+
+impl Served {
+    fn closed(closed: Vec<ConnId>) -> Served {
+        Served {
+            closed,
+            outcome: Outcome::default(),
+        }
+    }
+}
+
 /// The server: the accepted connections and the waits that belong to them.
 pub struct Server {
     limits: Limits,
@@ -259,21 +277,22 @@ impl Server {
     }
 
     /// The connection has something to read: serves one request. Returns the connections that
-    /// were closed (the event loop forgets them).
+    /// were closed (the event loop forgets them) and the outcome of the request: the replies in
+    /// it are already sent, but a caller with its own work to do for a notice (writing state
+    /// when a refresh swapped the database, exiting when a shutdown completed) needs to see it.
     pub fn on_readable<E: Effects>(
         &mut self,
         conn: ConnId,
         colony: &mut Colony<E>,
         now: u64,
-    ) -> Vec<ConnId> {
-        let mut closed = Vec::new();
+    ) -> Served {
         let Some(c) = self.conns.get(&conn) else {
-            return closed;
+            return Served::default();
         };
         let mut buf = vec![0u8; self.limits.message];
         let Ok(got) = recv(c.fd.as_fd(), &mut buf) else {
             self.close(conn, colony);
-            return vec![conn];
+            return Served::closed(vec![conn]);
         };
         let Received {
             len,
@@ -281,11 +300,11 @@ impl Server {
             truncated,
             ctrunc,
         } = got;
-        closed.extend(self.serve(conn, &buf[..len], fds, (truncated, ctrunc), colony, now));
-        if !self.conns.contains_key(&conn) && !closed.contains(&conn) {
-            closed.push(conn);
+        let mut served = self.serve(conn, &buf[..len], fds, (truncated, ctrunc), colony, now);
+        if !self.conns.contains_key(&conn) && !served.closed.contains(&conn) {
+            served.closed.push(conn);
         }
-        closed
+        served
     }
 
     fn serve<E: Effects>(
@@ -296,11 +315,11 @@ impl Server {
         (truncated, ctrunc): (bool, bool),
         colony: &mut Colony<E>,
         now: u64,
-    ) -> Vec<ConnId> {
+    ) -> Served {
         if bytes.is_empty() && !truncated {
             // The peer closed.
             self.close(conn, colony);
-            return Vec::new();
+            return Served::default();
         }
         if truncated {
             self.refuse(
@@ -309,7 +328,7 @@ impl Server {
                 DecodeError::Header as u32,
                 colony,
             );
-            return Vec::new();
+            return Served::default();
         }
         if ctrunc {
             self.refuse(
@@ -318,7 +337,7 @@ impl Server {
                 DecodeError::FdCount as u32,
                 colony,
             );
-            return Vec::new();
+            return Served::default();
         }
         if matches!(
             self.conns.get(&conn).map(|c| &c.state),
@@ -331,17 +350,17 @@ impl Server {
                 DecodeError::Consistency as u32,
                 colony,
             );
-            return Vec::new();
+            return Served::default();
         }
         let msg = match decode(bytes, fds.len()) {
             Ok(m) => m,
             Err(DecodeError::Version) => {
                 self.refuse(conn, ErrorCode::Version, 0, colony);
-                return Vec::new();
+                return Served::default();
             }
             Err(e) => {
                 self.refuse(conn, ErrorCode::BadRequest, e as u32, colony);
-                return Vec::new();
+                return Served::default();
             }
         };
         let Msg::Req(req) = msg else {
@@ -351,10 +370,10 @@ impl Server {
                 DecodeError::Type as u32,
                 colony,
             );
-            return Vec::new();
+            return Served::default();
         };
         let Some(peer) = self.conns.get(&conn).map(|c| c.peer) else {
-            return Vec::new();
+            return Served::default();
         };
         self.dispatch(conn, peer, &req, fds, colony, now)
     }
@@ -367,7 +386,7 @@ impl Server {
         fds: Vec<OwnedFd>,
         colony: &mut Colony<E>,
         now: u64,
-    ) -> Vec<ConnId> {
+    ) -> Served {
         let mut attached = Attached::default();
         match req {
             Req::Refresh { .. } => {
@@ -411,7 +430,10 @@ impl Server {
             closed.push(conn);
         }
         closed.extend(self.on_outcome(&handled.outcome, colony));
-        closed
+        Served {
+            closed,
+            outcome: handled.outcome,
+        }
     }
 
     /// Sends the replies colony owes to parked waits, and returns the connections that could
