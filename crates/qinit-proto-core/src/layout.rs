@@ -126,7 +126,8 @@ pub const WA_TARGET_OFF: usize = 1;
 /// Watch request word 2: `target_len`, 1 to `MAX_TARGET_LEN` for scope 0, else 0.
 pub const WA_TARGET_LEN: usize = 2;
 
-/// Notice reply word 0: `kind`, 0 node, 1 instance, 2 overflow, 3 end.
+/// Notice reply word 0: `kind`, 0 node, 1 instance, 2 database swapped, 3 colony's part of a
+/// shutdown is done.
 pub const NO_KIND: usize = 0;
 
 /// Notice reply word 1: `name_off`, the node or the frame; empty for kind 2 and 3.
@@ -144,10 +145,12 @@ pub const NO_STATE: usize = 4;
 /// Notice reply word 5: `detail`.
 pub const NO_DETAIL: usize = 5;
 
-/// Notice reply word 6: `has_status`, 0 or 1 (kind 1).
+/// Notice reply word 6: `report`, what happened: 0 to 8 for a node, 0 to 5 for an instance, 0
+/// for kinds 2 and 3.
 pub const NO_REPORT: usize = 6;
 
-/// Notice reply word 7: `status`, the wait status (kind 1).
+/// Notice reply word 7: `status`, a wait status where the report carries one; for kind 3 the
+/// number of cells still populated; 0 otherwise.
 pub const NO_STATUS: usize = 7;
 
 /// Status request word 0: `target_off`.

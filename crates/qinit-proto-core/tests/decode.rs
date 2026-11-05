@@ -545,3 +545,41 @@ fn a_notice_kind_4_or_state_7_is_enum() {
         DecodeError::Enum
     );
 }
+
+#[test]
+fn a_notice_name_that_disagrees_with_its_kind_is_consistency() {
+    fn notice(kind: u32, name: &'static str) -> Vec<u8> {
+        build(
+            T_NOTICE,
+            0,
+            &[N(kind), S(name), N(0), N(0), N(0), N(0), N(0)],
+            &[],
+        )
+    }
+    // The test strings live for the whole test binary (`W::S` holds a `&'static str`).
+    let long: &'static str = "n".repeat(MAX_NAME_LEN + 1).leak();
+    let longest: &'static str = "n".repeat(MAX_NAME_LEN).leak();
+    for kind in [0, 1] {
+        // A node or instance notice names its node or frame: 1 to MAX_NAME_LEN bytes.
+        assert_eq!(
+            check(&notice(kind, ""), 0).unwrap_err(),
+            DecodeError::Consistency,
+            "kind {kind}, empty"
+        );
+        assert_eq!(
+            check(&notice(kind, long), 0).unwrap_err(),
+            DecodeError::Consistency,
+            "kind {kind}, too long"
+        );
+        assert_eq!(check(&notice(kind, longest), 0), Ok(()), "kind {kind}");
+    }
+    for kind in [2, 3] {
+        // A swap or shutdown notice names nothing.
+        assert_eq!(
+            check(&notice(kind, "sshd"), 0).unwrap_err(),
+            DecodeError::Consistency,
+            "kind {kind}, named"
+        );
+        assert_eq!(check(&notice(kind, ""), 0), Ok(()), "kind {kind}");
+    }
+}
