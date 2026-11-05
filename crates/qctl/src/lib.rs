@@ -7,6 +7,7 @@ use std::io::Write;
 
 pub mod args;
 pub mod compile;
+pub mod owner;
 pub mod report;
 
 use args::{Command, Parsed};

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! `qctl compile`: layers to a database file, written atomically.
 use crate::args::{CompileOpts, PolicyChoice};
-use crate::report;
+use crate::{owner, report};
 use qinit_frames::compile::{CompileInput, compile};
 use qinit_frames::layers::LayerInput;
 use std::fs::OpenOptions;
@@ -123,6 +123,12 @@ pub fn run(
             return 1;
         }
     };
+    let mut roots: Vec<&Path> = input.layers.iter().map(|l| l.dir.as_path()).collect();
+    roots.extend(input.policy.as_deref());
+    if let Err(r) = owner::check(&roots, owner::geteuid(), err) {
+        let _ = writeln!(err, "{r}");
+        return 1;
+    }
     let compiled = match compile(&input) {
         Ok(c) => c,
         Err(errors) => {
