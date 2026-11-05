@@ -414,6 +414,7 @@ name = "qinit-vm-guests"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "qctl",
  "qinit-cell",
  "qinit-client",
  "qinit-colony",

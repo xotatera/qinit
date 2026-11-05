@@ -12,6 +12,27 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Group 3, the notice stream (D37): `Watch` (control protocol type 8, any user) on a node, an
+  instance `<frame>#<id>` or everything turns the connection into a stream of `Notice` replies
+  (type 75: node, instance, database swapped, shutdown complete, each with its state, a report
+  word and a status). A targeted watch starts with the current state; a refresh that removes the
+  node ends it with `Superseded`; a watcher that does not read is closed and the server goes on.
+  The proved decoder and `authorized` cover both records. The client gets `Client::watch`,
+  `Scope`, `Event` and `Watcher::next` with a timeout; `docs/control-protocol.md` documents both
+  with examples.
+- Group 4, the C interface (D41): `qinit-client-c` (MPL-2.0) builds `libqinit_client_c` as a
+  static archive and a shared object with the cbindgen-generated `include/qinit_client.h`, whose
+  drift a test checks. Status, list, change, refresh, shutdown, launch, run (QLR1 bytes) and the
+  notice stream; errors are an `int` kind plus `qinit_last_error`. A C smoke program is compiled
+  against the header and linked into the crate's tests; `crates/qinit-client-c/README.md` is the
+  C user's page.
+- Group 5, `qctl` (D16, D26, D42), `docs/qctl.md`: `compile` (the database byte for byte the
+  library's), `show` (a frame or the policy as effective TOML with each key's origin), `fill`
+  (the implicit defaults written into the `etc` layer, the other bytes kept, the database
+  unchanged), the control commands (`status`, `list`, `start`/`stop`/`restart`/`clear` with
+  `--wait`, `refresh`, `poweroff`/`reboot`/`halt`), `launch`, `run` from a TOML request file, and
+  `watch`. Run as root, `compile` and `show` refuse a policy or layer path, or an ancestor
+  directory, that is a symbolic link, not root's or writable by group or other (D26).
 - Group 2b, the view and the instance, hardened and finished (D43 to D49):
   - The view is built on `/run/qinit/view` from detached mount clones (`open_tree`,
     `mount_setattr`, `move_mount`), so a read-only host root works and nothing is left behind
@@ -194,6 +215,13 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `qinit_frames::Compiled` carries the model it compiled: the frames as the layers merged them,
+  the resolved model and the origin of every key (`merged`, `resolved`, `provenance`).
+- `qinit_colony::Outcome` gains `stream`: notices become stream replies as they are pushed, so a
+  node index always names the model it came from.
+- The layer gate has an `ffi` layer for a C ABI over a runtime crate (it reaches edge, runtime,
+  core, kernel and primitive; only tooling reaches it); `cc` is a tool of the test gate.
+- A watch of an instance that has already exited starts with an exited notice carrying its status.
 - `sandbox.landlock` is renamed `sandbox.paths` (database `C_PATHS_*`, request `paths`). The list
   is sorted and canonical, refuses `/`, `/dev`, `/tmp` and a writable `/proc`, needs the `mount`
   namespace, and must cover the program and the working directory.
