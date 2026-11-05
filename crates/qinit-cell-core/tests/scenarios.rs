@@ -418,3 +418,64 @@ fn an_empty_level_before_spawned_while_stopping_waits_for_the_main_process() {
     assert_eq!(c.phase, Phase::Empty);
     assert_eq!(c.main, Main::Reaped(Some(9)));
 }
+
+/// A created cell whose main process 7 was started with caller-marked readiness.
+fn starting_external() -> Cell {
+    let (c, _) = run(
+        absent(),
+        &[
+            Event::Request(Request::Create),
+            Event::Created,
+            Event::Request(Request::Spawn(ReadyMode::External)),
+            Event::Spawned(7),
+        ],
+    );
+    assert_eq!(c.phase, Phase::Starting);
+    c
+}
+
+#[test]
+fn external_readiness_is_marked_by_the_caller() {
+    let (c, acts) = run(starting_external(), &[Event::Request(Request::MarkReady)]);
+    assert_eq!(c.phase, Phase::Running);
+    assert_eq!(acts[0], [Action::Report(Report::Ready)]);
+}
+
+#[test]
+fn a_mark_after_the_exit_does_nothing() {
+    let (exited, _) = run(starting_external(), &[Event::MainExited(Some(256))]);
+    let (c, acts) = run(exited, &[Event::Request(Request::MarkReady)]);
+    assert_eq!(c, exited);
+    assert_eq!(acts[0], []);
+}
+
+#[test]
+fn a_mark_before_the_exec_is_confirmed_or_in_the_wrong_mode_does_nothing() {
+    let (pending, _) = run(
+        absent(),
+        &[
+            Event::Request(Request::Create),
+            Event::Created,
+            Event::Request(Request::Spawn(ReadyMode::External)),
+        ],
+    );
+    let (c, acts) = run(pending, &[Event::Request(Request::MarkReady)]);
+    assert_eq!((c, &acts[0][..]), (pending, &[][..]));
+    let (c, acts) = run(running(), &[Event::Request(Request::MarkReady)]);
+    assert_eq!(c, running());
+    assert_eq!(acts[0], []);
+}
+
+#[test]
+fn an_external_main_exit_while_starting_is_an_exit_not_ready() {
+    let (_, acts) = run(starting_external(), &[Event::MainExited(Some(0))]);
+    assert_eq!(acts[0], [Action::Report(Report::MainExited(Some(0)))]);
+}
+
+#[test]
+fn ready_lines_are_ignored_in_external_mode() {
+    let c = starting_external();
+    let (n, acts) = run(c, &[Event::ReadyLine, Event::ReadyClosed]);
+    assert_eq!(n, c);
+    assert_eq!(acts, [vec![], vec![]]);
+}

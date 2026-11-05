@@ -308,7 +308,7 @@ impl Effects for Kernel {
         let (err_r, err_w) = fd::pipe(libc::O_CLOEXEC | libc::O_NONBLOCK)?;
         let pipe = match ready {
             ReadyMode::Pipe => Some(fd::pipe(libc::O_CLOEXEC)?),
-            ReadyMode::Exit => None,
+            ReadyMode::Exit | ReadyMode::External => None,
         };
         let mut routes: Vec<(BorrowedFd<'_>, RawFd)> =
             cmd.fds.iter().map(|(f, n)| (f.as_fd(), *n)).collect();

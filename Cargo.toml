@@ -44,6 +44,7 @@ memory = "4G"
 timeout = "45s"
 
 # Measured 2026-10-27: 29 verified, 12.6-15.7 s (18.9-22.3 s CPU), 986 MB peak.
+# Re-measured 2026-11-06 with external readiness (SP7): 12.7 s (18.8 s CPU).
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-cell-core"
 kind = "verus"
