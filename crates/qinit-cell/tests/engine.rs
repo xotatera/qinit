@@ -670,3 +670,110 @@ fn a_main_reaped_after_its_cell_is_gone_is_an_orphan() {
         .unwrap();
     assert_eq!(e.take_notices(), [Notice::Orphan { pid: 99, status: 0 }]);
 }
+
+#[test]
+fn limits_are_written_before_the_spawn() {
+    let mut e = Engine::new(Sim::default());
+    let id = e.create("w").unwrap();
+    e.set_limits(id, 1_048_576, 32).unwrap();
+    e.spawn(id, cmd(), ReadyMode::Pipe).unwrap();
+    let calls: Vec<&Call> = e
+        .effects
+        .calls
+        .iter()
+        .filter(|c| {
+            matches!(
+                c,
+                Call::Create(..) | Call::WriteLimits(..) | Call::Spawn(..)
+            )
+        })
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            &Call::Create(0, "w".into()),
+            &Call::WriteLimits(0, 1_048_576, 32),
+            &Call::Spawn(0, ReadyMode::Pipe)
+        ]
+    );
+}
+
+#[test]
+fn a_zero_limit_is_passed_through_for_the_kernel_effect_to_skip() {
+    let mut e = Engine::new(Sim::default());
+    let id = e.create("w").unwrap();
+    e.set_limits(id, 0, 0).unwrap();
+    assert!(e.effects.calls.contains(&Call::WriteLimits(0, 0, 0)));
+}
+
+#[test]
+fn limits_after_the_spawn_are_refused() {
+    let mut e = running();
+    let before = e.effects.calls.len();
+    assert_eq!(
+        e.set_limits(CellId(0), 1 << 20, 8),
+        Err(Error::Sys(qinit_sys::Errno(libc::EBUSY)))
+    );
+    assert_eq!(e.effects.calls.len(), before, "nothing was written");
+    assert_eq!(
+        e.set_limits(CellId(9), 1, 1),
+        Err(Error::NoSuchCell(9)),
+        "no such cell"
+    );
+}
+
+#[test]
+fn an_external_cell_is_ready_when_marked() {
+    let mut e = Engine::new(Sim::default());
+    let id = e.create("w").unwrap();
+    e.spawn(id, cmd(), ReadyMode::External).unwrap();
+    e.on_ready(&Ready::Readable(token(0, Source::ExecError)))
+        .unwrap();
+    assert_eq!(reports(&mut e), [Report::Created]);
+    e.mark_ready(id).unwrap();
+    assert_eq!(reports(&mut e), [Report::Ready]);
+    assert_eq!(e.phase(id), Some(Phase::Running));
+}
+
+#[test]
+fn a_mark_before_the_exec_is_confirmed_waits_for_it() {
+    let mut e = Engine::new(Sim::default());
+    let id = e.create("w").unwrap();
+    e.effects.exec_pending = true;
+    e.spawn(id, cmd(), ReadyMode::External).unwrap();
+    e.mark_ready(id).unwrap();
+    assert_eq!(reports(&mut e), [Report::Created], "not ready yet");
+    e.effects.exec_pending = false;
+    e.on_ready(&Ready::Readable(token(0, Source::ExecError)))
+        .unwrap();
+    assert_eq!(reports(&mut e), [Report::Ready]);
+}
+
+#[test]
+fn signal_main_without_a_main_is_esrch() {
+    let mut e = Engine::new(Sim::default());
+    let id = e.create("w").unwrap();
+    assert_eq!(
+        e.signal_main(id, libc::SIGHUP),
+        Err(Error::Sys(qinit_sys::Errno(libc::ESRCH)))
+    );
+    e.spawn(id, cmd(), ReadyMode::Pipe).unwrap();
+    e.signal_main(id, libc::SIGHUP).unwrap();
+    assert!(
+        e.effects
+            .calls
+            .contains(&Call::SignalNumber(0, libc::SIGHUP))
+    );
+}
+
+#[test]
+fn the_main_pidfd_exists_only_while_a_main_is_tracked() {
+    let mut e = Engine::new(Sim::default());
+    let id = e.create("w").unwrap();
+    assert!(matches!(
+        e.main_pidfd(id),
+        Err(Error::Sys(qinit_sys::Errno(libc::ESRCH)))
+    ));
+    e.spawn(id, cmd(), ReadyMode::Pipe).unwrap();
+    assert!(e.main_pidfd(id).is_ok());
+}

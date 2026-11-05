@@ -432,6 +432,14 @@ impl Loop {
     }
 }
 
+impl std::os::fd::AsFd for Loop {
+    /// The epoll descriptor: readable while [`Loop::poll`] has something to return, so another
+    /// loop can wait on this one.
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.ep)
+    }
+}
+
 impl Drop for Loop {
     fn drop(&mut self) {
         let tokens: Vec<Token> = self.sources.keys().copied().collect();

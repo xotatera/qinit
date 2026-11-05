@@ -202,6 +202,64 @@ impl<E: Effects> Engine<E> {
         Ok(CellId(slot))
     }
 
+    /// Sets the cell's memory and pid limits (0 leaves one unset). Only before the spawn: the
+    /// limits are then in force from the main process's first instruction.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchCell`]; [`Error::Sys`] with `EBUSY` outside the created phase, or the
+    /// errno of the write.
+    pub fn set_limits(
+        &mut self,
+        id: CellId,
+        memory_max_bytes: u64,
+        pids_max: u32,
+    ) -> Result<(), Error> {
+        if self.entry(id.0)?.cell.phase != Phase::Created {
+            return Err(Error::Sys(Errno(libc::EBUSY)));
+        }
+        self.effects
+            .write_limits(id.0, memory_max_bytes, pids_max)?;
+        Ok(())
+    }
+
+    /// Declares an [`ReadyMode::External`] cell ready. A mark that arrives before the exec
+    /// result is settled waits for it, so it is never dropped.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchCell`], or [`Error::Sys`] when an effect failed.
+    pub fn mark_ready(&mut self, id: CellId) -> Result<(), Error> {
+        let mark = Event::Request(Request::MarkReady);
+        let e = self.entry(id.0)?;
+        if e.pending_main.is_some() {
+            e.pending_events.push_back(mark);
+            return Ok(());
+        }
+        self.deliver(id.0, mark)
+    }
+
+    /// Sends signal `sig` to the cell's main process through its pidfd.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchCell`]; [`Error::Sys`] with `ESRCH` when no main is tracked.
+    pub fn signal_main(&mut self, id: CellId, sig: i32) -> Result<(), Error> {
+        self.entry(id.0)?;
+        self.effects.signal_number(id.0, sig)?;
+        Ok(())
+    }
+
+    /// A duplicate of the cell's main pidfd.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchCell`]; [`Error::Sys`] with `ESRCH` when no main is tracked.
+    pub fn main_pidfd(&mut self, id: CellId) -> Result<OwnedFd, Error> {
+        self.entry(id.0)?;
+        Ok(self.effects.dup_main_pidfd(id.0)?)
+    }
+
     /// Stops a cell: `polite` first, the kill after `grace`, given up after `kill`.
     ///
     /// # Errors

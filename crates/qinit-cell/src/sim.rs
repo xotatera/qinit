@@ -7,7 +7,7 @@ use crate::effects::{Command, Effects, Reaped};
 use qinit_cell_core::{Effect, Handle, ReadyMode, Sig, Timer};
 use qinit_cell_drive::Source;
 use qinit_sys::Errno;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::ffi::CStr;
 use std::os::fd::OwnedFd;
 
@@ -26,6 +26,8 @@ pub enum Call {
     Cancel(u16, Timer),
     Close(u16, Source),
     Release(u16),
+    WriteLimits(u16, u64, u32),
+    SignalNumber(u16, i32),
 }
 
 #[derive(Default)]
@@ -51,6 +53,8 @@ pub struct Sim {
     pub children: VecDeque<Reaped>,
     /// `take_reaped` answers, all at once.
     pub reaped: Vec<(libc::pid_t, i32)>,
+    /// Slots with a tracked main (spawned or adopted, not yet closed).
+    mains: HashSet<u16>,
 }
 
 fn name(c: &CStr) -> String {
@@ -86,6 +90,7 @@ impl Effects for Sim {
     }
     fn spawn(&mut self, slot: u16, _cmd: Command, ready: ReadyMode) -> Result<Handle, Errno> {
         self.calls.push(Call::Spawn(slot, ready));
+        self.mains.insert(slot);
         Ok(u32::from(slot))
     }
     fn adopt_main(&mut self, slot: u16, _pidfd: OwnedFd) -> Result<Handle, Errno> {
@@ -93,6 +98,7 @@ impl Effects for Sim {
         if self.adopt_fails {
             Err(Errno(libc::EBADF))
         } else {
+            self.mains.insert(slot);
             Ok(u32::from(slot))
         }
     }
@@ -138,15 +144,38 @@ impl Effects for Sim {
     }
     fn close(&mut self, slot: u16, source: Source) {
         self.calls.push(Call::Close(slot, source));
+        if source == Source::Main {
+            self.mains.remove(&slot);
+        }
     }
     fn release(&mut self, slot: u16) {
         self.calls.push(Call::Release(slot));
+        self.mains.remove(&slot);
     }
     fn reap_children(&mut self) -> Result<Vec<Reaped>, Errno> {
         Ok(self.children.drain(..).collect())
     }
     fn take_reaped(&mut self) -> Vec<(libc::pid_t, i32)> {
         std::mem::take(&mut self.reaped)
+    }
+    fn write_limits(&mut self, slot: u16, memory: u64, pids: u32) -> Result<(), Errno> {
+        self.calls.push(Call::WriteLimits(slot, memory, pids));
+        Ok(())
+    }
+    fn signal_number(&mut self, slot: u16, sig: i32) -> Result<(), Errno> {
+        if !self.mains.contains(&slot) {
+            return Err(Errno(libc::ESRCH));
+        }
+        self.calls.push(Call::SignalNumber(slot, sig));
+        Ok(())
+    }
+    fn dup_main_pidfd(&mut self, slot: u16) -> Result<OwnedFd, Errno> {
+        if !self.mains.contains(&slot) {
+            return Err(Errno(libc::ESRCH));
+        }
+        std::fs::File::open("/dev/null")
+            .map(OwnedFd::from)
+            .map_err(|_| Errno(libc::EIO))
     }
     fn cgroup_id(&self, _slot: u16) -> Option<u64> {
         None

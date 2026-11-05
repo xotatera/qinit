@@ -17,7 +17,7 @@ pub use qinit_cell_core::{Failure, Phase, Polite, ReadyMode, Report};
 use effects::Effects;
 use engine::{Engine, ORPHANS};
 use kernel::Kernel;
-use std::os::fd::OwnedFd;
+use std::os::fd::{BorrowedFd, OwnedFd};
 use std::path::Path;
 use std::time::Duration;
 
@@ -108,6 +108,75 @@ impl Cells {
     /// As [`Engine::remove`].
     pub fn remove(&mut self, id: CellId) -> Result<(), Error> {
         self.engine.remove(id)
+    }
+
+    /// See [`Engine::set_limits`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::set_limits`].
+    pub fn set_limits(
+        &mut self,
+        id: CellId,
+        memory_max_bytes: u64,
+        pids_max: u32,
+    ) -> Result<(), Error> {
+        self.engine.set_limits(id, memory_max_bytes, pids_max)
+    }
+
+    /// See [`Engine::mark_ready`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::mark_ready`].
+    pub fn mark_ready(&mut self, id: CellId) -> Result<(), Error> {
+        self.engine.mark_ready(id)
+    }
+
+    /// See [`Engine::signal_main`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::signal_main`].
+    pub fn signal_main(&mut self, id: CellId, sig: i32) -> Result<(), Error> {
+        self.engine.signal_main(id, sig)
+    }
+
+    /// See [`Engine::main_pidfd`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::main_pidfd`].
+    pub fn main_pidfd(&mut self, id: CellId) -> Result<OwnedFd, Error> {
+        self.engine.main_pidfd(id)
+    }
+
+    /// The cells' own loop's epoll descriptor: readable while [`Cells::poll`] has something
+    /// to do. A caller with its own loop registers this and calls `poll` when it fires.
+    #[must_use]
+    pub fn poll_fd(&self) -> BorrowedFd<'_> {
+        self.engine.effects.poll_fd()
+    }
+
+    /// One non-blocking round of the cells' loop, then the notices pending (possibly none).
+    /// An error the round hit after it produced notices is returned by the next call.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Sys`] when the loop or an effect failed.
+    pub fn poll(&mut self) -> Result<Vec<Notice>, Error> {
+        if let Some(error) = self.pending_error.take() {
+            return Err(error);
+        }
+        let batch = self.engine.effects.poll()?;
+        self.pending_error = self.engine.on_batch(&batch);
+        let notices = self.engine.take_notices();
+        if notices.is_empty()
+            && let Some(error) = self.pending_error.take()
+        {
+            return Err(error);
+        }
+        Ok(notices)
     }
 
     #[must_use]

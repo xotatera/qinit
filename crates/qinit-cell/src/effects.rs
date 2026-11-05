@@ -68,6 +68,18 @@ pub trait Effects {
     /// `(pid, wait status)` of every child reaped outside `reap_children` that no cell
     /// tracks (a main let go by `close` or `release`), since the last call.
     fn take_reaped(&mut self) -> Vec<(libc::pid_t, i32)>;
+    /// Writes `memory.max` (bytes) and `pids.max` into the cell directory; 0 skips that file.
+    fn write_limits(
+        &mut self,
+        slot: u16,
+        memory_max_bytes: u64,
+        pids_max: u32,
+    ) -> Result<(), Errno>;
+    /// Signals the tracked main process by number through its pidfd; `ESRCH` when none is
+    /// tracked or it is gone.
+    fn signal_number(&mut self, slot: u16, sig: i32) -> Result<(), Errno>;
+    /// A duplicate of the tracked main's pidfd; `ESRCH` when none is tracked.
+    fn dup_main_pidfd(&mut self, slot: u16) -> Result<OwnedFd, Errno>;
     /// The cell's cgroup id, once opened.
     fn cgroup_id(&self, slot: u16) -> Option<u64>;
 }

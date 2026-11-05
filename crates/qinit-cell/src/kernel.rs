@@ -148,7 +148,32 @@ impl Kernel {
         if let Some(error) = self.reap_error.take() {
             return Err(error);
         }
-        let mut out = self.l.wait().map_err(lp)?;
+        let out = self.l.wait().map_err(lp)?;
+        Ok(self.settle(out))
+    }
+
+    /// As [`Kernel::wait`], without blocking: what the loop has ready now, possibly nothing.
+    ///
+    /// # Errors
+    ///
+    /// The loop's errno.
+    pub fn poll(&mut self) -> Result<Vec<Ready>, Errno> {
+        if let Some(error) = self.reap_error.take() {
+            return Err(error);
+        }
+        let out = self.l.poll().map_err(lp)?;
+        Ok(self.settle(out))
+    }
+
+    /// The loop's epoll descriptor: readable while [`Kernel::poll`] has results, so an outer
+    /// loop can wait on it.
+    #[must_use]
+    pub fn poll_fd(&self) -> BorrowedFd<'_> {
+        self.l.as_fd()
+    }
+
+    /// Takes the exits the loop reaped off the books and retries the unwatched strays.
+    fn settle(&mut self, mut out: Vec<Ready>) -> Vec<Ready> {
         out.retain(|r| match *r {
             Ready::Exited(t, status) => self.reaped_by_loop(t, status),
             _ => true,
@@ -162,7 +187,7 @@ impl Kernel {
                 Err(_) => {}
             }
         }
-        Ok(out)
+        out
     }
 
     /// Whether an exit the loop reaped goes on to the engine as it is.
@@ -518,6 +543,38 @@ impl Effects for Kernel {
 
     fn take_reaped(&mut self) -> Vec<(libc::pid_t, i32)> {
         std::mem::take(&mut self.reaped)
+    }
+
+    fn write_limits(
+        &mut self,
+        slot: u16,
+        memory_max_bytes: u64,
+        pids_max: u32,
+    ) -> Result<(), Errno> {
+        if memory_max_bytes != 0 {
+            let text = format!("{memory_max_bytes}\n");
+            cgroup::write_file_at(self.dir(slot)?, c"memory.max", text.as_bytes())?;
+        }
+        if pids_max != 0 {
+            let text = format!("{pids_max}\n");
+            cgroup::write_file_at(self.dir(slot)?, c"pids.max", text.as_bytes())?;
+        }
+        Ok(())
+    }
+
+    fn signal_number(&mut self, slot: u16, sig: i32) -> Result<(), Errno> {
+        let m = self.slot(slot)?.main.as_ref().ok_or(Errno(libc::ESRCH))?;
+        // `false`: the process is gone already.
+        if proc::pidfd_signal(&m.pidfd, sig)? {
+            Ok(())
+        } else {
+            Err(Errno(libc::ESRCH))
+        }
+    }
+
+    fn dup_main_pidfd(&mut self, slot: u16) -> Result<OwnedFd, Errno> {
+        let m = self.slot(slot)?.main.as_ref().ok_or(Errno(libc::ESRCH))?;
+        fd::dup_above(m.pidfd.as_fd(), 0)
     }
 
     fn cgroup_id(&self, slot: u16) -> Option<u64> {
