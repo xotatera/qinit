@@ -145,7 +145,7 @@ fn help_prints_the_grammar_and_exits_0() {
 
 #[test]
 fn a_command_that_is_not_built_yet_is_a_usage_error() {
-    let (code, _, err) = qctl(&["status", "worker.sshd"]);
+    let (code, _, err) = qctl(&["watch", "--all"]);
     assert_eq!(code, 2);
     assert!(err.contains("not implemented yet"), "{err}");
 }

@@ -7,10 +7,12 @@ use std::io::Write;
 
 pub mod args;
 pub mod compile;
+pub mod control;
 pub mod fill;
 pub mod owner;
 pub mod report;
 pub mod show;
+pub mod text;
 pub mod toml_text;
 
 use args::{Command, Parsed};
@@ -38,11 +40,18 @@ pub fn run_with(
             return 2;
         }
     };
-    let Parsed { command, .. } = parsed;
+    let Parsed {
+        command, socket, ..
+    } = parsed;
     match command {
         Command::Compile(opts) => compile::run(&opts, defaults, out, err),
         Command::Show(opts) => show::run(&opts, defaults, out, err),
         Command::Fill(opts) => fill::run(&opts, defaults, out, err),
+        Command::Status { .. }
+        | Command::List { .. }
+        | Command::Change { .. }
+        | Command::Refresh { .. }
+        | Command::Shutdown { .. } => control::run(&command, &socket, out, err),
         other => {
             let _ = writeln!(
                 err,

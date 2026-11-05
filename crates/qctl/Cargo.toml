@@ -25,6 +25,13 @@ serde.workspace = true
 toml.workspace = true
 toml_edit = { version = "=0.25.17", default-features = false, features = ["display", "parse"] }
 
+[dev-dependencies]
+qinit-colony = { path = "../qinit-colony" }
+qinit-colony-core = { path = "../qinit-colony-core" }
+qinit-ipc = { path = "../qinit-ipc" }
+qinit-proto = { path = "../qinit-proto", features = ["testing"] }
+qinit-sys = { path = "../qinit-sys" }
+
 [lints]
 workspace = true
 
