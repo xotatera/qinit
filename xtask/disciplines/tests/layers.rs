@@ -123,6 +123,11 @@ fn the_direction_table_is_exact() {
         ("runtime", "primitive"),
         ("edge", "primitive"),
         ("unsafe", "primitive"),
+        ("ffi", "edge"),
+        ("ffi", "runtime"),
+        ("ffi", "core"),
+        ("ffi", "kernel"),
+        ("ffi", "primitive"),
     ];
     for from in layers::LAYER_NAMES {
         for to in layers::LAYER_NAMES {
@@ -292,6 +297,27 @@ fn the_unsafe_zone_needs_no_opt_in() {
     let mut p = pkg("ffi", "unsafe", &[], vec![]);
     p.manifest = "[package]\nname = \"ffi\"\n\n[lints.rust]\nunsafe_code = \"allow\"\n".to_string();
     assert_eq!(messages(&[p]), Vec::<String>::new());
+}
+
+#[test]
+fn the_ffi_layer_needs_no_opt_in() {
+    let mut p = pkg("capi", "ffi", &[], vec![]);
+    p.manifest =
+        "[package]\nname = \"capi\"\n\n[lints.rust]\nunsafe_code = \"allow\"\n".to_string();
+    assert_eq!(messages(&[p]), Vec::<String>::new());
+}
+
+#[test]
+fn only_tooling_may_depend_on_ffi() {
+    let ps = [
+        pkg("a", "runtime", &["b"], vec![member("b")]),
+        pkg("b", "ffi", &[], vec![]),
+    ];
+    assert!(
+        messages(&ps).iter().any(|m| m.contains("may not depend")),
+        "{:#?}",
+        messages(&ps)
+    );
 }
 
 #[test]
