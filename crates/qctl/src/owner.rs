@@ -151,6 +151,21 @@ pub fn ancestors(dir: &Path) -> Result<Vec<Entry>, Refusal> {
         .collect()
 }
 
+/// For a directory that may not exist yet (one `qctl` is about to create as root): the rule on
+/// its nearest existing ancestor and every ancestor of that, so nothing is created below a
+/// directory others may write.
+///
+/// # Errors
+/// The first entry that breaks the rule, or [`Refusal::Io`].
+pub fn creatable(dir: &Path) -> Result<(), Refusal> {
+    let abs = std::path::absolute(dir).map_err(|e| Refusal::Io(dir.to_owned(), e))?;
+    let existing = abs
+        .ancestors()
+        .find(|p| std::fs::symlink_metadata(p).is_ok())
+        .unwrap_or(Path::new("/"));
+    judge(&ancestors(existing)?)
+}
+
 /// The check: as root, collect and judge; otherwise one notice line and success.
 ///
 /// # Errors

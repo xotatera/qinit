@@ -11,13 +11,12 @@
 //! temporary file and a rename, keeping its mode and owner; a dry run prints the diff instead.
 use crate::args::{FillOpts, PolicyChoice};
 use crate::compile::{Defaults, checked_input};
-use crate::report;
 use crate::show::{KINDS, kind_word, merged_frame, unwritable_default, user_ns};
+use crate::{owner, report};
 use qinit_frames::compile::{Compiled, compile};
 use qinit_frames::dump;
 use qinit_frames::layers::LayerInput;
 use qinit_frames::provenance::{FrameKey, Provenance};
-use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{self, Write};
@@ -223,6 +222,19 @@ pub fn plan(c: &Compiled, targets: &Targets) -> Result<Vec<Edit>, String> {
                         .filter(|o| o.template == Some(*t) && !o.sets(top))
                         .all(|o| o.default_of(key) == Some(value))
             });
+            // A frame that takes the field from its template and sets none of it would, by a key
+            // of its own, replace the template's whole field: refuse rather than change it.
+            if into_template.is_none()
+                && let Some(t) = f.template
+                && !f.sets(top)
+                && merged_frame(c, "template", t).is_some_and(|tt| tt.contains_key(top))
+            {
+                return Err(format!(
+                    "fill: {}.{}: {key}: the template {t} sets part of {top} and the frames \
+                     using it need different defaults for it; fill it by hand",
+                    f.kind, f.name
+                ));
+            }
             let (kind, name) = match into_template {
                 Some(t) => ("template", t),
                 None => (f.kind, f.name),
@@ -440,11 +452,16 @@ fn rewrite(path: &Path, edits: &[&Edit]) -> io::Result<Rewrite> {
     };
     let mut doc: DocumentMut = old.parse().map_err(|e| ctx(format!("{e}")))?;
     if doc.to_string() != old {
-        return Err(ctx(
-            "toml_edit cannot write this file back byte for byte (keys of one dotted table \
-             apart?); fill it by hand"
-                .into(),
-        ));
+        let why = if old.contains('\r') {
+            "it has CRLF line ends"
+        } else if !old.is_empty() && !old.ends_with('\n') {
+            "it does not end in a newline"
+        } else {
+            "keys of one dotted table apart?"
+        };
+        return Err(ctx(format!(
+            "toml_edit cannot write this file back byte for byte ({why}); fill it by hand"
+        )));
     }
     let mut next = max_position(doc.as_table());
     let mut keys = 0;
@@ -468,14 +485,25 @@ fn rewrite(path: &Path, edits: &[&Edit]) -> io::Result<Rewrite> {
     })
 }
 
+/// What [`apply`] did: the keys filled and the files they went into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Applied {
+    /// The keys inserted.
+    pub keys: usize,
+    /// The files with at least one key inserted.
+    pub files: usize,
+}
+
 /// Make `edits`, file by file; with `dry_run` print the unified diff of each file to `out`
-/// instead of writing. Every file is edited before any is written, so a file that cannot be
-/// edited stops the run with nothing written. Returns the number of keys filled.
+/// instead of writing. Every file is edited, and then every new text is written to its
+/// temporary file with the old file's owner and mode, before any is renamed over its file: a
+/// file that cannot be edited, or whose owner or mode cannot be kept, stops the run with no file
+/// changed. A file whose edits insert nothing is not written.
 ///
 /// # Errors
 /// A file that is a symbolic link, does not parse, would not keep its bytes, or fails to
 /// write.
-pub fn apply(edits: &[Edit], dry_run: bool, out: &mut dyn Write) -> io::Result<usize> {
+pub fn apply(edits: &[Edit], dry_run: bool, out: &mut dyn Write) -> io::Result<Applied> {
     let mut by_file: Vec<(&Path, Vec<&Edit>)> = Vec::new();
     for e in edits {
         match by_file.iter_mut().find(|(f, _)| *f == e.file) {
@@ -487,22 +515,62 @@ pub fn apply(edits: &[Edit], dry_run: bool, out: &mut dyn Write) -> io::Result<u
         .iter()
         .map(|(f, es)| rewrite(f, es))
         .collect::<io::Result<Vec<_>>>()?;
-    let mut keys = 0;
-    for r in rewrites.iter().filter(|r| r.keys > 0) {
-        keys += r.keys;
-        if dry_run {
+    let changed: Vec<&Rewrite> = rewrites.iter().filter(|r| r.keys > 0).collect();
+    let done = Applied {
+        keys: changed.iter().map(|r| r.keys).sum(),
+        files: changed.len(),
+    };
+    if dry_run {
+        for r in &changed {
             out.write_all(diff(&r.path, r.meta.is_some(), &r.old, &r.new).as_bytes())?;
-        } else {
-            write_keeping(&r.path, r.new.as_bytes(), r.meta.as_ref())?;
+        }
+        return Ok(done);
+    }
+    let mut staged = Vec::new();
+    for r in &changed {
+        match stage(&r.path, r.new.as_bytes(), r.meta.as_ref()) {
+            Ok(s) => staged.push(s),
+            Err(e) => {
+                for s in &staged {
+                    let _ = std::fs::remove_file(&s.tmp);
+                }
+                return Err(e);
+            }
         }
     }
-    Ok(keys)
+    let mut result = Ok(());
+    for s in &staged {
+        if result.is_ok() {
+            result = s.commit();
+        }
+        if result.is_err() {
+            let _ = std::fs::remove_file(&s.tmp);
+        }
+    }
+    result.map(|()| done)
 }
 
-/// Write `bytes` over `path` through a new temporary file beside it and a rename, with the mode
-/// and owner of `meta` (the old file's; 0644 and the caller's for a new file), synced, then the
-/// directory synced.
-fn write_keeping(path: &Path, bytes: &[u8], meta: Option<&Metadata>) -> io::Result<()> {
+/// A new text written and synced to a temporary file beside its file, not yet renamed over it.
+struct Staged {
+    tmp: PathBuf,
+    path: PathBuf,
+    dir: PathBuf,
+}
+
+impl Staged {
+    /// Rename the temporary file over the file, then sync the directory.
+    fn commit(&self) -> io::Result<()> {
+        std::fs::rename(&self.tmp, &self.path)
+            .and_then(|()| File::open(&self.dir)?.sync_all())
+            .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", self.path.display())))
+    }
+}
+
+/// Write `bytes` to a new temporary file beside `path` (creating the directory for a new file),
+/// with the mode and owner of `meta` (the old file's; 0644 and the caller's for a new file),
+/// synced. Nothing already at the temporary name is followed or removed.
+fn stage(path: &Path, bytes: &[u8], meta: Option<&Metadata>) -> io::Result<Staged> {
+    let at = |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", path.display()));
     let dir = match path.parent() {
         Some(d) if !d.as_os_str().is_empty() => d,
         _ => Path::new("."),
@@ -511,7 +579,8 @@ fn write_keeping(path: &Path, bytes: &[u8], meta: Option<&Metadata>) -> io::Resu
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o755)
-            .create(dir)?;
+            .create(dir)
+            .map_err(at)?;
     }
     let name = path
         .file_name()
@@ -521,25 +590,31 @@ fn write_keeping(path: &Path, bytes: &[u8], meta: Option<&Metadata>) -> io::Resu
     tmp_name.push(format!(".qctl-fill-{}", std::process::id()));
     let tmp = dir.join(tmp_name);
     let mode = meta.map_or(0o644, |m| m.permissions().mode() & 0o7777);
+    let mut f = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode & 0o777)
+        .open(&tmp)
+        .map_err(at)?;
     let result = (|| {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(mode & 0o777)
-            .open(&tmp)?;
-        f.write_all(bytes)?;
         if let Some(m) = meta {
             std::os::unix::fs::fchown(&f, Some(m.uid()), Some(m.gid()))?;
         }
         f.set_permissions(std::fs::Permissions::from_mode(mode))?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, path)?;
-        File::open(dir)?.sync_all()
+        f.write_all(bytes)?;
+        f.sync_all()
     })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    match result {
+        Ok(()) => Ok(Staged {
+            tmp,
+            path: path.to_path_buf(),
+            dir: dir.to_path_buf(),
+        }),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(at(e))
+        }
     }
-    result.map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))
 }
 
 /// One step of a line diff.
@@ -689,6 +764,15 @@ pub fn run(opts: &FillOpts, defaults: &Defaults, out: &mut dyn Write, err: &mut 
             return 1;
         }
     };
+    // An absent default etc layer is no root of the ownership check: as root, check where it
+    // would be created before anything is.
+    if defaults.euid == 0
+        && !last.dir.is_dir()
+        && let Err(r) = owner::creatable(&last.dir)
+    {
+        let _ = writeln!(err, "{r}");
+        return 1;
+    }
     let compiled = match compile(&input) {
         Ok(c) => c,
         Err(errors) => {
@@ -743,9 +827,12 @@ pub fn run(opts: &FillOpts, defaults: &Defaults, out: &mut dyn Write, err: &mut 
         return 0;
     }
     match apply(&edits, opts.dry_run, out) {
-        Ok(n) if !opts.dry_run => {
-            let files: BTreeSet<&Path> = edits.iter().map(|e| e.file.as_path()).collect();
-            let _ = writeln!(out, "qctl: fill: {n} keys filled in {} files", files.len());
+        Ok(done) if !opts.dry_run => {
+            let _ = writeln!(
+                out,
+                "qctl: fill: {} keys filled in {} files",
+                done.keys, done.files
+            );
             0
         }
         Ok(_) => 0,

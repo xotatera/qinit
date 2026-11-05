@@ -200,14 +200,19 @@ line is touched, no value is re-serialised.
 nor derived values.
 
 **Which file.** Only the last layer is written, never the vendor layer (the lowest layer is the
-package manager's and an update would undo the edit). With one layer given `fill` refuses. The key
+package manager's and an update would undo the edit). With `--layer` given exactly once `fill`
+refuses: the one layer would be the lowest. Without `--layer` the last layer is the default `etc`
+layer, created when absent (as root only below directories that pass the ownership rule). The key
 goes into the file of that layer that already has a table for the frame; when there is none, into a
 file of the same base name as the file that declared the frame, with a new `[<kind>.<name>]`
 header. The policy is written in place. A target that is an instance fills its frame.
 
-**Templates.** A key goes into the template's table, once, only if no frame using the template
-sets that field itself and all those frames agree on the default. Otherwise it goes into the
-frame. `fill template.<name>` fills what the frames leave to that template.
+**Templates.** A key goes into the template's table, once, when the frame takes the field from
+the template (it does not set that field itself) and every frame using the template that does
+not set the field either has the same default for it; frames that set the field are left out of
+that comparison. Otherwise it goes into the frame. When it would go into a frame that takes the
+field from a template which sets part of that field, `fill` refuses: the frame's key would replace
+the template's whole field. `fill template.<name>` fills what the frames leave to that template.
 
 **Where.** After the last key of the table. A key below a standard table that exists
 (`[worker.x.restart]`) goes into it; below an inline table (`restart = { max = 9 }`) it goes
@@ -218,14 +223,17 @@ prints. Inside an inline table the key is inserted without the comment.
 
 **Refusals.** `fill` parses each file with `toml_edit` and refuses, writing nothing, a file that
 `toml_edit` cannot write back byte for byte: a file with the keys of one dotted table apart, one
-with no trailing newline, or one with CRLF line ends. A file that is a symbolic link or not a
-regular file is refused. The ownership check applies as for `compile`.
+with no trailing newline, or one with CRLF line ends (the refusal says which of the last two it
+is). A file that is a symbolic link or not a regular file is refused. The ownership check applies
+as for `compile`.
 
-**Safety.** Each file is rewritten through a temporary file and a rename, keeping its mode and
-owner. `--dry-run` prints the unified diff of every file (`--- <path>` / `+++ <path>`, or
+**Safety.** Every file is edited first, then the new text of every file is written to a new
+temporary file beside it with the old file's mode and owner, and only when all of them are
+written are they renamed over their files: a file that cannot be edited, or whose temporary file
+cannot be written or given the owner and mode, stops the run with no file changed. `--dry-run` prints the unified diff of every file (`--- <path>` / `+++ <path>`, or
 `--- /dev/null` for a file that would be created) and writes nothing. When there is nothing to
 fill it prints `qctl: fill: nothing to fill` and exits 0, so a second `fill` is a no-op. A real
-fill prints `qctl: fill: <n> keys filled in <m> files`. After a fill, `compile` yields the same
+fill prints `qctl: fill: <n> keys filled in <m> files`, counting the files written. After a fill, `compile` yields the same
 database as before: only defaults were written. The database itself is never touched.
 
 Example (`etc/sshd.toml` contains `restart = { max = 9 }`; `qctl fill ... --dry-run worker.sshd`,

@@ -306,6 +306,7 @@ fn fill_writes_a_template_key_once_into_the_template() {
 #[test]
 fn fill_of_an_instance_fills_its_frame() {
     let t = TempDir::golden("instance");
+    let db = t.db(None);
     let (code, _out, err) = t.fill(&["worker.getty@tty1"]);
     assert_eq!(code, 0, "{err}");
     let tty = t.read("etc/tty-login.toml");
@@ -314,6 +315,138 @@ fn fill_of_an_instance_fills_its_frame() {
         "{tty}"
     );
     assert!(!t.read("etc/sshd.toml").contains("filled by qctl"));
+    assert!(t.db(None) == db, "the database changed:\n{tty}");
+    let once = t.snapshot();
+    let (code, out, err) = t.fill(&["worker.getty@tty1"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("nothing to fill"), "{out}");
+    assert!(t.snapshot() == once, "the second fill changed a file");
+}
+
+#[test]
+fn fill_of_a_template_writes_only_what_goes_into_the_template() {
+    let t = TempDir::new("template-target");
+    t.write(
+        "vendor/t.toml",
+        "[template.t]\ncredentials = { uid = \"root\" }\n",
+    );
+    t.write(
+        "vendor/a.toml",
+        "[worker.a]\nexec = [\"/bin/a\"]\ntemplate = \"t\"\nrestart = { policy = \"always\" }\n",
+    );
+    t.write(
+        "vendor/b.toml",
+        "[worker.b]\nexec = [\"/bin/b\"]\ntemplate = \"t\"\n",
+    );
+    let db = t.db(None);
+    let (code, out, err) = t.fill(&["template.t"]);
+    assert_eq!(code, 0, "{err}");
+    let tt = t.read("etc/t.toml");
+    assert!(tt.starts_with("[template.t]\n"), "{tt}");
+    assert!(
+        tt.contains(&format!("  ready = \"pipe\"{FILLED}\n")),
+        "{tt}"
+    );
+    // a's own restart defaults belong to a, not to the template: a template target leaves them.
+    assert!(!t.0.join("etc/a.toml").exists());
+    assert!(!t.0.join("etc/b.toml").exists());
+    assert!(out.ends_with("in 1 files\n"), "{out}");
+    assert!(t.db(None) == db, "the database changed:\n{tt}");
+    let (code, _out, err) = t.fill(&["template.nope"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("no frame template.nope"), "{err}");
+}
+
+#[test]
+fn the_summary_counts_only_the_files_written() {
+    let t = one_worker("summary", Some("[worker.x]\ncwd = \"/\"\n"));
+    let x = t.0.join("etc/x.toml");
+    let y = t.0.join("etc/y.toml");
+    let before = t.read("etc/x.toml");
+    let edit = |file: &Path, key: &str, value: &str| qctl::fill::Edit {
+        file: file.to_path_buf(),
+        table: vec!["worker".into(), "x".into()],
+        key: key.into(),
+        value: value.into(),
+    };
+    // x already has cwd: its edit inserts nothing; y gains one key.
+    let edits = [edit(&x, "cwd", "\"/\""), edit(&y, "umask", "0o027")];
+    let done = qctl::fill::apply(&edits, false, &mut Vec::new()).unwrap();
+    assert_eq!(done, qctl::fill::Applied { keys: 1, files: 1 });
+    assert_eq!(t.read("etc/x.toml"), before);
+    assert!(t.read("etc/y.toml").contains("umask = 0o027"));
+}
+
+#[test]
+fn a_file_that_cannot_be_staged_leaves_every_file_as_it_was() {
+    let t = one_worker("staged", Some("[worker.x]\n"));
+    let closed = t.0.join("closed");
+    std::fs::create_dir_all(&closed).unwrap();
+    std::fs::write(closed.join("z.toml"), "[worker.x]\n").unwrap();
+    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // Root writes into a 0555 directory anyway: then there is nothing to test.
+    let writable_anyway = std::fs::write(closed.join("probe"), "").is_ok();
+    let edit = |file: PathBuf| qctl::fill::Edit {
+        file,
+        table: vec!["worker".into(), "x".into()],
+        key: "umask".into(),
+        value: "0o027".into(),
+    };
+    let edits = [edit(t.0.join("etc/x.toml")), edit(closed.join("z.toml"))];
+    let r = qctl::fill::apply(&edits, false, &mut Vec::new());
+    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if writable_anyway {
+        return;
+    }
+    let e = r.unwrap_err();
+    assert!(e.to_string().contains("z.toml"), "{e}");
+    // x.toml was staged first and is untouched; its temporary file is gone.
+    assert_eq!(t.read("etc/x.toml"), "[worker.x]\n");
+    let names: Vec<_> = std::fs::read_dir(t.0.join("etc"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(names, ["x.toml"]);
+}
+
+#[test]
+fn an_absent_default_etc_layer_is_created_and_filled() {
+    let t = one_worker("no-etc", None);
+    let etc = t.0.join("no-etc/frames");
+    let defaults = Defaults {
+        vendor: t.0.join("vendor"),
+        etc: etc.clone(),
+        policy: "/nonexistent/policy.toml".into(),
+        euid: 1000,
+    };
+    let args: Vec<String> = ["fill", "--no-policy", "all"]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = qctl::run_with(&args, &mut out, &mut err, &defaults);
+    let err = String::from_utf8(err).unwrap();
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("etc layer") && err.contains("absent"), "{err}");
+    let x = std::fs::read_to_string(etc.join("x.toml")).unwrap();
+    assert!(x.starts_with("[worker.x]\n"), "{x}");
+    assert!(x.contains(&format!("  cwd = \"/\"{FILLED}\n")), "{x}");
+}
+
+#[test]
+fn where_an_absent_etc_layer_would_be_created_is_checked_as_root() {
+    let t = TempDir::new("creatable");
+    // Below the user's scratch directory: not root's, so nothing may be created there as root.
+    let r = qctl::owner::creatable(&t.0.join("no-etc/frames"));
+    assert!(
+        matches!(r, Err(qctl::owner::Refusal::Owner { .. })),
+        "{r:?}"
+    );
+    assert!(!t.0.join("no-etc").exists());
+    // Below a root-owned directory nobody else may write: allowed.
+    if qctl::owner::judge(&qctl::owner::ancestors(Path::new("/usr")).unwrap()).is_ok() {
+        assert!(qctl::owner::creatable(Path::new("/usr/qctl-no-such/frames")).is_ok());
+    }
 }
 
 #[test]
@@ -404,6 +537,24 @@ fn fill_refuses_a_single_layer() {
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("one layer"), "{err}");
     assert!(t.snapshot() == before, "a file changed");
+}
+
+#[test]
+fn a_file_without_a_final_newline_or_with_crlf_is_refused_with_the_reason() {
+    for (tag, etc, why) in [
+        (
+            "no-newline",
+            "[worker.x]\numask = 0o027",
+            "does not end in a newline",
+        ),
+        ("crlf", "[worker.x]\r\numask = 0o027\r\n", "CRLF line ends"),
+    ] {
+        let t = one_worker(tag, Some(etc));
+        let (code, _out, err) = t.fill(&["worker.x"]);
+        assert_eq!(code, 1, "{err}");
+        assert!(err.contains(why), "{tag}: {err}");
+        assert_eq!(t.read("etc/x.toml"), etc);
+    }
 }
 
 #[test]
