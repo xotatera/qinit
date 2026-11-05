@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The control commands against the real server on a thread, over a real socket.
+mod common;
 #[path = "../../qinit-client/tests/common/served.rs"]
 mod served;
 
+use common::TempDir;
 use served::common::database;
 use served::{Served, frames, instant};
 
@@ -79,14 +81,11 @@ fn a_missing_socket_is_a_transport_error_and_a_bad_wait_is_usage() {
 fn refresh_passes_the_database_and_halt_without_wait_prints_accepted() {
     let s = Served::start(&["db"], true, instant(None));
     let path = sock(&s);
-    let dir = std::env::temp_dir().join(format!("qctl-control-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("control");
     let db = dir.join("expected.db");
     let changed = frames().replace("/bin/db", "/bin/db2");
     std::fs::write(&db, database(&changed, &["db"])).unwrap();
     let (code, out, err) = qctl(&["--socket", &path, "refresh", db.to_str().unwrap()]);
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!((code, out.as_str()), (0, "accepted\n"), "{err}");
     let (code, out, err) = qctl(&["--socket", &path, "halt"]);
     assert_eq!((code, out.as_str()), (0, "accepted\n"), "{err}");

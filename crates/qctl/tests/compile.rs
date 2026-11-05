@@ -4,6 +4,9 @@
 use qctl::args::{self, Command, Outcome, PolicyChoice};
 use qctl::compile::Defaults;
 use std::os::unix::fs::MetadataExt;
+mod common;
+
+use common::TempDir;
 use std::path::PathBuf;
 
 const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../qinit-frames/tests/golden");
@@ -22,16 +25,10 @@ fn qctl(args: &[&str]) -> (i32, String, String) {
     )
 }
 
-fn temp_dir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("qctl-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
-
 #[test]
 fn compile_writes_the_same_bytes_as_the_library() {
-    let dir = temp_dir("golden");
+    let tmp = TempDir::new("golden");
+    let dir = tmp.path();
     let out = dir.join("colony.db").display().to_string();
     let dump = dir.join("colony.dump").display().to_string();
     let (code, _, err) = qctl(&[
@@ -62,7 +59,8 @@ fn compile_writes_the_same_bytes_as_the_library() {
 
 #[test]
 fn a_frame_error_names_file_line_and_key() {
-    let dir = temp_dir("bad");
+    let tmp = TempDir::new("bad");
+    let dir = tmp.path();
     let layer = dir.join("layer");
     std::fs::create_dir_all(&layer).unwrap();
     std::fs::write(layer.join("x.toml"), "[worker.x]\nexec = 1\n").unwrap();
@@ -95,7 +93,8 @@ fn a_frame_error_names_file_line_and_key() {
 
 #[test]
 fn a_missing_named_layer_is_an_error_and_a_missing_default_etc_is_a_notice() {
-    let dir = temp_dir("missing");
+    let tmp = TempDir::new("missing");
+    let dir = tmp.path();
     let out = dir.join("colony.db").display().to_string();
     let (code, _, err) = qctl(&[
         "compile",

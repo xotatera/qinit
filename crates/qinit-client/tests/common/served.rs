@@ -17,6 +17,7 @@ use qinit_proto::testing::Driver;
 use std::ffi::CString;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 
 pub fn frames() -> String {
@@ -73,13 +74,12 @@ impl Served {
         policy: Option<&str>,
         tick_ms: u64,
     ) -> Served {
+        // Unique per `Served` (two in one test, or a reused thread, never share a directory).
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "qinit-client-{}-{}",
             std::process::id(),
-            std::thread::current()
-                .name()
-                .unwrap_or("t")
-                .replace("::", "-")
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

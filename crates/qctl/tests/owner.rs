@@ -3,6 +3,9 @@
 //! D26: the ownership check.
 use qctl::owner::{Entry, Refusal, check, collect, euid_from, judge};
 use std::os::unix::fs::{PermissionsExt, symlink};
+mod common;
+
+use common::TempDir;
 use std::path::{Path, PathBuf};
 
 fn entry(path: &str, uid: u32, mode: u32) -> Entry {
@@ -12,13 +15,6 @@ fn entry(path: &str, uid: u32, mode: u32) -> Entry {
         mode,
         symlink: false,
     }
-}
-
-fn temp_dir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("qctl-owner-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
 }
 
 #[test]
@@ -106,7 +102,8 @@ fn root_runs_collect_and_judge_and_prints_no_notice() {
 
 #[test]
 fn collect_walks_descendants_and_ancestors() {
-    let d = temp_dir("walk");
+    let tmp = TempDir::new("owner-walk");
+    let d = tmp.path();
     let layer = d.join("layer");
     std::fs::create_dir_all(layer.join("sub")).unwrap();
     std::fs::write(layer.join("a.toml"), "").unwrap();
@@ -123,7 +120,7 @@ fn collect_walks_descendants_and_ancestors() {
         layer.join("a.toml"),
         layer.join("sub/b.toml"),
         policy.clone(),
-        d.clone(),
+        d.to_path_buf(),
         PathBuf::from("/"),
     ] {
         assert!(paths.contains(&p.as_path()), "{} missing", p.display());
@@ -134,12 +131,12 @@ fn collect_walks_descendants_and_ancestors() {
     let p = got.iter().find(|e| e.path == policy).unwrap();
     assert_eq!(p.mode & 0o7777, 0o600);
     assert!(!p.symlink);
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
 fn collect_records_symlinks_and_does_not_follow_them() {
-    let d = temp_dir("link");
+    let tmp = TempDir::new("owner-link");
+    let d = tmp.path();
     let layer = d.join("layer");
     let elsewhere = d.join("elsewhere");
     std::fs::create_dir_all(&layer).unwrap();
@@ -152,22 +149,22 @@ fn collect_records_symlinks_and_does_not_follow_them() {
     assert!(!got.iter().any(|e| e.path.ends_with("secret.toml")));
     let links: Vec<Entry> = got.into_iter().filter(|e| e.symlink).collect();
     assert!(matches!(judge(&links), Err(Refusal::Symlink(_))));
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
 fn a_symlink_root_is_recorded_as_a_symlink() {
-    let d = temp_dir("rootlink");
+    let tmp = TempDir::new("owner-rootlink");
+    let d = tmp.path();
     std::fs::create_dir_all(d.join("real")).unwrap();
     symlink(d.join("real"), d.join("l")).unwrap();
     let got = collect(&[&d.join("l")]).unwrap();
     assert!(got.iter().any(|e| e.path == d.join("l") && e.symlink));
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
 fn a_missing_root_and_an_unreadable_directory_are_io_refusals() {
-    let d = temp_dir("io");
+    let tmp = TempDir::new("owner-io");
+    let d = tmp.path();
     assert!(matches!(
         collect(&[&d.join("nope")]),
         Err(Refusal::Io(ref p, _)) if p == &d.join("nope")
@@ -194,12 +191,12 @@ fn an_unreadable_proc_self_fails_closed_and_the_check_still_runs() {
     let failure = Err(std::io::Error::from_raw_os_error(13));
     let euid = euid_from(failure);
     assert_eq!(euid, 0, "an unknown euid must be treated as root");
-    let d = temp_dir("failclosed");
+    let tmp = TempDir::new("owner-failclosed");
+    let d = tmp.path();
     let mut err = Vec::new();
-    let r = check(&[&d], euid, &mut err);
+    let r = check(&[d], euid, &mut err);
     assert!(matches!(r, Err(Refusal::Owner { .. })), "{r:?}");
     assert!(err.is_empty());
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
@@ -211,13 +208,13 @@ fn the_real_euid_is_the_owner_of_proc_self() {
 
 #[test]
 fn as_root_a_user_owned_tree_is_refused_without_a_notice() {
-    let d = temp_dir("asroot");
+    let tmp = TempDir::new("owner-asroot");
+    let d = tmp.path();
     std::fs::write(d.join("a.toml"), "").unwrap();
     let mut err = Vec::new();
-    let r = check(&[&d], 0, &mut err);
+    let r = check(&[d], 0, &mut err);
     assert!(matches!(r, Err(Refusal::Owner { .. })), "{r:?}");
     assert!(err.is_empty(), "{:?}", String::from_utf8_lossy(&err));
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]

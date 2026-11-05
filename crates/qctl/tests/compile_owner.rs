@@ -4,19 +4,15 @@
 //! `Defaults`) refuses a layer or a policy file that is not root's.
 use qctl::compile::Defaults;
 use qctl::owner::{collect, judge};
+mod common;
+
+use common::TempDir;
 use std::path::{Path, PathBuf};
 
 const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../qinit-frames/tests/golden");
 
 fn strings(args: &[&str]) -> Vec<String> {
     args.iter().map(|s| (*s).to_owned()).collect()
-}
-
-fn temp_dir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("qctl-cown-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
 }
 
 fn run(args: &[&str], euid: u32, dir: &Path) -> (i32, String) {
@@ -36,21 +32,30 @@ fn expected(path: &Path) -> String {
     format!("{}\n", judge(&collect(&[path]).unwrap()).unwrap_err())
 }
 
-/// A small root-owned directory that passes the check, or None on a host without one.
-fn clean_layer() -> Option<PathBuf> {
-    [
+/// A small root-owned directory that passes the check. A host without any fails the test rather
+/// than skipping it: the list then needs a directory that host has.
+fn clean_layer() -> PathBuf {
+    const CANDIDATES: [&str; 8] = [
         "/usr/lib/binfmt.d",
         "/usr/lib/sysusers.d",
+        "/usr/lib/modules-load.d",
         "/usr/share/factory",
-    ]
-    .iter()
-    .map(PathBuf::from)
-    .find(|p| p.is_dir() && judge(&collect(&[p]).unwrap()).is_ok())
+        "/usr/local/src",
+        "/usr/local/sbin",
+        "/var/empty",
+        "/usr/local",
+    ];
+    CANDIDATES
+        .iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_dir() && collect(&[p]).is_ok_and(|e| judge(&e).is_ok()))
+        .unwrap_or_else(|| panic!("no clean root-owned directory among {CANDIDATES:?}"))
 }
 
 #[test]
 fn a_root_compile_refuses_a_layer_that_is_not_roots() {
-    let dir = temp_dir("layer");
+    let tmp = TempDir::new("cown-layer");
+    let dir = tmp.path();
     let layer = dir.join("layer");
     std::fs::create_dir_all(&layer).unwrap();
     let out = dir.join("colony.db").display().to_string();
@@ -64,16 +69,13 @@ fn a_root_compile_refuses_a_layer_that_is_not_roots() {
     assert_eq!(err, expected(&layer));
     assert!(err.starts_with("qctl: ") && err.contains("the policy and the layers must be root's"));
     assert!(!Path::new(&out).exists());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn a_root_compile_refuses_a_policy_file_that_is_not_roots_with_a_clean_layer() {
-    let Some(layer) = clean_layer() else {
-        eprintln!("no clean root-owned layer on this host; skipped");
-        return;
-    };
-    let dir = temp_dir("policy");
+    let layer = clean_layer();
+    let tmp = TempDir::new("cown-policy");
+    let dir = tmp.path();
     let policy = dir.join("policy.toml");
     std::fs::write(&policy, "").unwrap();
     let out = dir.join("colony.db").display().to_string();
@@ -90,17 +92,16 @@ fn a_root_compile_refuses_a_policy_file_that_is_not_roots_with_a_clean_layer() {
     assert_eq!(code, 1, "{err}");
     assert_eq!(err, expected(&policy));
     assert!(!Path::new(&out).exists());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn an_unprivileged_compile_prints_the_notice_and_goes_on() {
-    let dir = temp_dir("user");
+    let tmp = TempDir::new("cown-user");
+    let dir = tmp.path();
     let out = dir.join("colony.db").display().to_string();
     let (code, err) = run(&["compile", "--no-policy", "--output", &out], 1000, &dir);
     assert_eq!(code, 0, "{err}");
     assert!(
         err.contains("qctl: not root: the ownership of the policy and layers is not checked\n")
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }

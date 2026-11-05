@@ -3,12 +3,17 @@
 //! `qctl watch` against the real server on a thread: `qctl` runs on its own thread and writes
 //! into a pipe, which the test reads line by line (each line is the handshake for the next
 //! step).
+mod common;
 #[path = "../../qinit-client/tests/common/served.rs"]
 mod served;
 
+use common::TempDir;
 use served::common::database;
 use served::{Served, instant};
 use std::io::{BufRead, BufReader};
+use std::os::fd::OwnedFd;
+use std::sync::mpsc;
+use std::time::Duration;
 
 fn qctl(args: &[&str]) -> (i32, String, String) {
     let args: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
@@ -21,14 +26,36 @@ fn qctl(args: &[&str]) -> (i32, String, String) {
     )
 }
 
-/// `qctl <args>` on a thread, its output on the returned reader; the thread's result is the
+/// How long a test waits for the next line before it fails (rather than hanging).
+const LINE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The lines written to a pipe, read on a thread so the test can wait for each with a bound.
+struct Lines(mpsc::Receiver<String>);
+
+impl Lines {
+    fn new(r: OwnedFd) -> Lines {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut r = BufReader::new(std::fs::File::from(r));
+            loop {
+                let mut l = String::new();
+                match r.read_line(&mut l) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if tx.send(l.trim_end_matches('\n').to_owned()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        Lines(rx)
+    }
+}
+
+/// `qctl <args>` on a thread, its output on the returned lines; the thread's result is the
 /// exit code and the error text.
-fn spawn(
-    args: &[&str],
-) -> (
-    BufReader<std::fs::File>,
-    std::thread::JoinHandle<(i32, String)>,
-) {
+fn spawn(args: &[&str]) -> (Lines, std::thread::JoinHandle<(i32, String)>) {
     let args: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
     let (r, w) = qinit_sys::fd::pipe(0o2_000_000).unwrap();
     let thread = std::thread::spawn(move || {
@@ -37,14 +64,15 @@ fn spawn(
         let code = qctl::run(&args, &mut out, &mut err);
         (code, String::from_utf8(err).unwrap())
     });
-    (BufReader::new(std::fs::File::from(r)), thread)
+    (Lines::new(r), thread)
 }
 
-fn line(r: &mut BufReader<std::fs::File>) -> Option<String> {
-    let mut l = String::new();
-    match r.read_line(&mut l).unwrap() {
-        0 => None,
-        _ => Some(l.trim_end_matches('\n').to_owned()),
+/// The next line, or None at the end of the output; panics after [`LINE_TIMEOUT`] without one.
+fn line(r: &mut Lines) -> Option<String> {
+    match r.0.recv_timeout(LINE_TIMEOUT) {
+        Ok(l) => Some(l),
+        Err(mpsc::RecvTimeoutError::Disconnected) => None,
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!("no line from qctl in {LINE_TIMEOUT:?}"),
     }
 }
 
@@ -67,14 +95,11 @@ fn watch_prints_current_then_the_change_and_ends_on_superseded() {
         }
     }
     // A database without `db` ends the watch: the node is gone.
-    let dir = std::env::temp_dir().join(format!("qctl-watch-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("watch");
     let db = dir.join("without-db.db");
     let frames = "[forager.backup]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/backup\"]\n";
     std::fs::write(&db, database(frames, &[])).unwrap();
     let (code, _, err) = qctl(&["--socket", &path, "refresh", db.to_str().unwrap()]);
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(code, 0, "{err}");
     let mut last = None;
     while let Some(l) = line(&mut lines) {
@@ -154,7 +179,7 @@ fn watch_all_goes_on_after_an_instance_exit() {
         let code = qctl::watch::follow(w, false, &mut out, &mut err);
         (code, String::from_utf8(err).unwrap())
     });
-    let mut lines = BufReader::new(std::fs::File::from(r));
+    let mut lines = Lines::new(r);
     let (code, out, err) = qctl(&["--socket", &path, "launch", "backup"]);
     assert_eq!(code, 0, "{err}");
     let target = out
