@@ -33,7 +33,7 @@ pub struct Served {
     pub path: PathBuf,
     stop: Option<OwnedFd>,
     thread: Option<JoinHandle<Colony<Sim>>>,
-    _dir: PathBuf,
+    dir: PathBuf,
 }
 
 impl Served {
@@ -58,6 +58,20 @@ impl Served {
         instance: Script,
         pidfds: Vec<OwnedFd>,
         policy: Option<&str>,
+    ) -> Served {
+        Served::start_ticking(enable, root, instance, pidfds, policy, 0)
+    }
+
+    /// As [`Served::start_policy`], with the virtual clock moved `tick_ms` forward at every
+    /// wake-up of the server, so a wait the request just armed elapses at the next one (the
+    /// one that delivers the reply). With 0 the clock stands still and no wait ever elapses.
+    pub fn start_ticking(
+        enable: &[&str],
+        root: bool,
+        instance: Script,
+        pidfds: Vec<OwnedFd>,
+        policy: Option<&str>,
+        tick_ms: u64,
     ) -> Served {
         let dir = std::env::temp_dir().join(format!(
             "qinit-client-{}-{}",
@@ -90,7 +104,7 @@ impl Served {
         let thread = std::thread::spawn(move || {
             driver
                 .serve_until(&mut colony, stop_r.as_fd(), |c| {
-                    let out = advance_outcome(c, 0);
+                    let out = advance_outcome(c, tick_ms);
                     (c.effects.now(), out)
                 })
                 .unwrap();
@@ -100,7 +114,7 @@ impl Served {
             path,
             stop: Some(stop_w),
             thread: Some(thread),
-            _dir: dir,
+            dir,
         }
     }
 
@@ -120,6 +134,7 @@ impl Drop for Served {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 

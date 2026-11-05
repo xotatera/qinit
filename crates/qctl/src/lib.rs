@@ -9,11 +9,14 @@ pub mod args;
 pub mod compile;
 pub mod control;
 pub mod fill;
+pub mod launch;
 pub mod owner;
 pub mod report;
+pub mod request;
 pub mod show;
 pub mod text;
 pub mod toml_text;
+pub mod watch;
 
 use args::{Command, Parsed};
 
@@ -52,13 +55,8 @@ pub fn run_with(
         | Command::Change { .. }
         | Command::Refresh { .. }
         | Command::Shutdown { .. } => control::run(&command, &socket, out, err),
-        other => {
-            let _ = writeln!(
-                err,
-                "qctl: '{}' is not implemented yet\nTry 'qctl --help'.",
-                other.name()
-            );
-            2
-        }
+        Command::Launch(opts) => launch::launch(&opts, &socket, out, err),
+        Command::Run(opts) => launch::run(&opts, &socket, out, err),
+        Command::Watch { all, target } => watch::run(all, &target, &socket, out, err),
     }
 }

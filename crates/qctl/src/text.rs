@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The names of the protocol's state and detail words (`docs/control-protocol.md`, enum values).
-use qinit_client::StateWord;
+use qinit_client::{Report, StateWord};
 
 /// The name of a node state word, with `/detail` where the state has one: `waiting/backoff`,
 /// `quarantined/breaker`. A word the table does not know prints as its number.
@@ -50,5 +50,25 @@ pub fn instance_state(s: u32) -> String {
         4 => "exited".to_owned(),
         5 => "stopping".to_owned(),
         n => format!("state{n}"),
+    }
+}
+
+/// The name of what a notice reports.
+#[must_use]
+pub fn report(r: Report) -> &'static str {
+    match r {
+        Report::Current => "current",
+        Report::Started => "started",
+        Report::Ready => "ready",
+        Report::Done => "done",
+        Report::Stopped => "stopped",
+        Report::Failed => "failed",
+        Report::Quarantined => "quarantined",
+        Report::Refused => "refused",
+        Report::Lost => "lost",
+        Report::Starting => "starting",
+        Report::Running => "running",
+        Report::Stopping => "stopping",
+        Report::Exited => "exited",
     }
 }

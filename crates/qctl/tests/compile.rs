@@ -144,10 +144,10 @@ fn help_prints_the_grammar_and_exits_0() {
 }
 
 #[test]
-fn a_command_that_is_not_built_yet_is_a_usage_error() {
-    let (code, _, err) = qctl(&["watch", "--all"]);
-    assert_eq!(code, 2);
-    assert!(err.contains("not implemented yet"), "{err}");
+fn watch_without_a_server_fails_with_exit_1() {
+    let (code, out, err) = qctl(&["--socket", "/nonexistent/qctl-sock", "watch", "--all"]);
+    assert_eq!((code, out.as_str()), (1, ""));
+    assert!(err.starts_with("qctl: "), "{err}");
 }
 
 fn parsed(a: &[&str]) -> args::Parsed {
@@ -231,6 +231,14 @@ fn the_grammar_parses_every_command() {
         panic!()
     };
     assert!(r.stop_cell && r.wait_ready);
+    // The run defaults are the client's `RunArgs` and the frames' (10 s grace, no ceilings).
+    let Command::Run(r) = parsed(&["run", "r.toml", "--name", "n"]).command else {
+        panic!()
+    };
+    assert_eq!(
+        (r.stop_grace, r.memory_max, r.pids_max, r.stop_cell, r.wait),
+        (10_000, 0, 0, false, 600_000)
+    );
     assert!(matches!(
         parsed(&["fill", "--dry-run", "all"]).command,
         Command::Fill(_)

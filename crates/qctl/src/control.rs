@@ -24,24 +24,28 @@ pub fn run(command: &Command, socket: &Path, out: &mut dyn Write, err: &mut dyn 
     };
     match go(command, socket, wait, out) {
         Ok(()) => 0,
-        Err(Failure::Client(ClientError::Server(code, detail))) => {
-            let _ = writeln!(err, "qctl: colony refused: {code:?} ({detail})");
-            1
-        }
-        Err(Failure::Client(e)) => {
-            let _ = writeln!(err, "qctl: {e}");
-            1
-        }
-        Err(Failure::Io(e)) => {
-            let _ = writeln!(err, "qctl: {e}");
-            1
-        }
+        Err(f) => f.report(err),
     }
 }
 
-enum Failure {
+/// Why a command over the protocol failed.
+pub(crate) enum Failure {
     Client(ClientError),
     Io(std::io::Error),
+}
+
+impl Failure {
+    /// Print the failure on `err` (a server refusal says so) and return exit code 1.
+    pub(crate) fn report(&self, err: &mut dyn Write) -> i32 {
+        let _ = match self {
+            Failure::Client(ClientError::Server(code, detail)) => {
+                writeln!(err, "qctl: colony refused: {code:?} ({detail})")
+            }
+            Failure::Client(e) => writeln!(err, "qctl: {e}"),
+            Failure::Io(e) => writeln!(err, "qctl: {e}"),
+        };
+        1
+    }
 }
 
 impl From<ClientError> for Failure {
@@ -63,10 +67,15 @@ fn wait_of(command: &Command) -> Result<Wait, String> {
         | Command::Shutdown { wait, .. } => *wait,
         _ => None,
     };
-    match ms {
-        None => Ok(Wait::Now),
-        Some(ms @ 1..=MAX_WAIT_MS) => Ok(Wait::Settled(Duration::from_millis(u64::from(ms)))),
-        Some(ms) => Err(format!("--wait: {ms} is not from 1 to {MAX_WAIT_MS}")),
+    ms.map_or(Ok(Wait::Now), |ms| wait_ms(ms).map(Wait::Settled))
+}
+
+/// A `--wait` value: 1 ms to the protocol's maximum.
+pub(crate) fn wait_ms(ms: u32) -> Result<Duration, String> {
+    if (1..=MAX_WAIT_MS).contains(&ms) {
+        Ok(Duration::from_millis(u64::from(ms)))
+    } else {
+        Err(format!("--wait: {ms} is not from 1 to {MAX_WAIT_MS}"))
     }
 }
 

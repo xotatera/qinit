@@ -421,7 +421,8 @@ fn parse_command(word: &str, s: &mut Scan<'_>) -> Result<Command, String> {
     let mut pidfd = false;
     let mut name = None;
     let mut wait_ready = false;
-    let (mut memory_max, mut pids_max, mut stop_cell, mut stop_grace) = (0, 0, false, 100);
+    // The defaults of the client's `RunArgs`: no ceilings, the main process, the frames' 10 s grace.
+    let (mut memory_max, mut pids_max, mut stop_cell, mut stop_grace) = (0, 0, false, 10_000);
     let mut tail = Vec::new();
     let launch_like = matches!(word, "launch" | "run");
     while let Some(item) = s.next()? {
