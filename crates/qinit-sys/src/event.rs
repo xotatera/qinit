@@ -39,10 +39,19 @@ pub fn epoll_del(ep: impl AsFd, fd: RawFd) -> Result<()> {
 
 /// Waits without a timeout (callers arm a timerfd) and fills `out`; retries EINTR.
 pub fn epoll_wait(ep: impl AsFd, out: &mut [libc::epoll_event]) -> Result<usize> {
+    epoll_wait_timeout(ep, out, -1)
+}
+
+/// Waits at most `ms` milliseconds (`0` polls, `-1` blocks) and fills `out`; retries EINTR.
+pub fn epoll_wait_timeout(
+    ep: impl AsFd,
+    out: &mut [libc::epoll_event],
+    ms: libc::c_int,
+) -> Result<usize> {
     let max = libc::c_int::try_from(out.len()).unwrap_or(libc::c_int::MAX);
     loop {
         // SAFETY: `out` has room for `max` events.
-        match check(unsafe { libc::epoll_wait(ep.as_fd().as_raw_fd(), out.as_mut_ptr(), max, -1) })
+        match check(unsafe { libc::epoll_wait(ep.as_fd().as_raw_fd(), out.as_mut_ptr(), max, ms) })
         {
             #[allow(clippy::cast_sign_loss)] // check() returned a non-negative count
             Ok(n) => return Ok(n as usize),
@@ -54,32 +63,47 @@ pub fn epoll_wait(ep: impl AsFd, out: &mut [libc::epoll_event]) -> Result<usize>
 
 /// A nonblocking one-shot timerfd on the monotonic clock, armed to fire `after` from now.
 pub fn timer(after: Duration) -> Result<OwnedFd> {
+    let t = timer_unarmed()?;
+    timer_set(&t, Some(after))?;
+    Ok(t)
+}
+
+/// A nonblocking timerfd on the monotonic clock that is not armed.
+pub fn timer_unarmed() -> Result<OwnedFd> {
     // SAFETY: timerfd_create takes integers.
-    let t = owned(unsafe {
+    owned(unsafe {
         libc::timerfd_create(
             libc::CLOCK_MONOTONIC,
             libc::TFD_CLOEXEC | libc::TFD_NONBLOCK,
         )
-    })?;
-    let after = after.max(Duration::from_nanos(1));
+    })
+}
+
+/// Arms `fd` to fire once, `after` from now (at least one nanosecond: a zero would disarm it),
+/// or disarms it with `None`. Either way a pending expiration is forgotten.
+pub fn timer_set(fd: impl AsFd, after: Option<Duration>) -> Result<()> {
+    let after = after.map(|d| d.max(Duration::from_nanos(1)));
+    let secs = after.map_or(0, |d| d.as_secs());
     let spec = libc::itimerspec {
         it_interval: libc::timespec {
             tv_sec: 0,
             tv_nsec: 0,
         },
         it_value: libc::timespec {
-            tv_sec: after
-                .as_secs()
-                .try_into()
-                .map_err(|_| Errno(libc::EINVAL))?,
-            tv_nsec: after.subsec_nanos().into(),
+            tv_sec: secs.try_into().map_err(|_| Errno(libc::EINVAL))?,
+            tv_nsec: after.map_or(0, |d| d.subsec_nanos()).into(),
         },
     };
     // SAFETY: `spec` is valid; the old value is not requested.
     check(unsafe {
-        libc::timerfd_settime(t.as_raw_fd(), 0, &raw const spec, std::ptr::null_mut())
+        libc::timerfd_settime(
+            fd.as_fd().as_raw_fd(),
+            0,
+            &raw const spec,
+            std::ptr::null_mut(),
+        )
     })?;
-    Ok(t)
+    Ok(())
 }
 
 /// Blocks `sigs` in the calling thread and returns a nonblocking signalfd for them.
@@ -106,12 +130,29 @@ pub fn read_signal(fd: impl AsFd) -> Option<u32> {
 
 /// A nonblocking inotify instance watching the file or directory `path` for `mask`.
 pub fn inotify(path: &Path, mask: u32) -> Result<OwnedFd> {
+    let f = inotify_init()?;
+    inotify_add(&f, path, mask)?;
+    Ok(f)
+}
+
+/// A nonblocking inotify instance with no watch.
+pub fn inotify_init() -> Result<OwnedFd> {
     // SAFETY: inotify_init1 takes integer flags.
-    let f = owned(unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) })?;
+    owned(unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) })
+}
+
+/// Adds (or updates) a watch of `path` for `mask` on `fd`; returns the watch descriptor.
+pub fn inotify_add(fd: impl AsFd, path: &Path, mask: u32) -> Result<i32> {
     let path = crate::cpath(path)?;
     // SAFETY: a NUL-terminated path that outlives the call.
-    check(unsafe { libc::inotify_add_watch(f.as_raw_fd(), path.as_ptr(), mask) })?;
-    Ok(f)
+    check(unsafe { libc::inotify_add_watch(fd.as_fd().as_raw_fd(), path.as_ptr(), mask) })
+}
+
+/// Removes the watch `wd` from `fd`.
+pub fn inotify_rm(fd: impl AsFd, wd: i32) -> Result<()> {
+    // SAFETY: integers only.
+    check(unsafe { libc::inotify_rm_watch(fd.as_fd().as_raw_fd(), wd) })?;
+    Ok(())
 }
 
 /// `read(2)` into `buf`.

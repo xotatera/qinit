@@ -324,7 +324,8 @@ impl<E: Effects> Engine<E> {
                     self.deliver(slot, Event::Deadline(timer))?;
                 }
             }
-            Ready::Signal(..) => {}
+            // The cell loop registers no shared inotify set.
+            Ready::Signal(..) | Ready::InotifySet(..) => {}
         }
         Ok(())
     }
