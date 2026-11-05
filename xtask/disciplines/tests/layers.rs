@@ -309,15 +309,41 @@ fn the_ffi_layer_needs_no_opt_in() {
 
 #[test]
 fn only_tooling_may_depend_on_ffi() {
+    // Every other layer is refused, each with the message naming both layers and the crate.
+    for from in layers::LAYER_NAMES
+        .iter()
+        .copied()
+        .filter(|l| !matches!(*l, "ffi" | "tooling"))
+    {
+        assert!(!layers::may_depend(from, "ffi"), "{from} -> ffi");
+        let ps = [
+            pkg("a", from, &[], vec![member("b")]),
+            pkg("b", "ffi", &[], vec![]),
+        ];
+        let want = format!("a: a `{from}` crate may not depend on `ffi` crate `b`");
+        assert!(
+            messages(&ps).contains(&want),
+            "{from}: {:#?}",
+            messages(&ps)
+        );
+    }
+    assert!(layers::may_depend("tooling", "ffi"));
     let ps = [
-        pkg("a", "runtime", &["b"], vec![member("b")]),
+        pkg("a", "tooling", &[], vec![member("b")]),
         pkg("b", "ffi", &[], vec![]),
     ];
     assert!(
-        messages(&ps).iter().any(|m| m.contains("may not depend")),
+        !messages(&ps).iter().any(|m| m.contains("may not depend")),
         "{:#?}",
         messages(&ps)
     );
+    // The ffi layer itself reaches what it wraps, never the unsafe zone or tooling.
+    for to in ["edge", "runtime", "core", "kernel", "primitive", "ffi"] {
+        assert!(layers::may_depend("ffi", to), "ffi -> {to}");
+    }
+    for to in ["unsafe", "tooling"] {
+        assert!(!layers::may_depend("ffi", to), "ffi -> {to}");
+    }
 }
 
 #[test]
