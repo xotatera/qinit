@@ -189,6 +189,13 @@ fn ready(cx: &mut Cx, base: &str, kind: Kind, f: &Frame) -> Ready {
             cx.bad(&key, format!("`{k}` is not pipe or exit"));
             Ready::Pipe
         }
+        Some(SReady::Socket { .. } | SReady::Path { .. }) if f.launch.is_some() => {
+            cx.bad(
+                &key,
+                "an instance cannot use socket or path readiness: use pipe or exit",
+            );
+            Ready::Pipe
+        }
         Some(SReady::Socket { socket }) => {
             cx.text(&key, socket);
             Ready::Socket(socket.clone())

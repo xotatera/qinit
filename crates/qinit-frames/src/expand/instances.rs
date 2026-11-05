@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Instance expansion: `%i` substitution, instance name checks and per-instance provenance.
-use super::{kind_name, valid_instance, valid_name};
+use super::{kind_name, reserved_why, reserved_word, valid_instance, valid_name};
 use crate::error::{Code, Error};
 use crate::provenance::{FrameKey, Provenance};
 use crate::schema::{Creds, DepEdge, DepGroup, Frame, Output, Ready, Sandbox};
@@ -114,6 +114,12 @@ pub(super) fn instances(
         if !valid_instance(inst) || !valid_name(&full) {
             let why = format!("instance {inst:?} makes the invalid name {full:?}");
             errs.push(Error::new(Code::BadName, key.clone(), why));
+        } else if let Some(word) = reserved_word(&full) {
+            errs.push(Error::new(
+                Code::BadName,
+                key.clone(),
+                reserved_why(&full, word),
+            ));
         } else if !seen.insert(inst.as_str()) {
             let why = format!("instance `{inst}` is listed twice");
             errs.push(Error::new(Code::Instance, key.clone(), why));

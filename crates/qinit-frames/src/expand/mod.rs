@@ -60,6 +60,24 @@ pub fn valid_name(s: &str) -> bool {
         && !s.starts_with(['.', '-'])
 }
 
+/// The words a cgroup directory already uses for its own interface files (`memory.max`,
+/// `cgroup.procs`): a node cell named `memory.max` would collide with one.
+const CGROUP_WORDS: [&str; 11] = [
+    "cgroup", "cpu", "cpuset", "io", "memory", "pids", "hugetlb", "misc", "rdma", "dmem", "irq",
+];
+
+/// The reserved word `name` starts with (the part before its first `.`), if any.
+pub(super) fn reserved_word(name: &str) -> Option<&'static str> {
+    let head = name.split('.').next().unwrap_or(name);
+    CGROUP_WORDS.into_iter().find(|w| *w == head)
+}
+
+pub(super) fn reserved_why(name: &str, word: &str) -> String {
+    format!(
+        "{name:?} is reserved: `{word}` would collide with a cgroup interface file such as `{word}.max`"
+    )
+}
+
 pub(super) fn valid_instance(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b != b'@' && name_byte(b))
 }
@@ -123,6 +141,10 @@ impl<'a> Run<'a> {
         let base = format!("{kname}.{name}");
         if !valid_name(name) || name.contains('@') {
             let why = format!("{name:?} is not a valid frame name");
+            return self.errs.push(Error::new(Code::BadName, base, why));
+        }
+        if let Some(word) = reserved_word(name) {
+            let why = reserved_why(name, word);
             return self.errs.push(Error::new(Code::BadName, base, why));
         }
         if let Some(prev) = self.seen.insert(name, kname) {
