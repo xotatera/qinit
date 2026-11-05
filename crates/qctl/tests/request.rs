@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The TOML request file of `qctl run` (spec 2026-11-05 §4.6).
+mod common;
+
+use common::TempDir;
 use qctl::request::parse;
 use qinit_launch::{RequestSpec, Seccomp, Securebits, Stream, UserMap};
 
@@ -124,4 +127,51 @@ fn a_bad_value_is_refused_with_its_key() {
         assert!(err.starts_with(key), "{body}: {err}");
     }
     assert!(parse("cwd = \"/\"\n").unwrap_err().contains("argv"));
+}
+
+#[test]
+fn a_value_the_overseer_would_refuse_is_refused_before_sending() {
+    let base = "argv = [\"/bin/x\"]\n";
+    for (body, key) in [
+        ("cwd = \"work\"", "cwd"),
+        ("cwd = \"\"", "cwd"),
+        ("deadline_ms = 0", "deadline_ms"),
+        ("umask = 0o1000", "umask"),
+    ] {
+        let err = parse(&format!("{base}{body}\n")).unwrap_err();
+        assert!(err.starts_with(key), "{body}: {err}");
+    }
+    for body in ["cwd = \"/work\"", "deadline_ms = 1", "umask = 0o777"] {
+        assert!(parse(&format!("{base}{body}\n")).is_ok(), "{body}");
+    }
+    // Over 64 KiB once laid out.
+    let big = format!("{base}env = [\"K={}\"]\n", "v".repeat(70_000));
+    assert!(parse(&big).unwrap_err().contains("64 KiB"));
+}
+
+#[test]
+fn qctl_run_names_the_file_and_sends_nothing_for_a_bad_value() {
+    let dir = TempDir::new("request-bad");
+    let file = dir.join("r.toml");
+    std::fs::write(&file, "argv = [\"/bin/x\"]\ndeadline_ms = 0\n").unwrap();
+    let args: Vec<String> = [
+        "--socket",
+        "/nonexistent/qctl-sock",
+        "run",
+        file.to_str().unwrap(),
+        "--name",
+        "n",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect();
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = qctl::run(&args, &mut out, &mut err);
+    let err = String::from_utf8(err).unwrap();
+    assert_eq!(code, 1, "{err}");
+    // The file's error, not the connection's: the socket is never tried.
+    assert!(
+        err.starts_with(&format!("qctl: {}: deadline_ms", file.display())),
+        "{err}"
+    );
 }

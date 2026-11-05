@@ -253,14 +253,16 @@ excerpt):
 request (`docs/launch-request.md`), sends it to the colony and starts an instance named
 `~NAME#<id>`. An unknown key is an error, and so is a missing `argv`. A key left out takes the
 default below. A file that cannot be read or parsed, or a value that is not valid, is exit 1 with
-`qctl: <file>: <why>` before anything is sent.
+`qctl: <file>: <why>` before anything is sent. `qctl` checks each value as the table says, and a
+request over 64 KiB once laid out; the overseer judges the rest of the request
+(`docs/launch-request.md`), and its refusal comes back from colony.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `argv` | list of strings | required | Program and arguments. |
 | `env` | list of `"K=V"` strings | `[]` | |
-| `cwd` | string | `"/"` | |
-| `umask` | TOML integer | `0o027` | Write it as an integer (`0o022`), not a string. |
+| `cwd` | string | `"/"` | An absolute path. |
+| `umask` | TOML integer | `0o027` | Write it as an integer (`0o022`), not a string; at most `0o777`. |
 | `rlimits` | table | none | Resource name to a number or `"infinity"`; byte limits also take a size (`"64M"`). Same names and rules as a frame's `rlimits`. |
 | `user` | string | empty | The user to run as; the overseer needs a name of 1 to 96 bytes, so give one. |
 | `caps` | list of names | `[]` | Capability names, e.g. `"net_bind_service"`. |

@@ -6,7 +6,7 @@
 use qinit_db::RLIMIT_KEYS;
 use qinit_frames::resolve::{cap_bit, ns_name};
 use qinit_frames::schema::{Rlimits, rlimit_value};
-use qinit_launch::{RequestSpec, Seccomp, Securebits, Stream, UserMap};
+use qinit_launch::{EncodeError, RequestSpec, Seccomp, Securebits, Stream, UserMap};
 use serde::Deserialize;
 
 /// The file as written; every field optional but `argv`.
@@ -37,13 +37,34 @@ struct File {
     deadline_ms: Option<u32>,
 }
 
-/// The request in `text`.
+/// The request in `text`, checked as far as qctl can before anything is sent.
 ///
 /// # Errors
 /// The TOML error (an unknown key, a missing `argv`, a value of the wrong type), or the key and
 /// why its value is not one: an unknown capability, namespace, syscall or mode, a stream that
-/// is not a path, `"fd:N"` or `"same"`, a limit out of range.
+/// is not a path, `"fd:N"` or `"same"`, a limit out of range, a `cwd` that is not absolute, a
+/// `deadline_ms` of 0, a `umask` over `0o777`; or a request over 64 KiB once laid out.
 pub fn parse(text: &str) -> Result<RequestSpec, String> {
+    let spec = spec(text)?;
+    if !spec.cwd.starts_with('/') {
+        return Err(format!("cwd: `{}` is not an absolute path", spec.cwd));
+    }
+    if spec.deadline_ms == 0 {
+        return Err("deadline_ms: must be at least 1".into());
+    }
+    if spec.umask > 0o777 {
+        return Err(format!("umask: {:#o} is over 0o777", spec.umask));
+    }
+    // The layout is the last check: what the client sends is these bytes.
+    spec.bytes().map_err(|e| match e {
+        EncodeError::TooLarge => "the request is over 64 KiB once laid out".to_owned(),
+        EncodeError::BadStream => "stdin and stdout cannot be \"same\"".to_owned(),
+    })?;
+    Ok(spec)
+}
+
+/// The fields of `text`, each converted, with the defaults for those left out.
+fn spec(text: &str) -> Result<RequestSpec, String> {
     let f: File = toml::from_str(text).map_err(|e| e.to_string().trim_end().to_owned())?;
     let d = RequestSpec::default();
     Ok(RequestSpec {
