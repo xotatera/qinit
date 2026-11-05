@@ -37,14 +37,20 @@ pub(crate) enum Failure {
 impl Failure {
     /// Print the failure on `err` (a server refusal says so) and return exit code 1.
     pub(crate) fn report(&self, err: &mut dyn Write) -> i32 {
-        let _ = match self {
-            Failure::Client(ClientError::Server(code, detail)) => {
-                writeln!(err, "qctl: colony refused: {code:?} ({detail})")
-            }
-            Failure::Client(e) => writeln!(err, "qctl: {e}"),
-            Failure::Io(e) => writeln!(err, "qctl: {e}"),
-        };
+        let _ = writeln!(err, "qctl: {self}");
         1
+    }
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Failure::Client(ClientError::Server(code, detail)) => {
+                write!(f, "colony refused: {code:?} ({detail})")
+            }
+            Failure::Client(e) => write!(f, "{e}"),
+            Failure::Io(e) => write!(f, "{e}"),
+        }
     }
 }
 
@@ -121,7 +127,12 @@ fn go(command: &Command, socket: &Path, wait: Wait, out: &mut dyn Write) -> Resu
             let outcome = Client::connect(socket)?.shutdown(mode, wait)?;
             print_outcome(outcome, out)?;
         }
-        _ => unreachable!("only the control commands come here"),
+        other => {
+            return Err(Failure::Io(std::io::Error::other(format!(
+                "{} is not a control command",
+                other.name()
+            ))));
+        }
     }
     Ok(())
 }

@@ -102,5 +102,31 @@ fn state_names_carry_their_detail() {
     assert_eq!(state(w(1, 1)), "waiting/backoff");
     assert_eq!(state(w(1, 0)), "waiting/dependency");
     assert_eq!(state(w(6, 0)), "quarantined/breaker");
+    assert_eq!(state(w(6, 1)), "quarantined/cascade");
+    assert_eq!(state(w(6, 2)), "quarantined/start-timeout");
+    assert_eq!(state(w(6, 3)), "quarantined/stop-failed");
     assert_eq!(state(w(3, 0)), "ready");
+    // A word the table does not know prints as its number.
+    assert_eq!(state(w(6, 4)), "quarantined/4");
+    assert_eq!(state(w(1, 2)), "waiting/2");
+    assert_eq!(state(w(7, 0)), "state7/0");
+    assert_eq!(qctl::text::kind(3), "kind3");
+    assert_eq!(qctl::text::instance_state(1), "state1");
+}
+
+#[test]
+fn a_command_that_is_not_a_control_command_is_an_error_not_a_panic() {
+    let mut err = Vec::new();
+    let code = qctl::control::run(
+        &qctl::args::Command::Watch {
+            all: true,
+            target: String::new(),
+        },
+        std::path::Path::new("/nonexistent/qctl-sock"),
+        &mut Vec::new(),
+        &mut err,
+    );
+    let err = String::from_utf8(err).unwrap();
+    assert_eq!(code, 1, "{err}");
+    assert!(err.starts_with("qctl: "), "{err}");
 }
