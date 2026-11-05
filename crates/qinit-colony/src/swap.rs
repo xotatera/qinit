@@ -158,11 +158,9 @@ impl<E: Effects> Colony<E> {
         if db == self.db {
             // Nothing was refreshed: an earlier refresh's set must not decide this wait.
             self.refresh_set.clear();
-            return Ok(Outcome {
-                notices: vec![Notice::Swapped],
-                errors: Vec::new(),
-                replies: Vec::new(),
-            });
+            let mut out = Outcome::default();
+            self.emit(&mut out, Notice::Swapped);
+            return Ok(out);
         }
         let mut sw = self.classify(db, model);
         self.close_over_hard_dependents(&mut sw);
@@ -185,6 +183,7 @@ impl<E: Effects> Colony<E> {
                 now,
             );
             out.notices.extend(o.notices);
+            out.stream.extend(o.stream);
             out.errors.extend(o.errors);
         }
         for id in sw.instances.clone() {
@@ -356,9 +355,10 @@ impl<E: Effects> Colony<E> {
         for (node, req) in asks {
             let o = self.input(node, Input::Request { node, req }, now);
             out.notices.extend(o.notices);
+            out.stream.extend(o.stream);
             out.errors.extend(o.errors);
         }
-        out.notices.push(Notice::Swapped);
+        self.emit(out, Notice::Swapped);
     }
 
     /// What starts node `i` of the new graph: a forager only runs, a worker or brood starts.

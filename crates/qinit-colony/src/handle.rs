@@ -6,13 +6,13 @@
 //! changes what a wait waits for answers it as superseded.
 
 use crate::effects::Effects;
-use crate::engine::{Colony, Error, Notice, Outcome};
+use crate::engine::{Colony, Error, Notice, Outcome, Scope, Stream};
 use crate::instance::{LaunchArgs, LaunchError, RunArgs, RunError};
 use crate::swap::SwapError;
 use qinit_colony_core::{Reason, Report, Request, SlotState, State, Why, slot_of};
 use qinit_db::ReadError;
 use qinit_proto_core::{
-    DecodeError, EncodeError, FLAG_PIDFD, FLAG_WAIT_READY, MAX_MESSAGE, PeerId, authorized,
+    DecodeError, EncodeError, FLAG_PIDFD, FLAG_WAIT_READY, MAX_MESSAGE, Op, PeerId, authorized,
 };
 use qinit_wire::{
     Action, Entries, ErrorCode, InstanceStatus, ListEntry, Mode, Msg, NodeStatus, Rep, Req,
@@ -135,6 +135,15 @@ pub enum OwnedRep {
     Exited {
         status: i32,
     },
+    /// A notice on a watch stream (D37; spec 2026-11-05 §2.2).
+    Notice {
+        kind: u32,
+        name: String,
+        id: u32,
+        state: StateWord,
+        report: u32,
+        status: i32,
+    },
 }
 
 impl OwnedRep {
@@ -204,6 +213,21 @@ impl OwnedRep {
                 errno: *errno,
             },
             OwnedRep::Exited { status } => Rep::Exited { status: *status },
+            OwnedRep::Notice {
+                kind,
+                name,
+                id,
+                state,
+                report,
+                status,
+            } => Rep::Notice(qinit_wire::Notice {
+                kind: *kind,
+                name,
+                id: *id,
+                state: *state,
+                report: *report,
+                status: *status,
+            }),
         };
         encode(&Msg::Rep(rep), fd_count, out)
     }
@@ -340,18 +364,14 @@ impl<E: Effects> Colony<E> {
             h.reply = error(ErrorCode::Denied, 0);
             return h;
         }
-        let reading = matches!(
-            op,
-            qinit_proto_core::Op::Status | qinit_proto_core::Op::List
-        );
+        let reading = matches!(op, Op::Status | Op::List | Op::Watch);
         if self.shutdown_mode.is_some() && !reading && !matches!(req, Req::Shutdown { .. }) {
             h.reply = error(ErrorCode::ShuttingDown, 0);
             return h;
         }
         match *req {
             Req::Status { target } => h.reply = self.status_reply(target, now),
-            // Served by the watcher table (a later task); until then a watch is refused.
-            Req::Watch { .. } => h.reply = error(ErrorCode::BadRequest, 0),
+            Req::Watch { all, target } => self.watch(all, target, wait, &mut h),
             Req::List { cursor, kind } => {
                 let (entries, next) = self.list(cursor, kind);
                 h.reply = OwnedRep::ListPage { entries, next };
@@ -461,6 +481,76 @@ impl<E: Effects> Colony<E> {
         }
     }
 
+    /// Registers a watcher under `wait` (D37). A target is a node by name or an instance colony
+    /// knows (live or in the exit ring); for a target the current state is the first stream
+    /// entry. No wait is armed: the server never waits on a watch.
+    fn watch(&mut self, all: bool, target: &str, wait: WaitId, h: &mut Handled) {
+        let scope = if all {
+            Scope::All
+        } else if let Some((frame, id)) = instance_target(target) {
+            match id.and_then(|id| self.instance(id)) {
+                Some(v) if v.frame_name == frame => Scope::Instance(v.id),
+                _ => {
+                    h.reply = error(ErrorCode::UnknownNode, 0);
+                    return;
+                }
+            }
+        } else if self.node_index(target).is_some() {
+            Scope::Node(target.to_owned())
+        } else {
+            h.reply = error(ErrorCode::UnknownNode, 0);
+            return;
+        };
+        h.reply = OwnedRep::Accepted;
+        let ends = match self.current_rep(&scope) {
+            Some((rep, ends)) => {
+                h.outcome.stream.insert(0, Stream { wait, rep, ends });
+                ends
+            }
+            None => false,
+        };
+        if !ends {
+            self.watchers.push((wait, scope));
+        }
+    }
+
+    /// The first notice of a targeted watch, report 0 (current), and whether it ends the stream
+    /// (an instance that has already exited). `None` for a watch of everything.
+    fn current_rep(&self, scope: &Scope) -> Option<(OwnedRep, bool)> {
+        match scope {
+            Scope::All => None,
+            Scope::Node(name) => {
+                let i = self.node_index(name)?;
+                Some((
+                    OwnedRep::Notice {
+                        kind: 0,
+                        name: name.clone(),
+                        id: 0,
+                        state: state_word(self.nodes[i as usize].state),
+                        report: 0,
+                        status: 0,
+                    },
+                    false,
+                ))
+            }
+            Scope::Instance(id) => {
+                let v = self.instance(*id)?;
+                let (state, _, status) = Self::instance_words(v.state);
+                Some((
+                    OwnedRep::Notice {
+                        kind: 1,
+                        name: v.frame_name,
+                        id: v.id,
+                        state: StateWord { state, detail: 0 },
+                        report: 0,
+                        status,
+                    },
+                    matches!(v.state, SlotState::Exited(_)),
+                ))
+            }
+        }
+    }
+
     /// Registers a wait with its deadline; one the effects layer could not arm ends at once.
     fn park(&mut self, id: WaitId, what: What, wait_ms: u32, h: &mut Handled) {
         let armed = self.effects.arm_wait(id.0, wait_ms);
@@ -542,6 +632,7 @@ impl<E: Effects> Colony<E> {
         let gave_up = self.nodes[node as usize].state == State::Off;
         let ended = out.notices.iter().any(|n| ends_up(n, node, gave_up));
         h.outcome.notices.extend(out.notices);
+        h.outcome.stream.extend(out.stream);
         h.outcome.errors.extend(out.errors);
         h.outcome.replies.extend(out.replies);
         let state = self.nodes[node as usize].state;
@@ -602,6 +693,7 @@ impl<E: Effects> Colony<E> {
         match self.stop_instance(view.id, now) {
             Ok(out) => {
                 h.outcome.notices.extend(out.notices);
+                h.outcome.stream.extend(out.stream);
                 h.outcome.errors.extend(out.errors);
                 h.reply = OwnedRep::Accepted;
                 if let Some(ms) = wait_ms {
@@ -641,6 +733,7 @@ impl<E: Effects> Colony<E> {
         match self.launch(args, now) {
             Ok((id, out)) => {
                 h.outcome.notices.extend(out.notices);
+                h.outcome.stream.extend(out.stream);
                 h.outcome.errors.extend(out.errors);
                 h.reply = OwnedRep::Launched { id };
                 if pidfd
@@ -717,6 +810,7 @@ impl<E: Effects> Colony<E> {
         match self.run_request(args, now) {
             Ok((id, out)) => {
                 h.outcome.notices.extend(out.notices);
+                h.outcome.stream.extend(out.stream);
                 h.outcome.errors.extend(out.errors);
                 h.reply = OwnedRep::Launched { id };
                 if w.pidfd
@@ -770,6 +864,7 @@ impl<E: Effects> Colony<E> {
             Ok(out) => {
                 let swapped = out.notices.contains(&Notice::Swapped);
                 h.outcome.notices.extend(out.notices);
+                h.outcome.stream.extend(out.stream);
                 h.outcome.errors.extend(out.errors);
                 h.outcome.replies.extend(out.replies);
                 h.reply = OwnedRep::Accepted;
@@ -826,6 +921,7 @@ impl<E: Effects> Colony<E> {
             }
             let out = self.shutdown(now);
             h.outcome.notices.extend(out.notices);
+            h.outcome.stream.extend(out.stream);
             h.outcome.errors.extend(out.errors);
             h.outcome.replies.extend(out.replies);
         }
@@ -996,8 +1092,10 @@ impl<E: Effects> Colony<E> {
         out
     }
 
-    /// The connection that owned the wait is gone: forget the wait and its deadline.
+    /// The connection that owned the wait is gone: forget the wait and its deadline, or the
+    /// watcher.
     pub fn drop_wait(&mut self, wait: WaitId) {
+        self.watchers.retain(|(w, _)| *w != wait);
         if let Some(pos) = self.waits.iter().position(|w| w.id == wait) {
             self.waits.remove(pos);
             self.effects.cancel_wait(wait.0);

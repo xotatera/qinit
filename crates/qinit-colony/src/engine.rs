@@ -45,6 +45,28 @@ pub struct Outcome {
     pub errors: Vec<Error>,
     /// Replies owed to parked waits that this call settled, answered or superseded.
     pub replies: Vec<(crate::handle::WaitId, crate::handle::OwnedRep)>,
+    /// Replies to watchers (D37), in the order the notices were pushed. Unlike `replies` they
+    /// do not end a wait; an entry with `ends` set is the watcher's last.
+    pub stream: Vec<Stream>,
+}
+
+/// One reply on a watcher's stream.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stream {
+    pub wait: crate::handle::WaitId,
+    /// An `OwnedRep::Notice`, or `OwnedRep::Superseded` when a refresh removed the node.
+    pub rep: crate::handle::OwnedRep,
+    /// The stream is over: the watcher was forgotten and the connection is idle again.
+    pub ends: bool,
+}
+
+/// What a watcher watches. A node by name, not by index: a swap renumbers nodes, and the
+/// watcher follows the name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Scope {
+    All,
+    Node(String),
+    Instance(u32),
 }
 
 /// Colony: the compiled database, the node table and the scheduler's state.
@@ -81,6 +103,8 @@ pub struct Colony<E: Effects> {
     pub(crate) shutdown_mode: Option<crate::handle::ShutdownMode>,
     /// The nodes the last refresh restarts or signals, by name.
     pub(crate) refresh_set: Vec<String>,
+    /// The watchers (D37): not state to keep across a restart, as their connections go with it.
+    pub(crate) watchers: Vec<(crate::handle::WaitId, Scope)>,
 }
 
 /// The state of a worker colony found already running when it started.
@@ -170,6 +194,7 @@ impl<E: Effects> Colony<E> {
             waits: Vec::new(),
             shutdown_mode: None,
             refresh_set: Vec::new(),
+            watchers: Vec::new(),
         };
         let mut out = Outcome::default();
         let converged = qinit_colony_core::load_from(
@@ -415,7 +440,152 @@ impl<E: Effects> Colony<E> {
                     out.errors.push(Error::Effect(node, e));
                 }
             }
-            Action::Report(node, r) => out.notices.push(Notice::Node(node, r)),
+            Action::Report(node, r) => self.emit(out, Notice::Node(node, r)),
+        }
+    }
+
+    /// Pushes `n` into `out`, and with it the stream reply of every watcher it concerns. This is
+    /// the one place a notice enters an outcome: a node index in `n` names the model in place
+    /// now, which a later swap would renumber.
+    pub(crate) fn emit(&mut self, out: &mut Outcome, n: Notice) {
+        if !self.watchers.is_empty() {
+            let mut rep = None;
+            let mut ended = Vec::new();
+            for (wait, scope) in &self.watchers {
+                let hit = match (scope, &n) {
+                    (Scope::All, _) => true,
+                    // `ShutdownComplete` rides node 0's report slot but is the colony's.
+                    (Scope::Node(_), Notice::Node(_, Report::ShutdownComplete { .. })) => false,
+                    (Scope::Node(name), Notice::Node(ix, _)) => self
+                        .model
+                        .nodes
+                        .get(*ix as usize)
+                        .is_some_and(|m| m.name == *name),
+                    (Scope::Instance(id), Notice::Instance(x, _) | Notice::InstanceReady(x)) => {
+                        id == x
+                    }
+                    _ => false,
+                };
+                if hit {
+                    let ends = matches!(scope, Scope::Instance(_))
+                        && matches!(n, Notice::Instance(_, SlotState::Exited(_)));
+                    let rep = rep.get_or_insert_with(|| self.notice_rep(&n)).clone();
+                    out.stream.push(Stream {
+                        wait: *wait,
+                        rep,
+                        ends,
+                    });
+                    if ends {
+                        ended.push(*wait);
+                    }
+                }
+                if let (Scope::Node(name), Notice::Swapped) = (scope, &n)
+                    && self.node_index(name).is_none()
+                {
+                    out.stream.push(Stream {
+                        wait: *wait,
+                        rep: crate::handle::OwnedRep::Superseded(crate::handle::state_word(
+                            State::Off,
+                        )),
+                        ends: true,
+                    });
+                    ended.push(*wait);
+                }
+            }
+            self.watchers.retain(|(w, _)| !ended.contains(w));
+        }
+        out.notices.push(n);
+    }
+
+    /// The words of an instance state on a stream: `(state, report, status)`, the state as
+    /// `Status` shows it.
+    pub(crate) fn instance_words(s: SlotState) -> (u32, u32, i32) {
+        match s {
+            SlotState::Starting | SlotState::Free => (2, 1, 0),
+            SlotState::Running => (3, 2, 0),
+            SlotState::Stopping => (5, 4, 0),
+            SlotState::Exited(status) => (4, 5, status),
+        }
+    }
+
+    /// The stream reply for `n` (spec 2026-11-05 §2.2), read against the model in place now.
+    pub(crate) fn notice_rep(&self, n: &Notice) -> crate::handle::OwnedRep {
+        use crate::handle::{OwnedRep, state_word};
+        use qinit_wire::StateWord;
+        let zero = StateWord {
+            state: 0,
+            detail: 0,
+        };
+        let frame = |id: u32| self.instance(id).map(|v| v.frame_name).unwrap_or_default();
+        match *n {
+            Notice::Node(_, Report::ShutdownComplete { still_populated }) => OwnedRep::Notice {
+                kind: 3,
+                name: String::new(),
+                id: 0,
+                state: zero,
+                report: 0,
+                status: i32::try_from(still_populated).unwrap_or(i32::MAX),
+            },
+            Notice::Node(ix, r) => {
+                let (report, status) = match r {
+                    Report::Started => (1, 0),
+                    Report::Ready => (2, 0),
+                    Report::Done => (3, 0),
+                    Report::Stopped => (4, 0),
+                    Report::Failed(s) => (5, s.unwrap_or(-1)),
+                    Report::Quarantined(_) => (6, 0),
+                    Report::Refused => (7, 0),
+                    Report::Lost => (8, 0),
+                    // Turned into a signal before it could reach a notice; and handled above.
+                    Report::Reload | Report::ShutdownComplete { .. } => (0, 0),
+                };
+                OwnedRep::Notice {
+                    kind: 0,
+                    name: self
+                        .model
+                        .nodes
+                        .get(ix as usize)
+                        .map(|m| m.name.clone())
+                        .unwrap_or_default(),
+                    id: 0,
+                    state: self
+                        .nodes
+                        .get(ix as usize)
+                        .map_or(state_word(State::Off), |s| state_word(s.state)),
+                    report,
+                    status,
+                }
+            }
+            Notice::Instance(id, s) => {
+                let (state, report, status) = Self::instance_words(s);
+                OwnedRep::Notice {
+                    kind: 1,
+                    name: frame(id),
+                    id,
+                    state: StateWord { state, detail: 0 },
+                    report,
+                    status,
+                }
+            }
+            Notice::InstanceReady(id) => OwnedRep::Notice {
+                kind: 1,
+                name: frame(id),
+                id,
+                state: StateWord {
+                    state: 3,
+                    detail: 0,
+                },
+                report: 3,
+                status: 0,
+            },
+            Notice::Swapped => OwnedRep::Notice {
+                kind: 2,
+                name: String::new(),
+                id: 0,
+                state: zero,
+                report: 0,
+                status: 0,
+            },
         }
     }
 }
