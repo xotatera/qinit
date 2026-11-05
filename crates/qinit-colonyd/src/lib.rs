@@ -6,6 +6,7 @@
 pub mod args;
 pub mod deadlines;
 pub mod exit;
+pub mod watch;
 
 /// Runs colony to the end and returns its exit status.
 #[must_use]
