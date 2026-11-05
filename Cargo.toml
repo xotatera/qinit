@@ -98,6 +98,8 @@ timeout = "60s"
 # Group 2 (2026-11-04, `Run` and the instance table): 161 verified, three runs 27.0, 30.6 and 27.9 s
 # CPU (28-31 s wall, 0.40 GB peak), warm build directory. 100s covers about 3x the slowest and
 # about 2x a cold build (inferred, +15-20 s CPU).
+# SP7 (2026-11-06, `restore`, `inv_ok`): 166 verified, 27.6 s (33.4 s CPU), 0.96 GB peak; 100s still
+# covers 3x the CPU.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-colony-core"
 kind = "verus"

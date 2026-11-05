@@ -5,7 +5,8 @@ mod common;
 
 use common::*;
 use qinit_colony_core::{
-    Action, CellReport, Input, K, Reason, Report, Request, State, TimerKind, Why,
+    Action, CellReport, Input, K, NodeState, Reason, Report, Request, State, TimerKind, Why,
+    inv_ok, load_from, off, restore,
 };
 use qinit_db::{GroupKind, RestartOn, RestartPolicy};
 
@@ -843,4 +844,114 @@ fn a_late_optional_sync_target_does_not_restart_its_dependent() {
     let actions = h.cell("b", CellReport::Ready, 11);
     assert!(stops(&h, &actions).is_empty(), "{actions:?}");
     assert_eq!(h.state("a"), State::Starting);
+}
+
+// ---- restore (SP7, R15) ----
+/// A harness over `m` whose table is `tbl` as saved, without loading it.
+fn saved(m: qinit_db::Model, tbl: Vec<NodeState>) -> Harness {
+    let (mut h, _) = Harness::load(m);
+    h.nodes = tbl;
+    h.late = vec![false; h.late.len()];
+    h.meta = qinit_colony_core::meta();
+    h
+}
+
+#[test]
+fn restore_keeps_an_enabled_node_unwanted() {
+    let m = model(vec![worker("a")], &[0]);
+    let mut h = saved(m.clone(), vec![off()]);
+    assert!(inv_ok(&h.db, &h.nodes));
+    assert!(restore(
+        &h.db,
+        &mut h.nodes,
+        &h.paths,
+        &mut h.late,
+        &mut h.meta,
+        7
+    ));
+    assert_eq!(h.state("a"), State::Off);
+    assert!(!h.node("a").wanted);
+    // `load_from` wants every enabled node: that is what `restore` must not do.
+    let mut g = saved(m, vec![off()]);
+    assert!(load_from(
+        &g.db,
+        &mut g.nodes,
+        &g.paths,
+        &mut g.late,
+        &mut g.meta,
+        7
+    ));
+    assert_eq!(g.state("a"), State::Starting);
+}
+
+#[test]
+fn restore_keeps_a_quarantine() {
+    let m = model(
+        vec![restarting(worker("a"), RestartPolicy::OnFailure, 3, 60_000)],
+        &[0],
+    );
+    let quarantined = NodeState {
+        state: State::Quarantined(Reason::Breaker),
+        wanted: true,
+        burst_count: 4,
+        ..off()
+    };
+    let mut h = saved(m, vec![quarantined]);
+    assert!(inv_ok(&h.db, &h.nodes));
+    assert!(restore(
+        &h.db,
+        &mut h.nodes,
+        &h.paths,
+        &mut h.late,
+        &mut h.meta,
+        7
+    ));
+    assert_eq!(h.state("a"), State::Quarantined(Reason::Breaker));
+    assert_eq!(h.node("a").burst_count, 4);
+}
+
+#[test]
+fn inv_ok_refuses_a_breaker_quarantine_below_max() {
+    let m = model(
+        vec![restarting(worker("a"), RestartPolicy::OnFailure, 3, 60_000)],
+        &[0],
+    );
+    let q = |burst_count| NodeState {
+        state: State::Quarantined(Reason::Breaker),
+        burst_count,
+        ..off()
+    };
+    let h = saved(m, vec![q(0)]);
+    assert!(!inv_ok(&h.db, &h.nodes));
+    assert!(!inv_ok(&h.db, &[q(3)]), "at max is not over it");
+    assert!(inv_ok(&h.db, &[q(4)]));
+}
+
+#[test]
+fn inv_ok_refuses_a_forager_in_backoff() {
+    let m = model(vec![forager("f")], &[]);
+    let backoff = NodeState {
+        state: State::Waiting(Why::Backoff),
+        timer: Some(TimerKind::Backoff),
+        ..off()
+    };
+    let h = saved(m, vec![off()]);
+    assert!(inv_ok(&h.db, &h.nodes));
+    assert!(!inv_ok(&h.db, &[backoff]));
+}
+
+#[test]
+fn inv_ok_refuses_a_timer_the_state_does_not_own() {
+    let m = model(vec![worker("a")], &[]);
+    let h = saved(m, vec![off()]);
+    let armed_off = NodeState {
+        timer: Some(TimerKind::StartTimeout),
+        ..off()
+    };
+    assert!(!inv_ok(&h.db, &[armed_off]));
+    let stop_without_process = NodeState {
+        to_stop: true,
+        ..off()
+    };
+    assert!(!inv_ok(&h.db, &[stop_without_process]));
 }
