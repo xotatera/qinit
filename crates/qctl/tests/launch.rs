@@ -159,3 +159,27 @@ fn a_wait_status_maps_to_the_exit_code() {
     assert_eq!(exit_code(-1), None, "the exit was not seen");
     assert_eq!(exit_code((19 << 8) + 0x7f), None, "a stop is no end");
 }
+
+#[test]
+fn fds_routes_the_named_streams_and_only_those() {
+    // The instance runs on (the 100 ms wait elapses), so its routed descriptors stay with it.
+    let routed = |fds: Option<&str>| {
+        let s = Served::start_ticking(&[], true, instant(None), Vec::new(), None, 1000);
+        let path = sock(&s);
+        let mut args = vec!["--socket", &path, "launch", "backup", "--wait", "100"];
+        args.extend(fds.map(|f| ["--fds", f]).into_iter().flatten());
+        let (code, out, err) = qctl(&args);
+        let colony = s.finish();
+        let counts: Vec<usize> = colony.effects.instance_fds.values().map(Vec::len).collect();
+        (code, out, err, counts)
+    };
+    let (code, _, err, counts) = routed(None);
+    assert_eq!((code, counts), (0, vec![0]), "{err}");
+    let (code, _, err, counts) = routed(Some("stdout"));
+    assert_eq!((code, counts), (0, vec![1]), "{err}");
+    // backup's launch table routes stdout only: colony refuses stdin, and nothing starts.
+    let (code, out, err, counts) = routed(Some("stdin"));
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(err.starts_with("qctl: colony refused: "), "{err}");
+    assert!(counts.is_empty(), "{counts:?}");
+}

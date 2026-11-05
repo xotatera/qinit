@@ -361,7 +361,7 @@ pub(super) fn cred(
 
 /// The name (no `cap_` prefix) of capability number `bit`.
 #[must_use]
-pub fn cap_name(bit: u8) -> Option<&'static str> {
+pub(crate) fn cap_name(bit: u8) -> Option<&'static str> {
     CAPS.get(usize::from(bit)).copied()
 }
 

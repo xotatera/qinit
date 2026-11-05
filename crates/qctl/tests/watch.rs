@@ -159,7 +159,10 @@ fn a_watch_whose_server_goes_away_exits_1() {
     while line(&mut lines).is_some() {}
     let (code, err) = thread.join().unwrap();
     assert_eq!(code, 1);
-    assert_eq!(err, "qctl: colony closed the stream\n");
+    assert_eq!(
+        err,
+        "qctl: the stream ended: colony closed it or sent a reply that is not a notice\n"
+    );
 }
 
 #[test]
@@ -204,6 +207,9 @@ fn watch_all_goes_on_after_an_instance_exit() {
     let (code, err) = thread.join().unwrap();
     assert_eq!(
         (code, err.as_str()),
-        (1, "qctl: colony closed the stream\n")
+        (
+            1,
+            "qctl: the stream ended: colony closed it or sent a reply that is not a notice\n"
+        )
     );
 }

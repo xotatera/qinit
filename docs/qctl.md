@@ -372,5 +372,5 @@ line per notice and waits without limit. There is no timestamp.
 
 `<report>` is one of `current`, `started`, `ready`, `done`, `stopped`, `failed`, `quarantined`,
 `refused`, `lost`, `starting`, `running`, `stopping`, `exited`. A watch of everything goes on past
-an instance's exit. When the colony closes the connection, `qctl: colony closed the stream` is
-printed and the exit code is 1.
+an instance's exit. When the colony closes the connection, or sends a reply that is not a notice
+`qctl` knows (an unknown report word, for example), `qctl: the stream ended: colony closed it or sent a reply that is not a notice` is printed and the exit code is 1.

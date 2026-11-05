@@ -39,7 +39,12 @@ fn exit(result: Result<(), Failure>, err: &mut dyn Write) -> i32 {
     match result {
         Ok(()) => 0,
         Err(Failure::Client(ClientError::Unexpected)) => {
-            let _ = writeln!(err, "qctl: colony closed the stream");
+            // The client's Unexpected: the connection closed, or a reply that is no notice (a
+            // report word it does not know, say).
+            let _ = writeln!(
+                err,
+                "qctl: the stream ended: colony closed it or sent a reply that is not a notice"
+            );
             1
         }
         Err(f) => f.report(err),
