@@ -345,3 +345,30 @@ fn a_run_requires_its_request_fd_and_its_roles() {
     let long = "a".repeat(96);
     assert!(encoded(&Msg::Req(named(&long, 0)), 1).is_err());
 }
+
+#[test]
+fn watch_and_notice_round_trip() {
+    for req in [
+        Req::Watch {
+            all: false,
+            target: "sshd",
+        },
+        Req::Watch {
+            all: true,
+            target: "",
+        },
+    ] {
+        round_trip(&Msg::Req(req));
+    }
+    let rep = Rep::Notice(Notice {
+        kind: 1,
+        name: "backup",
+        id: 7,
+        state: st(4, 0),
+        report: 5,
+        status: -1,
+    });
+    round_trip(&Msg::Rep(rep));
+    let bytes = encoded(&Msg::Rep(rep), 0).unwrap();
+    assert_eq!(bytes[12..16], 75u32.to_le_bytes());
+}

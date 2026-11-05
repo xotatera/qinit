@@ -287,6 +287,9 @@ fn own(rep: Rep<'_>) -> Reply {
         Rep::Launched { id } => Reply::Launched(id),
         Rep::LaunchFailed { step, errno } => Reply::LaunchFailed(step, errno),
         Rep::Exited { status } => Reply::Exited(status),
+        // A notice outside a watch is not an answer to any call; the watcher (a later task)
+        // reads notices itself.
+        Rep::Notice(_) => Reply::Error(ErrorCode::BadRequest, 0),
     }
 }
 

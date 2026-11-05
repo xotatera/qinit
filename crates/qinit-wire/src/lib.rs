@@ -322,6 +322,12 @@ pub enum Req<'a> {
         settled: bool,
         wait_ms: u32,
     },
+    /// Watch a node or an instance (`all` false, `target` names it) or everything (`all` true,
+    /// `target` empty) for state notices.
+    Watch {
+        all: bool,
+        target: &'a str,
+    },
     /// Launch the whole request in the first descriptor (a sealed memfd).
     Run {
         /// The launch name, 1 to 95 bytes; the instance is `~<name>#<id>`.
@@ -366,6 +372,24 @@ pub enum Rep<'a> {
     Exited {
         status: i32,
     },
+    Notice(Notice<'a>),
+}
+
+/// A state notice on a watch stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Notice<'a> {
+    /// 0 node, 1 instance, 2 database swapped, 3 colony's part of a shutdown is done.
+    pub kind: u32,
+    /// The node's name or the instance's frame; empty for kinds 2 and 3.
+    pub name: &'a str,
+    /// The instance id (kind 1), 0 otherwise.
+    pub id: u32,
+    /// The state after the event.
+    pub state: StateWord,
+    /// What happened (see the protocol document).
+    pub report: u32,
+    /// A wait status where the report carries one; the cells still populated for kind 3.
+    pub status: i32,
 }
 
 /// A message.
@@ -434,6 +458,10 @@ fn request(b: &[u8], t: u32) -> Result<Req<'_>, DecodeError> {
             stop_grace_ms: rec(b, RU_STOP_GRACE_MS),
             wait_ms: rec(b, RU_WAIT_MS),
         },
+        T_WATCH => Req::Watch {
+            all: flag(rec(b, WA_SCOPE)),
+            target: text(b, rec(b, WA_TARGET_OFF), rec(b, WA_TARGET_LEN))?,
+        },
         _ => Req::Shutdown {
             mode: Mode::from_word(rec(b, SH_MODE)).ok_or(bad)?,
             settled: flag(rec(b, SH_SETTLED)),
@@ -501,6 +529,14 @@ fn reply(b: &[u8], t: u32) -> Result<Rep<'_>, DecodeError> {
             step: rec(b, LF_STEP),
             errno: rec(b, LF_ERRNO),
         },
+        T_NOTICE => Rep::Notice(Notice {
+            kind: rec(b, NO_KIND),
+            name: text(b, rec(b, NO_NAME_OFF), rec(b, NO_NAME_LEN))?,
+            id: rec(b, NO_ID),
+            state: state(b, NO_STATE),
+            report: rec(b, NO_REPORT),
+            status: rec(b, NO_STATUS) as i32,
+        }),
         _ => Rep::Exited {
             status: rec(b, EX_STATUS) as i32,
         },
@@ -532,6 +568,7 @@ pub fn op_of(r: &Req<'_>) -> Op {
         Req::Refresh { .. } => Op::Refresh,
         Req::Shutdown { .. } => Op::Shutdown,
         Req::Run { .. } => Op::Run,
+        Req::Watch { .. } => Op::Watch,
     }
 }
 
@@ -667,6 +704,10 @@ fn request_record<'a>(r: &Req<'a>, rec: &mut Rec<'a>) -> u32 {
                 .w(wait_ms);
             T_RUN
         }
+        Req::Watch { all, target } => {
+            rec.w(word_of(all)).s(target);
+            T_WATCH
+        }
     }
 }
 
@@ -733,6 +774,15 @@ fn reply_record<'a>(r: &Rep<'a>, rec: &mut Rec<'a>) -> u32 {
         Rep::Exited { status } => {
             rec.w(status as u32);
             T_EXITED
+        }
+        Rep::Notice(n) => {
+            rec.w(n.kind)
+                .s(n.name)
+                .w(n.id)
+                .state(n.state)
+                .w(n.report)
+                .w(n.status as u32);
+            T_NOTICE
         }
     }
 }

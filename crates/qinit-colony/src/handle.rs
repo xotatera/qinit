@@ -350,6 +350,8 @@ impl<E: Effects> Colony<E> {
         }
         match *req {
             Req::Status { target } => h.reply = self.status_reply(target, now),
+            // Served by the watcher table (a later task); until then a watch is refused.
+            Req::Watch { .. } => h.reply = error(ErrorCode::BadRequest, 0),
             Req::List { cursor, kind } => {
                 let (entries, next) = self.list(cursor, kind);
                 h.reply = OwnedRep::ListPage { entries, next };
