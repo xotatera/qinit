@@ -460,3 +460,13 @@ Two defaults have no TOML spelling in the frame schema: no start timeout (`start
 "none"`, a node ready on exit) and `sandbox.user_map = "own"` without a user namespace. `qctl
 show` and `qctl fill` print them as comments instead of keys, since a written key would not
 compile; a schema word for each would let them be written.
+
+### D59 — Intermittent failures of the xtask CLI tests · `OPEN`
+
+In one full gate run two tests of `xtask/runner/tests/cli.rs` failed,
+`empty_proofs_are_a_successful_no_op` (exit 2) and
+`full_gate_names_the_malformed_repository_proof_declaration` (`cannot run cargo metadata: No such
+file or directory`); they passed alone and in the next gate runs. `Fixture::new` names its
+temporary root by `SystemTime` nanoseconds only. The hypothesis, unproven: two tests running in
+parallel get the same root and one's `Drop` removes it under the other. The candidate fix is the
+process id and an atomic counter in the name.

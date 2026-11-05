@@ -450,25 +450,38 @@ fn chmod(path: &str, mode: u32) -> Result<(), String> {
         .map_err(|e| format!("chmod {path}: {e}"))
 }
 
+/// Puts back the modes it saved and removes the layer tree when dropped, on every path out of
+/// the compile case (an error, an early return or a panic the suite runner catches). Each step is
+/// best-effort: one failure does not stop the others, and the case's result stays its own.
+struct Restore {
+    modes: Vec<(&'static str, u32)>,
+}
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(QCTL_TREE);
+        for (path, mode) in self.modes.drain(..).rev() {
+            if let Err(e) = chmod(path, mode) {
+                eprintln!("restore: {e}");
+            }
+        }
+    }
+}
+
 /// A compile as root (the guest's) refuses a layer file others may write, and takes it once it
 /// is 0644.
 fn qctl_compile_as_root_refuses_a_world_writable_layer() -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     // The guest's `/` and `/run` are the initramfs's, mode 1777, which the ancestor rule refuses
-    // as well: give them a host's mode for the case and put the old ones back after.
-    let ancestors = ["/", "/run"];
-    let mut modes = Vec::new();
-    for a in ancestors {
+    // as well: give them a host's mode for the case; the guard puts the old ones back.
+    let mut restore = Restore { modes: Vec::new() };
+    for a in ["/", "/run"] {
         let m = std::fs::metadata(a).map_err(|e| format!("{a}: {e}"))?;
-        modes.push((a, m.permissions().mode() & 0o7777));
+        // Saved before the change, so the guard covers a failed or partial chmod too.
+        restore.modes.push((a, m.permissions().mode() & 0o7777));
         chmod(a, 0o755)?;
     }
-    let result = compile_twice();
-    let _ = std::fs::remove_dir_all(QCTL_TREE);
-    for (a, m) in modes {
-        chmod(a, m)?;
-    }
-    result
+    compile_twice()
 }
 
 /// The two compiles of [`qctl_compile_as_root_refuses_a_world_writable_layer`].
@@ -523,6 +536,8 @@ fn qctl_status_start_and_watch_in_the_guest() -> Result<(), String> {
         let Ok((r, w)) = qinit_sys::fd::pipe(libc::O_CLOEXEC) else {
             return 3;
         };
+        // The watch blocks until the process exits, which is fine: this client is a forked
+        // process and exits with its verdict below.
         std::thread::spawn(move || {
             let mut out = std::fs::File::from(w);
             let mut err = Vec::new();
