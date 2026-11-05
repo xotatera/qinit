@@ -298,6 +298,7 @@ dependencies = [
  "qinit-ipc",
  "qinit-launch",
  "qinit-overseer",
+ "qinit-overseer-core",
  "qinit-proto",
  "qinit-sys",
 ]

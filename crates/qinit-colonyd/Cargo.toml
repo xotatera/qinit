@@ -33,6 +33,7 @@ qinit-sys = { path = "../qinit-sys" }
 
 [dev-dependencies]
 qinit-frames = { path = "../qinit-frames" }
+qinit-overseer-core = { path = "../qinit-overseer-core" }
 
 [lints]
 workspace = true

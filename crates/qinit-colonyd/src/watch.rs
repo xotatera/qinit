@@ -171,6 +171,34 @@ impl Watcher {
         }
     }
 
+    /// The ids were renumbered: each entry's id goes through `renumber`, and an entry it maps to
+    /// `None` is dropped.
+    pub fn remap(&mut self, l: &mut Loop, renumber: impl Fn(u64) -> Option<u64>) {
+        let old: Vec<u64> = self.entries.keys().copied().collect();
+        let mut moved = Vec::new();
+        for id in old {
+            match renumber(id) {
+                Some(new) if new == id => {}
+                Some(new) => moved.push((id, new)),
+                None => self.remove(l, id),
+            }
+        }
+        // Two passes so that ids that swap places do not overwrite each other.
+        let taken: Vec<(u64, u64, Entry)> = moved
+            .into_iter()
+            .filter_map(|(id, new)| self.entries.remove(&id).map(|e| (id, new, e)))
+            .collect();
+        for (id, new, e) in taken {
+            if let Some(wd) = e.wd
+                && let Some(ids) = self.wds.get_mut(&wd)
+            {
+                ids.retain(|&i| i != id);
+                ids.push(new);
+            }
+            self.entries.insert(new, e);
+        }
+    }
+
     /// Paths whose watch could not be moved (the kernel refused), with the errno, since the
     /// last call. Such a path is not watched any more.
     pub fn take_errors(&mut self) -> Vec<(u64, Errno)> {
