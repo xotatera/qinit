@@ -12,8 +12,8 @@
 //! prints as a comment, so the output compiles back to the same nodes. The template is resolved
 //! into the frame: its name is a comment and the keys it gives are marked `# template <name>`.
 use crate::args::{PolicyChoice, ShowOpts};
-use crate::compile::{Defaults, input};
-use crate::{owner, report, toml_text};
+use crate::compile::{Defaults, checked_input};
+use crate::{report, toml_text};
 use qinit_db::{RLIMIT_KEYS, Userns};
 use qinit_frames::compile::{Compiled, compile};
 use qinit_frames::dump::{self, Line};
@@ -57,19 +57,10 @@ pub fn run(opts: &ShowOpts, defaults: &Defaults, out: &mut dyn Write, err: &mut 
         };
         targets.push(parsed);
     }
-    let input = match input(&opts.layers, &opts.policy, defaults, err) {
+    let input = match checked_input(&opts.layers, &opts.policy, defaults, err) {
         Ok(i) => i,
-        Err(m) => {
-            let _ = writeln!(err, "qctl: {m}");
-            return 1;
-        }
+        Err(code) => return code,
     };
-    let mut roots: Vec<&Path> = input.layers.iter().map(|l| l.dir.as_path()).collect();
-    roots.extend(input.policy.as_deref());
-    if let Err(r) = owner::check(&roots, defaults.euid, err) {
-        let _ = writeln!(err, "{r}");
-        return 1;
-    }
     let compiled = if targets.iter().any(|t| matches!(t, Target::Frame { .. })) {
         match compile(&input) {
             Ok(c) => {

@@ -8,16 +8,29 @@ use std::path::{Path, PathBuf};
 
 const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../qinit-frames/tests/golden");
 
-/// Every frame of the golden tree that is a node or expands to nodes.
-const FRAMES: [&str; 7] = [
-    "brood.boot-complete",
-    "worker.getty",
-    "worker.logd",
-    "forager.mount-var",
-    "brood.multi-user",
-    "worker.sshd",
-    "worker.syslog-ng",
-];
+/// Every frame of the golden tree that is a node or expands to nodes, as `kind.name`, from the
+/// merged frames of the compiled tree (templates left out: they are resolved into the frames).
+fn golden_frames() -> Vec<String> {
+    let layer = |name: &str| LayerInput {
+        name: name.into(),
+        dir: PathBuf::from(format!("{GOLDEN}/{name}")),
+    };
+    let input = CompileInput {
+        layers: vec![layer("vendor"), layer("etc")],
+        policy: None,
+    };
+    let c = compile(&input).expect("golden compiles");
+    let mut out = Vec::new();
+    for (kind, frames) in &c.merged.table {
+        if kind == "template" {
+            continue;
+        }
+        for name in frames.as_table().expect("a kind is a table").keys() {
+            out.push(format!("{kind}.{name}"));
+        }
+    }
+    out
+}
 
 /// A scratch directory, removed on drop (also when the test panics).
 struct TempDir(PathBuf);
@@ -39,11 +52,16 @@ impl Drop for TempDir {
 
 /// Run `qctl` as a user other than root, so the ownership check does not judge the temp tree.
 fn qctl(args: &[&str]) -> (i32, String, String) {
+    qctl_as(args, 1000)
+}
+
+/// Run `qctl` with the effective user id `euid`.
+fn qctl_as(args: &[&str], euid: u32) -> (i32, String, String) {
     let defaults = Defaults {
         vendor: "/nonexistent/vendor".into(),
         etc: "/nonexistent/etc".into(),
         policy: "/nonexistent/policy.toml".into(),
-        euid: 1000,
+        euid,
     };
     let args: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
     let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -84,9 +102,11 @@ fn show_round_trips_through_the_compiler() {
     let tmp = TempDir::new("round-trip");
     let layer = tmp.0.join("layer");
     std::fs::create_dir_all(&layer).unwrap();
+    let frames = golden_frames();
+    assert_eq!(frames.len(), 7, "{frames:?}");
     let mut all = String::new();
-    for f in FRAMES {
-        all.push_str(&show(&[f]));
+    for f in &frames {
+        all.push_str(&show(&[f.as_str()]));
         all.push('\n');
     }
     std::fs::write(layer.join("shown.toml"), &all).unwrap();
@@ -173,4 +193,23 @@ fn show_policy_fills_the_rule_defaults() {
         qinit_frames::policy::to_model(&loaded)
     };
     assert_eq!(model(&again), model(&policy), "{out}");
+}
+
+#[test]
+fn a_root_show_refuses_a_tree_that_is_not_roots() {
+    let tmp = TempDir::new("root");
+    let layer = tmp.0.join("layer");
+    std::fs::create_dir_all(&layer).unwrap();
+    std::fs::write(
+        layer.join("a.toml"),
+        "[worker.a]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\n",
+    )
+    .unwrap();
+    let l = format!("l={}", layer.display());
+    for target in ["worker.a", "policy"] {
+        let (code, out, err) = qctl_as(&["show", "--layer", &l, "--no-policy", target], 0);
+        assert_eq!(code, 1, "{target}: {err}");
+        assert!(err.contains("owned by uid"), "{target}: {err}");
+        assert!(out.is_empty(), "{target}: {out}");
+    }
 }

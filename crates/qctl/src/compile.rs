@@ -112,6 +112,31 @@ pub fn input(
     })
 }
 
+/// The compiler input of `layers` and `policy` after the ownership check (spec §4.4) of every
+/// layer and the policy file, for every command that reads frames.
+///
+/// # Errors
+/// The exit code, 1, once the reason is on `err`: a named layer or policy file is absent, or
+/// (as root) a path fails the ownership check.
+pub fn checked_input(
+    layers: &[(String, PathBuf)],
+    policy: &PolicyChoice,
+    defaults: &Defaults,
+    err: &mut dyn Write,
+) -> Result<CompileInput, i32> {
+    let input = input(layers, policy, defaults, err).map_err(|m| {
+        let _ = writeln!(err, "qctl: {m}");
+        1
+    })?;
+    let mut roots: Vec<&Path> = input.layers.iter().map(|l| l.dir.as_path()).collect();
+    roots.extend(input.policy.as_deref());
+    owner::check(&roots, defaults.euid, err).map_err(|r| {
+        let _ = writeln!(err, "{r}");
+        1
+    })?;
+    Ok(input)
+}
+
 /// Run `qctl compile`; returns the exit code.
 pub fn run(
     opts: &CompileOpts,
@@ -119,19 +144,10 @@ pub fn run(
     _out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
-    let input = match input(&opts.layers, &opts.policy, defaults, err) {
+    let input = match checked_input(&opts.layers, &opts.policy, defaults, err) {
         Ok(i) => i,
-        Err(m) => {
-            let _ = writeln!(err, "qctl: {m}");
-            return 1;
-        }
+        Err(code) => return code,
     };
-    let mut roots: Vec<&Path> = input.layers.iter().map(|l| l.dir.as_path()).collect();
-    roots.extend(input.policy.as_deref());
-    if let Err(r) = owner::check(&roots, defaults.euid, err) {
-        let _ = writeln!(err, "{r}");
-        return 1;
-    }
     let compiled = match compile(&input) {
         Ok(c) => c,
         Err(errors) => {
