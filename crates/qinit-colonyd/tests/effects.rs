@@ -532,3 +532,36 @@ fn a_failed_instance_start_leaves_nothing_behind() {
     assert_eq!(fx.routes.cell(Owner::Instance(0)), None);
     assert!(fx.status.is_empty());
 }
+
+#[test]
+fn remap_keeps_status_pipes_registered_under_their_new_owner() {
+    use qinit_colonyd::effects::{STATUS_NODE, status_owner, status_token};
+    let tmp = Tmp::new("statusmap");
+    let m = model(vec![worker("a"), worker("b")]);
+    let mut fx = rig(FakeCells::default(), &tmp.0);
+    fx.start(0, &spec_of(&m, 0), &m).unwrap();
+    fx.start(1, &spec_of(&m, 1), &m).unwrap();
+    // Swap the two nodes' places.
+    fx.remap(&[1, 0]);
+    // `b`'s launch fails: the record arrives on its pipe, which is now node 0's.
+    let b_write = &fx.cells.spawned[1].fds[1].0;
+    qinit_overseer::status::Status {
+        step: qinit_overseer::status::STEP_DECODE,
+        errno: libc::EINVAL,
+    }
+    .write(b_write.as_fd());
+    let ready = fx.events.poll().unwrap();
+    let tokens: Vec<u64> = ready
+        .iter()
+        .filter_map(|r| match r {
+            qinit_event::Ready::Readable(t) | qinit_event::Ready::Hangup(t) => Some(*t),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tokens, [status_token(Owner::Node(0))], "{ready:?}");
+    assert_eq!(status_owner(STATUS_NODE), Some(Owner::Node(0)));
+    assert_eq!(status_owner(7), None);
+    let failure = fx.take_launch_record(Owner::Node(0)).unwrap();
+    assert_eq!(failure.name, "b");
+    assert_eq!((failure.step, failure.errno), ("decode", libc::EINVAL));
+}

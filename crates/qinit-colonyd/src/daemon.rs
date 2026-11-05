@@ -6,7 +6,7 @@
 //! refresh swapped the database or a shutdown completed, to the work that follows. See
 //! `docs/colony.md`.
 use crate::args::Args;
-use crate::effects::{CellOps, Heard, PathEvent, RealEffects};
+use crate::effects::{CellOps, Heard, PathEvent, RealEffects, status_owner};
 use crate::exit;
 use crate::notes::describe;
 use crate::route::Owner;
@@ -283,6 +283,18 @@ impl<C: CellOps> Daemon<C> {
         }
     }
 
+    /// A launch's status pipe is readable: a failure record is logged, end of file is a launch
+    /// that reached its `execve`.
+    fn on_status(&mut self, owner: Owner) {
+        if let Some(f) = self.colony.effects.take_launch_record(owner) {
+            let why = std::io::Error::from_raw_os_error(f.errno);
+            self.say(
+                Sev::Err,
+                &format!("{}: launch failed at {}: {why}", f.name, f.step),
+            );
+        }
+    }
+
     fn on_heard(&mut self, heard: Heard) {
         for (pid, status) in heard.orphans {
             self.say(
@@ -305,6 +317,10 @@ impl<C: CellOps> Daemon<C> {
                     self.cells_dirty |= self.ready.remove(&owner);
                 }
                 _ => {}
+            }
+            if !matches!(report, CellReport::Created | CellReport::Running) {
+                // Ready, gone or failed: what waited for its readiness is past caring.
+                self.colony.effects.end_readiness_watch(owner);
             }
             let out = match owner {
                 Owner::Node(n) => self.colony.on_cell(n, report, self.now_ms),
@@ -359,9 +375,9 @@ impl<C: CellOps> Daemon<C> {
         let Some(id) = self.colony.effects.routes.cell(owner) else {
             return;
         };
-        if let Err(e) = self.colony.effects.cells.mark_ready(id) {
-            self.say(Sev::Err, &format!("marking {owner:?} ready: {e}"));
-        }
+        // A cell that left `Starting` meanwhile (it exited, was stopped) refuses nothing and
+        // reports nothing: the mark is simply late.
+        let _ = self.colony.effects.cells.mark_ready(id);
     }
 
     fn on_ready(&mut self, r: Ready) {
@@ -384,6 +400,11 @@ impl<C: CellOps> Daemon<C> {
             Ready::Hangup(t) if t < BASE => {
                 self.server.close(ConnId(t), &mut self.colony);
                 self.forget(&[ConnId(t)]);
+            }
+            Ready::Readable(t) | Ready::Hangup(t) if status_owner(t).is_some() => {
+                if let Some(owner) = status_owner(t) {
+                    self.on_status(owner);
+                }
             }
             Ready::Signal(SIGNALS, signo) => self.on_signal(signo),
             Ready::InotifySet(INOTIFY, evs) => self.on_inotify(&evs),

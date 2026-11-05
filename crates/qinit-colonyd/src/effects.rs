@@ -19,7 +19,7 @@ use qinit_event::{Loop, Token};
 use qinit_overseer::request::{RequestSpec, Routed, from_instance, from_model};
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
-use std::os::fd::{BorrowedFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -29,6 +29,49 @@ pub const REQUEST_FD: RawFd = 3;
 pub const STATUS_FD: RawFd = 4;
 /// Where the readiness pipe's write end arrives.
 pub const READY_FD: RawFd = 5;
+
+/// First loop token of the status pipes of nodes; those of instances follow at
+/// [`STATUS_INSTANCE`]. The low bits are the node index or the instance slot.
+pub const STATUS_NODE: Token = 2 << 40;
+/// First loop token of the status pipes of instances.
+pub const STATUS_INSTANCE: Token = 3 << 40;
+
+/// The loop token of the status pipe of `owner`.
+#[must_use]
+pub fn status_token(owner: Owner) -> Token {
+    match owner {
+        Owner::Node(n) => STATUS_NODE | u64::from(n),
+        Owner::Instance(s) => STATUS_INSTANCE | u64::from(s),
+    }
+}
+
+/// Whose status pipe a loop token is, if it is one.
+#[must_use]
+pub fn status_owner(token: Token) -> Option<Owner> {
+    let low = u32::try_from(token & 0xFFFF_FFFF).ok()?;
+    match token & !0xFFFF_FFFF {
+        STATUS_NODE => Some(Owner::Node(low)),
+        STATUS_INSTANCE => Some(Owner::Instance(low)),
+        _ => None,
+    }
+}
+
+/// The read end of a launch's status pipe, with the request it launched (the step names come
+/// from the request's plan).
+#[derive(Debug)]
+pub struct LaunchWatch {
+    pub fd: OwnedFd,
+    pub request: Vec<u8>,
+}
+
+/// A launch that failed a step of the overseer's sequence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchFailure {
+    /// The node's or instance's cell name.
+    pub name: String,
+    pub step: &'static str,
+    pub errno: i32,
+}
 
 /// A watcher id for the readiness of node `n`.
 const READY_TAG: u64 = 1 << 32;
@@ -185,7 +228,7 @@ pub struct RealEffects<C: CellOps> {
     /// The daemon's event loop: the watcher's inotify set lives in it.
     pub events: Loop,
     /// The read end of each launch's status pipe, until the launch ends.
-    pub status: HashMap<Owner, OwnedFd>,
+    pub status: HashMap<Owner, LaunchWatch>,
     /// The cell map changed: the state files need rewriting.
     pub dirty: bool,
     /// The loop's clock, `CLOCK_MONOTONIC` milliseconds, as of this wake-up.
@@ -334,6 +377,26 @@ impl<C: CellOps> RealEffects<C> {
             .collect()
     }
 
+    /// Ends what waits for `owner`'s readiness: its cell is ready, gone or past caring.
+    pub fn end_readiness_watch(&mut self, owner: Owner) {
+        self.watcher
+            .remove(&mut self.events, READY_TAG | owner_node(owner));
+    }
+
+    /// Reads the status pipe of `owner` (the loop said it is readable) and forgets it: a failure
+    /// record names the step that failed; end of file means the launch reached its `execve`.
+    pub fn take_launch_record(&mut self, owner: Owner) -> Option<LaunchFailure> {
+        let watch = self.status.remove(&owner)?;
+        let _ = self.events.remove(status_token(owner));
+        let rec = qinit_overseer::status::Status::read(std::os::fd::AsFd::as_fd(&watch.fd))?;
+        let cell = self.routes.cell(owner)?;
+        Some(LaunchFailure {
+            name: self.names.get(&cell)?.clone(),
+            step: qinit_overseer::status::step_name(&watch.request, rec.step),
+            errno: rec.errno,
+        })
+    }
+
     /// Removes a cell that must not live on and settles its notices now, while its slot still
     /// means it: a later cell in the same slot must not hear them.
     fn discard(&mut self, id: CellId, owner: Owner) {
@@ -351,7 +414,9 @@ impl<C: CellOps> RealEffects<C> {
         }
         self.routes.unbind(id);
         self.names.remove(&id);
-        self.status.remove(&owner);
+        if self.status.remove(&owner).is_some() {
+            let _ = self.events.remove(status_token(owner));
+        }
         self.watcher
             .remove(&mut self.events, READY_TAG | owner_node(owner));
         self.dirty = true;
@@ -520,11 +585,17 @@ impl<C: CellOps> RealEffects<C> {
     /// Creates the cell and launches into it; any failure after the cell exists removes it.
     fn run_plan(&mut self, plan: Plan) -> Result<i32, Errno> {
         let owner = plan.owner;
-        let request_fd = match plan.request {
-            Request::Sealed(fd) => fd,
+        let (request_fd, request_bytes) = match plan.request {
+            Request::Sealed(fd) => {
+                let bytes =
+                    qinit_ipc::memfd::read_all(fd.as_fd(), 1 << 20).map_err(|e| Errno(e.0))?;
+                (fd, bytes)
+            }
             Request::Build(spec) => {
                 let bytes = spec.bytes().map_err(|_| Errno(libc::E2BIG))?;
-                qinit_ipc::memfd::sealed(c"qinit-launch", &bytes).map_err(|e| Errno(e.0))?
+                let fd =
+                    qinit_ipc::memfd::sealed(c"qinit-launch", &bytes).map_err(|e| Errno(e.0))?;
+                (fd, bytes)
             }
         };
         let (status_r, status_w) = qinit_sys::fd::pipe(libc::O_CLOEXEC).map_err(sys)?;
@@ -553,6 +624,7 @@ impl<C: CellOps> RealEffects<C> {
             mode: plan.mode,
             watch: plan.watch,
             request_fd,
+            request_bytes,
             fds: plan.fds,
             ready_fd: plan.ready_fd,
             status_w,
@@ -594,7 +666,20 @@ impl<C: CellOps> RealEffects<C> {
             (Some(Phase::Failed(_)) | None, _) | (_, None) => return Err(Errno(libc::EIO)),
             (_, Some(pid)) => pid,
         };
-        self.status.insert(l.owner, l.status_r);
+        qinit_sys::fd::set_nonblocking(&l.status_r).map_err(sys)?;
+        self.events
+            .add_fd(l.status_r.as_fd(), status_token(l.owner))
+            .map_err(|e| match e {
+                qinit_event::Error::Sys { errno, .. } => sys(errno),
+                _ => Errno(libc::EINVAL),
+            })?;
+        self.status.insert(
+            l.owner,
+            LaunchWatch {
+                fd: l.status_r,
+                request: l.request_bytes,
+            },
+        );
         Ok(pid)
     }
 
@@ -646,6 +731,7 @@ struct Launched {
     mode: ReadyMode,
     watch: Option<(String, Want)>,
     request_fd: OwnedFd,
+    request_bytes: Vec<u8>,
     fds: Vec<(OwnedFd, RawFd)>,
     ready_fd: RawFd,
     status_w: OwnedFd,
@@ -732,18 +818,23 @@ impl<C: CellOps> Effects for RealEffects<C> {
         self.routes.remap(map);
         self.pipes.remap(map);
         self.deadlines.remap(map);
-        let old: Vec<(Owner, OwnedFd)> = self.status.drain().collect();
-        for (owner, fd) in old {
-            match owner {
-                Owner::Instance(_) => {
-                    self.status.insert(owner, fd);
-                }
-                Owner::Node(was) => {
-                    if let Some(now) = map.iter().position(|&m| m == was) {
-                        let now = u32::try_from(now).unwrap_or(u32::MAX);
-                        self.status.insert(Owner::Node(now), fd);
-                    }
-                }
+        // The loop knows a status pipe by its owner's number: every old token goes first, so two
+        // pipes that swap numbers do not meet.
+        let old: Vec<(Owner, LaunchWatch)> = self.status.drain().collect();
+        for (owner, _) in &old {
+            let _ = self.events.remove(status_token(*owner));
+        }
+        for (owner, watch) in old {
+            let now = match owner {
+                Owner::Instance(_) => Some(owner),
+                Owner::Node(was) => map
+                    .iter()
+                    .position(|&m| m == was)
+                    .map(|n| Owner::Node(u32::try_from(n).unwrap_or(u32::MAX))),
+            };
+            if let Some(now) = now {
+                let _ = self.events.add_fd(watch.fd.as_fd(), status_token(now));
+                self.status.insert(now, watch);
             }
         }
         // Readiness watches (tagged by node) follow their node; dependency paths are by name.

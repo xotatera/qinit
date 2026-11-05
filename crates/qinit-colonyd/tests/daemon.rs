@@ -492,3 +492,120 @@ fn a_failed_start_shows_as_a_spawn_failure_not_a_crash() {
     );
     assert_eq!(d.turn(Vec::new()), None, "and the daemon serves on");
 }
+
+// ---- readiness and launch failures (Task 17) ----
+
+fn path_ready_frames(path: &std::path::Path) -> String {
+    format!(
+        "[worker.db]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/bin/db\"]\n\
+         ready = {{ path = \"{}\" }}\n",
+        path.display()
+    )
+}
+
+fn marked(r: &Rig) -> usize {
+    r.d.colony
+        .effects
+        .cells
+        .calls
+        .iter()
+        .filter(|c| matches!(c, Call::MarkReady(_)))
+        .count()
+}
+
+#[test]
+fn a_path_ready_node_is_marked_when_its_file_is_created() {
+    let dir = Tmp::new("pathready-dir");
+    let file = dir.0.join("run/db.pid");
+    let mut r = boot(&path_ready_frames(&file), &["db"], "pathready");
+    assert_eq!(marked(&r), 0, "nothing yet");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, b"1").unwrap();
+    assert_eq!(r.d.pump(), None);
+    assert_eq!(marked(&r), 1, "the cell was marked ready once");
+}
+
+#[test]
+fn a_file_that_was_there_before_the_start_does_not_mark_the_node() {
+    let dir = Tmp::new("stalefile-dir");
+    let file = dir.0.join("run/db.pid");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, b"old").unwrap();
+    let mut r = boot(&path_ready_frames(&file), &["db"], "stalefile");
+    assert_eq!(r.d.pump(), None);
+    assert_eq!(marked(&r), 0, "the stale file is not readiness");
+}
+
+#[test]
+fn its_watch_is_gone_after_an_exit_and_after_ready() {
+    let dir = Tmp::new("watchgone-dir");
+    let file = dir.0.join("run/db.pid");
+    let mut r = boot(&path_ready_frames(&file), &["db"], "watchgone");
+    assert_eq!(
+        r.d.colony.effects.watcher.pending(),
+        1,
+        "waiting for its file"
+    );
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::MainExited(Some(256))));
+    r.d.turn(Vec::new());
+    assert_eq!(
+        r.d.colony.effects.watcher.pending(),
+        0,
+        "the exit ends the watch"
+    );
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, b"1").unwrap();
+    assert_eq!(r.d.pump(), None);
+    assert_eq!(marked(&r), 0, "a later file marks nothing");
+
+    let mut r = boot(&path_ready_frames(&file), &["db"], "watchready");
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::Ready));
+    r.d.turn(Vec::new());
+    assert_eq!(
+        r.d.colony.effects.watcher.pending(),
+        0,
+        "ready ends the watch"
+    );
+}
+
+#[test]
+fn a_launch_failure_record_is_logged_with_its_step_name() {
+    let mut r = boot(WORKER, &["db"], "launchfail");
+    let status_w = &r.d.colony.effects.cells.spawned[0].fds[1].0;
+    let rec = qinit_overseer::status::Status {
+        step: qinit_overseer::status::STEP_IDENTITY,
+        errno: libc::ENOENT,
+    };
+    rec.write(status_w.as_fd());
+    assert_eq!(r.d.pump(), None);
+    let logged = r.logged();
+    let line = logged
+        .iter()
+        .find(|l| l.contains("launch failed"))
+        .unwrap_or_else(|| panic!("{logged:?}"));
+    assert!(line.starts_with("<27>colony["), "an error: {line}");
+    assert!(line.contains("db: launch failed at identity: "), "{line}");
+    assert!(line.contains("No such file or directory"), "{line}");
+}
+
+#[test]
+fn a_successful_launch_closes_its_status_pipe_quietly() {
+    let mut r = boot(WORKER, &["db"], "launchok");
+    // The overseer's exec closes fd 4: the fake spawn's copy stands in for it.
+    let fds = std::mem::take(&mut r.d.colony.effects.cells.spawned[0].fds);
+    drop(fds);
+    assert_eq!(r.d.pump(), None);
+    assert!(!r.logged().iter().any(|l| l.contains("launch failed")));
+    assert!(
+        r.d.colony.effects.status.is_empty(),
+        "the pipe is closed and forgotten after its end of file"
+    );
+}
