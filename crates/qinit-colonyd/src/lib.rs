@@ -7,6 +7,7 @@ pub mod args;
 pub mod deadlines;
 pub mod effects;
 pub mod exit;
+pub mod pipes;
 pub mod route;
 pub mod state;
 pub mod syslog;

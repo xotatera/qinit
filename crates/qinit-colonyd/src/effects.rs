@@ -8,12 +8,13 @@
 //! the cell with the request at fd 3, the status pipe's write end at fd 4 and the readiness
 //! pipe's at fd 5. Any failure after the cell exists removes it again.
 use crate::deadlines::{Deadlines, Key};
+use crate::pipes::Pipes;
 use crate::route::{Owner, Routes};
 use crate::watch::{Want, Watcher};
 use qinit_cell::effects::Command;
 use qinit_cell::{CellId, Error as CellError, Notice, Phase, Polite, ReadyMode, Report};
 use qinit_colony::{Effects, Errno, InstanceSpec, NodeSpec, StopMode, TimerKind};
-use qinit_db::{Model, Ready};
+use qinit_db::{Model, Node, Ready, Route};
 use qinit_event::{Loop, Token};
 use qinit_overseer::request::{RequestSpec, Routed, from_instance, from_model};
 use std::collections::{BTreeMap, HashMap};
@@ -171,6 +172,8 @@ pub struct RealEffects<C: CellOps> {
     pub routes: Routes,
     pub deadlines: Deadlines,
     pub watcher: Watcher,
+    /// The logger pipes colony holds (rebuilt when a database is loaded or swapped in).
+    pub pipes: Pipes,
     /// The daemon's event loop: the watcher's inotify set lives in it.
     pub events: Loop,
     /// The read end of each launch's status pipe, until the launch ends.
@@ -209,6 +212,7 @@ impl<C: CellOps> RealEffects<C> {
             routes: Routes::default(),
             deadlines: Deadlines::default(),
             watcher,
+            pipes: Pipes::default(),
             events,
             status: HashMap::new(),
             dirty: false,
@@ -321,12 +325,8 @@ impl<C: CellOps> RealEffects<C> {
     /// The launch of a node.
     fn launch_node(&mut self, node: u32, spec: &NodeSpec, model: &Model) -> Result<i32, Errno> {
         let n = model.nodes.get(node as usize).ok_or(Errno(libc::ENOENT))?;
-        let routed = Routed {
-            stdin: None,
-            stdout: None,
-            stderr: None,
-            ready: matches!(n.ready, Ready::Pipe).then_some(READY_FD.unsigned_abs()),
-        };
+        let (mut routed, fds) = self.route_fds(node, n, model, [None, None, None])?;
+        routed.ready = matches!(n.ready, Ready::Pipe).then_some(READY_FD.unsigned_abs());
         let request = from_model(n, model, &routed, deadline_ms(spec.start_timeout_ms))
             .map_err(|_| Errno(libc::EINVAL))?;
         let (mode, watch) = match &n.ready {
@@ -343,9 +343,72 @@ impl<C: CellOps> RealEffects<C> {
             mode,
             watch,
             request: Request::Build(Box::new(request)),
-            fds: Vec::new(),
+            fds,
             ready_fd: READY_FD,
         })
+    }
+
+    /// The descriptors a launch of `node` routes in besides the request, the status pipe and the
+    /// readiness pipe, numbered from 6 in the order stdin, stdout, stderr as far as present, and
+    /// the numbers the request is told. A stream the caller supplied (`given`) is used as it is; a
+    /// pipe route gets a duplicate of the logger's write end (colony keeps its own), a logger gets
+    /// a duplicate of the read end as its input. A pipe route whose logger has no pipe is an error:
+    /// the pipes were not rebuilt for this database.
+    fn route_fds(
+        &self,
+        index: u32,
+        node: &Node,
+        model: &Model,
+        given: [Option<OwnedFd>; 3],
+    ) -> Result<(Routed, Vec<(OwnedFd, RawFd)>), Errno> {
+        let [stdin, stdout, stderr] = given;
+        let writer = |route: u32| -> Result<Option<OwnedFd>, Errno> {
+            match model.routes.get(route as usize) {
+                Some(Route::Pipe(logger)) => {
+                    let w = self.pipes.writer(*logger).ok_or(Errno(libc::ENOENT))?;
+                    qinit_sys::fd::dup_above(w, 0).map(Some).map_err(sys)
+                }
+                _ => Ok(None),
+            }
+        };
+        let own_stdin = match (stdin, self.pipes.reader(index)) {
+            (Some(fd), _) => Some(fd),
+            (None, Some(r)) => Some(qinit_sys::fd::dup_above(r, 0).map_err(sys)?),
+            (None, None) => None,
+        };
+        let own_stdout = match (stdout, node.output) {
+            (Some(fd), _) => Some(fd),
+            (None, Some(r)) => writer(r)?,
+            (None, None) => None,
+        };
+        // Standard error follows standard output when both name the same route.
+        let own_stderr = match (stderr, node.errors) {
+            (Some(fd), _) => Some(fd),
+            (None, Some(r))
+                if node.output.is_none_or(|o| {
+                    model.routes.get(o as usize) != model.routes.get(r as usize)
+                }) =>
+            {
+                writer(r)?
+            }
+            _ => None,
+        };
+        let mut fds = Vec::new();
+        let mut number = READY_FD + 1;
+        let mut place = |fd: Option<OwnedFd>| {
+            fd.map(|fd| {
+                fds.push((fd, number));
+                number += 1;
+                (number - 1).unsigned_abs()
+            })
+        };
+        let routed = Routed {
+            stdin: place(own_stdin),
+            stdout: place(own_stdout),
+            stderr: place(own_stderr),
+            ready: None,
+        };
+        Ok((routed, fds))
     }
 
     /// The launch of an instance: a frame's, built here, or a `Run`'s, whose request is the
@@ -388,23 +451,9 @@ impl<C: CellOps> RealEffects<C> {
                 .nodes
                 .get(spec.frame as usize)
                 .ok_or(Errno(libc::ENOENT))?;
-            // The caller's descriptors follow the readiness pipe: 6 upward, in the order stdin,
-            // stdout, stderr, as many as were sent.
-            let mut fds = Vec::new();
-            let mut number = READY_FD + 1;
-            let mut place = |fd: Option<OwnedFd>| {
-                fd.map(|fd| {
-                    fds.push((fd, number));
-                    number += 1;
-                    number.unsigned_abs() - 1
-                })
-            };
-            let routed = Routed {
-                stdin: place(stdin),
-                stdout: place(stdout),
-                stderr: place(stderr),
-                ready: matches!(n.ready, Ready::Pipe).then_some(READY_FD.unsigned_abs()),
-            };
+            let (mut routed, fds) =
+                self.route_fds(spec.frame, n, model, [stdin, stdout, stderr])?;
+            routed.ready = matches!(n.ready, Ready::Pipe).then_some(READY_FD.unsigned_abs());
             let request = from_instance(
                 n,
                 model,
@@ -645,6 +694,7 @@ impl<C: CellOps> Effects for RealEffects<C> {
 
     fn remap(&mut self, map: &[u32]) {
         self.routes.remap(map);
+        self.pipes.remap(map);
         self.deadlines.remap(map);
         let old: Vec<(Owner, OwnedFd)> = self.status.drain().collect();
         for (owner, fd) in old {
