@@ -253,3 +253,30 @@ fn every_error_from_a_failing_stage_is_returned_together() {
     assert!(keys.contains(&"worker.a.restart.policy"), "{keys:?}");
     assert!(keys.contains(&"worker.b.cell.memory_max"), "{keys:?}");
 }
+
+#[test]
+fn lines_and_render_agree() {
+    use std::fmt::Write as _;
+    let c = compile(&golden_input()).expect("golden compiles");
+    let lines = qinit_frames::dump::lines(&c.resolved, &c.provenance);
+    assert!(!lines.is_empty());
+    // The dump is the node blocks built from the lines, then the trailer.
+    let mut rebuilt = String::new();
+    for (i, n) in c.resolved.model.nodes.iter().enumerate() {
+        let kind = match n.kind {
+            qinit_db::Kind::Worker => "worker",
+            qinit_db::Kind::Forager => "forager",
+            qinit_db::Kind::Brood => "brood",
+        };
+        let _ = writeln!(rebuilt, "{kind} {}", n.name);
+        for l in lines.iter().filter(|l| l.node == i) {
+            let _ = writeln!(rebuilt, "  {} = {}  # {}", l.key, l.value, l.origin);
+        }
+        rebuilt.push('\n');
+    }
+    assert!(c.dump.starts_with(&rebuilt), "{rebuilt}");
+    let trailer = &c.dump[rebuilt.len()..];
+    assert!(trailer.starts_with("enabled = "), "{trailer}");
+    assert!(lines.iter().any(|l| l.origin == "template tty-login"));
+    assert!(lines.iter().any(|l| l.origin == "etc"));
+}

@@ -5,7 +5,7 @@
 //! it. The client is a thin shell over the proved message format.
 #![forbid(unsafe_code)]
 
-use qinit_ipc::{connect_seqpacket, recv, send};
+use qinit_ipc::{connect_seqpacket, poll_readable, recv, send};
 use qinit_launch::RequestSpec;
 use qinit_proto_core::{DecodeError, MAX_MESSAGE};
 use qinit_wire::{Msg, Rep, Req, decode, encode};
@@ -152,7 +152,7 @@ pub enum LaunchOutcome {
 ///
 /// # Errors
 /// The errno of the `PIDFD_GET_INFO` call, other than the kernel not knowing the request.
-pub fn pidfd_exit(fd: &OwnedFd) -> std::io::Result<PidfdExit> {
+pub fn pidfd_exit(fd: impl AsFd) -> std::io::Result<PidfdExit> {
     qinit_ipc::pidfd::pidfd_exit(fd).map_err(std::io::Error::from)
 }
 
@@ -227,11 +227,205 @@ pub enum StopMode {
     Cell,
 }
 
+/// What a watch covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope<'a> {
+    /// Every node and instance.
+    All,
+    /// One node, or one instance (`<frame>#<id>`).
+    Target(&'a str),
+}
+
+/// What happened, as a notice reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Report {
+    /// The state at the start of the watch.
+    Current,
+    Started,
+    Ready,
+    Done,
+    Stopped,
+    Failed,
+    Quarantined,
+    Refused,
+    Lost,
+    Starting,
+    Running,
+    Stopping,
+    Exited,
+}
+
+impl Report {
+    /// The report of a notice of `kind` (0 node, 1 instance) with the report word `report`;
+    /// `None` for a pair the protocol does not define.
+    #[must_use]
+    pub fn from_wire(kind: u32, report: u32) -> Option<Report> {
+        const NODE: [Report; 9] = [
+            Report::Current,
+            Report::Started,
+            Report::Ready,
+            Report::Done,
+            Report::Stopped,
+            Report::Failed,
+            Report::Quarantined,
+            Report::Refused,
+            Report::Lost,
+        ];
+        const INSTANCE: [Report; 6] = [
+            Report::Current,
+            Report::Starting,
+            Report::Running,
+            Report::Ready,
+            Report::Stopping,
+            Report::Exited,
+        ];
+        let table: &[Report] = match kind {
+            0 => &NODE,
+            1 => &INSTANCE,
+            _ => return None,
+        };
+        table.get(usize::try_from(report).ok()?).copied()
+    }
+}
+
+/// One event of a watch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Event {
+    Node {
+        name: String,
+        report: Report,
+        state: StateWord,
+        status: Option<i32>,
+    },
+    Instance {
+        frame: String,
+        id: u32,
+        report: Report,
+        state: u32,
+        status: Option<i32>,
+    },
+    /// The database was swapped.
+    Swapped,
+    /// Colony's part of a shutdown is done; this many cells are still populated.
+    ShutdownComplete { still_populated: u32 },
+}
+
+/// What [`Watcher::next`] returns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Next {
+    Event(Event),
+    /// The watch ended with this final state (superseded); the watcher is spent.
+    Ended(StateWord),
+    /// Nothing came within the timeout; the stream is as it was.
+    Timeout,
+}
+
+/// A connection that streams notices (see [`Client::watch`]).
+pub struct Watcher {
+    client: Client,
+    spent: bool,
+    /// The watch is of one instance: its exit ends the stream. A watch of everything, or of a
+    /// node, goes on past an instance's exit.
+    ends_on_exit: bool,
+}
+
+impl AsFd for Watcher {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.client.fd.as_fd()
+    }
+}
+
+impl Watcher {
+    /// The next event, within `timeout` (`None`: no limit). After the exit of a watched
+    /// instance (a watch of everything goes on), or `Ended`, the watcher is spent and every call
+    /// returns [`ClientError::Unexpected`].
+    ///
+    /// # Errors
+    /// [`ClientError`]; `Unexpected` when the server closed the stream or the watcher is spent.
+    pub fn next(&mut self, timeout: Option<Duration>) -> Result<Next, ClientError> {
+        if self.spent {
+            return Err(ClientError::Unexpected);
+        }
+        let ms = timeout.map_or(-1, |d| {
+            i32::try_from(d.as_millis().min(i32::MAX as u128)).unwrap_or(i32::MAX)
+        });
+        if !poll_readable(self.client.fd.as_fd(), ms)? {
+            return Ok(Next::Timeout);
+        }
+        match self.client.reply()? {
+            Reply::Notice(n) => {
+                let event = Self::event(n)?;
+                // The exit ends the stream of a watched instance, and only that.
+                if self.ends_on_exit
+                    && matches!(
+                        event,
+                        Event::Instance {
+                            report: Report::Exited,
+                            ..
+                        }
+                    )
+                {
+                    self.spent = true;
+                }
+                Ok(Next::Event(event))
+            }
+            Reply::Superseded(s) => {
+                self.spent = true;
+                Ok(Next::Ended(s))
+            }
+            _ => Err(ClientError::Unexpected),
+        }
+    }
+
+    /// Whether the stream has ended: after `Ended`, or after the exit of a watched instance.
+    #[must_use]
+    pub fn is_spent(&self) -> bool {
+        self.spent
+    }
+
+    fn event(n: Notice) -> Result<Event, ClientError> {
+        match n.kind {
+            0 | 1 => {
+                let report = Report::from_wire(n.kind, n.report).ok_or(ClientError::Unexpected)?;
+                let status = matches!(report, Report::Failed | Report::Exited).then_some(n.status);
+                if n.kind == 0 {
+                    Ok(Event::Node {
+                        name: n.name,
+                        report,
+                        state: n.state,
+                        status,
+                    })
+                } else {
+                    Ok(Event::Instance {
+                        frame: n.name,
+                        id: n.id,
+                        report,
+                        state: n.state.state,
+                        status,
+                    })
+                }
+            }
+            2 => Ok(Event::Swapped),
+            3 => Ok(Event::ShutdownComplete {
+                still_populated: u32::try_from(n.status).unwrap_or(0),
+            }),
+            _ => Err(ClientError::Unexpected),
+        }
+    }
+}
+
 /// A connection to colony.
 pub struct Client {
     fd: OwnedFd,
     buf: Vec<u8>,
     out: Box<[u8; MAX_MESSAGE]>,
+}
+
+/// The socket, for a caller's own poll loop; the client stays its owner.
+impl AsFd for Client {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
 }
 
 /// A reply, owned.
@@ -247,6 +441,17 @@ enum Reply {
     Launched(u32),
     LaunchFailed(u32, u32),
     Exited(i32),
+    Notice(Notice),
+}
+
+/// A notice, owned.
+struct Notice {
+    kind: u32,
+    name: String,
+    id: u32,
+    state: StateWord,
+    report: u32,
+    status: i32,
 }
 
 fn own(rep: Rep<'_>) -> Reply {
@@ -287,6 +492,15 @@ fn own(rep: Rep<'_>) -> Reply {
         Rep::Launched { id } => Reply::Launched(id),
         Rep::LaunchFailed { step, errno } => Reply::LaunchFailed(step, errno),
         Rep::Exited { status } => Reply::Exited(status),
+        // Only a watcher expects a notice; any other call treats one as an unexpected reply.
+        Rep::Notice(n) => Reply::Notice(Notice {
+            kind: n.kind,
+            name: n.name.to_owned(),
+            id: n.id,
+            state: n.state,
+            report: n.report,
+            status: n.status,
+        }),
     }
 }
 
@@ -527,7 +741,23 @@ impl Client {
         wait: Duration,
     ) -> Result<Begun, ClientError> {
         let bytes = request.bytes().map_err(|_| ClientError::Io(22))?;
-        let memfd = qinit_ipc::memfd::sealed(c"qinit-run", &bytes)?;
+        self.begin_run_bytes(name, &bytes, args, pidfd, wait)
+    }
+
+    /// As [`Client::begin_run`], with the request given as its QLR1 bytes
+    /// (`docs/launch-request.md`): they go in a sealed memfd as they are; colony decodes them.
+    ///
+    /// # Errors
+    /// [`ClientError`]; `Server(Invalid, _)` for bytes that do not decode.
+    pub fn begin_run_bytes(
+        &mut self,
+        name: &str,
+        request: &[u8],
+        args: &RunArgs<'_>,
+        pidfd: bool,
+        wait: Duration,
+    ) -> Result<Begun, ClientError> {
+        let memfd = qinit_ipc::memfd::sealed(c"qinit-run", request)?;
         let mut roles = 0u32;
         let mut fds: Vec<BorrowedFd<'_>> = vec![memfd.as_fd()];
         for (bit, fd) in [(1, args.stdin), (2, args.stdout), (4, args.stderr)] {
@@ -579,5 +809,27 @@ impl Client {
             &[],
         )?;
         self.waited(wait)
+    }
+
+    /// Turns this connection into a stream of state notices for `scope`: the current state
+    /// first, then every change. Any user may watch.
+    ///
+    /// # Errors
+    /// [`ClientError`]; `Server(UnknownNode, _)` for a target that does not exist.
+    pub fn watch(mut self, scope: Scope<'_>) -> Result<Watcher, ClientError> {
+        let (all, target) = match scope {
+            Scope::All => (true, ""),
+            Scope::Target(t) => (false, t),
+        };
+        self.ask(Req::Watch { all, target }, &[])?;
+        match self.reply()? {
+            Reply::Accepted => Ok(Watcher {
+                client: self,
+                spent: false,
+                // Only an instance target (`<frame>#<id>`) carries a `#`.
+                ends_on_exit: matches!(scope, Scope::Target(t) if t.contains('#')),
+            }),
+            _ => Err(ClientError::Unexpected),
+        }
     }
 }

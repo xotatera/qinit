@@ -378,7 +378,7 @@ pub fn repo_registry() -> Vec<Gate> {
             run: Box::new(xtask::gates::test),
             inputs: Inputs::Tree,
             env: xtask::RUST_ENV,
-            tools: &["cargo", "rustc"],
+            tools: &["cargo", "cc", "rustc"],
             extra_paths: &[],
             cache_paths: &[],
             ignored_inputs: &[],

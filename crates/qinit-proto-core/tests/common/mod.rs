@@ -85,6 +85,7 @@ pub fn valid(t: u32) -> (Vec<u8>, usize) {
             3,
             vec![S("job"), N(6), N(0), N(0), N(0), N(0), N(1000), N(5000)],
         ),
+        T_WATCH => (0, vec![N(0), S("sshd")]),
         T_SHUTDOWN => (0, vec![N(1), N(1), N(5000)]),
         T_ERROR => (0, vec![N(CODE_DENIED), N(0), N(1)]),
         T_NODE_STATUS => (
@@ -110,6 +111,7 @@ pub fn valid(t: u32) -> (Vec<u8>, usize) {
         T_LAUNCHED => (0, vec![N(7)]),
         T_LAUNCH_FAILED => (0, vec![N(11), N(13)]),
         T_EXITED => (0, vec![N(0)]),
+        T_NOTICE => (0, vec![N(0), S("sshd"), N(0), N(3), N(0), N(2), N(0)]),
         _ => panic!("no such type {t}"),
     };
     let entries: &[(&str, u32, u32, u32)] = if t == T_LIST_PAGE {
@@ -121,7 +123,7 @@ pub fn valid(t: u32) -> (Vec<u8>, usize) {
 }
 
 /// Every message type of the format.
-pub const TYPES: [u32; 18] = [
+pub const TYPES: [u32; 20] = [
     T_STATUS,
     T_LIST,
     T_CHANGE,
@@ -129,6 +131,7 @@ pub const TYPES: [u32; 18] = [
     T_REFRESH,
     T_SHUTDOWN,
     T_RUN,
+    T_WATCH,
     T_ERROR,
     T_NODE_STATUS,
     T_INSTANCE_STATUS,
@@ -140,6 +143,7 @@ pub const TYPES: [u32; 18] = [
     T_LAUNCHED,
     T_LAUNCH_FAILED,
     T_EXITED,
+    T_NOTICE,
 ];
 
 /// `bytes` with its words patched by `f` (the trailing partial word kept as it was).

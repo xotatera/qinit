@@ -30,7 +30,7 @@ connection whose pidfd cannot be had is closed. The user id decides what the pee
 
 | Request | Who may send it |
 | --- | --- |
-| `Status`, `List` | any user |
+| `Status`, `List`, `Watch` | any user |
 | `Change`, `Launch`, `Refresh`, `Shutdown` | user id 0 only |
 
 A request the peer may not make gets `Error(Denied)` and the connection stays open.
@@ -57,6 +57,13 @@ A request the peer may not make gets `Error(Denied)` and the connection stays op
   reply is `Pending(state)` and the request stays in effect. If another request changes what a
   parked wait waits for, or a refresh removes it, the wait is answered at once with
   `Superseded(state)`.
+- **A watch is a request in flight until the client closes.** After `Accepted`, a `Watch` keeps
+  the connection busy: `Notice` replies arrive as things happen, and a second request on the
+  connection is `Error(BadRequest)` with detail 6 and the close. The stream ends when the client
+  closes, when the watched instance's exited notice goes out (the connection is idle again), or
+  when a refresh removes the watched node (`Superseded` with state off, idle again). Nothing is queued
+  per watcher beyond the socket's own buffer: a watcher that does not read is closed when its
+  receive queue is full. There is no replay.
 - **Closing a connection does not undo anything.** A request that was accepted stays in effect;
   a running instance continues.
 
@@ -111,6 +118,7 @@ sent as a reply, or the other way round, is a protocol error.
 | 5 | `Refresh` | request |
 | 6 | `Shutdown` | request |
 | 7 | `Run` | request |
+| 8 | `Watch` | request |
 | 64 | `Error` | reply |
 | 65 | `NodeStatus` | reply |
 | 66 | `InstanceStatus` | reply |
@@ -122,6 +130,7 @@ sent as a reply, or the other way round, is a protocol error.
 | 72 | `Launched` | reply |
 | 73 | `LaunchFailed` | reply |
 | 74 | `Exited` | reply |
+| 75 | `Notice` | reply |
 
 ### Enum values
 
@@ -182,6 +191,11 @@ one; either way the `refresh` edges of the nodes that depend on it fire. Reply: 
 `Error` (`UnknownNode`, `NotNow` with the node's state when the request does nothing in that
 state, `ShuttingDown`); and if `settled`, then `Settled`, `Pending` or `Superseded`, each with
 the state the node reached or is in.
+
+`start` on a worker that is done (ready by exit, and its process exited) is `Accepted` and changes
+nothing: the worker stays done, no notice goes out, and with `settled` the second reply is
+`Settled` at once with state 4 (done). A forager is never started, only run: `start` on one is
+`Error(NotNow)` with its state.
 
 ### `Launch` (type 4), user id 0
 
@@ -277,6 +291,33 @@ client: Run   name="db" flags=2 wait_ms=30000     # fds: request (readiness pipe
 server: Launched id=7
 server: Settled  state=3                           # the service wrote its byte
 ```
+
+### `Watch` (type 8), any user
+
+| Word | Name | Meaning |
+| --- | --- | --- |
+| 0 | `scope` | 0 one target, 1 everything |
+| 1, 2 | `target_off`, `target_len` | with scope 0: a node name or `<frame>#<id>`, 1 to 107 bytes; with scope 1: empty |
+
+No descriptors. A scope other than 0 or 1 is `Error(BadRequest)` with detail 5 (`Enum`); a scope 0
+with an empty target or a scope 1 with a non-empty one is detail 6 (`Consistency`). A target that
+names no node and no instance colony knows (one that is live, or that has exited and is still
+remembered, see below) gets `Error(UnknownNode)` and the connection stays open.
+Otherwise the first reply is `Accepted`, and then `Notice` replies follow.
+
+- **Scope 1 (everything):** every node report, every instance state change and readiness, every
+  database swap and the end of colony's part of a shutdown.
+- **Scope 0, a node:** right after `Accepted`, one notice with report 0 (current) and the node's
+  state now, so the client never races a `Status` against the stream; then that node's reports.
+- **Scope 0, an instance:** the same, with the instance's state now; then its changes. The exited
+  notice (report 5) ends the stream. An instance that has already exited is a valid target while
+  colony still remembers it: its first notice says exited and ends the stream at once. Colony
+  forgetting an instance emits nothing.
+- **A refresh that removes a watched node** answers `Superseded` with state 0 (off) and detail 0,
+  whatever the node's last state was; the connection is idle again. A watcher of everything gets the kind 2 notice and keeps
+  watching.
+- **Shutdown:** a watcher of everything gets kind 3 when colony's part is done; colony then closes
+  its connections as usual. A `Watch` sent during a shutdown is served.
 
 ## Replies
 
@@ -374,6 +415,24 @@ pidfd carries no status. The client library wraps this as `pidfd_exit`.
 | --- | --- | --- |
 | 0 | `status` | the wait status of the instance's main process, as a signed word; -1 when its exit was not seen (the cell was emptied first, for example by a stop) |
 
+### `Notice` (type 75)
+
+| Word | Name | Meaning |
+| --- | --- | --- |
+| 0 | `kind` | 0 node, 1 instance, 2 database swapped, 3 colony's part of a shutdown is done |
+| 1, 2 | `name_off`, `name_len` | the node's name, or the instance's frame; empty for kinds 2 and 3 |
+| 3 | `id` | the instance id; 0 otherwise |
+| 4, 5 | `state`, `detail` | the state after the event, as in the enum table; 0, 0 for kinds 2 and 3 |
+| 6 | `report` | what happened (below) |
+| 7 | `status` | a wait status as a signed word where the report carries one (a node failure, an instance exit; -1 when it was not seen); for kind 3 the number of cells still populated; 0 otherwise |
+
+`report` for a node: 0 current (the first notice of a targeted watch), 1 started, 2 ready, 3 done,
+4 stopped, 5 failed, 6 quarantined, 7 refused, 8 lost (a report was dropped: the state word is
+still right, the client re-reads what it needs). For an instance: 0 current, 1 starting, 2 running,
+3 ready (the readiness byte), 4 stopping, 5 exited. For kinds 2 and 3: 0. The decoder refuses a
+`kind` above 3, a `state` above 6, a non-empty name for kinds 2 and 3 and an empty or over-long one
+for kinds 0 and 1.
+
 ## Examples
 
 Every block below is one message. The first comment line gives the number of descriptors that
@@ -386,6 +445,13 @@ Text after `#` is a comment.
 # fds: 0
 51435031 01000000 20000000 01000000 00000000  # header: magic, version, total_len, type, fd_count
 1c000000 04000000  # record
+73736864  # pool: "sshd"
+```
+### Watch
+```qcp1
+# fds: 0
+51435031 01000000 24000000 08000000 00000000  # header: magic, version, total_len, type, fd_count
+00000000 20000000 04000000  # record
 73736864  # pool: "sshd"
 ```
 ### List
@@ -500,4 +566,11 @@ The same reply with a pidfd:
 # fds: 0
 51435031 01000000 18000000 4a000000 00000000  # header: magic, version, total_len, type, fd_count
 00000000  # record
+```
+### Notice
+```qcp1
+# fds: 0
+51435031 01000000 38000000 4b000000 00000000  # header: magic, version, total_len, type, fd_count
+00000000 34000000 04000000 00000000 03000000 00000000 02000000 00000000  # record
+73736864  # pool: "sshd"
 ```

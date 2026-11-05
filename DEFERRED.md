@@ -123,17 +123,27 @@ single-threaded and changes its own credentials (SP5), so it is not such a calle
 Resolved by the colony core sub-project: `qinit-colony-core` evaluates the groups over the
 observed node states and `qinit-colony` runs it against simulated cells.
 
-### D16 — `qctl` command-line tool · `OPEN`
+### D16 — `qctl` command-line tool · `RESOLVED`
 
-`qinit-frames` is a library: it has no command-line front end. The `qctl`
-compiler and administrative CLI, which will call it, is a later sub-project.
+Resolved by `qctl` (spec 2026-11-05 §4; commits 52184eb, 5b0bc92, 0211d91, 4170248, 0e62ac7), an
+`edge`-layer crate with a hand-written argument grammar: `compile` (the layers
+`vendor=/usr/lib/qinit/frames` and `etc=/etc/qinit/frames`, the policy `/etc/qinit/policy.toml` when it exists,
+the output `/etc/qinit/colony.db`, byte for byte the library's database), `show`, `fill`, and the
+control commands over the protocol: `status`, `list`, `start`/`stop`/`restart`/`clear` with
+`--wait`, `refresh`, `poweroff`/`reboot`/`halt`, `launch`, `run` from a TOML request file, and `watch`, one line
+per notice. Exit codes are 0 done, 1 refused or failed, 2 usage. `docs/qctl.md` is its page; the
+control suite runs it in-process as root in the guest.
 
-### D42 — Implicit defaults are not written back to frame and policy TOML · `OPEN`
+### D42 — Implicit defaults are not written back to frame and policy TOML · `RESOLVED`
 
 A frame or policy that leaves a key out gets the compiler's default (`cwd = "/"`, `umask`, no
-limits, the built-in rlimit ceiling), and nothing shows the effective value in the file. Writing
-the implicit defaults back into the frame and policy TOML, before or after compilation, would make
-them visible. Home: `qctl` (D16).
+limits, the built-in rlimit ceiling), and nothing showed the effective value in the file. Resolved
+by `qctl show` and `qctl fill` (spec 2026-11-05 §4.3, §4.4; commits bf7cfef, bedef46, 7dad1ec):
+`show` prints a frame or the policy as effective TOML, each key with the layer it came from or
+`# default`; `fill` writes the implicit defaults into the `etc` layer (an amend table when the
+layer has none; vendor files are never edited), marked `# default, filled by qctl`, preserving the
+file's other bytes, idempotent, and the compiled database is byte-identical before and after. Two
+defaults have no TOML word and stay comments (D58).
 
 ### D17 — Policy signature verification · `OPEN`
 
@@ -196,11 +206,16 @@ stating that halves the worst-case graph cost (about 134 million steps): `check_
 `DbError::Pool { table, record }` names the record whose reference failed and
 `DbError::Utf8 { offset }` the first bad pool offset, like the record errors.
 
-### D26 — No ownership or mode check on policy and layers · `ACCEPTED`
+### D26 — No ownership or mode check on policy and layers · `RESOLVED`
 
-The compiler reads the policy file and the layer directories as given, with
-no check of their owner or mode, although the design calls the policy
-root-owned. The `qctl` front end (D16) is the place to enforce it.
+The compiler read the policy file and the layer directories as given, with no check of their
+owner or mode, although the design calls the policy root-owned. Resolved in `qctl` (spec
+2026-11-05 §4.2; commits 4e364ae, 400f3b2, bedef46): run as root, `compile` and `show` refuse a
+policy file, a layer, any file or directory below a layer, or any ancestor directory of them that
+is a symbolic link, is not owned by uid 0 or is writable by group or other, naming the first path
+and its owner and mode; an effective uid that cannot be read fails closed. Run as another user,
+`qctl` prints a notice that the check is skipped. The library itself still reads what it is given.
+The control suite checks the refusal and the success as root in the guest.
 
 ### D27 — Real path watching · `OPEN`
 
@@ -281,10 +296,18 @@ The init of a pid namespace cannot raise a default-action signal on itself, so i
 service that itself exits with such a code in a pid namespace is reported as killed by that
 signal.
 
-### D37 — Notice stream · `OPEN`
+### D37 — Notice stream · `RESOLVED`
 
-A client cannot subscribe to node state changes or instance exits: it asks, or it waits on a
-request with a deadline. A watch request that streams notices on a connection is deferred.
+A client could not subscribe to node state changes or instance exits. Resolved (spec 2026-11-05
+§2; commits faeeea4, 7fc6352, 7af11a4, bc1fdc4, b146efc, 49cb551): `Watch` (type 8, any user, a
+node, an instance `<frame>#<id>` or everything) is answered `Accepted` and then the connection
+carries `Notice` replies (type 75: node, instance, database swapped, shutdown complete, with the
+state, a report word and a status). A targeted watch starts with the current state (an instance
+that has already exited says exited, with its status); a refresh that removes the node ends the
+stream with `Superseded`; a watcher that does not read is closed and the server goes on. Colony
+keys watchers by name and turns notices into stream replies as they are pushed into an `Outcome`.
+The client has `Client::watch` and `Watcher::next` with a timeout; the control suite watches a
+change made by a second connection.
 
 ### D38 — A pidfd in the launch reply · `RESOLVED`
 
@@ -308,10 +331,16 @@ Any user may read status and the list; everything else needs user id 0, decided 
 `authorized` function. Finer authority (per service, per user) belongs to the privilege authority
 project, which plugs in at that function.
 
-### D41 — A C interface to the client library · `OPEN`
+### D41 — A C interface to the client library · `RESOLVED`
 
-`qinit-client` is a Rust library. Other languages implement the protocol from
-`docs/control-protocol.md`; a C ABI over the client is deferred.
+Resolved by `qinit-client-c` (MPL-2.0, the `ffi` layer; spec 2026-11-05 §3; commits 761fc78,
+c1a747e, 5f5695f): `libqinit_client_c` as a static archive and a shared object, with the header
+`include/qinit_client.h` generated by cbindgen and checked for drift by a test. Status, list,
+change, refresh, shutdown, launch and run (QLR1 bytes, D53) and the notice stream are exported;
+errors are an `int` kind plus `qinit_last_error`, names are copied into 97-byte arrays. A C smoke
+program, compiled against the header and linked into the test binary by the build script, runs
+its sequence against the test server in the test gate. `crates/qinit-client-c/README.md` is the
+C user's page.
 
 ### D43 — Idmapped mounts in the view · `RESOLVED`
 
@@ -384,3 +413,76 @@ home directory listed `ro:` by a different launch of the same user) can still re
 launch that lists a path through it. Resolving every entry without symlinks would break ordinary
 host layouts and is not proposed; the answer is to list such paths only from directories the
 service cannot write.
+
+### D51 — Machine-readable `qctl` output · `OPEN`
+
+`qctl` prints lines for people (`state: ready`, `node db ready ready`). A `--json` form for
+scripts is deferred; until then a script uses the client library or the C interface.
+
+### D52 — A notice backlog · `OPEN`
+
+A watch sees only what happens after it is in place (and, for a target, its current state). A
+watcher that connects late cannot read what it missed; a backlog it could replay is deferred.
+
+### D53 — A C builder for launch requests · `OPEN`
+
+`qinit_run_begin` takes the QLR1 bytes of a launch request (`docs/launch-request.md`); the C
+interface has no builder for them, so a C program encodes the request itself.
+
+### D54 — `qctl run` from a frame file · `OPEN`
+
+`qctl run` takes a TOML request file. Compiling one frame into a request, so a frame can be run
+as an instance directly, is deferred.
+
+### D55 — `qctl show` and `fill` for `enable.toml` · `OPEN`
+
+`show` and `fill` act on frames and the policy. The enable list (`enable.toml`) has neither an
+effective view nor written-back defaults.
+
+### D56 — Outcome merges that drop parked replies · `OPEN`
+
+Several places in colony merge the `Outcome` of an inner call into their own and carry the
+notices, the stream and the errors but not `replies`: `change_instance`, `launch_request` and
+`run_handler` in `handle.rs` and the phase merges of a refresh in `swap.rs`. A parked wait that
+an inner call resolves would lose its reply, and its client would wait until its deadline. No
+test reaches it today; the merges should go through one helper that moves every field.
+
+### D57 — `Client::watch` spends the client on a refusal · `OPEN`
+
+`Client::watch(self)` consumes the client, and on a refusal (`UnknownNode`, `Denied`) it returns
+the error without the client, although the server keeps the connection open. The C interface
+inherits it: a refused `qinit_watch` spends its client, which must be connected again. Returning
+the client with the error would keep the connection.
+
+### D58 — Defaults with no TOML word · `OPEN`
+
+Two defaults have no TOML spelling in the frame schema: no start timeout (`start_timeout =
+"none"`, a node ready on exit) and `sandbox.user_map = "own"` without a user namespace. `qctl
+show` and `qctl fill` print them as comments instead of keys, since a written key would not
+compile; a schema word for each would let them be written.
+
+### D59 — Intermittent failures of the xtask CLI tests · `OPEN`
+
+In one full gate run two tests of `xtask/runner/tests/cli.rs` failed,
+`empty_proofs_are_a_successful_no_op` (exit 2) and
+`full_gate_names_the_malformed_repository_proof_declaration` (`cannot run cargo metadata: No such
+file or directory`); they passed alone and in the next gate runs. `Fixture::new` names its
+temporary root by `SystemTime` nanoseconds only. The hypothesis, unproven: two tests running in
+parallel get the same root and one's `Drop` removes it under the other. The candidate fix is the
+process id and an atomic counter in the name.
+
+### D60 — `qctl fill` renames its files one by one · `OPEN`
+
+`qctl fill` edits every file and writes every new text to a temporary file, with the old file's
+owner and mode, before it renames any, so a failed edit, write, `chown` or `chmod` leaves every
+file as it was. The renames themselves then run one after another: a rename that fails after the
+first leaves the earlier files filled and the rest not. Each file is still whole, and a second
+`fill` completes the rest, but the files of one run are not replaced as one. Directories made
+for a new file are not removed when a later file fails.
+
+### D61 — Test directories left in `/tmp` by other crates · `OPEN`
+
+Runs of `cargo test` leave directories in `/tmp`: `qinit-sys-fs-*`, `qinit-ipc-*` and
+`qinit-sys-det-*` are each in the hundreds on the maintainer's host. Their test harnesses
+predate this branch and were not examined; each needs a guard that removes its directory when
+dropped, as the qctl, client and protocol tests now have.

@@ -345,3 +345,100 @@ fn a_run_requires_its_request_fd_and_its_roles() {
     let long = "a".repeat(96);
     assert!(encoded(&Msg::Req(named(&long, 0)), 1).is_err());
 }
+
+#[test]
+fn watch_and_notice_round_trip() {
+    for req in [
+        Req::Watch {
+            all: false,
+            target: "sshd",
+        },
+        Req::Watch {
+            all: true,
+            target: "",
+        },
+    ] {
+        round_trip(&Msg::Req(req));
+    }
+    let rep = Rep::Notice(Notice {
+        kind: 1,
+        name: "backup",
+        id: 7,
+        state: st(4, 0),
+        report: 5,
+        status: -1,
+    });
+    round_trip(&Msg::Rep(rep));
+    let bytes = encoded(&Msg::Rep(rep), 0).unwrap();
+    assert_eq!(bytes[12..16], 75u32.to_le_bytes());
+}
+
+#[test]
+fn a_watch_or_notice_that_breaks_a_rule_is_refused_not_encoded() {
+    let watch = |all, target| encoded(&Msg::Req(Req::Watch { all, target }), 0);
+    // One target needs a name; everything takes none.
+    assert_eq!(watch(false, ""), Err(EncodeError::Invalid));
+    assert_eq!(watch(true, "sshd"), Err(EncodeError::Invalid));
+    let longest = "t".repeat(MAX_TARGET_LEN);
+    let long = "t".repeat(MAX_TARGET_LEN + 1);
+    assert!(watch(false, &longest).is_ok());
+    assert_eq!(watch(false, &long), Err(EncodeError::Invalid));
+    // A watch carries no descriptor.
+    assert_eq!(
+        encoded(
+            &Msg::Req(Req::Watch {
+                all: false,
+                target: "sshd"
+            }),
+            1
+        ),
+        Err(EncodeError::Invalid)
+    );
+
+    let notice = |kind, name, state| {
+        encoded(
+            &Msg::Rep(Rep::Notice(Notice {
+                kind,
+                name,
+                id: 0,
+                state,
+                report: 0,
+                status: 0,
+            })),
+            0,
+        )
+    };
+    assert_eq!(notice(4, "", st(0, 0)), Err(EncodeError::Invalid), "kind 4");
+    assert_eq!(
+        notice(0, "sshd", st(7, 0)),
+        Err(EncodeError::Invalid),
+        "state 7"
+    );
+    assert_eq!(
+        notice(0, "", st(0, 0)),
+        Err(EncodeError::Invalid),
+        "unnamed node"
+    );
+    assert_eq!(
+        notice(1, "", st(0, 0)),
+        Err(EncodeError::Invalid),
+        "unnamed instance"
+    );
+    assert_eq!(
+        notice(2, "x", st(0, 0)),
+        Err(EncodeError::Invalid),
+        "named swap"
+    );
+    assert_eq!(
+        notice(3, "x", st(0, 0)),
+        Err(EncodeError::Invalid),
+        "named shutdown"
+    );
+    let long_name = "n".repeat(MAX_NAME_LEN + 1);
+    assert_eq!(
+        notice(0, &long_name, st(0, 0)),
+        Err(EncodeError::Invalid),
+        "long name"
+    );
+    assert!(notice(2, "", st(0, 0)).is_ok());
+}

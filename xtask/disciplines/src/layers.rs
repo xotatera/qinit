@@ -31,6 +31,7 @@ pub const LAYER_NAMES: &[&str] = &[
     "runtime",
     "edge",
     "unsafe",
+    "ffi",
     "tooling",
 ];
 
@@ -98,8 +99,10 @@ fn violation(package: &str, message: String) -> Violation {
 
 /// Whether a crate in layer `from` may depend on a crate in layer `to`:
 /// edge → runtime → core → kernel → primitive, every layer but tooling may
-/// reach primitive, only the runtime reaches the unsafe zone, tooling
-/// reaches everything and only tooling reaches tooling.
+/// reach primitive, only the runtime reaches the unsafe zone, the ffi layer
+/// (a C ABI over a runtime crate) reaches edge, runtime, core, kernel and
+/// primitive and only tooling reaches it, tooling reaches everything and
+/// only tooling reaches tooling.
 #[must_use]
 pub fn may_depend(from: &str, to: &str) -> bool {
     if from == "tooling" {
@@ -118,6 +121,7 @@ pub fn may_depend(from: &str, to: &str) -> bool {
                 | ("unsafe", "kernel" | "core")
                 | ("runtime", "kernel" | "core" | "unsafe")
                 | ("edge", "kernel" | "core" | "runtime")
+                | ("ffi", "edge" | "runtime" | "core" | "kernel" | "primitive")
         )
 }
 
@@ -410,7 +414,9 @@ fn check_package(p: &Package, all: &[Package], out: &mut Vec<Violation>) {
     if let Some(from) = layer {
         check_direction(p, from, all, out);
     }
-    if !matches!(layer, Some("unsafe" | "primitive")) && !opts_into_workspace_lints(&p.manifest) {
+    if !matches!(layer, Some("unsafe" | "primitive" | "ffi"))
+        && !opts_into_workspace_lints(&p.manifest)
+    {
         out.push(violation(
             name,
             "Cargo.toml does not set `lints.workspace = true`".to_string(),

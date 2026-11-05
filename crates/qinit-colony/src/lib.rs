@@ -17,7 +17,7 @@ mod swap;
 pub mod text;
 
 pub use effects::{Effects, Errno, InstanceSpec, NodeSpec};
-pub use engine::{Colony, Error, Notice, Outcome};
+pub use engine::{Colony, Error, Notice, Outcome, Scope, Stream};
 pub use handle::{
     Attached, EntryView, Handled, InstanceStatusView, NodeStatusView, OwnedRep, Peer, ShutdownMode,
     WaitId, state_word,

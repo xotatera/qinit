@@ -230,11 +230,8 @@ impl<E: Effects> Colony<E> {
                     status: None,
                     stop: None,
                 });
-                let out = Outcome {
-                    notices: vec![Notice::Instance(id, SlotState::Starting)],
-                    errors: Vec::new(),
-                    replies: Vec::new(),
-                };
+                let mut out = Outcome::default();
+                self.emit(&mut out, Notice::Instance(id, SlotState::Starting));
                 Ok((id, out))
             }
             Err(e) => {
@@ -322,11 +319,8 @@ impl<E: Effects> Colony<E> {
                     status: None,
                     stop: Some((args.stop, args.grace_ms)),
                 });
-                let out = Outcome {
-                    notices: vec![Notice::Instance(id, SlotState::Starting)],
-                    errors: Vec::new(),
-                    replies: Vec::new(),
-                };
+                let mut out = Outcome::default();
+                self.emit(&mut out, Notice::Instance(id, SlotState::Starting));
                 Ok((id, out))
             }
             Err(e) => {
@@ -366,7 +360,7 @@ impl<E: Effects> Colony<E> {
         if let Err(e) = self.effects.stop_instance(slot32, mode, grace_ms) {
             out.errors.push(crate::engine::Error::Effect(frame, e));
         }
-        out.notices.push(Notice::Instance(id, SlotState::Stopping));
+        self.emit(out, Notice::Instance(id, SlotState::Stopping));
     }
 
     /// What an instance's cell reported.
@@ -381,7 +375,7 @@ impl<E: Effects> Colony<E> {
             CellPhase::Running => {
                 if self.slots[i].state == SlotState::Starting {
                     set_state(&mut self.slots, i, SlotState::Running);
-                    out.notices.push(Notice::Instance(id, SlotState::Running));
+                    self.emit(&mut out, Notice::Instance(id, SlotState::Running));
                 }
             }
             CellPhase::MainExited(status) => {
@@ -395,7 +389,7 @@ impl<E: Effects> Colony<E> {
             }
             CellPhase::Empty | CellPhase::Failed(_) => self.finish_instance(i, &mut out),
             // The readiness byte of an instance that was started to wait for it.
-            CellPhase::Ready => out.notices.push(Notice::InstanceReady(id)),
+            CellPhase::Ready => self.emit(&mut out, Notice::InstanceReady(id)),
             CellPhase::Created | CellPhase::NotReady | CellPhase::Removed | CellPhase::Refused => {}
         }
         self.after_event(now, &mut out);
@@ -420,8 +414,7 @@ impl<E: Effects> Colony<E> {
             id: rec.id,
             status,
         });
-        out.notices
-            .push(Notice::Instance(rec.id, SlotState::Exited(status)));
+        self.emit(out, Notice::Instance(rec.id, SlotState::Exited(status)));
     }
 
     /// The live instance `id`, or its remembered exit.

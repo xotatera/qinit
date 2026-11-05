@@ -34,7 +34,8 @@ use crate::provenance::{locate, locate_all};
 use crate::schema::{Frame, LaunchCfg, Output, Ready as SReady};
 use crate::schema::{Rlimits, rlimit_value};
 use crate::units::{duration_ms, size_kib};
-pub(crate) use cred::{cap_bit, cap_name, ns_name};
+pub(crate) use cred::cap_name;
+pub use cred::{cap_bit, ns_name};
 use qinit_db::{
     Group, GroupKind, Kind, Launch, Model, Node, RLIMIT_COUNT, RLIMIT_KEYS, Ready, Reload, Restart,
     RestartPolicy, Route, Stop, StopMode,

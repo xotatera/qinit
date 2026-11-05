@@ -420,6 +420,7 @@ pub fn advance_outcome(colony: &mut Colony<Sim>, ms: u64) -> Outcome {
     let mut all = Outcome::default();
     while let Some(out) = deliver_next(colony, target) {
         all.notices.extend(out.notices);
+        all.stream.extend(out.stream);
         all.errors.extend(out.errors);
         all.replies.extend(out.replies);
     }

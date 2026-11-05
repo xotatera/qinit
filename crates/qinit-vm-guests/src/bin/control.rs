@@ -4,10 +4,13 @@
 //! The control protocol with real peers on a real kernel (spec 2026-11-04 §8): root and a user
 //! other than root connect to the server over a `SOCK_SEQPACKET` socket, and the server takes
 //! each peer's `SO_PEERCRED` and `SO_PEERPIDFD`. Colony runs on simulated cells here; the real
-//! cells are sub-project 7's. No threads: the server is this process, and each client is a
-//! forked process whose exit status is the verdict.
+//! cells are sub-project 7's. The server is this process, single-threaded, and each client is a
+//! forked process whose exit status is the verdict (the `qctl watch` case runs its watch on a
+//! thread of that client). `qctl` itself runs in-process, as root, for its compile and control
+//! cases (spec 2026-11-05 §5).
 use qinit_client::{
-    Action, Begun, Client, ClientError, ErrorCode, LaunchArgs, Started, Status, Wait,
+    Action, Begun, Client, ClientError, ErrorCode, Event, LaunchArgs, Next, Report, Scope, Started,
+    StateWord, Status, Wait,
 };
 use qinit_colony::Colony;
 use qinit_colony::sim::{Sim, advance_outcome};
@@ -20,8 +23,9 @@ use qinit_proto::Limits;
 use qinit_proto::testing::Driver;
 use qinit_vm_guests::run;
 use std::ffi::CString;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::path::Path;
+use std::time::Duration;
 
 const SOCKET: &str = "/tmp/colony";
 
@@ -71,6 +75,11 @@ fn world() -> Result<Colony<Sim>, String> {
                 ..node("backup", Kind::Forager)
             },
             node("db", Kind::Worker),
+            // Ready by pipe, so a start reports `ready` (db, ready by exit, ends in `done`).
+            Node {
+                ready: Ready::Pipe,
+                ..node("web", Kind::Worker)
+            },
         ],
         creds: vec![Cred {
             user: "svc".into(),
@@ -206,11 +215,20 @@ fn root_is_not_limited_per_uid() -> Result<(), String> {
     })
 }
 
+/// Whether `fd` polls readable within `ms` milliseconds; `None` when the poll itself failed.
+fn readable(fd: BorrowedFd<'_>, ms: u64) -> Option<bool> {
+    use qinit_sys::event::{epoll, epoll_add, epoll_wait, timer};
+    let ep = epoll().ok()?;
+    let clock = timer(Duration::from_millis(ms)).ok()?;
+    epoll_add(&ep, fd.as_raw_fd(), libc::EPOLLIN as u32, 1).ok()?;
+    epoll_add(&ep, clock.as_raw_fd(), libc::EPOLLIN as u32, 2).ok()?;
+    let mut events = [libc::epoll_event { events: 0, u64: 0 }; 2];
+    let n = epoll_wait(&ep, &mut events).ok()?;
+    Some(events[..n].iter().any(|e| e.u64 == 1))
+}
+
 /// A launch with the pidfd flag hands the client a pidfd that is readable once the process ends.
 fn a_launch_pidfd_polls_readable_at_exit() -> Result<(), String> {
-    use qinit_sys::event::{epoll, epoll_add, epoll_wait, timer};
-    use std::os::fd::AsRawFd;
-    use std::time::Duration;
     // The sim's stand-in for the instance's main process: a child that waits to be killed.
     let victim = qinit_sys::proc::fork().map_err(|e| format!("fork: {e}"))?;
     if victim == 0 {
@@ -237,15 +255,7 @@ fn a_launch_pidfd_polls_readable_at_exit() -> Result<(), String> {
             else {
                 return 2;
             };
-            let readable = |ms: u64| -> Option<bool> {
-                let ep = epoll().ok()?;
-                let clock = timer(Duration::from_millis(ms)).ok()?;
-                epoll_add(&ep, pidfd.as_raw_fd(), libc::EPOLLIN as u32, 1).ok()?;
-                epoll_add(&ep, clock.as_raw_fd(), libc::EPOLLIN as u32, 2).ok()?;
-                let mut events = [libc::epoll_event { events: 0, u64: 0 }; 2];
-                let n = epoll_wait(&ep, &mut events).ok()?;
-                Some(events[..n].iter().any(|e| e.u64 == 1))
-            };
+            let readable = |ms: u64| readable(pidfd.as_fd(), ms);
             // Alive: not readable (the 100 ms timer fires first).
             if readable(100) != Some(false) {
                 return 3;
@@ -376,6 +386,200 @@ fn run_is_refused_without_a_run_rule() -> Result<(), String> {
     })
 }
 
+fn watch_sees_a_change_from_a_second_connection() -> Result<(), String> {
+    serve_while(|| {
+        let Some(mut w) = connect()
+            .ok()
+            .and_then(|c| c.watch(Scope::Target("db")).ok())
+        else {
+            return 1;
+        };
+        let five = Some(Duration::from_secs(5));
+        let current = matches!(
+            w.next(five),
+            Ok(Next::Event(Event::Node {
+                report: Report::Current,
+                ..
+            }))
+        );
+        // Let the start-up notices pass: after a quiet moment only the stop can report. At most
+        // 64 of them; a stream that never goes quiet fails the case instead of holding it.
+        let quiet = Some(Duration::from_millis(300));
+        let drained = (0..64).find_map(|_| match w.next(quiet) {
+            Ok(Next::Timeout) => Some(true),
+            Ok(Next::Event(_)) => None,
+            _ => Some(false),
+        }) == Some(true);
+        let stopped = connect().is_ok_and(|mut c| c.change("db", Action::Stop, Wait::Now).is_ok());
+        let saw = (0..8).any(|_| {
+            // db is ready by exit and the simulated process never exits, so the stop leaves
+            // the node done: the report is `Done` (or `Stopped`) and the state word is 4, done.
+            matches!(
+                w.next(five),
+                Ok(Next::Event(Event::Node {
+                    report: Report::Stopped | Report::Done,
+                    state: StateWord { state: 4, .. },
+                    ..
+                }))
+            )
+        });
+        i32::from(!(current && drained && stopped && saw))
+    })
+}
+
+/// `qctl <args>` run in this process: the exit code, the output and the error text.
+fn qctl(args: &[&str]) -> (i32, String, String) {
+    let args: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = qctl::run(&args, &mut out, &mut err);
+    (
+        code,
+        String::from_utf8_lossy(&out).into_owned(),
+        String::from_utf8_lossy(&err).into_owned(),
+    )
+}
+
+/// The layer tree of the compile case.
+const QCTL_TREE: &str = "/run/qctl-l";
+
+/// Sets the mode of `path` outright (an earlier case left the umask at 0).
+fn chmod(path: &str, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .map_err(|e| format!("chmod {path}: {e}"))
+}
+
+/// Puts back the modes it saved and removes the layer tree when dropped, on every path out of
+/// the compile case (an error, an early return or a panic the suite runner catches). Each step is
+/// best-effort: one failure does not stop the others, and the case's result stays its own.
+struct Restore {
+    modes: Vec<(&'static str, u32)>,
+}
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(QCTL_TREE);
+        for (path, mode) in self.modes.drain(..).rev() {
+            if let Err(e) = chmod(path, mode) {
+                eprintln!("restore: {e}");
+            }
+        }
+    }
+}
+
+/// A compile as root (the guest's) refuses a layer file others may write, and takes it once it
+/// is 0644.
+fn qctl_compile_as_root_refuses_a_world_writable_layer() -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    // The guest's `/` and `/run` are the initramfs's, mode 1777, which the ancestor rule refuses
+    // as well: give them a host's mode for the case; the guard puts the old ones back.
+    let mut restore = Restore { modes: Vec::new() };
+    for a in ["/", "/run"] {
+        let m = std::fs::metadata(a).map_err(|e| format!("{a}: {e}"))?;
+        // Saved before the change, so the guard covers a failed or partial chmod too.
+        restore.modes.push((a, m.permissions().mode() & 0o7777));
+        chmod(a, 0o755)?;
+    }
+    compile_twice()
+}
+
+/// The two compiles of [`qctl_compile_as_root_refuses_a_world_writable_layer`].
+fn compile_twice() -> Result<(), String> {
+    let _ = std::fs::remove_dir_all(QCTL_TREE);
+    let vendor = format!("{QCTL_TREE}/vendor");
+    std::fs::create_dir_all(&vendor).map_err(|e| e.to_string())?;
+    chmod(QCTL_TREE, 0o755)?;
+    chmod(&vendor, 0o755)?;
+    let file = format!("{vendor}/x.toml");
+    std::fs::write(
+        &file,
+        "[worker.x]\nexec = [\"/bin/x\"]\ncredentials = { uid = \"root\" }\n",
+    )
+    .map_err(|e| e.to_string())?;
+    let db = format!("{QCTL_TREE}/out.db");
+    let layer = format!("vendor={vendor}");
+    let args = ["compile", "--layer", &layer, "--no-policy", "--output", &db];
+    chmod(&file, 0o666)?;
+    let (code, _, err) = qctl(&args);
+    // The refusal names the file itself, not an ancestor.
+    let refused = err.starts_with(&format!("qctl: {file}: owned by uid 0, mode 666: "))
+        && err.contains("must be root's and not writable by group or other");
+    if code != 1 || !refused || Path::new(&db).exists() {
+        return Err(format!("0666 was not refused: exit {code}, {err:?}"));
+    }
+    chmod(&file, 0o644)?;
+    let (code, _, err) = qctl(&args);
+    let written = Path::new(&db).exists();
+    if code != 0 || !written {
+        return Err(format!(
+            "0644 refused: exit {code}, written {written}, {err:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// `qctl status` and `stop --wait` against the served colony, then `qctl watch` on a thread
+/// writing into a pipe sees the `start` the client asks for reach `ready`. The start is web's:
+/// db is ready by exit, so its start never reports `ready`.
+fn qctl_status_start_and_watch_in_the_guest() -> Result<(), String> {
+    use std::io::Read;
+    serve_while(|| {
+        let (code, out, _) = qctl(&["--socket", SOCKET, "status", "db"]);
+        if code != 0 || !out.contains("state:") {
+            return 1;
+        }
+        let (code, out, _) = qctl(&["--socket", SOCKET, "stop", "db", "--wait", "5000"]);
+        if code != 0 || !out.starts_with("settled") {
+            return 2;
+        }
+        let Ok((r, w)) = qinit_sys::fd::pipe(libc::O_CLOEXEC) else {
+            return 3;
+        };
+        // The watch blocks until the process exits, which is fine: this client is a forked
+        // process and exits with its verdict below.
+        std::thread::spawn(move || {
+            let mut out = std::fs::File::from(w);
+            let mut err = Vec::new();
+            qctl::run(
+                &["--socket", SOCKET, "watch", "web"].map(str::to_owned),
+                &mut out,
+                &mut err,
+            )
+        });
+        let mut r = std::fs::File::from(r);
+        let mut seen = String::new();
+        // Read until a line of the stream starts with `want`, each read bounded by 5 s.
+        let mut until = |want: &str| -> bool {
+            let mut buf = [0u8; 512];
+            for _ in 0..16 {
+                if seen.lines().any(|l| l.starts_with(want)) {
+                    return true;
+                }
+                if readable(r.as_fd(), 5000) != Some(true) {
+                    return false;
+                }
+                match r.read(&mut buf) {
+                    Ok(n) if n > 0 => seen.push_str(&String::from_utf8_lossy(&buf[..n])),
+                    _ => return false,
+                }
+            }
+            seen.lines().any(|l| l.starts_with(want))
+        };
+        // The current state first: the watch is in place before the start.
+        if !until("node web current off") {
+            return 4;
+        }
+        if qctl(&["--socket", SOCKET, "start", "web"]).0 != 0 {
+            return 5;
+        }
+        let ready = until("node web ready ready");
+        if !ready {
+            eprintln!("qctl watch printed: {seen:?}");
+        }
+        i32::from(!ready) * 6
+    })
+}
+
 fn main() {
     run(
         "control",
@@ -401,6 +605,18 @@ fn main() {
             (
                 "run_is_refused_without_a_run_rule",
                 run_is_refused_without_a_run_rule,
+            ),
+            (
+                "watch_sees_a_change_from_a_second_connection",
+                watch_sees_a_change_from_a_second_connection,
+            ),
+            (
+                "qctl_compile_as_root_refuses_a_world_writable_layer",
+                qctl_compile_as_root_refuses_a_world_writable_layer,
+            ),
+            (
+                "qctl_status_start_and_watch_in_the_guest",
+                qctl_status_start_and_watch_in_the_guest,
             ),
         ],
     )

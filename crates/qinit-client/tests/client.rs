@@ -1,133 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: MPL-2.0
 //! The client against the real server, over a real socket, with the colony on a thread.
-#[path = "../../qinit-colony/tests/common/mod.rs"]
-mod common;
+#[path = "common/served.rs"]
+mod served;
 
-use common::*;
 use qinit_client::{
-    Action, Begun, Client, ClientError, ErrorCode, LaunchArgs, LaunchOutcome, Mode, Outcome,
-    Started, Status, Wait,
+    Action, Begun, ClientError, ErrorCode, Event, LaunchArgs, LaunchOutcome, Mode, Next, Outcome,
+    Report, Scope, Started, Status, Wait,
 };
-use qinit_colony::sim::{Script, Sim, advance_outcome};
-use qinit_colony::{Colony, Peer};
-use qinit_ipc::listen_seqpacket;
-use qinit_proto::Limits;
-use qinit_proto::testing::Driver;
-use std::ffi::CString;
+use qinit_colony::sim::Script;
+use served::common::*;
+use served::*;
 use std::io::Read;
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
-use std::path::PathBuf;
-use std::thread::JoinHandle;
 use std::time::Duration;
-
-fn frames() -> String {
-    "[worker.db]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/db\"]\n\
-     [worker.app]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/app\"]\n\
-     deps = [{ group = \"require_all\", edges = [{ to = \"db\" }] }]\n\
-     [forager.backup]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/backup\"]\n\
-     [forager.backup.launch]\nconcurrency = 2\nargv_tail = 2\nenv = [\"TARGET\"]\nfds = [\"stdout\"]\n"
-        .to_owned()
-}
-
-/// A server on a thread, until dropped.
-struct Served {
-    path: PathBuf,
-    stop: Option<OwnedFd>,
-    thread: Option<JoinHandle<Colony<Sim>>>,
-    _dir: PathBuf,
-}
-
-impl Served {
-    fn start(enable: &[&str], root: bool, instance: Script) -> Served {
-        Served::start_with(enable, root, instance, Vec::new())
-    }
-
-    /// As [`Served::start`], with the pidfds the simulated effects hand out.
-    fn start_with(enable: &[&str], root: bool, instance: Script, pidfds: Vec<OwnedFd>) -> Served {
-        Served::start_policy(enable, root, instance, pidfds, None)
-    }
-
-    /// As [`Served::start_with`], with a compiled policy when `policy` is given.
-    fn start_policy(
-        enable: &[&str],
-        root: bool,
-        instance: Script,
-        pidfds: Vec<OwnedFd>,
-        policy: Option<&str>,
-    ) -> Served {
-        let dir = std::env::temp_dir().join(format!(
-            "qinit-client-{}-{}",
-            std::process::id(),
-            std::thread::current()
-                .name()
-                .unwrap_or("t")
-                .replace("::", "-")
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("colony");
-        let c = CString::new(path.to_str().unwrap()).unwrap();
-        let listener = listen_seqpacket(&c, 16).unwrap();
-        let mut colony = match policy {
-            Some(p) => boot_with_policy(&frames(), enable, p, Sim::new()),
-            None => boot(&frames(), enable, Sim::new()).0,
-        };
-        colony.effects.instance_script = instance;
-        colony.effects.pidfds.extend(pidfds);
-        let mut driver = Driver::new(listener, Limits::default()).unwrap();
-        if root {
-            driver.identity = Some(Peer {
-                uid: 0,
-                gid: 0,
-                pid: 1,
-            });
-        }
-        let (stop_r, stop_w) = qinit_sys::fd::pipe(0o2_000_000).unwrap();
-        let thread = std::thread::spawn(move || {
-            driver
-                .serve_until(&mut colony, stop_r.as_fd(), |c| {
-                    let out = advance_outcome(c, 0);
-                    (c.effects.now(), out)
-                })
-                .unwrap();
-            colony
-        });
-        Served {
-            path,
-            stop: Some(stop_w),
-            thread: Some(thread),
-            _dir: dir,
-        }
-    }
-
-    fn client(&self) -> Client {
-        Client::connect(&self.path).unwrap()
-    }
-
-    fn finish(mut self) -> Colony<Sim> {
-        drop(self.stop.take());
-        self.thread.take().unwrap().join().unwrap()
-    }
-}
-
-impl Drop for Served {
-    fn drop(&mut self) {
-        drop(self.stop.take());
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
-    }
-}
-
-fn instant(exit: Option<i32>) -> Script {
-    Script {
-        ready_after_ms: None,
-        exit_after: exit.map(|s| (0, Some(s))),
-        ..Script::default()
-    }
-}
 
 fn my_uid() -> u32 {
     std::fs::metadata("/proc/self").unwrap().uid()
@@ -353,6 +240,42 @@ fn begin_run_sends_the_sealed_request_first() {
 }
 
 #[test]
+fn begin_run_bytes_sends_the_given_bytes_sealed() {
+    use qinit_client::RunArgs;
+    use qinit_launch::RequestSpec;
+    let s = Served::start(&[], true, instant(Some(0)));
+    let mut c = s.client();
+    // The client's descriptor is the socket, idle between calls.
+    assert!(!qinit_ipc::poll_readable(c.as_fd(), 0).unwrap());
+    let bytes = RequestSpec {
+        argv: vec!["/bin/job".into()],
+        user: "svc".into(),
+        ..RequestSpec::default()
+    }
+    .bytes()
+    .unwrap();
+    // The bytes decode: the policy refuses them (clause 1, no policy), as with `begin_run`.
+    let got = c.begin_run_bytes(
+        "job",
+        &bytes,
+        &RunArgs::default(),
+        false,
+        Duration::from_secs(5),
+    );
+    assert_eq!(got.err(), Some(ClientError::Server(ErrorCode::Denied, 1)));
+    // Bytes that are not a request: refused as a header that does not decode (detail 1).
+    let mut c = s.client();
+    let got = c.begin_run_bytes(
+        "job",
+        b"not a request",
+        &RunArgs::default(),
+        false,
+        Duration::from_secs(5),
+    );
+    assert_eq!(got.err(), Some(ClientError::Server(ErrorCode::Invalid, 1)));
+}
+
+#[test]
 fn pidfd_exit_is_exported_and_works_on_a_spawned_child() {
     let mut child = std::process::Command::new("sh")
         .args(["-c", "exit 5"])
@@ -404,4 +327,125 @@ fn begin_run_wait_ready_sets_flag_bit_1_and_finish_returns_ready() {
         panic!("not started")
     };
     assert_eq!(c.finish(id).unwrap(), LaunchOutcome::Ready { id });
+}
+
+#[test]
+fn watch_one_node_gets_current_then_the_change() {
+    let s = Served::start(&["db"], true, instant(None));
+    let mut w = s.client().watch(Scope::Target("db")).unwrap();
+    assert!(
+        matches!(w.next(Some(Duration::from_secs(5))).unwrap(), Next::Event(Event::Node { ref name, report: Report::Current, .. }) if name == "db")
+    );
+    s.client().change("db", Action::Stop, Wait::Now).unwrap();
+    let mut saw_stop = false;
+    for _ in 0..8 {
+        if let Next::Event(Event::Node {
+            report: Report::Stopped,
+            ..
+        }) = w.next(Some(Duration::from_secs(5))).unwrap()
+        {
+            saw_stop = true;
+            break;
+        }
+    }
+    assert!(saw_stop);
+}
+
+#[test]
+fn watch_next_times_out_without_an_event() {
+    let s = Served::start(&["db"], true, instant(None));
+    let mut w = s.client().watch(Scope::All).unwrap();
+    // Notices still in flight from the harness's start-up (boot and timer reports) come first,
+    // then silence.
+    let mut quiet = false;
+    for _ in 0..16 {
+        if matches!(
+            w.next(Some(Duration::from_millis(50))).unwrap(),
+            Next::Timeout
+        ) {
+            quiet = true;
+            break;
+        }
+    }
+    assert!(quiet);
+}
+
+#[test]
+fn an_instance_watch_ends_at_the_exit() {
+    let s = Served::start(&[], true, instant(Some(5)));
+    let mut c = s.client();
+    let Begun::Started(Started { id, .. }) = c
+        .begin_launch(
+            "backup",
+            &LaunchArgs::default(),
+            false,
+            Duration::from_secs(5),
+        )
+        .unwrap()
+    else {
+        panic!("the launch failed");
+    };
+    let mut w = s
+        .client()
+        .watch(Scope::Target(&format!("backup#{id}")))
+        .unwrap();
+    match w.next(Some(Duration::from_secs(5))).unwrap() {
+        // The exit as it happens, or (an instance that had already exited) at once; either
+        // way the first notice says exited, with the status, and ends the stream.
+        Next::Event(Event::Instance {
+            report: Report::Exited,
+            state: 4,
+            status: Some(5),
+            ..
+        }) => {}
+        Next::Ended(st) => assert_eq!(st.state, 4),
+        other => panic!("unexpected first item {other:?}"),
+    }
+    assert_eq!(
+        w.next(Some(Duration::from_secs(1))).unwrap_err(),
+        ClientError::Unexpected
+    );
+}
+
+#[test]
+fn a_watch_of_an_unknown_target_is_unknown_node() {
+    let s = Served::start(&["db"], true, instant(None));
+    assert!(matches!(
+        s.client().watch(Scope::Target("nope")),
+        Err(ClientError::Server(ErrorCode::UnknownNode, 0))
+    ));
+}
+
+#[test]
+fn a_watch_of_everything_keeps_watching_after_an_instance_exit() {
+    let s = Served::start(&["db"], true, instant(Some(0)));
+    // `watch` returns after `Accepted`: the watcher is in place before the launch.
+    let mut w = s.client().watch(Scope::All).unwrap();
+    let got = s
+        .client()
+        .launch("backup", &LaunchArgs::default(), Duration::from_secs(5))
+        .unwrap();
+    assert!(matches!(got, LaunchOutcome::Exited { .. }), "{got:?}");
+    loop {
+        if let Next::Event(Event::Instance {
+            report: Report::Exited,
+            ..
+        }) = w.next(Some(Duration::from_secs(5))).unwrap()
+        {
+            break;
+        }
+    }
+    // The stream goes on: a change after the exit still arrives.
+    s.client().change("db", Action::Stop, Wait::Now).unwrap();
+    loop {
+        match w.next(Some(Duration::from_secs(5))).unwrap() {
+            Next::Event(Event::Node {
+                ref name,
+                report: Report::Stopped,
+                ..
+            }) if name == "db" => break,
+            Next::Timeout => panic!("no notice after the exit"),
+            _ => {}
+        }
+    }
 }

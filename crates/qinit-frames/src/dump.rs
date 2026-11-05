@@ -24,14 +24,29 @@ use qinit_db::{
 use qinit_db_core::{FD_STDERR, FD_STDIN, FD_STDOUT};
 use std::fmt::Write as _;
 
-/// Render `resolved` with the origin of each key from `provenance`.
+/// One `key = value  # origin` line of the dump.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Line {
+    /// The index of the node in the model.
+    pub node: usize,
+    /// The key in frame key syntax, such as `restart.policy` or `deps[0].edges[1]`.
+    pub key: String,
+    /// The resolved value in frame syntax.
+    pub value: String,
+    /// The origin label: the layer, `template <name>` or `default`.
+    pub origin: String,
+}
+
+/// The keyed lines of every node of `resolved`, node by node, with the origin of each key from
+/// `provenance`.
 #[must_use]
-pub fn render(resolved: &Resolved, provenance: &Provenance) -> String {
+pub fn lines(resolved: &Resolved, provenance: &Provenance) -> Vec<Line> {
     let model = &resolved.model;
-    let mut out = String::new();
+    let mut out = Vec::new();
     for (i, node) in model.nodes.iter().enumerate() {
         let mut b = Block {
             out: &mut out,
+            index: i,
             prov: provenance,
             kind: kind_name(node.kind),
             name: &node.name,
@@ -39,6 +54,24 @@ pub fn render(resolved: &Resolved, provenance: &Provenance) -> String {
             frame_groups: resolved.frame_groups.get(i).copied().unwrap_or(0),
         };
         b.node(model, node);
+    }
+    out
+}
+
+/// Render `resolved` with the origin of each key from `provenance`.
+#[must_use]
+pub fn render(resolved: &Resolved, provenance: &Provenance) -> String {
+    let model = &resolved.model;
+    let all = lines(resolved, provenance);
+    let mut rest = all.as_slice();
+    let mut out = String::new();
+    for (i, node) in model.nodes.iter().enumerate() {
+        let _ = writeln!(out, "{} {}", kind_name(node.kind), node.name);
+        let n = rest.iter().take_while(|l| l.node == i).count();
+        for l in &rest[..n] {
+            let _ = writeln!(out, "  {} = {}  # {}", l.key, l.value, l.origin);
+        }
+        rest = &rest[n..];
         out.push('\n');
     }
     let names = |ix: &[u32]| list(ix.iter().map(|&i| quote(node_name(model, i))));
@@ -49,7 +82,9 @@ pub fn render(resolved: &Resolved, provenance: &Provenance) -> String {
 
 /// The lines of one node.
 struct Block<'a> {
-    out: &'a mut String,
+    out: &'a mut Vec<Line>,
+    /// The node's index in the model.
+    index: usize,
     prov: &'a Provenance,
     kind: &'a str,
     name: &'a str,
@@ -60,8 +95,10 @@ struct Block<'a> {
     frame_groups: usize,
 }
 
-/// The comment the dump puts after a value with origin `o`.
-fn label(o: Option<&Origin>) -> String {
+/// The comment the dump puts after a value with origin `o`: `template <name>` for a key
+/// inherited from a template, the layer for any other key a layer set, `default` for none.
+#[must_use]
+pub fn label(o: Option<&Origin>) -> String {
     match o {
         Some(Origin {
             template: Some(t), ..
@@ -78,7 +115,12 @@ impl Block<'_> {
     }
 
     fn line_from(&mut self, key: &str, value: &str, origin: &str) {
-        let _ = writeln!(self.out, "  {key} = {value}  # {origin}");
+        self.out.push(Line {
+            node: self.index,
+            key: key.to_owned(),
+            value: value.to_owned(),
+            origin: origin.to_owned(),
+        });
     }
 
     fn line(&mut self, key: &str, value: &str) {
@@ -129,7 +171,6 @@ impl Block<'_> {
     }
 
     fn node(&mut self, model: &Model, n: &Node) {
-        let _ = writeln!(self.out, "{} {}", kind_name(n.kind), n.name);
         if let Some(t) = &n.instance_of {
             let frame = FrameKey::new(self.kind, self.name, &[]);
             let origin = label(self.prov.get(&frame));

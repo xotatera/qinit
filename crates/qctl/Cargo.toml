@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 Xota Tera
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[package]
+name = "qctl"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "qctl"
+
+[[bin]]
+name = "qctl"
+path = "src/main.rs"
+
+[dependencies]
+qinit-client = { path = "../qinit-client" }
+qinit-db = { path = "../qinit-db" }
+qinit-frames = { path = "../qinit-frames" }
+qinit-launch = { path = "../qinit-launch" }
+serde.workspace = true
+toml.workspace = true
+toml_edit = { version = "=0.25.17", default-features = false, features = ["display", "parse"] }
+
+[dev-dependencies]
+qinit-colony = { path = "../qinit-colony" }
+qinit-colony-core = { path = "../qinit-colony-core" }
+qinit-ipc = { path = "../qinit-ipc" }
+qinit-proto = { path = "../qinit-proto", features = ["testing"] }
+qinit-sys = { path = "../qinit-sys" }
+
+[lints]
+workspace = true
+
+# Layer and allowed direct dependencies, checked by the `layers` gate.
+[package.metadata.disciplines]
+layer = "edge"
+allow = ["qinit-client", "qinit-db", "qinit-frames", "qinit-launch", "serde", "toml", "toml_edit"]

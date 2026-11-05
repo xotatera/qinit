@@ -57,7 +57,7 @@ const NAMESPACES: [&str; 6] = ["mount", "pid", "ipc", "uts", "net", "user"];
 
 /// The capability number of `name` (no `cap_` prefix), 0 to 40.
 #[must_use]
-pub(crate) fn cap_bit(name: &str) -> Option<u8> {
+pub fn cap_bit(name: &str) -> Option<u8> {
     CAPS.iter()
         .position(|c| *c == name)
         .and_then(|i| u8::try_from(i).ok())
@@ -367,7 +367,7 @@ pub(crate) fn cap_name(bit: u8) -> Option<&'static str> {
 
 /// The name of namespace bit `bit` of `Cred::ns`.
 #[must_use]
-pub(crate) fn ns_name(bit: u8) -> Option<&'static str> {
+pub fn ns_name(bit: u8) -> Option<&'static str> {
     NAMESPACES.get(usize::from(bit)).copied()
 }
 

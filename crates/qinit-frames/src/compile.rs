@@ -8,9 +8,9 @@
 //! fails returns every error it found; later stages do not run.
 use crate::error::{Code, Error, Warning};
 use crate::expand::{expand, kind_name};
-use crate::layers::{self, LayerInput};
-use crate::provenance::locate;
-use crate::resolve::resolve;
+use crate::layers::{self, LayerInput, Merged};
+use crate::provenance::{Provenance, locate};
+use crate::resolve::{Resolved, resolve};
 use crate::{dump, graph, policy};
 use qinit_db::Model;
 use std::path::PathBuf;
@@ -25,8 +25,9 @@ pub struct CompileInput {
     pub policy: Option<PathBuf>,
 }
 
-/// A compiled database, the non-fatal findings and a human-readable dump with provenance.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A compiled database, the non-fatal findings, a human-readable dump with provenance and the
+/// model behind them: the merged frames, the resolved model and the origin of every key.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Compiled {
     /// The database, validated and decoded back to the resolved model before it is returned.
     pub bytes: Vec<u8>,
@@ -34,6 +35,12 @@ pub struct Compiled {
     pub warnings: Vec<Warning>,
     /// The resolved model with the origin of each key; see [`crate::dump`].
     pub dump: String,
+    /// The frames as the layers merged them, before templates and instances.
+    pub merged: Merged,
+    /// The resolved model (its `policy` set when a policy file was given).
+    pub resolved: Resolved,
+    /// The origin of every key of every frame, templates and instances expanded.
+    pub provenance: Provenance,
 }
 
 /// Compile `input` into database bytes.
@@ -83,8 +90,11 @@ pub fn compile(input: &CompileInput) -> Result<Compiled, Vec<Error>> {
     let dump = dump::render(&resolved, prov);
     Ok(Compiled {
         bytes,
-        warnings: resolved.warnings,
+        warnings: resolved.warnings.clone(),
         dump,
+        merged,
+        resolved,
+        provenance: expanded.provenance,
     })
 }
 
