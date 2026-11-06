@@ -12,12 +12,14 @@ mod engine;
 mod handle;
 mod instance;
 mod query;
+mod restore;
 pub mod sim;
 mod swap;
 pub mod text;
 
 pub use effects::{Effects, Errno, InstanceSpec, NodeSpec};
 pub use engine::{Colony, Error, Notice, Outcome, Scope, Stream};
+
 pub use handle::{
     Attached, EntryView, Handled, InstanceStatusView, NodeStatusView, OwnedRep, Peer, ShutdownMode,
     WaitId, state_word,
@@ -26,4 +28,5 @@ pub use instance::{
     Exit, FRAMELESS, InstanceView, LaunchArgs, LaunchError, MAX_RUN_NAME, RING, RunArgs, RunError,
 };
 pub use qinit_colony_core::{Reason, Report, Request, SlotState, State, StopMode, TimerKind, Why};
+pub use restore::{Counters, Restored, RestoredNode, SavedTerminal};
 pub use swap::SwapError;

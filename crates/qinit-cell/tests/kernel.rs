@@ -76,3 +76,26 @@ fn a_handed_over_child_let_go_is_reaped_and_reported() {
     // `child` is never waited for by std: `close` reaped it.
     std::mem::forget(child);
 }
+
+#[test]
+fn a_tracked_main_is_signalled_by_number_polled_and_its_pidfd_duplicated() {
+    let mut child = Command::new("cat").stdin(Stdio::piped()).spawn().unwrap();
+    let mut k = kernel();
+    assert_eq!(
+        k.signal_number(0, libc::SIGTERM),
+        Err(qinit_sys::Errno(libc::ESRCH)),
+        "no main yet"
+    );
+    k.adopt_main(0, proc::pidfd_open(child.id() as libc::pid_t).unwrap())
+        .unwrap();
+    assert_eq!(k.poll().unwrap(), [], "nothing has happened");
+    assert!(k.dup_main_pidfd(0).is_ok());
+    k.signal_number(0, libc::SIGTERM).unwrap();
+    let status = child.wait().unwrap();
+    assert_eq!(
+        std::os::unix::process::ExitStatusExt::signal(&status),
+        Some(libc::SIGTERM)
+    );
+    let main = token(0, Source::Main);
+    assert_eq!(k.poll().unwrap(), [Ready::Readable(main)]);
+}

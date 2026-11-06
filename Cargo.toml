@@ -3,7 +3,7 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/qinit-cell", "crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-client", "crates/qinit-client-c", "crates/qinit-colony", "crates/qinit-colony-core", "crates/qinit-db", "crates/qinit-db-core", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-frames", "crates/qinit-graph-core", "crates/qinit-ipc", "crates/qinit-launch", "crates/qinit-overseer", "crates/qinit-overseer-core", "crates/qinit-proto", "crates/qinit-proto-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests", "crates/qinit-wire", "crates/qctl"]
+members = ["crates/qinit-cell", "crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-client", "crates/qinit-client-c", "crates/qinit-colony", "crates/qinit-colony-core", "crates/qinit-colonyd", "crates/qinit-db", "crates/qinit-db-core", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-frames", "crates/qinit-graph-core", "crates/qinit-ipc", "crates/qinit-launch", "crates/qinit-overseer", "crates/qinit-overseer-core", "crates/qinit-proto", "crates/qinit-proto-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests", "crates/qinit-wire", "crates/qctl"]
 
 [workspace.package]
 edition = "2024"
@@ -44,6 +44,7 @@ memory = "4G"
 timeout = "45s"
 
 # Measured 2026-10-27: 29 verified, 12.6-15.7 s (18.9-22.3 s CPU), 986 MB peak.
+# Re-measured 2026-11-06 with external readiness (SP7): 12.7 s (18.8 s CPU).
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-cell-core"
 kind = "verus"
@@ -53,6 +54,7 @@ timeout = "45s"
 
 # Measured 2026-10-27: 12 verified, 13.5-14.2 s (19.9-21.0 s CPU), 1.0 GB peak.
 # Container runs: 13.5 and 14.0 s; 45s covers 2x the slowest measured 21.0s CPU.
+# Re-measured 2026-11-06 at CAPACITY 4352 (SP7): verifies, 0.6 s (0.5 s CPU) after the build.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-cell-drive"
 kind = "verus"
@@ -96,6 +98,8 @@ timeout = "60s"
 # Group 2 (2026-11-04, `Run` and the instance table): 161 verified, three runs 27.0, 30.6 and 27.9 s
 # CPU (28-31 s wall, 0.40 GB peak), warm build directory. 100s covers about 3x the slowest and
 # about 2x a cold build (inferred, +15-20 s CPU).
+# SP7 (2026-11-06, `restore`, `inv_ok`): 166 verified, 27.6 s (33.4 s CPU), 0.96 GB peak; 100s still
+# covers 3x the CPU.
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-colony-core"
 kind = "verus"

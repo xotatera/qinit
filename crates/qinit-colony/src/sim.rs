@@ -9,6 +9,7 @@ use crate::engine::{Colony, Notice, Outcome};
 use crate::handle::WaitId;
 use qinit_cell_core::{Failure, Report as CellPhase};
 use qinit_colony_core::{StopMode, TimerKind};
+use qinit_db::Model;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::os::fd::OwnedFd;
 
@@ -191,7 +192,7 @@ impl Sim {
 }
 
 impl Effects for Sim {
-    fn start(&mut self, node: u32, _spec: &NodeSpec) -> Result<i32, Errno> {
+    fn start(&mut self, node: u32, _spec: &NodeSpec, _model: &Model) -> Result<i32, Errno> {
         self.calls.push(Call::Start(node));
         self.starts.push((node, self.now));
         self.drop_cell_events(node);
@@ -214,7 +215,12 @@ impl Effects for Sim {
         Ok(1000 + i32::try_from(node).unwrap_or(0))
     }
 
-    fn start_instance(&mut self, slot: u32, spec: InstanceSpec) -> Result<i32, Errno> {
+    fn start_instance(
+        &mut self,
+        slot: u32,
+        spec: InstanceSpec,
+        _model: &Model,
+    ) -> Result<i32, Errno> {
         self.calls
             .push(Call::StartInstance(slot, spec.name.clone()));
         self.drop_instance_events(slot);

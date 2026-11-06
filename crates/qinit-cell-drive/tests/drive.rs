@@ -48,3 +48,15 @@ fn the_first_unused_slot_is_chosen() {
     assert_eq!(first_free(&[true, true]), None);
     assert_eq!(first_free(&[]), None);
 }
+
+#[test]
+fn the_table_holds_every_node_and_instance() {
+    assert_eq!(CAPACITY, 4352, "MAX_NODES + MAX_SLOTS");
+    let mut used = vec![true; usize::from(CAPACITY)];
+    assert_eq!(first_free(&used), None);
+    used[usize::from(CAPACITY) - 1] = false;
+    assert_eq!(first_free(&used), Some(4351));
+    let t = token(4351, Source::Kill);
+    assert_eq!(route(t), Some((4351, Source::Kill)));
+    assert_eq!(route(u64::from(CAPACITY) << 3), None);
+}

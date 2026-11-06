@@ -243,6 +243,45 @@ pub open spec fn inv_node(ns: NodeState, p: Params) -> bool {
         && ns.backoff_exp == 0 && !ns.restart_after)
 }
 
+/// [`timer_matches`], executable.
+#[must_use]
+pub fn timer_matches_ok(ns: &NodeState, start_timeout: u32) -> (r: bool)
+    ensures
+        r == timer_matches(*ns, start_timeout as int),
+{
+    match ns.state {
+        State::Starting => match ns.timer {
+            Some(TimerKind::StartTimeout) => true,
+            None => start_timeout == 0 || ns.timed_out,
+            _ => false,
+        },
+        State::Waiting(Why::Backoff) => matches!(ns.timer, Some(TimerKind::Backoff)),
+        State::Waiting(Why::Deps) => matches!(ns.timer, None | Some(TimerKind::Edge)),
+        _ => ns.timer.is_none(),
+    }
+}
+
+/// [`inv_node`], executable: whether a saved node state may be restored as it is.
+#[must_use]
+pub fn inv_node_ok(ns: &NodeState, p: &Params) -> (r: bool)
+    ensures
+        r == inv_node(*ns, *p),
+{
+    let timer = timer_matches_ok(ns, p.start_timeout_ms);
+    let breaker = match ns.state {
+        State::Quarantined(Reason::Breaker) => p.max > 0 && ns.burst_count > p.max,
+        _ => true,
+    };
+    let stop = !ns.to_stop || matches!(ns.state, State::Starting | State::Ready);
+    let forager = p.kind != 1 || (!matches!(ns.state, State::Quarantined(_))
+        && !matches!(
+        ns.state,
+        State::Waiting(Why::Backoff),
+    )
+        && ns.backoff_exp == 0 && !ns.restart_after);
+    timer && breaker && stop && forager
+}
+
 // ---- small constructors ----
 /// Only the report slots differ between `n` and `ns`.
 pub open spec fn keeps_but_reports(n: NodeState, ns: NodeState) -> bool {

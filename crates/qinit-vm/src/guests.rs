@@ -94,6 +94,8 @@ pub fn cargo_command(root: &Path) -> Command {
             "qinit-vm-guests",
             "-p",
             "qinit-overseer",
+            "-p",
+            "qinit-colonyd",
             "--bins",
         ])
         .args(["--message-format", "json-render-diagnostics"]);

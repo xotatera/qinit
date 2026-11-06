@@ -169,3 +169,76 @@ fn a_source_error_waits_behind_the_events_of_its_batch() {
     assert_eq!(l.wait(), Err(Error::Empty));
     std::mem::forget(child);
 }
+
+/// A temporary directory removed when it goes out of scope.
+struct Tmp(std::path::PathBuf);
+
+impl Tmp {
+    fn new(tag: &str) -> Tmp {
+        let d = std::env::temp_dir().join(format!("qinit-event-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        Tmp(d)
+    }
+}
+
+impl Drop for Tmp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn one_inotify_set_reports_each_watch_by_descriptor() {
+    let (a, b) = (Tmp::new("set-a"), Tmp::new("set-b"));
+    let mut l = Loop::new().unwrap();
+    l.add_inotify_set(5).unwrap();
+    let wd_a = l.watch(5, &a.0, libc::IN_CREATE).unwrap();
+    let wd_b = l.watch(5, &b.0, libc::IN_CREATE).unwrap();
+    assert_ne!(wd_a, wd_b);
+    std::fs::write(b.0.join("made"), b"x").unwrap();
+    let got = l.wait().unwrap();
+    let [Ready::InotifySet(5, evs)] = got.as_slice() else {
+        panic!("{got:?}")
+    };
+    assert_eq!(
+        evs,
+        &[(wd_b, libc::IN_CREATE, std::ffi::OsString::from("made"))]
+    );
+}
+
+#[test]
+fn an_unwatched_descriptor_reports_nothing_more() {
+    let a = Tmp::new("unwatch");
+    let mut l = Loop::new().unwrap();
+    l.add_inotify_set(5).unwrap();
+    let wd = l.watch(5, &a.0, libc::IN_CREATE).unwrap();
+    l.unwatch(5, wd).unwrap();
+    std::fs::write(a.0.join("made"), b"x").unwrap();
+    assert_eq!(l.poll().unwrap(), []);
+}
+
+#[test]
+fn a_rearmable_timer_fires_and_stays_registered() {
+    let mut l = Loop::new().unwrap();
+    l.add_timer(8).unwrap();
+    assert_eq!(l.poll().unwrap(), [], "unarmed");
+    l.set_timer(8, Some(Duration::from_millis(1))).unwrap();
+    assert_eq!(l.wait().unwrap(), [Ready::Deadline(8)]);
+    l.set_timer(8, Some(Duration::from_millis(1))).unwrap();
+    assert_eq!(l.wait().unwrap(), [Ready::Deadline(8)]);
+    l.set_timer(8, Some(Duration::from_millis(1))).unwrap();
+    l.set_timer(8, None).unwrap();
+    assert_eq!(l.poll().unwrap(), [], "a disarmed timer is silent");
+}
+
+#[test]
+fn poll_does_not_block_and_an_empty_loop_polls_empty() {
+    assert_eq!(Loop::new().unwrap().poll().unwrap(), []);
+    let (r, w) = qinit_sys::fd::pipe(libc::O_CLOEXEC).unwrap();
+    let mut w = std::fs::File::from(w);
+    let mut l = Loop::new().unwrap();
+    l.add_fd(r.as_fd(), 1).unwrap();
+    assert_eq!(l.poll().unwrap(), [], "nothing to read yet");
+    w.write_all(b"x").unwrap();
+    assert_eq!(l.poll().unwrap(), [Ready::Readable(1)]);
+}

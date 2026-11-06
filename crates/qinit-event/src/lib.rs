@@ -27,11 +27,15 @@ pub enum Ready {
     /// The process behind a pidfd exited; its wait status. The source is removed and the
     /// process reaped.
     Exited(Token, i32),
-    /// The deadline passed. The source is removed.
+    /// The deadline passed. A one-shot source is removed; a re-armable timer stays.
     Deadline(Token),
     Signal(Token, u32),
     /// `(mask, name)` of each inotify event.
     Inotify(Token, Vec<(u32, OsString)>),
+    /// `(watch descriptor, mask, name)` of each event of a shared inotify instance. The
+    /// kernel's `IN_IGNORED` (a watch ended) is not reported; ask for `IN_DELETE_SELF` to hear
+    /// that a watched path went away.
+    InotifySet(Token, Vec<(i32, u32, OsString)>),
 }
 
 /// Why the loop failed.
@@ -57,6 +61,18 @@ impl std::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl From<Error> for Errno {
+    /// The errno a caller that speaks errnos reports: the kernel's own for a failed call,
+    /// `EEXIST` for a token registered twice, `EINVAL` for a wait on an empty loop.
+    fn from(e: Error) -> Errno {
+        match e {
+            Error::Sys { errno, .. } => errno,
+            Error::DuplicateToken(_) => Errno(libc::EEXIST),
+            Error::Empty => Errno(libc::EINVAL),
+        }
+    }
+}
 
 fn sys<T>(r: qinit_sys::Result<T>, what: &'static str) -> Result<T, Error> {
     r.map_err(|errno| Error::Sys { what, errno })
@@ -84,6 +100,10 @@ enum Source {
     },
     Signal(OwnedFd),
     Inotify(OwnedFd),
+    /// One inotify instance holding many watches.
+    InotifySet(OwnedFd),
+    /// A re-armable timerfd: reports `Deadline` and stays registered.
+    Timer(OwnedFd),
 }
 
 /// An epoll loop. Sources are level-triggered; one-shot sources (deadlines, pidfds) remove
@@ -199,6 +219,83 @@ impl Loop {
         self.register(raw, IN, token, Source::Inotify(f))
     }
 
+    /// One inotify instance under `token`; add its watches with [`Loop::watch`]. Reports
+    /// `InotifySet` for every watch.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::DuplicateToken`] when `token` is registered; [`Error::Sys`] when the kernel
+    /// refuses the inotify instance or the registration.
+    pub fn add_inotify_set(&mut self, token: Token) -> Result<(), Error> {
+        let f = sys(event::inotify_init(), "inotify_init1")?;
+        let raw = f.as_raw_fd();
+        self.register(raw, IN, token, Source::InotifySet(f))
+    }
+
+    fn inotify_of(&self, token: Token) -> Result<&OwnedFd, Error> {
+        match self.sources.get(&token) {
+            Some((_, Source::InotifySet(f))) => Ok(f),
+            _ => Err(Error::Sys {
+                what: "no inotify set under the token",
+                errno: Errno(libc::ENOENT),
+            }),
+        }
+    }
+
+    /// Watches `path` for `mask` on the inotify set `token`; returns the watch descriptor.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Sys`] when `token` is not an inotify set or the kernel refuses the watch.
+    pub fn watch(&mut self, token: Token, path: &Path, mask: u32) -> Result<i32, Error> {
+        sys(
+            event::inotify_add(self.inotify_of(token)?, path, mask),
+            "inotify_add_watch",
+        )
+    }
+
+    /// Stops watching `wd` on the inotify set `token`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Sys`] when `token` is not an inotify set or the kernel refuses the removal
+    /// (`EINVAL` when the watch is already gone).
+    pub fn unwatch(&mut self, token: Token, wd: i32) -> Result<(), Error> {
+        sys(
+            event::inotify_rm(self.inotify_of(token)?, wd),
+            "inotify_rm_watch",
+        )
+    }
+
+    /// A timer under `token`, not armed; [`Loop::set_timer`] arms it. Unlike a deadline it
+    /// stays registered after it fires.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::DuplicateToken`] when `token` is registered; [`Error::Sys`] when the kernel
+    /// refuses the timerfd or the registration.
+    pub fn add_timer(&mut self, token: Token) -> Result<(), Error> {
+        let t = sys(event::timer_unarmed(), "timerfd")?;
+        let raw = t.as_raw_fd();
+        self.register(raw, IN, token, Source::Timer(t))
+    }
+
+    /// Arms the timer `token` to report `Deadline` once, `after` from now, or disarms it with
+    /// `None`. Either replaces any earlier setting.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Sys`] when `token` is not a timer or the kernel refuses the setting.
+    pub fn set_timer(&mut self, token: Token, after: Option<Duration>) -> Result<(), Error> {
+        let Some((_, Source::Timer(t))) = self.sources.get(&token) else {
+            return Err(Error::Sys {
+                what: "no timer under the token",
+                errno: Errno(libc::ENOENT),
+            });
+        };
+        sys(event::timer_set(t, after), "timerfd_settime")
+    }
+
     /// Stops reporting `token`; owned fds are closed.
     ///
     /// # Errors
@@ -233,8 +330,31 @@ impl Loop {
         if self.sources.is_empty() {
             return Err(Error::Empty);
         }
+        self.collect(-1)
+    }
+
+    /// As [`Loop::wait`] with a zero timeout: what is ready now, possibly nothing. An empty
+    /// loop polls empty, not [`Error::Empty`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Loop::wait`], except [`Error::Empty`].
+    pub fn poll(&mut self) -> Result<Vec<Ready>, Error> {
+        if let Some(e) = self.deferred.take() {
+            return Err(e);
+        }
+        if self.sources.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.collect(0)
+    }
+
+    fn collect(&mut self, timeout_ms: libc::c_int) -> Result<Vec<Ready>, Error> {
         let mut evs = [libc::epoll_event { events: 0, u64: 0 }; 16];
-        let n = sys(event::epoll_wait(&self.ep, &mut evs), "epoll_wait")?;
+        let n = sys(
+            event::epoll_wait_timeout(&self.ep, &mut evs, timeout_ms),
+            "epoll_wait",
+        )?;
         let mut out = Vec::new();
         let mut failed = None;
         for ev in &evs[..n] {
@@ -292,6 +412,22 @@ impl Loop {
                     }
                     Ok(())
                 }
+                Source::InotifySet(f) => {
+                    let evs = read_inotify_set(f);
+                    if !evs.is_empty() {
+                        out.push(Ready::InotifySet(token, evs));
+                    }
+                    Ok(())
+                }
+                Source::Timer(t) => {
+                    // Reading clears the expiration count; a timer re-armed since the
+                    // epoll_wait has nothing to read and is not reported.
+                    let mut count = [0u8; 8];
+                    if event::read(t, &mut count).is_ok() {
+                        out.push(Ready::Deadline(token));
+                    }
+                    Ok(())
+                }
             };
             if let Err(e) = result {
                 failed.get_or_insert(e);
@@ -305,6 +441,14 @@ impl Loop {
         }
         out.sort_by_key(|r| !matches!(r, Ready::Exited(..)));
         Ok(out)
+    }
+}
+
+impl std::os::fd::AsFd for Loop {
+    /// The epoll descriptor: readable while [`Loop::poll`] has something to return, so another
+    /// loop can wait on this one.
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.ep)
     }
 }
 
@@ -322,6 +466,34 @@ fn read_inotify(fd: &OwnedFd) -> Vec<(u32, OsString)> {
     let mut buf = vec![0u8; 4096];
     while let Ok(n @ 1..) = event::read(fd, &mut buf) {
         out.extend(parse_inotify(&buf[..n]));
+    }
+    out
+}
+
+fn read_inotify_set(fd: &OwnedFd) -> Vec<(i32, u32, OsString)> {
+    let mut out = Vec::new();
+    let mut buf = vec![0u8; 4096];
+    while let Ok(n @ 1..) = event::read(fd, &mut buf) {
+        out.extend(parse_inotify_set(&buf[..n]));
+    }
+    out
+}
+
+/// The `(wd, mask, name)` of each complete `inotify_event` in `buf` except `IN_IGNORED` ones (a
+/// truncated event ends the parse).
+#[must_use]
+pub fn parse_inotify_set(buf: &[u8]) -> Vec<(i32, u32, OsString)> {
+    let mut out = Vec::new();
+    let mut off = 0usize;
+    while let Some((mask, name, next)) = next_event(buf, off) {
+        // `next_event` returned, so the 16-byte header at `off` is inside `buf`.
+        let wd = i32::from_ne_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+        let name = &buf[name];
+        let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+        if mask & libc::IN_IGNORED == 0 {
+            out.push((wd, mask, OsString::from_vec(name[..end].to_vec())));
+        }
+        off = next;
     }
     out
 }

@@ -300,3 +300,34 @@ fn name_length_is_exact_at_96_bytes() {
     assert_eq!(ok(&inst("bbbbb")).frames[0].0.len(), 96);
     assert_eq!(errs(&inst("bbbbbb"))[0].code, Code::BadName);
 }
+
+#[test]
+fn a_node_name_that_is_a_cgroup_interface_word_is_refused() {
+    let worker = |name: &str| {
+        format!("[worker.{name}]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/a\"]\n")
+    };
+    for name in [
+        "memory.max",
+        "cgroup.procs",
+        "pids.x",
+        "io.weight",
+        "irq.pressure",
+    ] {
+        let es = errs(&worker(&format!("\"{name}\"")));
+        assert_eq!(es.len(), 1, "{name}: {es:?}");
+        assert_eq!(es[0].code, Code::BadName, "{name}: {es:?}");
+        assert!(es[0].detail.contains("reserved"), "{name}: {es:?}");
+    }
+    // A word that only starts like one is fine.
+    ok(&worker("memoryd"));
+    ok(&worker("\"iod.main\""));
+}
+
+#[test]
+fn an_instance_name_that_is_a_cgroup_interface_word_is_refused() {
+    let es = errs(
+        "[worker.\"memory.x\"]\ncredentials = { uid = \"svc\" }\nexec = [\"/a\"]\ninstances = [\"a\"]\n",
+    );
+    assert!(es.iter().all(|e| e.code == Code::BadName), "{es:?}");
+    assert!(!es.is_empty());
+}

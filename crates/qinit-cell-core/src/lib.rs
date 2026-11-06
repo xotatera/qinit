@@ -31,6 +31,9 @@ pub enum ReadyMode {
     Pipe,
     /// The main process exits with status 0.
     Exit,
+    /// The caller decides: `Request::MarkReady` (the daemon marks it when a path or socket
+    /// the service creates appears).
+    External,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,6 +118,8 @@ pub struct Cell {
 pub enum Request {
     Create,
     Spawn(ReadyMode),
+    /// The caller saw an `External` cell's readiness condition.
+    MarkReady,
     /// Adopt an existing cell; the main pidfd queen handed over, if any.
     Adopt(Option<Handle>),
     Stop { polite: Polite, grace_ms: u32, kill_ms: u32 },
@@ -517,6 +522,13 @@ fn request(c: Cell, q: Request) -> (r: (Cell, Actions))
             ),
             _ => (c, refused()),
         },
+        Request::MarkReady => match (c.phase, c.ready, c.main) {
+            (Phase::Starting, ReadyMode::External, Main::Live(_)) => (
+                Cell { phase: Phase::Running, ..c },
+                one(Action::Report(Report::Ready)),
+            ),
+            _ => (c, none()),
+        },
         Request::Adopt(h) => match c.phase {
             Phase::Absent => {
                 let main = match h {
@@ -585,7 +597,7 @@ fn main_exited(c: Cell, status: Option<i32>) -> (r: (Cell, Actions))
                 Phase::Starting => {
                     let by_exit = match c.ready {
                         ReadyMode::Exit => status == Some(0),
-                        ReadyMode::Pipe => false,
+                        ReadyMode::Pipe | ReadyMode::External => false,
                     };
                     let first = if by_exit {
                         Action::Report(Report::Ready)

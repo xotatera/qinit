@@ -53,8 +53,8 @@ impl Driver {
             match r {
                 Ready::Readable(LISTENER) => self.accept_one()?,
                 Ready::Readable(token) => {
-                    let closed = self.server.on_readable(ConnId(token), colony, now);
-                    self.forget(&closed)?;
+                    let served = self.server.on_readable(ConnId(token), colony, now);
+                    self.forget(&served.closed)?;
                 }
                 Ready::Hangup(token) => {
                     self.server.close(ConnId(token), colony);

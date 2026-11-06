@@ -166,3 +166,27 @@ fn a_name_with_a_hash_is_an_error() {
     let es = errs("[forager.\"a#1\"]\nexec = [\"/a\"]\ncredentials = { uid = \"svc\" }\n");
     assert!(!es.is_empty(), "{es:?}");
 }
+
+#[test]
+fn socket_or_path_readiness_on_a_launchable_frame_is_refused() {
+    for ready in [
+        r#"{ socket = "/run/x.sock" }"#,
+        r#"{ path = "/run/x.pid" }"#,
+    ] {
+        let src = format!(
+            "[forager.backup]\nexec = [\"/bin/backup\"]\ncredentials = {{ uid = \"svc\" }}\n\
+             ready = {ready}\n[forager.backup.launch]\nconcurrency = 1\n"
+        );
+        refused(&src, "forager.backup.ready");
+        assert!(
+            errs(&src)[0].detail.contains("socket or path readiness"),
+            "{ready}"
+        );
+    }
+    // The same readiness on a node with no launch table stays allowed.
+    ok(
+        "[forager.backup]\nexec = [\"/bin/backup\"]\ncredentials = { uid = \"svc\" }\n\
+        ready = { path = \"/run/x.pid\" }\n",
+    );
+    ok(&forager("concurrency = 1"));
+}

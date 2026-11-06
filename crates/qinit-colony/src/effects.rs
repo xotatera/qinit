@@ -4,7 +4,7 @@
 //! and a path watcher; `Sim` records the calls and answers from scripts.
 
 use qinit_colony_core::{StopMode, TimerKind};
-use qinit_db::{Kind, Ready};
+use qinit_db::{Kind, Model, Ready};
 use std::os::fd::OwnedFd;
 
 /// An errno, as the effect layer reports it.
@@ -23,6 +23,9 @@ pub struct NodeSpec {
     pub stop: StopMode,
     pub grace_ms: u32,
     pub start_timeout_ms: u32,
+    /// The cell's memory ceiling in KiB and its process ceiling, 0 for none.
+    pub memory_max_kib: u32,
+    pub pids_max: u32,
 }
 
 /// What an instance's cell is started with: the launchable frame's node, plus what the caller
@@ -60,9 +63,16 @@ pub struct InstanceSpec {
 #[allow(clippy::missing_errors_doc)] // each method's error is the errno of the operation its doc names
 pub trait Effects {
     /// Creates the node's cell and starts its main process in it; returns that process's pid.
-    fn start(&mut self, node: u32, spec: &NodeSpec) -> Result<i32, Errno>;
+    /// `model` is the database in force, for the parts of the node `spec` does not carry (its
+    /// credentials, environment and streams).
+    fn start(&mut self, node: u32, spec: &NodeSpec, model: &Model) -> Result<i32, Errno>;
     /// Creates the cell of instance slot `slot` and starts its main process; returns the pid.
-    fn start_instance(&mut self, slot: u32, spec: InstanceSpec) -> Result<i32, Errno>;
+    fn start_instance(
+        &mut self,
+        slot: u32,
+        spec: InstanceSpec,
+        model: &Model,
+    ) -> Result<i32, Errno>;
     /// A pidfd of the main process of the instance in `slot`, for a caller that asked for one.
     /// The instance runs on without one when this fails.
     fn instance_pidfd(&mut self, slot: u32) -> Result<OwnedFd, Errno>;

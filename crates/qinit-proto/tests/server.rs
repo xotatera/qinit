@@ -933,3 +933,83 @@ fn closing_a_watching_connection_makes_colony_forget_the_watcher() {
     assert_eq!(r.colony.watchers(), 0);
     assert_eq!(r.driver.server.connections(), 0);
 }
+
+/// A server with one root connection to `colony`, and the client end of it.
+fn direct(
+    enable: &[&str],
+) -> (
+    qinit_proto::Server,
+    qinit_proto::ConnId,
+    OwnedFd,
+    Colony<Sim>,
+) {
+    let (client, server_end) = qinit_ipc::seqpacket_pair().unwrap();
+    qinit_sys::fd::set_nonblocking(&server_end).unwrap();
+    let mut server = qinit_proto::Server::new(Limits::default());
+    let root = Peer {
+        uid: 0,
+        gid: 0,
+        pid: 1,
+    };
+    let conn = server.accept_as(server_end, root).unwrap();
+    let (colony, _) = boot(&frames(), enable, Sim::new());
+    (server, conn, client, colony)
+}
+
+#[test]
+fn on_readable_returns_the_outcome_of_a_refresh_that_completes_at_once() {
+    // Nothing runs, so the refresh has nothing to stop: it swaps inside the request.
+    let (mut server, conn, client, mut colony) = direct(&[]);
+    let bytes = database(&frames(), &[]);
+    let fd = memfd(&bytes);
+    send_msg(
+        &client,
+        &Msg::Req(Req::Refresh {
+            settled: false,
+            wait_ms: 0,
+        }),
+        &[fd.as_fd()],
+    );
+    let result = server.on_readable(conn, &mut colony, 0);
+    assert!(result.closed.is_empty());
+    assert!(
+        result
+            .outcome
+            .notices
+            .contains(&qinit_colony::Notice::Swapped),
+        "{:?}",
+        result.outcome.notices
+    );
+    assert!(read(&client, |rep| matches!(rep, Rep::Accepted)).unwrap());
+}
+
+#[test]
+fn on_readable_returns_a_shutdown_that_completes_at_once() {
+    let (mut server, conn, client, mut colony) = direct(&[]);
+    send_msg(
+        &client,
+        &Msg::Req(Req::Shutdown {
+            mode: Mode::Poweroff,
+            settled: false,
+            wait_ms: 0,
+        }),
+        &[],
+    );
+    let result = server.on_readable(conn, &mut colony, 0);
+    let done = result.outcome.notices.iter().any(|n| {
+        matches!(
+            n,
+            qinit_colony::Notice::Node(_, qinit_colony::Report::ShutdownComplete { .. })
+        )
+    });
+    assert!(done, "{:?}", result.outcome.notices);
+}
+
+#[test]
+fn a_refused_request_returns_an_empty_outcome() {
+    let (mut server, conn, client, mut colony) = direct(&[]);
+    send_unchecked(client.as_fd(), &[0u8; 3], &[]).unwrap();
+    let result = server.on_readable(conn, &mut colony, 0);
+    assert_eq!(result.outcome, qinit_colony::Outcome::default());
+    assert_eq!(result.closed, [conn], "the malformed request closed it");
+}

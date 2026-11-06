@@ -2150,6 +2150,38 @@ pub fn rebuild_late(db: &[u8], tbl: &[NodeState], paths: &[bool], late: &mut [bo
     }
 }
 
+/// [`inv_all`], executable: whether a saved table may be restored against `db`.
+#[must_use]
+pub fn inv_ok(db: &[u8], tbl: &[NodeState]) -> (r: bool)
+    requires
+        well_formed(db@),
+        tbl@.len() == nodes(db@),
+    ensures
+        r == inv_all(db@, tbl@),
+{
+    let n = tbl.len();
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            i <= n,
+            n == tbl@.len(),
+            well_formed(db@),
+            n == nodes(db@),
+            forall|k: int| 0 <= k < i ==> inv_node(tbl@[k], params_of(db@, k)),
+        decreases n - i,
+    {
+        let p = params(db, i);
+        if !inv_node_ok(&tbl[i], &p) {
+            proof {
+                assert(!inv_all(db@, tbl@));
+            }
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// Starts colony on a database whose nodes may already be in any state that satisfies the
 /// invariant (workers colony found running when it started): the enabled nodes are wanted,
 /// then the table settles.
@@ -2171,6 +2203,29 @@ pub fn load_from(
 {
     meta.cursor = 0;
     mark_enabled(db, tbl);
+    reconcile(db, tbl, paths, late, false, now)
+}
+
+/// Resumes colony from a table it saved itself (the caller checked [`inv_ok`]): unlike
+/// [`load_from`] it does not want the enabled nodes, so a node stopped by an administrator stays
+/// stopped and a quarantine stays, and the table then settles.
+pub fn restore(
+    db: &[u8],
+    tbl: &mut [NodeState],
+    paths: &[bool],
+    late: &mut [bool],
+    meta: &mut Meta,
+    now: u64,
+) -> (converged: bool)
+    requires
+        sized(db@, old(tbl)@.len() as int, paths@.len() as int, old(late)@.len() as int),
+        inv_all(db@, old(tbl)@),
+    ensures
+        final(tbl)@.len() == old(tbl)@.len(),
+        final(late)@.len() == old(late)@.len(),
+        inv_all(db@, final(tbl)@),
+{
+    meta.cursor = 0;
     reconcile(db, tbl, paths, late, false, now)
 }
 

@@ -98,3 +98,48 @@ fn shutdown_counts_a_stop_failed_cell() {
     );
     assert_eq!(c.effects.starts.len(), before);
 }
+
+#[test]
+fn shutdown_stops_instances_too_whoever_asks() {
+    // A signal calls `Colony::shutdown` directly, with no protocol request: the instances, which
+    // nothing depends on, must still be told to stop (they are stopped first).
+    let frames = "[forager.backup]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/backup\"]\n\
+                  [forager.backup.launch]\nconcurrency = 2\n";
+    let (mut c, _) = boot(frames, &[], Sim::new());
+    let (id, _) = c
+        .launch(
+            qinit_colony::LaunchArgs {
+                frame: "backup".to_owned(),
+                argv_tail: Vec::new(),
+                env_add: Vec::new(),
+                fds: [None, None, None],
+            },
+            0,
+        )
+        .unwrap();
+    let out = c.shutdown(1);
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let stopped = c
+        .effects
+        .calls
+        .iter()
+        .filter(|call| matches!(call, Call::StopInstance(..)))
+        .count();
+    assert_eq!(stopped, 1, "{:?}", c.effects.calls);
+    assert!(
+        out.notices
+            .contains(&Notice::Instance(id, qinit_colony::SlotState::Stopping)),
+        "{:?}",
+        out.notices
+    );
+    // Asking again, or through the protocol later, does not stop it twice.
+    let again = c.shutdown(2);
+    assert!(again.errors.is_empty());
+    let stopped = c
+        .effects
+        .calls
+        .iter()
+        .filter(|call| matches!(call, Call::StopInstance(..)))
+        .count();
+    assert_eq!(stopped, 1);
+}
