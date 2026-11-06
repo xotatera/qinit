@@ -685,3 +685,40 @@ fn a_cell_that_failed_to_stop_does_not_keep_the_daemon_from_leaving() {
     assert_eq!(r.d.turn(Vec::new()), Some(exit::HALT));
     qinit_sys::signal::unblock_all().unwrap();
 }
+
+// ---- final review: owner-keyed state ----
+
+#[test]
+fn an_instance_in_the_same_numbered_slot_leaves_a_nodes_readiness_watch_alone() {
+    let dir = Tmp::new("slotwatch-dir");
+    let file = dir.0.join("run/db.pid");
+    // `db` sorts before `zz`, so it is node 0: the instance's slot 0 has the same number.
+    let frames = format!(
+        "{}{}",
+        path_ready_frames(&file),
+        FORAGER.replace("backup", "zz")
+    );
+    let mut r = boot(&frames, &["db"], "slotwatch");
+    assert_eq!(
+        r.d.colony.effects.watcher.pending(),
+        1,
+        "db waits for its file"
+    );
+    let args = qinit_colony::LaunchArgs {
+        frame: "zz".into(),
+        ..launch_args()
+    };
+    let (_, out) = r.d.colony.launch(args, 0).unwrap();
+    drop(out);
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(1), Report::MainExited(Some(0))));
+    r.d.turn(Vec::new());
+    assert_eq!(
+        r.d.colony.effects.watcher.pending(),
+        1,
+        "an instance's exit must not end the node's readiness watch"
+    );
+}

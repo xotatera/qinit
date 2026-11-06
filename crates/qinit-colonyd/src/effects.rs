@@ -423,8 +423,13 @@ impl<C: CellOps> RealEffects<C> {
 
     /// Ends what waits for `owner`'s readiness: its cell is ready, gone or past caring.
     pub fn end_readiness_watch(&mut self, owner: Owner) {
-        self.watcher
-            .remove(&mut self.events, READY_TAG | owner_node(owner));
+        self.end_ready_watch_of(owner);
+    }
+
+    fn end_ready_watch_of(&mut self, owner: Owner) {
+        if let Some(key) = ready_key(owner) {
+            self.watcher.remove(&mut self.events, key);
+        }
     }
 
     /// Reads the status pipe of `owner` (the loop said it is readable) and forgets it: a failure
@@ -461,8 +466,7 @@ impl<C: CellOps> RealEffects<C> {
         if self.status.remove(&owner).is_some() {
             let _ = self.events.remove(status_token(owner));
         }
-        self.watcher
-            .remove(&mut self.events, READY_TAG | owner_node(owner));
+        self.end_ready_watch_of(owner);
         self.dirty = true;
     }
 
@@ -689,7 +693,7 @@ impl<C: CellOps> RealEffects<C> {
             .map_err(|e| errno_of(&e))?;
         if let Some((path, want)) = l.watch {
             // Before the spawn: what the service makes at once must not be missed.
-            let key = READY_TAG | owner_node(l.owner);
+            let key = ready_key(l.owner).ok_or(Errno(libc::EINVAL))?;
             self.watcher
                 .add(&mut self.events, key, Path::new(&path), want)
                 .map_err(sys)?;
@@ -728,8 +732,7 @@ impl<C: CellOps> RealEffects<C> {
     fn stop_owner(&mut self, owner: Owner, mode: StopMode, grace_ms: u32) -> Result<(), Errno> {
         let id = self.routes.cell(owner).ok_or(Errno(libc::ENOENT))?;
         // The readiness watch ends with the stop.
-        self.watcher
-            .remove(&mut self.events, READY_TAG | owner_node(owner));
+        self.end_ready_watch_of(owner);
         // A cell adopted without its main has no process to signal politely.
         let polite = match mode {
             StopMode::Main if self.cells.main_pid(id).is_some() => Polite::Main,
@@ -780,9 +783,12 @@ struct Launched {
     status_r: OwnedFd,
 }
 
-fn owner_node(owner: Owner) -> u64 {
+/// The id of `owner`'s readiness watch in the path watcher. Only nodes have one: an instance
+/// shares its number with a node, so it must never name that node's watch.
+fn ready_key(owner: Owner) -> Option<u64> {
     match owner {
-        Owner::Node(n) | Owner::Instance(n) => u64::from(n),
+        Owner::Node(n) => Some(READY_TAG | u64::from(n)),
+        Owner::Instance(_) => None,
     }
 }
 
