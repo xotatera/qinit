@@ -115,15 +115,26 @@ impl Syslog {
     }
 
     fn to_console(&self, line: &str) {
-        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&self.console) {
-            let _ = writeln!(f, "{line}");
-        }
+        write_line(&self.console, line);
     }
 
     fn mark(&self, note: &str) {
-        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&self.kmsg) {
-            let _ = writeln!(f, "{note}");
-        }
+        write_line(&self.kmsg, note);
+    }
+}
+
+/// Appends `text` and a newline to a device or file without ever waiting on it and without
+/// taking it as a controlling terminal: a console whose line is held, or one nobody reads, drops
+/// the message (this is the path for when logging is already broken), and a hangup or `^C` on
+/// it must not reach colony as a signal.
+fn write_line(path: &Path, text: &str) {
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .append(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_CLOEXEC)
+        .open(path)
+    {
+        let _ = writeln!(f, "{text}");
     }
 }
 

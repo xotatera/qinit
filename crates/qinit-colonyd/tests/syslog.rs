@@ -130,3 +130,25 @@ fn a_missing_socket_falls_back_to_the_console_and_marks_kmsg_once() {
     assert_eq!(kmsg.len(), 2, "{kmsg:?}");
     assert!(kmsg[1].contains("syslog back"), "{kmsg:?}");
 }
+
+#[test]
+fn a_console_nobody_reads_does_not_stop_the_daemon() {
+    let t = Tmp::new("stuck");
+    // A FIFO with no reader blocks a plain `open` for writing for ever, like a console whose
+    // line is held by flow control.
+    let console = t.at("console");
+    let c = std::ffi::CString::new(console.to_str().unwrap()).unwrap();
+    qinit_sys::fd::mkfifo(&c, 0o600).unwrap();
+    let kmsg = t.at("kmsg");
+    let (log, socket) = (t.at("nolog"), t.at("nolog"));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut s = Syslog::new(&socket, &console, &kmsg);
+        s.log(Sev::Err, "nobody is listening");
+        let _ = tx.send(());
+    });
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_secs(3)).is_ok(),
+        "logging waited on a console that cannot be written (socket {log:?})"
+    );
+}
