@@ -608,3 +608,25 @@ fn a_new_cell_for_an_owner_clears_its_failed_and_ready_marks() {
     assert!(!fx.failed.contains(&Owner::Node(0)), "failed is per cell");
     assert!(!fx.ready.contains(&Owner::Node(0)), "ready is per cell");
 }
+
+#[test]
+fn nothing_that_can_fail_comes_after_the_spawn() {
+    let tmp = Tmp::new("prespawn");
+    let m = model(vec![worker("db")]);
+    let mut fx = rig(FakeCells::default(), &tmp.0);
+    // The status pipe's loop registration is refused (its token is taken): the start must fail
+    // before a process exists, not leave one running that colony cannot track.
+    let (taken, _w) = qinit_sys::fd::pipe(libc::O_CLOEXEC).unwrap();
+    fx.events
+        .add_fd(
+            taken.as_fd(),
+            qinit_colonyd::effects::status_token(Owner::Node(0)),
+        )
+        .unwrap();
+    assert!(fx.start(0, &spec_of(&m, 0), &m).is_err());
+    assert!(
+        !fx.cells.calls.iter().any(|c| matches!(c, Call::Spawn(..))),
+        "a process was spawned that the failure could not take back: {:?}",
+        fx.cells.calls
+    );
+}

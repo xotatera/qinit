@@ -707,6 +707,20 @@ impl<C: CellOps> RealEffects<C> {
                 .add(&mut self.events, key, Path::new(&path), want)
                 .map_err(sys)?;
         }
+        // Everything that can fail without the cell layer's say-so comes before the spawn: after
+        // it a process runs in the cell, and a failure could not take it back (a cell with a main
+        // is not removed).
+        qinit_sys::fd::set_nonblocking(&l.status_r).map_err(sys)?;
+        self.events
+            .add_fd(l.status_r.as_fd(), status_token(l.owner))
+            .map_err(|e| sys(qinit_sys::Errno::from(e)))?;
+        self.status.insert(
+            l.owner,
+            LaunchWatch {
+                fd: l.status_r,
+                request: l.request_bytes,
+            },
+        );
         let mut fds = vec![(l.request_fd, REQUEST_FD), (l.status_w, STATUS_FD)];
         fds.extend(l.fds);
         let cmd = Command {
@@ -720,22 +734,10 @@ impl<C: CellOps> RealEffects<C> {
             .spawn(l.id, cmd, l.mode)
             .map_err(|e| errno_of(&e))?;
         // The cell layer reports a spawn it could not make as a failed cell, not as an error.
-        let pid = match (self.cells.phase(l.id), self.cells.main_pid(l.id)) {
-            (Some(Phase::Failed(_)) | None, _) | (_, None) => return Err(Errno(libc::EIO)),
-            (_, Some(pid)) => pid,
-        };
-        qinit_sys::fd::set_nonblocking(&l.status_r).map_err(sys)?;
-        self.events
-            .add_fd(l.status_r.as_fd(), status_token(l.owner))
-            .map_err(|e| sys(qinit_sys::Errno::from(e)))?;
-        self.status.insert(
-            l.owner,
-            LaunchWatch {
-                fd: l.status_r,
-                request: l.request_bytes,
-            },
-        );
-        Ok(pid)
+        match (self.cells.phase(l.id), self.cells.main_pid(l.id)) {
+            (Some(Phase::Failed(_)) | None, _) | (_, None) => Err(Errno(libc::EIO)),
+            (_, Some(pid)) => Ok(pid),
+        }
     }
 
     fn stop_owner(&mut self, owner: Owner, mode: StopMode, grace_ms: u32) -> Result<(), Errno> {
