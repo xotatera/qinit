@@ -347,6 +347,28 @@ impl<C: CellOps> RealEffects<C> {
         out
     }
 
+    /// The watches the kernel refused to move since the last call, each as a line to log: what
+    /// was being waited for.
+    pub fn watch_faults(&mut self) -> Vec<(WatchLoss, String)> {
+        self.watcher
+            .take_errors()
+            .into_iter()
+            .map(|(id, errno)| {
+                let why = std::io::Error::from_raw_os_error(errno.0).to_string();
+                match id & !0xFFFF_FFFF {
+                    READY_TAG => (
+                        WatchLoss::Readiness(u32::try_from(id & 0xFFFF_FFFF).unwrap_or(u32::MAX)),
+                        why,
+                    ),
+                    _ => (
+                        WatchLoss::Path(self.path_names.get(&id).cloned().unwrap_or_default()),
+                        why,
+                    ),
+                }
+            })
+            .collect()
+    }
+
     /// Reads whatever the inotify set has ready now (not blocking) and says what it means. For
     /// hosts that do not run the daemon's loop.
     ///
@@ -792,6 +814,15 @@ struct Launched {
     ready_fd: RawFd,
     status_w: OwnedFd,
     status_r: OwnedFd,
+}
+
+/// What a watch the kernel refused was for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WatchLoss {
+    /// The readiness of the node at this index.
+    Readiness(u32),
+    /// A dependency path.
+    Path(String),
 }
 
 /// `owners` after the node table was renumbered: a node follows its number in `map` (new node

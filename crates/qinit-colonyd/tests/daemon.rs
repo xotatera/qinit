@@ -761,3 +761,34 @@ fn a_refresh_that_renumbers_nodes_keeps_the_ready_flags_with_their_cells() {
     assert_eq!(ready("b"), Some(true), "b is still ready: {lines:?}");
     assert_eq!(ready("c"), Some(false), "c never was: {lines:?}");
 }
+
+#[test]
+fn a_watch_the_kernel_refuses_is_logged_not_dropped_silently() {
+    if qinit_sys::cred::getuid() == 0 {
+        eprintln!("skipped: root can watch a directory with no permissions");
+        return;
+    }
+    let dir = Tmp::new("watcherr-dir");
+    let file = dir.0.join("a/db.pid");
+    let mut r = boot(&path_ready_frames(&file), &["db"], "watcherr");
+    // The directory appears with no permissions: the watch cannot move down into it.
+    std::fs::create_dir(dir.0.join("a")).unwrap();
+    std::fs::set_permissions(
+        dir.0.join("a"),
+        std::os::unix::fs::PermissionsExt::from_mode(0),
+    )
+    .unwrap();
+    assert_eq!(r.d.pump(), None);
+    let logged = r.logged();
+    assert!(
+        logged
+            .iter()
+            .any(|l| l.starts_with("<27>") && l.contains("db") && l.contains("watch")),
+        "an error line names the node and the lost watch: {logged:?}"
+    );
+    std::fs::set_permissions(
+        dir.0.join("a"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+}

@@ -6,7 +6,7 @@
 //! refresh swapped the database or a shutdown completed, to the work that follows. See
 //! `docs/colony.md`.
 use crate::args::Args;
-use crate::effects::{CellOps, Heard, PathEvent, RealEffects, status_owner};
+use crate::effects::{CellOps, Heard, PathEvent, RealEffects, WatchLoss, status_owner};
 use crate::exit;
 use crate::notes::describe;
 use crate::readopt::{self, Plan, Procs, RealProcs};
@@ -584,6 +584,24 @@ impl<C: CellOps> Daemon<C> {
     fn report_faults(&mut self) {
         for fault in std::mem::take(&mut self.colony.effects.faults) {
             self.say(Sev::Err, &fault);
+        }
+        for (loss, why) in self.colony.effects.watch_faults() {
+            let line = match loss {
+                WatchLoss::Readiness(n) => {
+                    let name = self
+                        .colony
+                        .model()
+                        .nodes
+                        .get(n as usize)
+                        .map(|x| x.name.as_str());
+                    format!(
+                        "{}: readiness watch lost ({why}); the node ends on its start timeout",
+                        name.unwrap_or("a node")
+                    )
+                }
+                WatchLoss::Path(p) => format!("path watch for {p} lost ({why}): it is not seen"),
+            };
+            self.say(Sev::Err, &line);
         }
     }
 
