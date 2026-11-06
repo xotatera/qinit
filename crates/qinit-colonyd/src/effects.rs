@@ -492,8 +492,9 @@ impl<C: CellOps> RealEffects<C> {
         }
         self.routes.unbind(id);
         self.names.remove(&id);
-        if self.status.remove(&owner).is_some() {
+        if let Some(watch) = self.status.remove(&owner) {
             let _ = self.events.remove(status_token(owner));
+            drop(watch);
         }
         self.end_ready_watch_of(owner);
         self.dirty = true;
@@ -662,6 +663,12 @@ impl<C: CellOps> RealEffects<C> {
     /// Creates the cell and launches into it; any failure after the cell exists removes it.
     fn run_plan(&mut self, plan: Plan) -> Result<i32, Errno> {
         let owner = plan.owner;
+        // A directory of that name that colony did not make (one of its own would be in the
+        // routing table) is somebody else's: it is neither used nor removed, and the start
+        // fails as `mkdir` would have failed. Checked before anything is made for the launch.
+        if std::fs::symlink_metadata(self.comb.join(&plan.name)).is_ok() {
+            return Err(Errno(libc::EEXIST));
+        }
         let (request_fd, request_bytes) = match plan.request {
             Request::Sealed(fd) => {
                 let bytes =
@@ -677,12 +684,6 @@ impl<C: CellOps> RealEffects<C> {
         };
         let (status_r, status_w) = qinit_sys::fd::pipe(libc::O_CLOEXEC).map_err(sys)?;
 
-        // A directory of that name that colony did not make (one of its own would be in the
-        // routing table) is somebody else's: it is neither used nor removed, and the start
-        // fails as `mkdir` would have failed.
-        if self.comb.join(&plan.name).exists() {
-            return Err(Errno(libc::EEXIST));
-        }
         let id = self.cells.create(&plan.name).map_err(|e| errno_of(&e))?;
         self.routes.bind(id, owner);
         self.failed.remove(&owner);

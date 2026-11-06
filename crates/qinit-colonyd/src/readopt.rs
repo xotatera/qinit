@@ -223,7 +223,10 @@ pub fn plan(
             name: line.name.clone(),
         });
         let piped = piped.contains(&ix);
-        let exit_ready = matches!(model.nodes[ix as usize].ready, Ready::Exit);
+        let exit_ready = model
+            .nodes
+            .get(ix as usize)
+            .is_some_and(|n| matches!(n.ready, Ready::Exit));
         let (phase, restart, exited) = match (line.ready, had_main) {
             (true, true) => (Restored::Ready, piped, false),
             (true, false) => (Restored::Ready, piped, true),

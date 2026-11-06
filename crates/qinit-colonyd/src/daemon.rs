@@ -315,16 +315,16 @@ impl<C: CellOps> Daemon<C> {
                 plan.adopted.len()
             ),
         );
-        d.settle(&first, true);
+        d.settle(first, true);
         // The exits and restarts adoption calls for come after the table is restored and before
         // the notices the adoption held are delivered: an exit, then the empty cell it leaves.
         for node in &plan.exited {
             let out = d.colony.adopted_exit(*node, now);
-            d.settle(&out, true);
+            d.settle(out, true);
         }
         for node in &plan.restart {
             let out = d.colony.request(*node, Request::Restart, now);
-            d.settle(&out, true);
+            d.settle(out, true);
         }
         if plan.next_instance > 1 {
             d.colony.seed_instance_ids(plan.next_instance);
@@ -411,10 +411,7 @@ impl<C: CellOps> Daemon<C> {
     ///
     /// The replies are held until the end of the wake-up, after the log and the state files: a
     /// client that has seen a change can rely on its log line and on the saved state being there.
-    fn settle(&mut self, out: &Outcome, deliver: bool) {
-        if deliver {
-            self.owed.push(out.clone());
-        }
+    fn settle(&mut self, out: Outcome, deliver: bool) {
         for e in &out.errors {
             self.say(Sev::Err, &describe_error(e));
         }
@@ -436,6 +433,9 @@ impl<C: CellOps> Daemon<C> {
                 }
                 _ => {}
             }
+        }
+        if deliver {
+            self.owed.push(out);
         }
     }
 
@@ -529,7 +529,7 @@ impl<C: CellOps> Daemon<C> {
                 Owner::Node(n) => self.colony.on_cell(n, report, self.now_ms),
                 Owner::Instance(slot) => self.colony.on_instance(slot, report, self.now_ms),
             };
-            self.settle(&out, true);
+            self.settle(out, true);
         }
     }
 
@@ -547,7 +547,7 @@ impl<C: CellOps> Daemon<C> {
                     continue;
                 }
             };
-            self.settle(&out, true);
+            self.settle(out, true);
         }
     }
 
@@ -556,7 +556,7 @@ impl<C: CellOps> Daemon<C> {
             libc::SIGTERM | libc::SIGINT => {
                 self.say(Sev::Info, "shutting down on a signal");
                 let out = self.colony.shutdown(self.now_ms);
-                self.settle(&out, true);
+                self.settle(out, true);
             }
             _ => self.say(
                 Sev::Info,
@@ -570,7 +570,7 @@ impl<C: CellOps> Daemon<C> {
             match ev {
                 PathEvent::Path(p) => {
                     let out = self.colony.on_path(&p, self.now_ms);
-                    self.settle(&out, true);
+                    self.settle(out, true);
                 }
                 PathEvent::Ready(owner) => self.mark_ready(owner),
             }
@@ -601,7 +601,7 @@ impl<C: CellOps> Daemon<C> {
                     .server
                     .on_readable(ConnId(t), &mut self.colony, self.now_ms);
                 self.forget(&served.closed);
-                self.settle(&served.outcome, false);
+                self.settle(served.outcome, false);
             }
             Ready::Hangup(t) if t < BASE => {
                 self.server.close(ConnId(t), &mut self.colony);

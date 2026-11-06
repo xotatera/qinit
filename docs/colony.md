@@ -54,8 +54,14 @@ debug level.
 5. The comb is opened, and `+memory +pids` is written to its `cgroup.subtree_control`: a node with a
    limit does not start without the controller. The comb's parent must offer both.
 6. The loop is built: signals, the one timer, the cells' own descriptor, the path watcher.
-7. Logger pipes are made (below), then the graph is started or re-adopted (below).
-8. The control socket is bound; a stale socket file is removed first, since the path is colony's.
+7. The control socket is bound; a stale socket file is removed first, since the path is colony's.
+   A client that connects before the graph is up waits in the socket's backlog.
+8. Logger pipes are made (below), then the graph is started or re-adopted (below).
+
+If the control socket cannot accept (out of descriptors), colony logs one error, takes the listener
+out of the loop for 100 ms and tries again, rather than spinning. A path or readiness watch the
+kernel refuses to move (for instance at the inotify watch limit) is logged as an error, naming the
+node; a readiness watch lost that way ends in the node's start timeout.
 
 A refusal is written to syslog, to the console path and to standard error, and ends colony with the
 exit status that names it.

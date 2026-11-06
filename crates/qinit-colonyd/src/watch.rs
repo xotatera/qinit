@@ -49,6 +49,7 @@ pub struct Watcher {
     errors: Vec<(u64, Errno)>,
     /// Runs after a watch is set and before the existence check that follows it. A hook for
     /// tests that make the path in exactly that window.
+    #[cfg(feature = "testing")]
     pub between: Option<Box<dyn FnMut()>>,
 }
 
@@ -94,6 +95,7 @@ impl Watcher {
             entries: BTreeMap::new(),
             wds: HashMap::new(),
             errors: Vec::new(),
+            #[cfg(feature = "testing")]
             between: None,
         })
     }
@@ -222,6 +224,7 @@ impl Watcher {
             e.wd = Some(wd);
             e.depth = depth;
         }
+        #[cfg(feature = "testing")]
         if let Some(hook) = self.between.as_mut() {
             hook();
         }

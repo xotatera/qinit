@@ -750,7 +750,8 @@ fn workers(names: &[&str]) -> String {
         .map(|n| {
             format!("[worker.{n}]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/bin/{n}\"]\n")
         })
-        .collect()
+        .collect::<Vec<_>>()
+        .concat()
 }
 
 #[test]
@@ -796,7 +797,7 @@ fn a_watch_the_kernel_refuses_is_logged_not_dropped_silently() {
     std::fs::create_dir(dir.0.join("a")).unwrap();
     std::fs::set_permissions(
         dir.0.join("a"),
-        std::os::unix::fs::PermissionsExt::from_mode(0),
+        std::os::unix::fs::PermissionsExt::from_mode(0o000),
     )
     .unwrap();
     assert_eq!(r.d.pump(), None);

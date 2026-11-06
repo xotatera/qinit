@@ -526,12 +526,13 @@ as the parent through which the status can be passed, ends this (SP8).
 adopted shows no pid in `Status` until it is started again. The `cells` file has the pid of the
 main (and `Cells::main_pid` has it after adoption); passing it to `restore` would fill the field.
 
-### D67 — A request's own reply comes before the state files are rewritten · `OPEN`
+### D67 — A request's replies come before the state files are rewritten · `OPEN`
 
-The daemon delivers the replies an outcome owes parked waits and watchers after it has logged and
-saved state, so a client that sees a change can rely on both. The reply a request gets for itself
-(`Launched`, `Accepted`, a wait that is already met) is sent by the server inside the request,
-before the `cells` and `nodes` files are rewritten. A client that kills colony the moment it has
+The daemon delivers the replies an event owes parked waits and watchers (a cell report, a timer, a
+path) after it has logged and saved state, so a client that sees a change can rely on both. The
+replies a *request* causes are sent by the server inside the request, before the `cells` and
+`nodes` files are rewritten: the one the request gets for itself (`Launched`, `Accepted`, a wait
+that is already met) and the ones it releases for other connections' waits and watchers. A client that kills colony the moment it has
 that reply can lose the record of what the request did: an instance launched in that window is
 unknown to the next colony, which leaves its cell running. Instances are transient and the window
 is microseconds, so it is accepted; closing it would make the server hand a request's reply back
