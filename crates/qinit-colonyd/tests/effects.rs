@@ -576,3 +576,35 @@ fn remap_keeps_status_pipes_registered_under_their_new_owner() {
     assert_eq!(failure.name, "b");
     assert_eq!((failure.step, failure.errno), ("decode", libc::EINVAL));
 }
+
+// ---- final review ----
+
+#[test]
+fn a_leftover_cell_the_cell_layer_gave_up_on_is_no_longer_waited_for() {
+    use qinit_colonyd::effects::CellOps;
+    let tmp = Tmp::new("clearfail");
+    let mut fx = rig(FakeCells::default(), &tmp.0);
+    let id = fx.cells.adopt("stray", 7, None).unwrap();
+    fx.clear_cell(id, Duration::from_millis(10)).unwrap();
+    assert!(fx.is_clearing());
+    fx.cells.pending.clear();
+    fx.cells.pending.push(Notice::Cell(
+        id,
+        qinit_cell::Report::Failed(qinit_cell::Failure::Stuck),
+    ));
+    let heard = fx.drain_notices().unwrap();
+    assert_eq!(heard.strays.len(), 1, "the failure is still reported");
+    assert!(!fx.is_clearing(), "a cell that failed is not waited for");
+}
+
+#[test]
+fn a_new_cell_for_an_owner_clears_its_failed_and_ready_marks() {
+    let tmp = Tmp::new("newcell");
+    let m = model(vec![worker("db")]);
+    let mut fx = rig(FakeCells::default(), &tmp.0);
+    fx.failed.insert(Owner::Node(0));
+    fx.ready.insert(Owner::Node(0));
+    fx.start(0, &spec_of(&m, 0), &m).unwrap();
+    assert!(!fx.failed.contains(&Owner::Node(0)), "failed is per cell");
+    assert!(!fx.ready.contains(&Owner::Node(0)), "ready is per cell");
+}

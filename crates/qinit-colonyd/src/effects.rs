@@ -233,6 +233,12 @@ pub struct RealEffects<C: CellOps> {
     pub status: HashMap<Owner, LaunchWatch>,
     /// The cell map changed: the state files need rewriting.
     pub dirty: bool,
+    /// The owners whose cell reported ready and has not since left it. Owner numbers change with
+    /// a database swap, so the set lives here, where `remap` reaches it.
+    pub ready: std::collections::BTreeSet<Owner>,
+    /// The owners whose cell failed (it could not be stopped): waiting for them is pointless. An
+    /// owner leaves the set when it gets a new cell.
+    pub failed: std::collections::BTreeSet<Owner>,
     /// The loop's clock, `CLOCK_MONOTONIC` milliseconds, as of this wake-up.
     pub now_ms: u64,
     /// Things that went wrong in calls that cannot return an error (`release`), for the log.
@@ -273,6 +279,8 @@ impl<C: CellOps> RealEffects<C> {
             events,
             status: HashMap::new(),
             dirty: false,
+            ready: std::collections::BTreeSet::new(),
+            failed: std::collections::BTreeSet::new(),
             now_ms: 0,
             faults: Vec::new(),
             overseer,
@@ -291,7 +299,8 @@ impl<C: CellOps> RealEffects<C> {
             match n {
                 Notice::Cell(id, report) => {
                     if self.clearing.contains(&id) {
-                        if report == Report::Removed {
+                        // A cell the cell layer gave up on is not waited for either.
+                        if matches!(report, Report::Removed | Report::Failed(_)) {
                             self.clearing.remove(&id);
                         }
                         self.inbox.strays.push((id, report));
@@ -367,10 +376,7 @@ impl<C: CellOps> RealEffects<C> {
     /// One line of the `cells` state file for every cell the effects own: its name, its cgroup
     /// id, whether `ready` holds its owner, and its main process (pid and start time) if tracked.
     #[must_use]
-    pub fn cell_lines(
-        &self,
-        ready: &std::collections::BTreeSet<Owner>,
-    ) -> Vec<crate::state::CellLine> {
+    pub fn cell_lines(&self) -> Vec<crate::state::CellLine> {
         self.routes
             .cells()
             .filter_map(|(id, owner)| {
@@ -379,7 +385,7 @@ impl<C: CellOps> RealEffects<C> {
                 Some(crate::state::CellLine {
                     name,
                     cgroup_id: self.cells.cgroup_id(id)?,
-                    ready: ready.contains(&owner),
+                    ready: self.ready.contains(&owner),
                     pid: pid.unwrap_or(0),
                     start_time: pid.and_then(crate::state::start_time).unwrap_or(0),
                 })
@@ -416,6 +422,7 @@ impl<C: CellOps> RealEffects<C> {
     /// Removes a cleared cell that has emptied.
     pub fn remove_cleared(&mut self, id: CellId) {
         if let Err(e) = self.cells.remove(id) {
+            self.clearing.remove(&id);
             self.faults
                 .push(format!("removing a cleared cell: {}", errno_of(&e).0));
         }
@@ -656,6 +663,8 @@ impl<C: CellOps> RealEffects<C> {
         }
         let id = self.cells.create(&plan.name).map_err(|e| errno_of(&e))?;
         self.routes.bind(id, owner);
+        self.failed.remove(&owner);
+        self.ready.remove(&owner);
         self.names.insert(id, plan.name.clone());
         self.dirty = true;
         if matches!(self.cells.phase(id), Some(Phase::Failed(_)) | None) {
@@ -783,6 +792,24 @@ struct Launched {
     status_r: OwnedFd,
 }
 
+/// `owners` after the node table was renumbered: a node follows its number in `map` (new node
+/// `i` was node `map[i]`), an instance keeps its slot, a node that is gone is dropped.
+fn remap_owners(
+    owners: &std::collections::BTreeSet<Owner>,
+    map: &[u32],
+) -> std::collections::BTreeSet<Owner> {
+    owners
+        .iter()
+        .filter_map(|o| match *o {
+            Owner::Instance(_) => Some(*o),
+            Owner::Node(was) => map
+                .iter()
+                .position(|&m| m == was)
+                .map(|n| Owner::Node(u32::try_from(n).unwrap_or(u32::MAX))),
+        })
+        .collect()
+}
+
 /// The id of `owner`'s readiness watch in the path watcher. Only nodes have one: an instance
 /// shares its number with a node, so it must never name that node's watch.
 fn ready_key(owner: Owner) -> Option<u64> {
@@ -864,6 +891,8 @@ impl<C: CellOps> Effects for RealEffects<C> {
 
     fn remap(&mut self, map: &[u32]) {
         self.routes.remap(map);
+        self.ready = remap_owners(&self.ready, map);
+        self.failed = remap_owners(&self.failed, map);
         self.pipes.remap(map);
         self.deadlines.remap(map);
         // The loop knows a status pipe by its owner's number: every old token goes first, so two

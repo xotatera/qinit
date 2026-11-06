@@ -20,7 +20,6 @@ use qinit_colony::{
 use qinit_event::{Loop, Ready, Token};
 use qinit_ipc::{accept, listen_seqpacket};
 use qinit_proto::{ConnId, Limits, Server};
-use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::Path;
@@ -78,8 +77,6 @@ pub struct Daemon<C: CellOps> {
     state: State,
     log: Syslog,
     socket: std::path::PathBuf,
-    /// The owners whose cell reported ready and has not since left it.
-    ready: BTreeSet<Owner>,
     last_nodes: Option<Vec<NodeLine>>,
     last_cells: Option<Vec<crate::state::CellLine>>,
     cells_dirty: bool,
@@ -91,8 +88,6 @@ pub struct Daemon<C: CellOps> {
     exit_after: Option<u8>,
     /// Outcomes whose replies are not yet delivered (see [`Daemon::settle`]).
     owed: Vec<Outcome>,
-    /// The owners whose cell failed (it could not be stopped): waiting for them is pointless.
-    failed: BTreeSet<Owner>,
 }
 
 impl<C: CellOps> Daemon<C> {
@@ -272,12 +267,6 @@ impl<C: CellOps> Daemon<C> {
             state,
             log,
             socket: args.socket.clone(),
-            ready: plan
-                .restored
-                .iter()
-                .filter(|r| r.phase == Restored::Ready)
-                .map(|r| Owner::Node(r.node))
-                .collect(),
             last_nodes: None,
             last_cells: None,
             cells_dirty: true,
@@ -286,8 +275,13 @@ impl<C: CellOps> Daemon<C> {
             shutdown_done: false,
             exit_after: None,
             owed: Vec::new(),
-            failed: BTreeSet::new(),
         };
+        d.colony.effects.ready = plan
+            .restored
+            .iter()
+            .filter(|r| r.phase == Restored::Ready)
+            .map(|r| Owner::Node(r.node))
+            .collect();
         for (sev, text) in &notes {
             d.say(*sev, text);
         }
@@ -467,17 +461,17 @@ impl<C: CellOps> Daemon<C> {
         }
         for (owner, report) in heard.cells {
             if let CellReport::Failed(_) = report {
-                self.failed.insert(owner);
+                self.colony.effects.failed.insert(owner);
             }
             match report {
                 CellReport::Ready => {
-                    self.cells_dirty |= self.ready.insert(owner);
+                    self.cells_dirty |= self.colony.effects.ready.insert(owner);
                 }
                 CellReport::MainExited(_)
                 | CellReport::Empty
                 | CellReport::NotReady
                 | CellReport::Failed(_) => {
-                    self.cells_dirty |= self.ready.remove(&owner);
+                    self.cells_dirty |= self.colony.effects.ready.remove(&owner);
                 }
                 _ => {}
             }
@@ -613,7 +607,7 @@ impl<C: CellOps> Daemon<C> {
             }
         }
         if self.cells_dirty || self.colony.effects.dirty {
-            let lines = self.colony.effects.cell_lines(&self.ready);
+            let lines = self.colony.effects.cell_lines();
             self.colony.effects.dirty = false;
             self.cells_dirty = false;
             if self.last_cells.as_ref() != Some(&lines) {
@@ -672,7 +666,7 @@ impl<C: CellOps> Daemon<C> {
         effects
             .routes
             .cells()
-            .all(|(_, owner)| self.failed.contains(&owner))
+            .all(|(_, owner)| effects.failed.contains(&owner))
             && !effects.is_clearing()
     }
 

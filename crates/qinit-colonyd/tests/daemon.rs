@@ -722,3 +722,42 @@ fn an_instance_in_the_same_numbered_slot_leaves_a_nodes_readiness_watch_alone() 
         "an instance's exit must not end the node's readiness watch"
     );
 }
+
+fn workers(names: &[&str]) -> String {
+    names
+        .iter()
+        .map(|n| {
+            format!("[worker.{n}]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/bin/{n}\"]\n")
+        })
+        .collect()
+}
+
+#[test]
+fn a_refresh_that_renumbers_nodes_keeps_the_ready_flags_with_their_cells() {
+    let mut r = boot(&workers(&["b", "c"]), &["b", "c"], "renumber");
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::Ready));
+    assert_eq!(r.d.turn(Vec::new()), None);
+    let client = connect_root(&mut r);
+    // `a` sorts first and is not enabled: `b` and `c` move from nodes 0, 1 to nodes 1, 2.
+    let new = database(&workers(&["a", "b", "c"]), &["b", "c"]);
+    let fd = qinit_ipc::memfd::sealed(c"db", &new).unwrap();
+    ask(
+        &client,
+        Req::Refresh {
+            settled: false,
+            wait_ms: 0,
+        },
+        &[fd.as_fd()],
+    );
+    assert_eq!(r.d.pump(), None);
+    assert_eq!(r.d.colony.model().nodes[0].name, "a", "the swap happened");
+    let saved = Saved::open(&r.run()).unwrap();
+    let lines = saved.read_cells().unwrap().unwrap();
+    let ready = |name: &str| lines.iter().find(|l| l.name == name).map(|l| l.ready);
+    assert_eq!(ready("b"), Some(true), "b is still ready: {lines:?}");
+    assert_eq!(ready("c"), Some(false), "c never was: {lines:?}");
+}
