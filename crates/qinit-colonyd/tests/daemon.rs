@@ -792,3 +792,35 @@ fn a_watch_the_kernel_refuses_is_logged_not_dropped_silently() {
     )
     .unwrap();
 }
+
+#[test]
+fn a_listener_that_cannot_accept_is_paused_and_comes_back() {
+    let mut r = boot(WORKER, &["db"], "emfile");
+    let path = CString::new(r.socket().to_str().unwrap()).unwrap();
+    let client = connect_seqpacket(&path).unwrap();
+    qinit_sys::fd::set_nonblocking(&client).unwrap();
+    // Out of descriptors: a level-triggered listener would wake the loop for ever.
+    r.d.listener_failed(libc::EMFILE);
+    ask(&client, Req::Status { target: "db" }, &[]);
+    assert_eq!(r.d.pump(), None);
+    assert_eq!(
+        answer(&client, |rep| matches!(rep, Rep::NodeStatus(_))),
+        None,
+        "nothing is accepted while the listener is paused"
+    );
+    let errors = r
+        .logged()
+        .into_iter()
+        .filter(|l| l.starts_with("<27>") && l.contains("accept"))
+        .count();
+    assert_eq!(errors, 1, "one error line says why");
+    // Its retry comes due.
+    r.d.colony.effects.deadlines.arm(Key::Listener, 0);
+    assert_eq!(r.d.turn(Vec::new()), None);
+    assert_eq!(r.d.pump(), None);
+    assert_eq!(
+        answer(&client, |rep| matches!(rep, Rep::NodeStatus(_))),
+        Some(true),
+        "the waiting connection is served once the listener is back"
+    );
+}

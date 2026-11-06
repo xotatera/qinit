@@ -27,6 +27,8 @@ use std::time::Duration;
 
 /// The control listener's token; connections use their own id (from 1).
 const LISTENER: Token = 0;
+/// How long the listener stays out of the loop after it could not accept.
+pub const LISTENER_RETRY_MS: u64 = 100;
 /// First token above every connection id.
 const BASE: Token = 1 << 40;
 /// The cell layer's own epoll descriptor.
@@ -329,6 +331,44 @@ impl<C: CellOps> Daemon<C> {
         self.log.log(sev, text);
     }
 
+    /// The listener could not accept (`errno`). A connection that went away before it was
+    /// accepted costs nothing; anything else (out of descriptors above all) would wake the loop
+    /// again at once for as long as it lasts, so the listener leaves the loop and comes back
+    /// after [`LISTENER_RETRY_MS`], with one error line.
+    pub fn listener_failed(&mut self, errno: i32) {
+        if matches!(
+            errno,
+            libc::EAGAIN | libc::EINTR | libc::ECONNABORTED | libc::EPROTO
+        ) {
+            return;
+        }
+        let why = std::io::Error::from_raw_os_error(errno);
+        self.say(
+            Sev::Err,
+            &format!(
+                "accept on the control socket failed ({why}): paused for {LISTENER_RETRY_MS} ms"
+            ),
+        );
+        let _ = self.colony.effects.events.remove(LISTENER);
+        self.colony.effects.deadlines.arm(
+            crate::deadlines::Key::Listener,
+            self.now_ms + LISTENER_RETRY_MS,
+        );
+    }
+
+    /// Puts the paused listener back into the loop.
+    fn resume_listener(&mut self) {
+        if let Err(e) = self
+            .colony
+            .effects
+            .events
+            .add_fd(self.listener.as_fd(), LISTENER)
+        {
+            self.say(Sev::Err, &format!("loop: {e}"));
+            self.exit = Some(exit::LOOP);
+        }
+    }
+
     /// Takes an accepted connection into the server and the loop.
     fn accept_conn(&mut self, fd: OwnedFd) {
         let admitted = self.server.accept(fd);
@@ -496,6 +536,10 @@ impl<C: CellOps> Daemon<C> {
                 crate::deadlines::Key::Wait(w) => {
                     self.colony.on_wait_deadline(WaitId(w), self.now_ms)
                 }
+                crate::deadlines::Key::Listener => {
+                    self.resume_listener();
+                    continue;
+                }
             };
             self.settle(&out, true);
         }
@@ -539,11 +583,10 @@ impl<C: CellOps> Daemon<C> {
 
     fn on_ready(&mut self, r: Ready) {
         match r {
-            Ready::Readable(LISTENER) => {
-                if let Ok(fd) = accept(self.listener.as_fd()) {
-                    self.accept_conn(fd);
-                }
-            }
+            Ready::Readable(LISTENER) => match accept(self.listener.as_fd()) {
+                Ok(fd) => self.accept_conn(fd),
+                Err(e) => self.listener_failed(e.0),
+            },
             Ready::Readable(CELLS | TIMER) | Ready::Deadline(TIMER) => {
                 // The cells are drained after every wake-up; the timer is checked below.
             }

@@ -11,6 +11,8 @@ pub enum Key {
     Node(u32, TimerKind),
     /// The deadline of a parked request's wait.
     Wait(u64),
+    /// The retry of the control socket's listener, paused after it could not accept.
+    Listener,
 }
 
 /// Pending deadlines, at most one per key.
