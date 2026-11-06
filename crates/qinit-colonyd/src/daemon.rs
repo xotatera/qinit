@@ -128,12 +128,11 @@ impl<C: CellOps> Daemon<C> {
         mut log: Syslog,
         procs: &impl Procs,
     ) -> Result<Daemon<C>, u8> {
-        let mut notes: Vec<(Sev, String)> = Vec::new();
         // What the earlier colony left: a file that does not parse is as good as none.
         let left = match state.read_cells() {
             Ok(lines) => lines,
             Err(why) => {
-                notes.push((Sev::Err, format!("the saved cell map is refused: {why}")));
+                log.log(Sev::Err, &format!("the saved cell map is refused: {why}"));
                 None
             }
         };
@@ -145,18 +144,17 @@ impl<C: CellOps> Daemon<C> {
                     chosen = saved;
                     from_state = true;
                 }
-                Ok(_) => notes.push((
+                Ok(_) => log.log(
                     Sev::Err,
-                    "no usable saved database copy: starting from --db, saved node state ignored"
-                        .to_owned(),
-                )),
-                Err(why) => notes.push((
+                    "no usable saved database copy: starting from --db, saved node state ignored",
+                ),
+                Err(why) => log.log(
                     Sev::Err,
-                    format!("the saved database copy is refused ({why}): starting from --db"),
-                )),
+                    &format!("the saved database copy is refused ({why}): starting from --db"),
+                ),
             }
         }
-        let mut refuse = |code: u8, why: String| {
+        let refuse = |log: &mut Syslog, code: u8, why: String| {
             log.log(Sev::Err, &why);
             eprintln!("colony: {why}");
             code
@@ -165,21 +163,23 @@ impl<C: CellOps> Daemon<C> {
             Ok(db) => db.decode(),
             Err(e) => {
                 return Err(refuse(
+                    &mut log,
                     exit::DATABASE,
                     format!("the database is refused: {e:?}"),
                 ));
             }
         };
-        let mut events = Loop::new().map_err(|e| refuse(exit::STARTUP, format!("loop: {e}")))?;
+        let mut events =
+            Loop::new().map_err(|e| refuse(&mut log, exit::STARTUP, format!("loop: {e}")))?;
         let signals = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP];
         events
             .add_signal(&signals, SIGNALS)
             .and_then(|()| events.add_timer(TIMER))
-            .map_err(|e| refuse(exit::STARTUP, format!("loop: {e}")))?;
+            .map_err(|e| refuse(&mut log, exit::STARTUP, format!("loop: {e}")))?;
         if let Some(fd) = cells.poll_fd() {
             events
                 .add_fd(fd, CELLS)
-                .map_err(|e| refuse(exit::STARTUP, format!("loop: {e}")))?;
+                .map_err(|e| refuse(&mut log, exit::STARTUP, format!("loop: {e}")))?;
         }
         let mut effects = RealEffects::new(
             cells,
@@ -188,12 +188,25 @@ impl<C: CellOps> Daemon<C> {
             events,
             INOTIFY,
         )
-        .map_err(|e| refuse(exit::STARTUP, format!("path watcher: {e}")))?;
+        .map_err(|e| refuse(&mut log, exit::STARTUP, format!("path watcher: {e}")))?;
         // Before the first start: a producer needs its logger's pipe.
         effects
             .pipes
             .rebuild(&model)
-            .map_err(|e| refuse(exit::STARTUP, format!("logger pipes: {e}")))?;
+            .map_err(|e| refuse(&mut log, exit::STARTUP, format!("logger pipes: {e}")))?;
+        // Before anything is started: a socket that cannot be had must not leave services
+        // running that no colony tracks. Clients that connect meanwhile wait in its backlog.
+        let listener = bind(&args.socket).map_err(|e| {
+            refuse(
+                &mut log,
+                exit::STARTUP,
+                format!("control socket {}: {e}", args.socket.display()),
+            )
+        })?;
+        effects
+            .events
+            .add_fd(listener.as_fd(), LISTENER)
+            .map_err(|e| refuse(&mut log, exit::STARTUP, format!("loop: {e}")))?;
         let now = now_ms();
         effects.now_ms = now;
 
@@ -203,7 +216,7 @@ impl<C: CellOps> Daemon<C> {
                 match state.read_nodes() {
                     Ok(n) => n,
                     Err(why) => {
-                        notes.push((Sev::Err, format!("the saved node state is refused: {why}")));
+                        log.log(Sev::Err, &format!("the saved node state is refused: {why}"));
                         None
                     }
                 }
@@ -218,16 +231,18 @@ impl<C: CellOps> Daemon<C> {
                 procs,
                 now,
             );
-            notes.append(&mut plan.notes);
+            for (sev, text) in &plan.notes {
+                log.log(*sev, text);
+            }
             for a in &plan.adopted {
                 effects.adopt_cell(a.id, a.owner, &a.name);
             }
             for id in &plan.clear {
                 if let Err(e) = effects.clear_cell(*id, CLEAR_GRACE) {
-                    notes.push((
+                    log.log(
                         Sev::Err,
-                        format!("cannot stop a leftover cell: errno {}", e.0),
-                    ));
+                        &format!("cannot stop a leftover cell: errno {}", e.0),
+                    );
                 }
             }
             match Colony::<RealEffects<C>>::validate_restore(&chosen, &plan.restored, now) {
@@ -235,10 +250,12 @@ impl<C: CellOps> Daemon<C> {
                 Err(e) => {
                     // A state file from disk is input: one that breaks the scheduler's
                     // invariant is refused whole, and only the cells are adopted.
-                    notes.push((
+                    log.log(
                         Sev::Err,
-                        format!("the saved node state is refused ({e:?}): adopting the cells only"),
-                    ));
+                        &format!(
+                            "the saved node state is refused ({e:?}): adopting the cells only"
+                        ),
+                    );
                     let initial: Vec<(u32, bool)> = plan
                         .restored
                         .iter()
@@ -254,14 +271,14 @@ impl<C: CellOps> Daemon<C> {
         } else {
             Colony::load(chosen.clone(), &[], effects, now)
         }
-        .map_err(|e| refuse(exit::DATABASE, format!("the database is refused: {e:?}")))?;
-
-        let listener = bind(&args.socket).map_err(|e| {
+        .map_err(|e| {
             refuse(
-                exit::STARTUP,
-                format!("control socket {}: {e}", args.socket.display()),
+                &mut log,
+                exit::DATABASE,
+                format!("the database is refused: {e:?}"),
             )
         })?;
+
         let mut d = Daemon {
             colony,
             server: Server::new(Limits::default()),
@@ -284,23 +301,12 @@ impl<C: CellOps> Daemon<C> {
             .filter(|r| r.phase == Restored::Ready)
             .map(|r| Owner::Node(r.node))
             .collect();
-        for (sev, text) in &notes {
-            d.say(*sev, text);
-        }
         if let Err(e) = d.state.write_db(&chosen) {
             d.say(
                 Sev::Err,
                 &format!("cannot save the database copy for a restart: {e}"),
             );
         }
-        d.colony
-            .effects
-            .events
-            .add_fd(d.listener.as_fd(), LISTENER)
-            .map_err(|e| {
-                d.say(Sev::Err, &format!("loop: {e}"));
-                exit::STARTUP
-            })?;
         d.say(
             Sev::Info,
             &format!(

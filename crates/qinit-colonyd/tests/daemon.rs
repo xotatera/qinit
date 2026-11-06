@@ -155,17 +155,28 @@ impl Rig {
 
     /// What colony has logged so far.
     fn logged(&self) -> Vec<String> {
-        self.log.set_nonblocking(true).unwrap();
-        let mut out = Vec::new();
-        let mut buf = [0u8; 512];
-        while let Ok(n) = self.log.recv(&mut buf) {
-            out.push(String::from_utf8_lossy(&buf[..n]).into_owned());
-        }
-        out
+        lines_of(&self.log)
     }
 }
 
 fn boot(frames: &str, enable: &[&str], tag: &str) -> Rig {
+    let bytes = database(frames, enable);
+    let (d, tmp, log) = try_boot(&bytes, tag, FakeCells::default(), |_| {});
+    Rig {
+        d: d.expect("boots"),
+        tmp,
+        log,
+        bytes,
+    }
+}
+
+/// Boots over `bytes` and `cells`; `prep` may change the arguments or the run directory first.
+fn try_boot(
+    bytes: &[u8],
+    tag: &str,
+    cells: FakeCells,
+    prep: impl FnOnce(&mut Args),
+) -> (Result<Daemon<FakeCells>, u8>, Tmp, UnixDatagram) {
     let tmp = Tmp::new(tag);
     let run = tmp.0.join("run");
     std::fs::create_dir_all(&run).unwrap();
@@ -174,7 +185,7 @@ fn boot(frames: &str, enable: &[&str], tag: &str) -> Rig {
     for f in ["console", "kmsg"] {
         std::fs::write(tmp.0.join(f), b"").unwrap();
     }
-    let args = Args {
+    let mut args = Args {
         db: tmp.0.join("colony.db"),
         comb: tmp.0.join("comb"),
         socket: run.join("colony"),
@@ -183,11 +194,21 @@ fn boot(frames: &str, enable: &[&str], tag: &str) -> Rig {
         console: tmp.0.join("console"),
         run: run.clone(),
     };
-    let bytes = database(frames, enable);
+    prep(&mut args);
     let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
     let state = Saved::open(&run).unwrap();
-    let d = Daemon::boot(FakeCells::default(), &args, &bytes, state, syslog).expect("boots");
-    Rig { d, tmp, log, bytes }
+    let d = Daemon::boot(cells, &args, bytes, state, syslog);
+    (d, tmp, log)
+}
+
+fn lines_of(log: &UnixDatagram) -> Vec<String> {
+    log.set_nonblocking(true).unwrap();
+    let mut out = Vec::new();
+    let mut buf = [0u8; 512];
+    while let Ok(n) = log.recv(&mut buf) {
+        out.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+    }
+    out
 }
 
 fn root() -> Peer {
@@ -822,5 +843,45 @@ fn a_listener_that_cannot_accept_is_paused_and_comes_back() {
         answer(&client, |rep| matches!(rep, Rep::NodeStatus(_))),
         Some(true),
         "the waiting connection is served once the listener is back"
+    );
+}
+
+#[test]
+fn what_boot_noticed_is_logged_even_when_it_then_refuses() {
+    let (d, _tmp, log) = try_boot(
+        b"not a database",
+        "refusenotes",
+        FakeCells::default(),
+        |a| {
+            // An earlier colony's cell map that does not parse, and a database that is refused.
+            let state = Saved::open(&a.run).unwrap();
+            drop(state);
+            std::fs::write(a.run.join("state/cells"), b"garbage\n").unwrap();
+        },
+    );
+    assert_eq!(d.err(), Some(exit::DATABASE));
+    let logged = lines_of(&log);
+    assert!(
+        logged
+            .iter()
+            .any(|l| l.contains("saved cell map is refused")),
+        "the note about the cell map is not lost: {logged:?}"
+    );
+}
+
+#[test]
+fn a_socket_that_cannot_be_bound_stops_boot_before_any_service_starts() {
+    let started = std::rc::Rc::new(std::cell::Cell::new(false));
+    let seen = started.clone();
+    let mut cells = FakeCells::default();
+    cells.on_spawn = Some(Box::new(move || seen.set(true)));
+    let bytes = database(WORKER, &["db"]);
+    let (d, _tmp, _log) = try_boot(&bytes, "nobind", cells, |a| {
+        a.socket = a.run.join("no-such-dir/colony");
+    });
+    assert_eq!(d.err(), Some(exit::STARTUP));
+    assert!(
+        !started.get(),
+        "a service was started that no colony will track"
     );
 }
