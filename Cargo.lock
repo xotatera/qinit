@@ -414,6 +414,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "qinit-queen-core"
+version = "0.1.0"
+dependencies = [
+ "vstd",
+]
+
+[[package]]
 name = "qinit-sys"
 version = "0.1.0"
 dependencies = [

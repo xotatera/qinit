@@ -3,7 +3,7 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/qinit-cell", "crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-client", "crates/qinit-client-c", "crates/qinit-colony", "crates/qinit-colony-core", "crates/qinit-colonyd", "crates/qinit-db", "crates/qinit-db-core", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-frames", "crates/qinit-graph-core", "crates/qinit-ipc", "crates/qinit-launch", "crates/qinit-overseer", "crates/qinit-overseer-core", "crates/qinit-proto", "crates/qinit-proto-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests", "crates/qinit-wire", "crates/qctl"]
+members = ["crates/qinit-cell", "crates/qinit-cell-core", "crates/qinit-cell-drive", "crates/qinit-client", "crates/qinit-client-c", "crates/qinit-colony", "crates/qinit-colony-core", "crates/qinit-colonyd", "crates/qinit-db", "crates/qinit-db-core", "crates/qinit-event", "crates/qinit-event-core", "crates/qinit-frames", "crates/qinit-graph-core", "crates/qinit-ipc", "crates/qinit-launch", "crates/qinit-overseer", "crates/qinit-overseer-core", "crates/qinit-proto", "crates/qinit-proto-core", "crates/qinit-queen-core", "crates/qinit-sys", "crates/qinit-vm", "crates/qinit-vm-guests", "crates/qinit-wire", "crates/qctl"]
 
 [workspace.package]
 edition = "2024"
@@ -136,5 +136,14 @@ timeout = "90s"
 name = "qinit-proto-core"
 kind = "verus"
 package = "qinit-proto-core"
+memory = "4G"
+timeout = "45s"
+
+# SP8 (2026-11-07), group 1, the channel records: 18 verified, 13.3 s (19.9 s CPU) wall, 1.0 GB peak,
+# warm build directory. 45s stands at about 2x a cold build (inferred).
+[[workspace.metadata.disciplines.proof]]
+name = "qinit-queen-core"
+kind = "verus"
+package = "qinit-queen-core"
 memory = "4G"
 timeout = "45s"
