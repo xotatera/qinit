@@ -103,3 +103,20 @@ fn an_abort_parks() {
 fn a_panic_hook_can_park() {
     parks("panic", "<2>queen: panic");
 }
+
+/// A fault inside the handler must reach the handler again: with a fault signal blocked there,
+/// the kernel would apply the default action and end PID 1.
+#[test]
+fn the_handler_leaves_the_fault_signals_unblocked() {
+    signal::install_fault_park().unwrap();
+    for sig in signal::FATAL {
+        // SAFETY: an all-zero sigaction is a valid out-parameter.
+        let mut act: libc::sigaction = unsafe { std::mem::zeroed() };
+        // SAFETY: a null new action only reads the current one into `act`.
+        let read = unsafe { libc::sigaction(sig, std::ptr::null(), &raw mut act) };
+        assert_eq!(read, 0);
+        // SAFETY: `act.sa_mask` is an initialised set.
+        let blocked = unsafe { libc::sigismember(&raw const act.sa_mask, sig) };
+        assert_eq!(blocked, 0, "signal {sig} is blocked inside its own handler");
+    }
+}

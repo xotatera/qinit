@@ -153,3 +153,27 @@ fn set_cloexec_raw_on_a_number_never_open_is_ebadf() {
         Err(qinit_sys::Errno(libc::EBADF))
     );
 }
+
+#[test]
+fn every_readable_signal_is_blockable_and_arrives_including_the_real_time_ones() {
+    let sigs = signal::readable();
+    for fatal in signal::FATAL {
+        assert!(!sigs.contains(&fatal), "{fatal} must stay unblocked");
+    }
+    for s in [libc::SIGKILL, libc::SIGSTOP] {
+        assert!(!sigs.contains(&s), "{s} cannot be caught");
+    }
+    for s in [libc::SIGINT, libc::SIGPWR, libc::SIGCHLD, libc::SIGTERM] {
+        assert!(sigs.contains(&s), "{s}");
+    }
+    let (min, max) = (libc::SIGRTMIN(), libc::SIGRTMAX());
+    for s in min..=max {
+        assert!(sigs.contains(&s), "real-time signal {s}");
+    }
+    let sfd = event::signalfd_blocking(&sigs).unwrap();
+    for s in [min, max] {
+        proc::kill_thread_self(s).unwrap();
+        assert_eq!(event::read_signal(&sfd), Some(s.cast_unsigned()));
+    }
+    signal::unblock_all().unwrap();
+}

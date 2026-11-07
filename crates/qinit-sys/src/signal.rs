@@ -57,6 +57,17 @@ pub const FATAL: [libc::c_int; 5] = [
     libc::SIGABRT,
 ];
 
+/// Every signal number a signalfd can read and a process can catch: all of them but [`FATAL`],
+/// `SIGKILL` and `SIGSTOP`, and the numbers the C library keeps for itself (`sigaddset` refuses
+/// those). The real-time signals are in it.
+#[must_use]
+pub fn readable() -> Vec<libc::c_int> {
+    (1..=64)
+        .filter(|s| !FATAL.contains(s) && *s != libc::SIGKILL && *s != libc::SIGSTOP)
+        .filter(|s| set_of(&[*s]).is_ok())
+        .collect()
+}
+
 /// Blocks every signal except [`FATAL`] in the calling thread.
 pub fn block_all_but_fatal() -> Result<()> {
     let mut set = MaybeUninit::<libc::sigset_t>::uninit();
@@ -123,14 +134,15 @@ extern "C" fn on_fatal(_sig: libc::c_int, info: *mut libc::siginfo_t, _ctx: *mut
     }
     write_line(FATAL_LINE);
     loop {
-        // SAFETY: pause takes no arguments; every other signal is blocked by `sa_mask`.
+        // SAFETY: pause takes no arguments; every signal but the fault ones is blocked by `sa_mask`.
         unsafe { libc::pause() };
     }
 }
 
 /// Installs the parking handler for [`FATAL`] on an alternate stack of the calling thread: it
 /// writes one line to the park descriptor and then sleeps for good. A fault inside the
-/// handler repeats it (`SA_NODEFER`), which parks again.
+/// handler repeats it (`SA_NODEFER`, and the fault signals are left out of `sa_mask`), which
+/// parks again.
 pub fn install_fault_park() -> Result<()> {
     let stack = libc::stack_t {
         ss_sp: ALT_STACK.0.get().cast(),
@@ -146,6 +158,11 @@ pub fn install_fault_park() -> Result<()> {
     act.sa_flags = libc::SA_ONSTACK | libc::SA_NODEFER | libc::SA_SIGINFO;
     // SAFETY: `act.sa_mask` is a valid set to fill.
     unsafe { libc::sigfillset(&raw mut act.sa_mask) };
+    for sig in FATAL {
+        // SAFETY: `act.sa_mask` is an initialised set. `SA_NODEFER` alone would not do: a signal
+        // named in `sa_mask` stays blocked, and a blocked fault ends the process.
+        check(unsafe { libc::sigdelset(&raw mut act.sa_mask, sig) })?;
+    }
     for sig in FATAL {
         // SAFETY: a valid sigaction with a handler that only calls write and pause.
         check(unsafe { libc::sigaction(sig, &raw const act, std::ptr::null_mut()) })?;
