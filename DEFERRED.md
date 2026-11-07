@@ -651,3 +651,15 @@ descriptors in the store, never reached the store: each colony failed to make it
 a colony at 1024 cannot put more than it holds itself; on the host a colony at 1024 handed 1100
 held descriptors refused the hand-over (`MSG_CTRUNC`, "did not fit"), and with the fix took them
 all. After it the guest case takes all 520 pipes back across a kill.
+
+### D75 — A one-off run cannot send a stream to a logger · `OPEN`
+
+`qctl run --frame` refuses a frame whose `output` or `errors` is a pipe route (`{ pipe = ... }`)
+unless `--fds` replaces that stream, because a `Run` request has no way to name a logger. Colony
+already holds one pipe per logger node (`docs/colony.md`, "Logger pipes"), so a one-off run could be
+given its write end. That needs a field in the `Run` record, "route this stream to logger NAME";
+colony resolving the name against the loaded database and refusing an unknown logger; a rule for a
+logger that is not running (the pipe holds about 64 KiB, then the instance blocks): refuse, or
+start the logger first; the proved decoder updated; and `run --frame` dropping its refusal. It
+changes the `Run` format, so it is planned in `feat/notice-backlog` with the other wire changes
+and needs the maintainer's approval of the amended design before it is built.
