@@ -19,6 +19,8 @@ Every new file needs SPDX headers (`SPDX-FileCopyrightText` and `SPDX-License-Id
 
 ## Tests
 
+The C tests of `qinit-client-c` need a `cc` that is GCC 13 or newer, or clang (`-fsanitize-trap=undefined`).
+
 In `qinit-colonyd`, only `tests/binary.rs` may start a process. A forked child holds a copy of every
 descriptor until its `exec`, which breaks the hang-up checks of the other tests in the same test
 binary.

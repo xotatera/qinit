@@ -372,6 +372,30 @@ fn a_malformed_enable_toml_is_reported_as_compile_reports_it() {
 }
 
 #[test]
+fn a_malformed_policy_is_reported_as_compile_reports_it() {
+    let tmp = TempDir::new("policy-bad");
+    let policy = tmp.0.join("policy.toml");
+    std::fs::write(&policy, "rule = [\n").unwrap();
+    let p = policy.display().to_string();
+    let layer = format!("--layer=vendor={GOLDEN}/vendor");
+    let (code, out, err) = qctl(&["show", &layer, "--policy", &p, "policy"]);
+    assert_eq!((code, out.as_str()), (1, ""), "{err}");
+    // The same lines `compile` prints for the same file.
+    let db = tmp.0.join("x.db");
+    let (compile_code, _, compile_err) = qctl(&[
+        "compile",
+        &layer,
+        "--policy",
+        &p,
+        "--output",
+        db.to_str().unwrap(),
+    ]);
+    assert_eq!(compile_code, 1, "{compile_err}");
+    assert!(!err.is_empty(), "no error text");
+    assert_eq!(err, compile_err);
+}
+
+#[test]
 fn show_enable_skips_a_middle_layer_without_the_file() {
     let tmp = TempDir::new("enable-middle");
     let mut layers = Vec::new();

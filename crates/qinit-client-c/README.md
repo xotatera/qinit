@@ -72,7 +72,7 @@ Only standard error has a "same" setter: "same" means wherever standard output g
 nothing goes before standard input or standard output for them to follow (the launch request
 refuses "same" for both, `docs/launch-request.md`).
 
-The setters return 0 or `QINIT_E_ARGUMENT` (a NULL request or string, a string that is empty or
+The setters return 0, `QINIT_E_ARGUMENT`, or `QINIT_E_UNEXPECTED` for a caught panic (a NULL request or string, a string that is empty or
 not UTF-8, a word out of range), and a refused call changes nothing. `qinit_request_bytes(r,
 &ptr, &len)` runs the check `qctl run` makes on a request file (`cwd` absolute, `deadline_ms` at
 least 1, `umask` at most `0o777`, a deny or allow filter with at least one syscall, at most 64 KiB

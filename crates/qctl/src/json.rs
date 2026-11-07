@@ -39,7 +39,8 @@ impl Output {
     }
 }
 
-/// An object of `fields`, in their order.
+/// An object of `fields`. Its keys come out sorted, not in the order given: the map is a
+/// `BTreeMap` (`serde_json` without `preserve_order`).
 fn object<const N: usize>(fields: [(&str, Value); N]) -> Map<String, Value> {
     fields.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()
 }

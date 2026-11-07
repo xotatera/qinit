@@ -69,6 +69,8 @@ fn main() {
 
 /// A C program could not be built: say why, and let the C tests fail in its place.
 fn unavailable(why: &str) {
-    println!("cargo::warning=the C tests cannot run: {why}");
+    println!(
+        "cargo::warning=the C tests cannot run (they need a `cc` that is GCC 13 or newer, or clang, for -fsanitize-trap=undefined): {why}"
+    );
     println!("cargo::rustc-cfg=smoke_c_unavailable");
 }
