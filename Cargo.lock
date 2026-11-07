@@ -302,6 +302,7 @@ dependencies = [
  "qinit-overseer-core",
  "qinit-proto",
  "qinit-proto-core",
+ "qinit-queen-core",
  "qinit-sys",
  "qinit-wire",
 ]
