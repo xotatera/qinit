@@ -540,6 +540,15 @@ The same window has a second face under queen: a colony killed after it made a c
 put the cell's directory in queen's store leaves a cell nobody holds. The next colony cannot adopt
 it and a later start of the same node fails to create its cell. The `queen` suite's kills wait for
 the state to reach queen for this reason.
+
+The server now holds a request's own reply, with the descriptors that travel with it, and the
+daemon sends it at the end of the wake-up after the state is saved, before the replies the
+request's outcome owes. One case is left: the replies go out once the saves were tried, whether or
+not they went. A save that waits more than a second for a queen that does not read is dropped,
+logged and tried again at the next wake-up, and a reply sent meanwhile comes before the state it
+reports. Holding the replies until the save goes would stop colony answering under a parked
+queen, which D69 says colony keeps serving.
+
 ### D68 — A configurable shutdown bound · `RESOLVED`
 
 Queen's shutdown bound was a constant, five minutes. `qinit.shutdown_ms=` on the kernel command

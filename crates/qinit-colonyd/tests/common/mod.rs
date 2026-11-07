@@ -75,6 +75,9 @@ pub struct FakeCells {
     pub on_spawn: Option<Box<dyn FnMut()>>,
     /// Runs inside `stop`, before it returns, the first time (once taken).
     pub on_stop: Option<Box<dyn FnOnce()>>,
+    /// Runs inside `dir_fd`, before it returns: the moment a new cell's directory is about to be
+    /// put in queen's store, before the state that names it is saved.
+    pub on_dir_fd: Option<Box<dyn FnMut()>>,
     /// `wait_for_status` was called.
     pub waits: bool,
     /// Slots whose status the next `settle_status` delivers.
@@ -228,6 +231,9 @@ impl CellOps for FakeCells {
     fn dir_fd(&mut self, id: CellId) -> Result<OwnedFd, Error> {
         if !self.phases.contains_key(&id.0) {
             return Err(Error::NoSuchCell(id.0));
+        }
+        if let Some(f) = self.on_dir_fd.as_mut() {
+            f();
         }
         std::fs::File::open("/dev/null")
             .map(OwnedFd::from)

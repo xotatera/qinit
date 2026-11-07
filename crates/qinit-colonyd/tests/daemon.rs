@@ -984,6 +984,98 @@ fn a_removed_cell_is_forgotten_after_the_state_that_dropped_it() {
     assert!(!r.queen.held.contains_key(&dir));
 }
 
+// ---- a request's replies follow the state they report (D67) ----
+
+/// Whether a message waits on `fd` (the daemon keeps its end open), left where it is.
+fn has_message(fd: &OwnedFd) -> bool {
+    qinit_ipc::poll_readable(fd.as_fd(), 0).unwrap()
+}
+
+fn launch_backup() -> Req<'static> {
+    Req::Launch {
+        frame: "backup",
+        argv_tail: qinit_wire::StrList::new(b""),
+        env_add: qinit_wire::StrList::new(b""),
+        fd_roles: 0,
+        wait_ms: 60_000,
+        flags: 0,
+    }
+}
+
+#[test]
+fn the_save_is_on_the_channel_before_a_launch_is_answered() {
+    let mut r = boot(FORAGER, &[], "replyorder");
+    let client = connect_root(&mut r);
+    // The client's socket, looked at the moment the instance's cell is first put in queen's
+    // store, before the `cells` text that names it is saved.
+    let probe = client.try_clone().unwrap();
+    let early = std::rc::Rc::new(std::cell::Cell::new(None));
+    let seen = early.clone();
+    r.d.colony.effects.cells.on_dir_fd = Some(Box::new(move || {
+        if seen.get().is_none() {
+            seen.set(Some(has_message(&probe)));
+        }
+    }));
+    ask(&client, launch_backup(), &[]);
+    assert_eq!(r.d.pump(), None);
+    assert_eq!(
+        early.get(),
+        Some(false),
+        "the client could read its reply before the instance's state went to queen"
+    );
+    // The client's socket first: once it has the reply, the channel names the instance.
+    let id = answer(&client, |rep| match rep {
+        Rep::Launched { id } => id,
+        other => panic!("{other:?}"),
+    })
+    .expect("the launch is answered");
+    let cells = parse_cells(&r.queen.text(KEY_CELLS).unwrap()).unwrap();
+    let name = format!("backup#{id}");
+    assert!(
+        cells.iter().any(|c| c.name == name),
+        "{name} is not in the cells entry: {cells:?}"
+    );
+}
+
+#[test]
+fn a_client_gone_before_the_flush_costs_nothing() {
+    let frames = format!("{WORKER}{FORAGER}");
+    let mut r = boot(&frames, &["db"], "replygone");
+    let gone = connect_root(&mut r);
+    let other = connect_root(&mut r);
+    ask(&gone, launch_backup(), &[]);
+    ask(&other, Req::Status { target: "db" }, &[]);
+    // The launching client closes after its request was served and before its reply is sent:
+    // while the instance's state is being saved.
+    let held = std::rc::Rc::new(std::cell::RefCell::new(Some(gone)));
+    let closer = held.clone();
+    r.d.colony.effects.cells.on_dir_fd = Some(Box::new(move || {
+        closer.borrow_mut().take();
+    }));
+    assert_eq!(r.d.pump(), None);
+    assert!(
+        held.borrow().is_none(),
+        "the client closed during the wake-up"
+    );
+    // The state of what its request did is saved all the same.
+    let cells = parse_cells(&r.queen.text(KEY_CELLS).unwrap()).unwrap();
+    assert!(
+        cells.iter().any(|c| c.name == "backup#1"),
+        "the instance is in the cells entry: {cells:?}"
+    );
+    // The other connection is answered and stays usable.
+    assert_eq!(
+        answer(&other, |rep| matches!(rep, Rep::NodeStatus(_))),
+        Some(true)
+    );
+    ask(&other, Req::Status { target: "db" }, &[]);
+    assert_eq!(r.d.pump(), None);
+    assert_eq!(
+        answer(&other, |rep| matches!(rep, Rep::NodeStatus(_))),
+        Some(true)
+    );
+}
+
 #[test]
 fn without_a_queen_nothing_is_saved() {
     let tmp = Tmp::new("noqueen");

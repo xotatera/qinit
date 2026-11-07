@@ -192,6 +192,12 @@ Colony's memory is in [queen's store](queen.md): colony *puts* a descriptor unde
 allocates, saves text that names the keys, and forgets a key once no saved text names it. It puts
 before it saves and forgets after, so a state never names a key queen does not hold.
 
+Every reply waits for the state it reports. A wake-up's replies, a request's own included
+(`Launched`, `Accepted`, a wait already met), are sent after the state is saved: a client that has
+its answer can kill colony, and the next colony knows what the request did. A save that waits more
+than a second for a queen that does not read is dropped, logged and tried again at the next
+wake-up; the replies do not wait for it, so colony keeps answering under a parked queen.
+
 * **Descriptors:** each cell's directory, each main's pidfd and both ends of each logger pipe.
 * **`cells`** (key 1), one line per cell colony made and has not removed:
   `<name> <cgroup id> <ready 0|1> <dir key> <main key>`; the main key is 0 for none.
