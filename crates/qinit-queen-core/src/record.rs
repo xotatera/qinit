@@ -28,6 +28,8 @@ pub enum FromColony {
     Drop { key: u64 },
     /// The shutdown has begun, ending in `mode`.
     Shutdown { mode: Mode },
+    /// Colony's loop is turning: sent now and then, it tells queen colony is not stuck.
+    Alive,
 }
 
 /// A record queen sends.
@@ -50,6 +52,8 @@ pub const KIND_PUT: u32 = 1;
 pub const KIND_DROP: u32 = 2;
 
 pub const KIND_SHUTDOWN: u32 = 3;
+
+pub const KIND_ALIVE: u32 = 4;
 
 pub const KIND_HELD: u32 = 65;
 
@@ -115,6 +119,12 @@ pub open spec fn from_colony_spec(b: Seq<u8>, fds: int) -> Option<FromColony> {
         } else if kind == KIND_SHUTDOWN {
             if key == 0 && arg <= 2 && fds == 0 {
                 Some(FromColony::Shutdown { mode: word_mode(arg) })
+            } else {
+                None
+            }
+        } else if kind == KIND_ALIVE {
+            if arg == 0 && key == 0 && fds == 0 {
+                Some(FromColony::Alive)
             } else {
                 None
             }
@@ -260,7 +270,7 @@ pub open spec fn from_colony_wf(r: FromColony) -> bool {
     match r {
         FromColony::Put { key } => key != 0,
         FromColony::Drop { key } => key != 0,
-        FromColony::Shutdown { .. } => true,
+        FromColony::Shutdown { .. } | FromColony::Alive => true,
     }
 }
 
@@ -301,6 +311,7 @@ pub fn encode_from_colony(r: FromColony) -> (b: [u8; 16])
         FromColony::Put { key } => pack(KIND_PUT, 0, key),
         FromColony::Drop { key } => pack(KIND_DROP, 0, key),
         FromColony::Shutdown { mode } => pack(KIND_SHUTDOWN, word_of(mode), 0),
+        FromColony::Alive => pack(KIND_ALIVE, 0, 0),
     }
 }
 
@@ -332,6 +343,12 @@ pub fn decode_from_colony(b: &[u8], fds: usize) -> (r: Option<FromColony>)
     } else if kind == KIND_SHUTDOWN {
         if key == 0 && arg <= 2 && fds == 0 {
             Some(FromColony::Shutdown { mode: mode_of(arg) })
+        } else {
+            None
+        }
+    } else if kind == KIND_ALIVE {
+        if arg == 0 && key == 0 && fds == 0 {
+            Some(FromColony::Alive)
         } else {
             None
         }

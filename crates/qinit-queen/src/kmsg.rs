@@ -75,6 +75,7 @@ pub fn is_failure(ev: &Event) -> bool {
             | Event::Hold
             | Event::ExecFailed
             | Event::ChannelBad
+            | Event::ColonySilent
             | Event::StoreFull(_)
             | Event::SpawnFailed
     )
@@ -113,6 +114,7 @@ pub fn format(ev: &Event, buf: &mut [u8; 128]) -> usize {
         }
         Event::ExecFailed => l.put(b"zero did not start"),
         Event::ChannelBad => l.put(b"colony sent a bad record"),
+        Event::ColonySilent => l.put(b"colony is silent, killing it"),
         Event::StoreFull(key) => {
             l.put(b"store full, refused key");
             l.num(i64::try_from(key).unwrap_or(i64::MAX), 7);

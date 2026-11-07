@@ -49,6 +49,10 @@ const INOTIFY: Token = BASE | 3;
 /// The channel to queen.
 const QUEEN: Token = BASE | 4;
 
+/// How often colony tells queen its loop is turning. Queen kills a colony that sent nothing for
+/// a whole period of its own (30 s unless the kernel command line says otherwise).
+pub use qinit_queen_core::machine::ALIVE_MS;
+
 /// How long a handed-over main's status is waited for after it exited.
 pub const STATUS_WAIT_MS: u64 = 1_000;
 
@@ -113,6 +117,8 @@ pub struct Daemon<C: CellOps> {
     owed: Vec<Outcome>,
     /// Cells whose handed-over main exited and whose status is awaited.
     status_pending: BTreeSet<CellId>,
+    /// When the next `Alive` is due; 0 means at the first turn.
+    next_alive_ms: u64,
 }
 
 impl<C: CellOps> Daemon<C> {
@@ -381,6 +387,7 @@ impl<C: CellOps> Daemon<C> {
             exit_after: None,
             owed: Vec::new(),
             status_pending: BTreeSet::new(),
+            next_alive_ms: 0,
         };
         d.colony.effects.ready = plan
             .restored
@@ -775,6 +782,7 @@ impl<C: CellOps> Daemon<C> {
         self.report_faults();
         self.persist();
         self.release_lost_link();
+        self.beat(self.now_ms);
         self.flush_replies();
         self.rearm();
     }
@@ -857,13 +865,25 @@ impl<C: CellOps> Daemon<C> {
         }
     }
 
-    /// Sets the one timer to the earliest deadline.
+    /// Tells queen the loop is turning when a period has passed since it last did, at `now`
+    /// (milliseconds, the loop's clock). Whether it did: not without a queen.
+    pub fn beat(&mut self, now: u64) -> bool {
+        if self.colony.effects.store.link().is_none() || now < self.next_alive_ms {
+            return false;
+        }
+        self.colony.effects.store.alive();
+        self.next_alive_ms = now.saturating_add(ALIVE_MS);
+        true
+    }
+
+    /// Sets the one timer to the earliest deadline, or the next heartbeat.
     fn rearm(&mut self) {
-        let after = self
-            .colony
-            .effects
-            .deadlines
-            .next()
+        let beat = self.colony.effects.store.link().map(|_| self.next_alive_ms);
+        let due = self.colony.effects.deadlines.next();
+        let after = [due, beat]
+            .into_iter()
+            .flatten()
+            .min()
             .map(|at| Duration::from_millis(at.saturating_sub(self.now_ms)));
         if let Err(e) = self.colony.effects.events.set_timer(TIMER, after) {
             self.say(Sev::Err, &format!("the timer refused: {e}"));

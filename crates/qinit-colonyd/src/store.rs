@@ -200,6 +200,12 @@ impl Store {
         );
     }
 
+    /// Tells queen colony's loop is turning. Never waits: a socket queen has not drained has
+    /// records in it that queen reads, and the next heartbeat follows.
+    pub fn alive(&mut self) {
+        self.transmit(&encode_from_colony(FromColony::Alive), None, false);
+    }
+
     /// Lets go of the channel: queen is gone, and colony carries on without saving.
     pub fn detach(&mut self) {
         self.link = None;
@@ -288,12 +294,18 @@ impl Store {
     /// Sends one record; whether it went. A full socket is waited on once; a closed one ends
     /// the link.
     fn send(&mut self, bytes: &[u8; 16], fd: Option<BorrowedFd<'_>>) -> bool {
+        self.transmit(bytes, fd, true)
+    }
+
+    /// As [`Store::send`]; with `patient` false a full socket is neither waited on nor warned
+    /// about.
+    fn transmit(&mut self, bytes: &[u8; 16], fd: Option<BorrowedFd<'_>>, patient: bool) -> bool {
         let Some(link) = self.link.as_ref() else {
             return false;
         };
         let fds: Vec<BorrowedFd<'_>> = fd.into_iter().collect();
         let mut result = send_nowait(link.as_fd(), bytes, &fds);
-        if matches!(result, Err(Errno(libc::EAGAIN))) && !self.stalled {
+        if matches!(result, Err(Errno(libc::EAGAIN))) && patient && !self.stalled {
             let wait = i32::try_from(Duration::from_millis(1000).as_millis()).unwrap_or(SEND_MS);
             if poll_writable(link.as_fd(), wait).unwrap_or(false) {
                 result = send_nowait(link.as_fd(), bytes, &fds);
@@ -304,6 +316,7 @@ impl Store {
                 self.stalled = false;
                 true
             }
+            Err(Errno(libc::EAGAIN)) if !patient => false,
             Err(Errno(libc::EAGAIN)) => {
                 if !self.stalled {
                     self.stalled = true;

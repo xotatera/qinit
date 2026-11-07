@@ -393,6 +393,7 @@ pub enum Sent {
     Put(u64),
     Drop(u64),
     Shutdown(qinit_queen_core::Mode),
+    Alive,
 }
 
 impl FakeQueen {
@@ -446,6 +447,7 @@ impl FakeQueen {
                     self.events.push(Sent::Shutdown(mode));
                     self.shutdowns.push(mode);
                 }
+                FromColony::Alive => self.events.push(Sent::Alive),
             }
         }
     }

@@ -24,7 +24,9 @@ prints a line and exits 2; Ctrl-Alt-Del is switched off, so it arrives as `SIGIN
 directory is `/` (queen pins no mount); the log is opened (`/dev/kmsg`, else `/dev/console`, else
 `/dev/null`, each on a description of its own, non-blocking, so a console stopped by flow control
 costs a line and not PID 1); `RLIMIT_NOFILE` is raised to 65536
-so queen can hold the whole store; the signalfd, timerfd and epoll instance are made; colony is
+so queen can hold the whole store (colony, rescue and zero are started with the limit queen
+itself started with, so services do not inherit the raised one); the kernel command line is read
+for the two [settings](#settings); the signalfd, timerfd and epoll instance are made; colony is
 started. A failure from the Ctrl-Alt-Del step on logs what failed and parks.
 
 ## Children and colony's exit
@@ -90,6 +92,7 @@ needs.
 | colony → queen | `Put{key}` + fd (1) | Hold it, replacing any entry under the key |
 | colony → queen | `Drop{key}` (2) | Close and forget it |
 | colony → queen | `Shutdown{mode}` (3) | A shutdown began; mode 0 halt, 1 poweroff, 2 reboot |
+| colony → queen | `Alive` (4) | Colony's loop is turning; sent every 2 s |
 | queen → colony | `Held{key}` + fd (65) | One per entry, sent at the start |
 | queen → colony | `HeldEnd{count}` (66) | The hand-over is complete |
 | queen → colony | `Reaped` (67) | Queen reaped an orphan (neither colony nor rescue): a status colony waits for may be readable now |
@@ -114,6 +117,31 @@ the nodes stay, and are adopted. Colony puts a descriptor before it saves the st
 forgets a key after it saved the state that stopped naming it. See [colony.md](colony.md) for what
 survives a restart.
 
+## The heartbeat
+
+A colony that is alive but no longer serving (a stuck loop) is noticed by a heartbeat. Colony
+sends `Alive` from its loop every 2 s. While colony runs, queen's timer measures periods of
+`qinit.heartbeat_ms` (30 s): at the end of a period in which no `Alive` arrived, queen logs
+`colony is silent, killing it` and kills colony, which is then reaped and counted like any other
+crash (restart, or rescue past the limit). A period with a beat starts the next. A new colony
+starts a new period, so one that is slow to start has a whole period. The watch is off during a
+shutdown (the shutdown bound covers it), in rescue and in the hold. A timer read in the turn that
+restarted colony, before the new period is over, is ignored. A colony that is silent is killed
+between one and two periods after it last spoke.
+
+## Settings
+
+The kernel command line (`/proc/cmdline`) holds queen's only two settings; the last of a
+setting wins, and a value that is not allowed is logged (`ignoring ...`) and the default kept.
+
+| Setting | Default | Allowed | Meaning |
+|---|---|---|---|
+| `qinit.shutdown_ms` | 300000 | 1 to 86400000 | How long colony has to end a shutdown before it is killed |
+| `qinit.heartbeat_ms` | 30000 | 0, or 8000 to 86400000 | The heartbeat period; 0 turns the watch off |
+
+A day is the ceiling because a timer holds no more; 8 s is the floor because colony beats every
+2 s and four beats should fit in a period.
+
 ## Paths and limits
 
 | Path | What |
@@ -122,8 +150,9 @@ survives a restart.
 | `/usr/lib/qinit/zero` | zero |
 | `/etc/qinit/rescue` | the rescue program |
 
-Queen's own bounds are constants: five exits in 60 s, 10 s for rescue, 5 min and 5 s for a
-shutdown. Making the shutdown bound configurable is D68.
+Queen's other bounds are constants: five exits in 60 s, 10 s for rescue, 5 s after the kill of a
+shutdown. Queen raises its own `RLIMIT_NOFILE` and gives colony, rescue and zero the limit it
+started with (a failed exec of zero raises it again).
 
 ## Tests
 
@@ -132,4 +161,5 @@ proof:qinit-queen-core` proves the decoder, the store and the machine. `cargo ru
 run queen queen_panic queen_fault readopt` runs queen as a real PID 1 in QEMU, with a stand-in
 for zero that logs its command line and starts queen over. The guests build queen with its
 `testing` feature, which reads the bounds from `/run/queen-test` and lets `SIGUSR1` panic and
-`SIGUSR2` fault.
+`SIGUSR2` fault. The guests boot with `qinit.heartbeat_ms=8000`, so the heartbeat is the real one
+on a shorter period.

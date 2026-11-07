@@ -31,15 +31,26 @@ pub struct Limits {
     pub shutdown_ms: u64,
     /// How long after the kill queen waits before it execs zero anyway.
     pub kill_wait_ms: u64,
+    /// How long a running colony may go without an `Alive` record before it is killed; 0 for no
+    /// watch.
+    pub heartbeat_ms: u64,
 }
 
-/// The limits of the spec: five exits in 60 s, 10 s for rescue, 5 min and 5 s for a shutdown.
+/// The limits of the spec: five exits in 60 s, 10 s for rescue, 5 min and 5 s for a shutdown,
+/// 30 s of silence from a running colony.
 pub const LIMITS: Limits = Limits {
     window_ms: 60_000,
     rescue_min_ms: 10_000,
     shutdown_ms: 300_000,
     kill_wait_ms: 5_000,
+    heartbeat_ms: 30_000,
 };
+
+/// How often a colony that runs under queen sends `Alive`.
+pub const ALIVE_MS: u64 = 2_000;
+
+/// The shortest heartbeat period worth setting: four beats fit in it.
+pub const MIN_HEARTBEAT_MS: u64 = 8_000;
 
 /// What queen is doing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +69,7 @@ pub enum Phase {
 
 /// Everything queen remembers besides the store table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]  // a state machine's flags, each independent
 pub struct State {
     pub phase: Phase,
     /// A shutdown has begun, ever: sticky, and no colony starts once it is set.
@@ -85,6 +97,10 @@ pub struct State {
     pub reaped: bool,
     /// The last key a `Put` was refused for, 0 for none.
     pub refused: u64,
+    /// Colony sent `Alive` in the heartbeat period now running.
+    pub alive: bool,
+    /// When that period began.
+    pub period_start: u64,
 }
 
 /// A fixed event for the log; the binary formats it with its numbers.
@@ -100,6 +116,8 @@ pub enum Event {
     ExecZero(Mode),
     ExecFailed,
     ChannelBad,
+    /// A running colony sent nothing for a whole heartbeat period.
+    ColonySilent,
     StoreFull(u64),
     SpawnFailed,
     CadIgnored,
@@ -157,6 +175,8 @@ pub struct Actions {
     pub spawn_colony: bool,
     /// One of the actions is `ExecZero`.
     pub exec_zero: bool,
+    /// One of the actions is a `Kill`.
+    pub kill: bool,
 }
 
 impl Actions {
@@ -182,8 +202,15 @@ impl Actions {
             r.len == 0,
             !r.spawn_colony,
             !r.exec_zero,
+            !r.kill,
     {
-        Actions { items: [Action::CancelTimer;6], len: 0, spawn_colony: false, exec_zero: false }
+        Actions {
+            items: [Action::CancelTimer;6],
+            len: 0,
+            spawn_colony: false,
+            exec_zero: false,
+            kill: false,
+        }
     }
 }
 
@@ -196,6 +223,7 @@ fn push(a: &mut Actions, x: Action)
         old(a).len < MAX_ACTIONS ==> final(a).len == old(a).len + 1,
         final(a).spawn_colony == (old(a).spawn_colony || (x is SpawnColony && old(a).len < 6)),
         final(a).exec_zero == (old(a).exec_zero || (x is ExecZero && old(a).len < 6)),
+        final(a).kill == (old(a).kill || (x is Kill && old(a).len < 6)),
 {
     if a.len < MAX_ACTIONS {
         a.items[a.len] = x;
@@ -206,6 +234,9 @@ fn push(a: &mut Actions, x: Action)
             },
             Action::ExecZero(_) => {
                 a.exec_zero = true;
+            },
+            Action::Kill(_) => {
+                a.kill = true;
             },
             _ => {},
         }
@@ -242,6 +273,8 @@ pub fn initial() -> (r: (State, Actions))
         request: None,
         reaped: false,
         refused: 0,
+        alive: false,
+        period_start: 0,
     };
     let mut a = Actions::none();
     push(&mut a, Action::SpawnColony);
@@ -292,6 +325,7 @@ fn begin_shutdown(s: &mut State, a: &mut Actions, lim: &Limits, mode: Mode)
         final(a).len <= old(a).len + 3,
         final(a).spawn_colony == old(a).spawn_colony,
         final(a).exec_zero == old(a).exec_zero,
+        final(a).kill == old(a).kill,
 {
     s.phase = Phase::Stopping;
     s.stopped = true;
@@ -314,6 +348,7 @@ fn drop_held_db(table: &mut [Entry], a: &mut Actions)
         final(a).len <= old(a).len + 1,
         final(a).spawn_colony == old(a).spawn_colony,
         final(a).exec_zero == old(a).exec_zero,
+        final(a).kill == old(a).kill,
 {
     #[allow(clippy::collapsible_if)]  // Verus has no let chains
     if let Some(f) = take(table, DB_KEY) {
@@ -329,6 +364,7 @@ fn spawn_rescue(s: &State, a: &mut Actions)
         final(a).len <= old(a).len + 1,
         final(a).spawn_colony == old(a).spawn_colony,
         final(a).exec_zero == old(a).exec_zero,
+        final(a).kill == old(a).kill,
 {
     if s.rescue == 0 {
         push(a, Action::SpawnRescue);
@@ -351,6 +387,7 @@ fn counted(s: &mut State, a: &mut Actions, lim: &Limits, now: u64)
             s,
         ).exits[0] + lim.window_ms <= now,
         final(a).exec_zero == old(a).exec_zero,
+        final(a).kill == old(a).kill,
 {
     if s.nexits == MAX_EXITS && (now < s.exits[0] || now - s.exits[0] < lim.window_ms) {
         push(a, Action::Log(Event::LimitTripped));
@@ -395,6 +432,7 @@ fn exec_zero(s: &mut State, a: &mut Actions, mode: Mode)
         final(a).len <= old(a).len + 2,
         final(a).exec_zero,
         final(a).spawn_colony == old(a).spawn_colony,
+        final(a).kill == old(a).kill,
 {
     s.mode = mode;
     push(a, Action::Log(Event::ExecZero(mode)));
@@ -428,6 +466,10 @@ pub fn step(s: &mut State, table: &mut [Entry], lim: &Limits, input: Input, now:
             == Phase::Killed && !a.exec_zero,
         (input is Timer && old(s).phase == Phase::Stopping && old(s).colony == 0) ==> a.exec_zero,
         (input is ExecFailed) ==> final(s).phase == Phase::Rescue,
+        (input is Timer && old(s).phase == Phase::Running && old(s).colony != 0 && lim.heartbeat_ms
+            > 0 && old(s).period_start <= now && now - old(s).period_start + 1 >= lim.heartbeat_ms
+            && !old(s).alive) ==> a.kill,
+        (input is Timer && old(s).phase == Phase::Running && old(s).alive) ==> !a.kill,
         match input {
             Input::Child { pid, .. } => (pid != 0 && pid == old(s).colony && (old(s).phase
                 == Phase::Stopping || old(s).phase == Phase::Killed) ==> a.exec_zero) && (pid != 0
@@ -557,6 +599,9 @@ pub fn step(s: &mut State, table: &mut [Entry], lim: &Limits, input: Input, now:
                         }
                     }
                 },
+                FromColony::Alive => {
+                    s.alive = true;
+                },
                 FromColony::Shutdown { mode } => {
                     match s.phase {
                         Phase::Running => {
@@ -596,7 +641,23 @@ pub fn step(s: &mut State, table: &mut [Entry], lim: &Limits, input: Input, now:
                     let mode = s.mode;
                     exec_zero(s, &mut a, mode);
                 },
-                Phase::Running | Phase::Rescue | Phase::Hold => {},
+                Phase::Running => {
+                    // The heartbeat: a whole period without a word from colony kills it; one
+                    // with a word starts the next. A timer read before the period is over is
+                    // the stale one of a colony that was replaced in the same turn.
+                    if s.colony != 0 && lim.heartbeat_ms > 0 && now >= s.period_start && now
+                        - s.period_start >= lim.heartbeat_ms - 1 {
+                        if s.alive {
+                            s.alive = false;
+                            s.period_start = now;
+                            push(&mut a, Action::ArmTimer(lim.heartbeat_ms));
+                        } else {
+                            push(&mut a, Action::Log(Event::ColonySilent));
+                            push(&mut a, Action::Kill(s.colony));
+                        }
+                    }
+                },
+                Phase::Rescue | Phase::Hold => {},
             }
         },
         Input::ColonySpawned(pid) => {
@@ -606,7 +667,12 @@ pub fn step(s: &mut State, table: &mut [Entry], lim: &Limits, input: Input, now:
             s.handed_over = false;
             s.reaped = false;
             s.refused = 0;
+            s.alive = false;
+            s.period_start = now;
             push(&mut a, Action::Log(Event::ColonyStarted(pid)));
+            if matches!(s.phase, Phase::Running) && lim.heartbeat_ms > 0 {
+                push(&mut a, Action::ArmTimer(lim.heartbeat_ms));
+            }
         },
         Input::ColonySpawnFailed => {
             push(&mut a, Action::Log(Event::SpawnFailed));

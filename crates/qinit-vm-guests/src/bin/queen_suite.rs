@@ -135,6 +135,39 @@ fn a_killed_colony_is_restarted_and_workers_keep_their_pids() -> Result<(), Stri
     Ok(())
 }
 
+/// The heartbeat period the guests boot with (`qinit.heartbeat_ms` in `qinit-vm`'s command line).
+const HEARTBEAT_MS: u64 = 8_000;
+
+fn a_colony_that_stops_turning_is_killed_and_restarted() -> Result<(), String> {
+    let mut c = fresh(&basic())?;
+    settled(&mut c, "w")?;
+    drop(c);
+    let old = colony_pid().ok_or("no colony runs")?;
+    let silent = kmsg_count("colony is silent")?;
+    // Stopped, colony is alive and answers nothing: only the heartbeat can notice.
+    e(qinit_sys::proc::kill(old, libc::SIGSTOP))?;
+    await_kmsg("colony is silent", silent + 1)?;
+    let mut c = await_colony_restart(old)?;
+    if settled(&mut c, "w")? != 3 {
+        return Err("the adopted worker is not ready".into());
+    }
+    Ok(())
+}
+
+fn a_colony_that_keeps_turning_is_left_alone() -> Result<(), String> {
+    let mut c = fresh(&basic())?;
+    settled(&mut c, "w")?;
+    drop(c);
+    let pid = colony_pid().ok_or("no colony runs")?;
+    let silent = kmsg_count("colony is silent")?;
+    // Two whole periods and a little more.
+    queened::pause(2 * HEARTBEAT_MS + 1_000)?;
+    if colony_pid() != Some(pid) || kmsg_count("colony is silent")? != silent {
+        return Err("a colony that sends its heartbeat was killed".into());
+    }
+    Ok(())
+}
+
 fn a_crash_loop_trips_the_limit() -> Result<(), String> {
     let holds = kmsg_count("nothing runs, holding")?;
     trip_limit("fail")?;
@@ -149,8 +182,33 @@ fn rescue_is_a_session_leader_on_the_console() -> Result<(), String> {
     trip_limit("now")?;
     let line = rescue_lines().pop().ok_or("rescue logged nothing")?;
     let f: Vec<&str> = line.split_whitespace().collect();
-    if f.len() != 3 || f[0] != f[1] || f[2] == "0" {
-        return Err(format!("rescue's session, pid, tty: {line:?}"));
+    if f.len() != 4 || f[0] != f[1] || f[2] == "0" {
+        return Err(format!("rescue's session, pid, tty, nofile: {line:?}"));
+    }
+    hold_then_back(holds)
+}
+
+/// Queen raises its own descriptor limit to hold the store; what it starts does not inherit that.
+fn children_do_not_inherit_the_raised_descriptor_limit() -> Result<(), String> {
+    let holds = kmsg_count("nothing runs, holding")?;
+    let queen = queened::open_files_soft(1).ok_or("no limit for queen")?;
+    if queen < 65_536 {
+        return Err(format!("queen's own soft limit is {queen}"));
+    }
+    let colony = colony_pid().ok_or("no colony")?;
+    let colony_limit = queened::open_files_soft(colony).ok_or("no limit for colony")?;
+    if colony_limit >= queen {
+        return Err(format!("colony inherited {colony_limit} (queen {queen})"));
+    }
+    trip_limit("now")?;
+    let line = rescue_lines().pop().ok_or("rescue logged nothing")?;
+    let rescue: u64 = line
+        .split_whitespace()
+        .nth(3)
+        .and_then(|w| w.parse().ok())
+        .ok_or_else(|| format!("rescue's line: {line:?}"))?;
+    if rescue >= queen {
+        return Err(format!("rescue inherited {rescue} (queen {queen})"));
     }
     hold_then_back(holds)
 }
@@ -446,10 +504,22 @@ fn main() {
                 "a_killed_colony_is_restarted_and_workers_keep_their_pids",
                 a_killed_colony_is_restarted_and_workers_keep_their_pids,
             ),
+            (
+                "a_colony_that_stops_turning_is_killed_and_restarted",
+                a_colony_that_stops_turning_is_killed_and_restarted,
+            ),
+            (
+                "a_colony_that_keeps_turning_is_left_alone",
+                a_colony_that_keeps_turning_is_left_alone,
+            ),
             ("a_crash_loop_trips_the_limit", a_crash_loop_trips_the_limit),
             (
                 "rescue_is_a_session_leader_on_the_console",
                 rescue_is_a_session_leader_on_the_console,
+            ),
+            (
+                "children_do_not_inherit_the_raised_descriptor_limit",
+                children_do_not_inherit_the_raised_descriptor_limit,
             ),
             (
                 "rescue_exiting_zero_late_brings_colony_back",

@@ -18,6 +18,7 @@ fn all_events() -> Vec<Event> {
         Event::Hold,
         Event::ExecFailed,
         Event::ChannelBad,
+        Event::ColonySilent,
         Event::StoreFull(u64::MAX),
         Event::StoreFull(16),
         Event::SpawnFailed,
@@ -64,6 +65,7 @@ fn the_level_is_err_for_failures_and_info_otherwise() {
                 | Event::Hold
                 | Event::ExecFailed
                 | Event::ChannelBad
+                | Event::ColonySilent
                 | Event::StoreFull(_)
                 | Event::SpawnFailed
         );

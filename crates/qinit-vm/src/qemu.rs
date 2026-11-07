@@ -83,7 +83,7 @@ pub fn args(a: Accel, kernel: &Path, initrd: &Path) -> Vec<OsString> {
     v.push("-initrd".into());
     v.push(initrd.as_os_str().to_owned());
     v.push("-append".into());
-    v.push("console=ttyS0 panic=-1 rdinit=/init loglevel=4".into());
+    v.push("console=ttyS0 panic=-1 rdinit=/init loglevel=4 qinit.heartbeat_ms=8000".into());
     v
 }
 

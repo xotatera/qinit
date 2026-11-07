@@ -12,6 +12,12 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Queen's settings and heartbeat (D68, D70, D72), `docs/queen.md`: `qinit.shutdown_ms=` and
+  `qinit.heartbeat_ms=` on the kernel command line set the shutdown bound (default 5 min) and the
+  heartbeat period (default 30 s, 0 for none). Colony sends `Alive` every 2 s; queen kills a
+  colony that sent nothing for a whole period, so a stuck loop is restarted like a crash. The
+  proof (`proof:qinit-queen-core`) states that a silent period kills and a spoken one does not.
+
 - Sub-project 8, queen (D8, D63, D64, D65), `docs/queen.md`: `queen` (`qinit-queen`, with the proved
   core `qinit-queen-core`) is the PID 1. It starts colony, restarts it under a limit of five exits
   in 60 s, holds colony's descriptors and state in a fixed store across a restart, runs
@@ -318,6 +324,9 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   both workspaces, `cargo xtask proofs`) also stops at its first failure.
 
 ### Fixed
+
+- Services no longer inherit queen's raised descriptor limit (D72): queen starts colony, rescue
+  and zero with the `RLIMIT_NOFILE` it started with.
 
 - `Status` shows the pid of an adopted node's main after a colony restart, not only after the next
   start (D66).

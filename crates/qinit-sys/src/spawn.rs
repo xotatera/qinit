@@ -5,7 +5,7 @@
 //! pidfd back (`CLONE_PIDFD`). Between the clone and `execve` the child runs only raw system
 //! calls on memory prepared before the clone: it resets its signal mask and dispositions,
 //! routes the given descriptors to their target numbers, closes every other number up to the
-//! highest target, marks everything above close-on-exec, and execs: `execve` of a path, or
+//! highest target, marks everything above close-on-exec, sets `RLIMIT_NOFILE` when asked, and execs: `execve` of a path, or
 //! `execveat` of a descriptor the caller opened ([`Prepared::with_fd`]). An exec failure writes
 //! the errno (four native-endian bytes) to the caller's close-on-exec error pipe; a successful
 //! exec closes it. No allocation and no libc locking happens in the child, so a caller
@@ -86,6 +86,8 @@ pub struct Prepared<'a> {
     /// Highest target number, or -1 with no routes.
     top: RawFd,
     session: Session,
+    /// The child's `RLIMIT_NOFILE`, set just before the exec.
+    nofile: Option<libc::rlimit>,
     _sources: PhantomData<BorrowedFd<'a>>,
 }
 
@@ -128,6 +130,15 @@ impl<'a> Prepared<'a> {
         self.session = s;
     }
 
+    /// Sets the child's `RLIMIT_NOFILE` to `cur` and `max` just before the exec, so what it and
+    /// its descendants inherit is not the caller's.
+    pub fn nofile(&mut self, cur: u64, max: u64) {
+        self.nofile = Some(libc::rlimit {
+            rlim_cur: cur,
+            rlim_max: max,
+        });
+    }
+
     fn build(
         path: CString,
         exe: Option<RawFd>,
@@ -165,6 +176,7 @@ impl<'a> Prepared<'a> {
             park,
             top,
             session: Session::Same,
+            nofile: None,
             _sources: PhantomData,
         })
     }
@@ -287,6 +299,12 @@ fn child(p: &Prepared<'_>, err: RawFd, exe: Option<RawFd>) -> ! {
     } < 0
     {
         fail(err);
+    }
+    if let Some(lim) = &p.nofile {
+        // SAFETY: setrlimit reads a two-field struct prepared before the clone.
+        if unsafe { libc::syscall(libc::SYS_setrlimit, libc::RLIMIT_NOFILE, lim) } < 0 {
+            fail(err);
+        }
     }
     match exe {
         // SAFETY: the parked descriptor is open; the empty path with AT_EMPTY_PATH names it;
