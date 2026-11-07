@@ -8,7 +8,8 @@
 //! ([`FILL_KEYS`], [`POLICY_KEYS`]), and never into
 //! a layer below the last. [`apply`] makes the edits with `toml_edit`, as inserted lines (or
 //! keys inserted inside an inline table) and nothing else, and writes each file through a
-//! temporary file and a rename, keeping its mode and owner; a dry run prints the diff instead.
+//! temporary file and a rename, keeping its mode and owner; a step that fails undoes every file
+//! of the run from hard-linked backups. A dry run prints the diff instead.
 use crate::args::{FillOpts, PolicyChoice};
 use crate::compile::{Defaults, checked_input};
 use crate::show::{KINDS, kind_word, merged_frame};
@@ -17,6 +18,7 @@ use qinit_frames::compile::{Compiled, compile};
 use qinit_frames::dump;
 use qinit_frames::layers::LayerInput;
 use qinit_frames::provenance::{FrameKey, Provenance};
+use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{self, Write};
@@ -494,14 +496,37 @@ pub struct Applied {
 
 /// Make `edits`, file by file; with `dry_run` print the unified diff of each file to `out`
 /// instead of writing. Every file is edited, and then every new text is written to its
-/// temporary file with the old file's owner and mode, before any is renamed over its file: a
-/// file that cannot be edited, or whose owner or mode cannot be kept, stops the run with no file
-/// changed. A file whose edits insert nothing is not written.
+/// temporary file with the old file's owner and mode, before any file is replaced: a file that
+/// cannot be edited, or whose owner or mode cannot be kept, stops the run with no file changed.
+/// Then every existing file is hard-linked to a backup name beside it,
+/// `.<name>.qctl-old-<pid>`, and only then are the files replaced one by one: an existing file
+/// by a rename, a new file by a hard link (never over a file that appeared meanwhile). A step
+/// that fails undoes the run: the files already replaced get their old file back from the
+/// backup (the same inode: bytes, mode and owner), new files and the directories created for them
+/// are removed, and no temporary or backup name stays. A crash part way is not undone; a
+/// second `fill` completes the rest. A file whose edits insert nothing is not written.
 ///
 /// # Errors
 /// A file that is a symbolic link, does not parse, would not keep its bytes, or fails to
-/// write.
+/// write; a backup name that is taken (an earlier `fill` that stopped part way may have left
+/// it; it stays as it is); a step of the commit that fails. When undoing fails too, the error
+/// says so and names each file whose old text stays at its backup name.
 pub fn apply(edits: &[Edit], dry_run: bool, out: &mut dyn Write) -> io::Result<Applied> {
+    apply_with(edits, dry_run, out, &mut |_| Ok(()))
+}
+
+/// [`apply`], with `fault(n)` called before the `n`-th step (from 0) of replacing the files: an
+/// error it returns fails that step. An existing file takes one step (its rename), a new file
+/// two (its link, then the removal of its temporary name). Tests fail each step in turn.
+///
+/// # Errors
+/// As [`apply`].
+pub fn apply_with(
+    edits: &[Edit],
+    dry_run: bool,
+    out: &mut dyn Write,
+    fault: &mut dyn FnMut(usize) -> io::Result<()>,
+) -> io::Result<Applied> {
     let mut by_file: Vec<(&Path, Vec<&Edit>)> = Vec::new();
     for e in edits {
         match by_file.iter_mut().find(|(f, _)| *f == e.file) {
@@ -524,69 +549,272 @@ pub fn apply(edits: &[Edit], dry_run: bool, out: &mut dyn Write) -> io::Result<A
         }
         return Ok(done);
     }
+    let mut created = Vec::new();
     let mut staged = Vec::new();
     for r in &changed {
-        match stage(&r.path, r.new.as_bytes(), r.meta.as_ref()) {
+        match stage(&r.path, r.new.as_bytes(), r.meta.as_ref(), &mut created) {
             Ok(s) => staged.push(s),
-            Err(e) => {
-                for s in &staged {
-                    let _ = std::fs::remove_file(&s.tmp);
-                }
-                return Err(e);
-            }
+            Err(e) => return Err(undo(&e, &staged, &created)),
         }
     }
-    let mut result = Ok(());
-    for s in &staged {
-        if result.is_ok() {
-            result = s.commit();
-        }
-        if result.is_err() {
-            let _ = std::fs::remove_file(&s.tmp);
-        }
-    }
-    result.map(|()| done)
+    commit(&mut staged, &created, fault).map(|()| done)
 }
 
-/// A new text written and synced to a temporary file beside its file, not yet renamed over it.
+/// How far a staged file got in the commit.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum State {
+    /// Only its temporary file exists.
+    Staged,
+    /// An existing file whose backup is linked too.
+    Backed,
+    /// A new file linked at its path, its temporary name not yet removed.
+    Linked,
+    /// Replaced: the new text is at the path alone (an existing file's backup kept).
+    Placed,
+}
+
+/// A new text written and synced to a temporary file beside its file, and how far the commit
+/// took it.
 struct Staged {
     tmp: PathBuf,
     path: PathBuf,
     dir: PathBuf,
+    /// The backup name of an existing file; `None` for a new file.
+    backup: Option<PathBuf>,
+    state: State,
 }
 
-impl Staged {
-    /// Rename the temporary file over the file, then sync the directory.
-    fn commit(&self) -> io::Result<()> {
-        std::fs::rename(&self.tmp, &self.path)
-            .and_then(|()| File::open(&self.dir)?.sync_all())
-            .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", self.path.display())))
+/// `e` with `path` in front.
+fn named(path: &Path, e: &io::Error) -> io::Error {
+    io::Error::new(e.kind(), format!("{}: {e}", path.display()))
+}
+
+/// Run `f` as step `n` (then count it), unless `fault(n)` fails it first.
+fn step(
+    n: &mut usize,
+    fault: &mut dyn FnMut(usize) -> io::Result<()>,
+    f: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    let at = *n;
+    *n += 1;
+    fault(at)?;
+    f()
+}
+
+/// Replace `s`'s file by its temporary file: a rename over an existing file, a hard link (which
+/// never replaces a file) and the removal of the temporary name for a new one.
+fn replace(
+    s: &mut Staged,
+    n: &mut usize,
+    fault: &mut dyn FnMut(usize) -> io::Result<()>,
+) -> io::Result<()> {
+    if s.backup.is_some() {
+        step(n, fault, || std::fs::rename(&s.tmp, &s.path))?;
+    } else {
+        step(n, fault, || std::fs::hard_link(&s.tmp, &s.path))?;
+        s.state = State::Linked;
+        step(n, fault, || std::fs::remove_file(&s.tmp))?;
+    }
+    s.state = State::Placed;
+    Ok(())
+}
+
+/// Link the backups, replace the files, then remove the backups and sync the directories. A
+/// failure before the last file is replaced is undone ([`undo`]).
+fn commit(
+    staged: &mut [Staged],
+    created: &[PathBuf],
+    fault: &mut dyn FnMut(usize) -> io::Result<()>,
+) -> io::Result<()> {
+    // Pass 1: a backup of every existing file. Nothing has changed yet.
+    let failed = staged.iter_mut().find_map(|s| {
+        let backup = s.backup.as_ref()?;
+        match std::fs::hard_link(&s.path, backup) {
+            Ok(()) => {
+                s.state = State::Backed;
+                None
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Some(io::Error::new(
+                e.kind(),
+                format!(
+                    "{}: the backup name is taken, perhaps by an earlier fill that stopped part \
+                     way; look at the file beside it before removing it: {e}",
+                    backup.display()
+                ),
+            )),
+            Err(e) => Some(io::Error::new(
+                e.kind(),
+                format!(
+                    "{}: cannot link its backup {}: {e}",
+                    s.path.display(),
+                    backup.display()
+                ),
+            )),
+        }
+    });
+    if let Some(e) = failed {
+        return Err(undo(&e, staged, created));
+    }
+    // Pass 2: replace the files one by one.
+    let mut n = 0;
+    let failed = staged
+        .iter_mut()
+        .find_map(|s| replace(s, &mut n, fault).err().map(|e| named(&s.path, &e)));
+    if let Some(e) = failed {
+        return Err(undo(&e, staged, created));
+    }
+    let mut left = Vec::new();
+    for b in staged.iter().filter_map(|s| s.backup.as_ref()) {
+        if let Err(e) = std::fs::remove_file(b) {
+            left.push(format!("{}: cannot remove this backup: {e}", b.display()));
+        }
+    }
+    for d in dirs(staged) {
+        if let Err(e) = File::open(d).and_then(|f| f.sync_all()) {
+            left.push(format!("{}: cannot sync: {e}", d.display()));
+        }
+    }
+    if left.is_empty() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "every file is filled, but {}",
+            left.join("; ")
+        )))
     }
 }
 
-/// Write `bytes` to a new temporary file beside `path` (creating the directory for a new file),
-/// with the mode and owner of `meta` (the old file's; 0644 and the caller's for a new file),
-/// synced. Nothing already at the temporary name is followed or removed.
-fn stage(path: &Path, bytes: &[u8], meta: Option<&Metadata>) -> io::Result<Staged> {
-    let at = |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", path.display()));
+/// The directories of `staged`, each once.
+fn dirs(staged: &[Staged]) -> Vec<&Path> {
+    let mut dirs: Vec<&Path> = Vec::new();
+    for s in staged {
+        if !dirs.contains(&s.dir.as_path()) {
+            dirs.push(&s.dir);
+        }
+    }
+    dirs
+}
+
+/// Undo a commit that stopped with `e`: file by file in reverse order, a replaced file gets its
+/// backup renamed back, a new file is removed, and every temporary file and other backup goes;
+/// then the directories in `created` are removed in reverse order (those left empty) and the
+/// directories synced. Returns `e`, and what could not be undone when anything could not: each
+/// old text that stays at its backup name, each name that stays.
+fn undo(e: &io::Error, staged: &[Staged], created: &[PathBuf]) -> io::Error {
+    fn remove(p: &Path, what: &str, failed: &mut Vec<String>) {
+        match std::fs::remove_file(p) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => {
+                failed.push(format!("{}: cannot remove {what}: {e}", p.display()));
+            }
+            _ => {}
+        }
+    }
+    let mut failed = Vec::new();
+    for s in staged.iter().rev() {
+        match (s.state, &s.backup) {
+            (State::Staged | State::Backed, backup) => {
+                remove(&s.tmp, "the temporary file", &mut failed);
+                if let (State::Backed, Some(b)) = (s.state, backup) {
+                    remove(b, "the backup", &mut failed);
+                }
+            }
+            (State::Linked, _) => {
+                remove(&s.path, "the new file", &mut failed);
+                remove(&s.tmp, "the temporary file", &mut failed);
+            }
+            (State::Placed, None) => remove(&s.path, "the new file", &mut failed),
+            (State::Placed, Some(b)) => {
+                if let Err(e) = std::fs::rename(b, &s.path) {
+                    failed.push(format!(
+                        "{}: its old text stays at {}: {e}",
+                        s.path.display(),
+                        b.display()
+                    ));
+                }
+            }
+        }
+    }
+    for d in created.iter().rev() {
+        match std::fs::remove_dir(d) {
+            Err(e)
+                if !matches!(
+                    e.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+                ) =>
+            {
+                failed.push(format!(
+                    "{}: cannot remove this directory: {e}",
+                    d.display()
+                ));
+            }
+            _ => {}
+        }
+    }
+    for d in dirs(staged) {
+        match File::open(d).and_then(|f| f.sync_all()) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => {
+                failed.push(format!("{}: cannot sync: {e}", d.display()));
+            }
+            _ => {}
+        }
+    }
+    if failed.is_empty() {
+        io::Error::new(e.kind(), format!("{e}; every file is as it was"))
+    } else {
+        io::Error::new(
+            e.kind(),
+            format!("{e}; undoing failed: {}", failed.join("; ")),
+        )
+    }
+}
+
+/// `.<name>.<tag>-<pid>` in `dir`.
+fn beside(dir: &Path, name: &OsStr, tag: &str) -> PathBuf {
+    let mut n = OsString::from(".");
+    n.push(name);
+    n.push(format!(".{tag}-{}", std::process::id()));
+    dir.join(n)
+}
+
+/// Create `dir` and its missing parents, mode 0755, each pushed onto `created` as it is created.
+/// A directory that appears meanwhile is used, not counted as created.
+fn make_dirs(dir: &Path, created: &mut Vec<PathBuf>) -> io::Result<()> {
+    let missing: Vec<&Path> = dir
+        .ancestors()
+        .take_while(|d| !d.as_os_str().is_empty() && !d.is_dir())
+        .collect();
+    for d in missing.into_iter().rev() {
+        match std::fs::DirBuilder::new().mode(0o755).create(d) {
+            Ok(()) => created.push(d.to_path_buf()),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && d.is_dir() => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Write `bytes` to a new temporary file beside `path` (creating the directory for a new file
+/// and pushing each directory created onto `created`), with the mode and owner of `meta` (the old
+/// file's; 0644 and the caller's for a new file), synced. Nothing already at the temporary name
+/// is followed or removed.
+fn stage(
+    path: &Path,
+    bytes: &[u8],
+    meta: Option<&Metadata>,
+    created: &mut Vec<PathBuf>,
+) -> io::Result<Staged> {
+    let at = |e: io::Error| named(path, &e);
     let dir = match path.parent() {
         Some(d) if !d.as_os_str().is_empty() => d,
         _ => Path::new("."),
     };
     if meta.is_none() && !dir.is_dir() {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o755)
-            .create(dir)
-            .map_err(at)?;
+        make_dirs(dir, created).map_err(at)?;
     }
     let name = path
         .file_name()
         .ok_or_else(|| invalid(format!("{}: no file name", path.display())))?;
-    let mut tmp_name = std::ffi::OsString::from(".");
-    tmp_name.push(name);
-    tmp_name.push(format!(".qctl-fill-{}", std::process::id()));
-    let tmp = dir.join(tmp_name);
+    let tmp = beside(dir, name, "qctl-fill");
     let mode = meta.map_or(0o644, |m| m.permissions().mode() & 0o7777);
     let mut f = OpenOptions::new()
         .write(true)
@@ -607,6 +835,8 @@ fn stage(path: &Path, bytes: &[u8], meta: Option<&Metadata>) -> io::Result<Stage
             tmp,
             path: path.to_path_buf(),
             dir: dir.to_path_buf(),
+            backup: meta.map(|_| beside(dir, name, "qctl-old")),
+            state: State::Staged,
         }),
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
