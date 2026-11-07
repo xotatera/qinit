@@ -320,3 +320,17 @@ pub fn kernel_release() -> Result<String> {
     let r = unsafe { CStr::from_ptr(u.release.as_ptr()) };
     Ok(r.to_string_lossy().into_owned())
 }
+
+/// `reboot(RB_DISABLE_CAD)`: Ctrl-Alt-Del is delivered to PID 1 as `SIGINT`, not as a reboot.
+pub fn cad_off() -> Result<()> {
+    // SAFETY: the reboot command takes no memory argument.
+    check(unsafe { libc::reboot(libc::RB_DISABLE_CAD) })?;
+    Ok(())
+}
+
+/// `reboot(RB_ENABLE_CAD)`: Ctrl-Alt-Del reboots the machine at once.
+pub fn cad_on() -> Result<()> {
+    // SAFETY: the reboot command takes no memory argument.
+    check(unsafe { libc::reboot(libc::RB_ENABLE_CAD) })?;
+    Ok(())
+}
