@@ -265,13 +265,22 @@ fn run_takes_a_request_file_or_a_frame() {
     let Command::Run(r) = parsed(&["run", "r.toml", "--name", "n"]).command else {
         panic!()
     };
-    assert_eq!(r.source, args::RunSource::Request("r.toml".into()));
+    assert_eq!(
+        r.source,
+        args::RunSource::Request {
+            file: "r.toml".into(),
+            name: "n".into()
+        }
+    );
     let Command::Run(r) = parsed(&["run", "--frame", "f.toml"]).command else {
         panic!()
     };
     assert_eq!(
-        (r.source, r.name),
-        (args::RunSource::Frame("f.toml".into()), None)
+        r.source,
+        args::RunSource::Frame {
+            file: "f.toml".into(),
+            name: None
+        }
     );
 }
 

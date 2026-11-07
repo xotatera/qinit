@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //! `RequestSpec::check`: the checks a client makes before it sends a request, shared by `qctl`
 //! and the C builder.
-use qinit_launch::{CheckError, RequestSpec, Stream};
+use qinit_launch::{CheckError, RequestSpec, Seccomp, Stream};
 
 fn base() -> RequestSpec {
     RequestSpec {
@@ -49,6 +49,22 @@ fn check_gives_qctls_texts() {
         ),
         (
             RequestSpec {
+                seccomp: Seccomp::Deny(Vec::new()),
+                ..base()
+            },
+            CheckError::NoSyscalls,
+            "syscalls: a deny or allow filter needs at least one syscall",
+        ),
+        (
+            RequestSpec {
+                seccomp: Seccomp::Allow(Vec::new()),
+                ..base()
+            },
+            CheckError::NoSyscalls,
+            "syscalls: a deny or allow filter needs at least one syscall",
+        ),
+        (
+            RequestSpec {
                 stdin: Stream::Same,
                 ..base()
             },
@@ -91,10 +107,16 @@ fn the_checks_go_in_qctls_order() {
     assert_eq!(spec.check(), Err(CheckError::Deadline));
     let spec = RequestSpec {
         umask: 0o1000,
-        stdout: Stream::Same,
+        seccomp: Seccomp::Deny(Vec::new()),
         ..base()
     };
     assert_eq!(spec.check(), Err(CheckError::Umask(0o1000)));
+    let spec = RequestSpec {
+        seccomp: Seccomp::Deny(Vec::new()),
+        stdout: Stream::Same,
+        ..base()
+    };
+    assert_eq!(spec.check(), Err(CheckError::NoSyscalls));
 }
 
 #[test]
@@ -105,6 +127,10 @@ fn a_request_that_passes_gives_the_bytes() {
             cwd: "/work".into(),
             deadline_ms: 1,
             umask: 0o777,
+            ..base()
+        },
+        RequestSpec {
+            seccomp: Seccomp::Allow(vec![0]),
             ..base()
         },
     ] {

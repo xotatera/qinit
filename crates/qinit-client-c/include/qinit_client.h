@@ -687,11 +687,14 @@ const char *qinit_request_error(const struct qinit_request *r);
  * Checks the request and lays it out: on success `*ptr` and `*len` give its bytes (QLR1) for
  * `qinit_run_args.request`. The bytes are the request's, valid until the next call on it
  * other than `qinit_request_error`, or until it is freed. The check is the one `qctl` makes
- * (`cwd` absolute, `deadline_ms` at least 1, `umask` at most 0o777, at most
- * `QINIT_REQUEST_MAX` bytes), and also refuses syscalls listed with seccomp none or default.
- * A request that fails it is `QINIT_E_ARGUMENT`, with `*ptr` NULL, `*len` 0 and the reason in
- * `qinit_request_error`; nothing else is checked here, so colony may still refuse the request
- * (`QINIT_E_SERVER` from `qinit_run_begin`).
+ * (`cwd` absolute, `deadline_ms` at least 1, `umask` at most 0o777, a deny or allow filter
+ * with at least one syscall, at most `QINIT_REQUEST_MAX` bytes), and also refuses syscalls
+ * listed with seccomp none or default. A request that fails it is `QINIT_E_ARGUMENT`, with
+ * `*ptr` NULL, `*len` 0 and the reason in `qinit_request_error`; nothing else is checked here,
+ * so colony may still refuse the request (`QINIT_E_SERVER` from `qinit_run_begin`).
+ *
+ * `ptr` and `len` must both be non-NULL: a NULL one is `QINIT_E_ARGUMENT` (reason `ptr: NULL`
+ * or `len: NULL`), and then nothing is written through the other.
  *
  * # Safety
  * `r` is NULL or a live request; `ptr` NULL or writable for a pointer; `len` NULL or writable

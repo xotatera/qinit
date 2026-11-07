@@ -39,15 +39,22 @@ pub const QINIT_NS_USER: u32 = 32;
 /// reason it hands out are its own.
 #[allow(non_camel_case_types)] // the C name
 pub struct qinit_request {
-    /// Every field but `seccomp`, which `bytes` makes from the next two.
-    spec: RequestSpec,
-    /// `QINIT_SECCOMP_*`.
-    seccomp: u32,
-    syscalls: Vec<u32>,
+    /// What the setters set.
+    fields: Fields,
     /// The bytes of the last `qinit_request_bytes`, until the next call.
     bytes: Vec<u8>,
     /// Why the last call failed; empty when it succeeded.
     error: CString,
+}
+
+/// The fields of a request as the setters leave them.
+#[derive(Clone)]
+struct Fields {
+    /// Every field but `seccomp`, which `qinit_request_bytes` makes from the next two.
+    spec: RequestSpec,
+    /// `QINIT_SECCOMP_*`.
+    seccomp: u32,
+    syscalls: Vec<u32>,
 }
 
 /// A refused call: the kind it returns and the reason `qinit_request_error` gives.
@@ -58,6 +65,23 @@ fn refused(why: impl Into<String>) -> Refused {
     Refused(QINIT_E_ARGUMENT, why.into())
 }
 
+/// Runs the setter `f` on a copy of the fields of the request behind `r`, through [`call`], and
+/// keeps the copy only when `f` succeeds: a refusal or a panic part way leaves the fields as
+/// they were.
+///
+/// # Safety
+/// As [`call`].
+unsafe fn on(r: *mut qinit_request, f: impl FnOnce(&mut Fields) -> Result<(), Refused>) -> c_int {
+    let step = |req: &mut qinit_request| {
+        let mut draft = req.fields.clone();
+        f(&mut draft)?;
+        req.fields = draft;
+        Ok(())
+    };
+    // SAFETY: the contract of `call` is this function's.
+    unsafe { call(r, step) }
+}
+
 /// Runs `f` on the request behind `r` with panics caught, after dropping the bytes of the last
 /// `qinit_request_bytes`, and keeps its reason (or none). Returns 0 or the failure's kind; a NULL
 /// `r` is `QINIT_E_ARGUMENT`.
@@ -65,7 +89,7 @@ fn refused(why: impl Into<String>) -> Refused {
 /// # Safety
 /// `r` is null or a live request from `qinit_request_new` that no other thread uses during the
 /// call.
-unsafe fn on(
+unsafe fn call(
     r: *mut qinit_request,
     f: impl FnOnce(&mut qinit_request) -> Result<(), Refused>,
 ) -> c_int {
@@ -133,9 +157,11 @@ fn seccomp(mode: u32, list: &[u32]) -> Result<Seccomp, Refused> {
 pub unsafe extern "C" fn qinit_request_new() -> *mut qinit_request {
     catch_unwind(|| {
         Box::into_raw(Box::new(qinit_request {
-            spec: RequestSpec::default(),
-            seccomp: QINIT_SECCOMP_NONE,
-            syscalls: Vec::new(),
+            fields: Fields {
+                spec: RequestSpec::default(),
+                seccomp: QINIT_SECCOMP_NONE,
+                syscalls: Vec::new(),
+            },
             bytes: Vec::new(),
             error: CString::default(),
         }))
@@ -149,9 +175,11 @@ pub unsafe extern "C" fn qinit_request_new() -> *mut qinit_request {
 /// `r` is NULL or a request from `qinit_request_new` not yet freed and not in use.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qinit_request_free(r: *mut qinit_request) {
+    // No `catch_unwind` here: nothing below can panic. The request holds only strings,
+    // vectors and a `CString`, whose drops free memory and do nothing else.
     if !r.is_null() {
         // SAFETY: by the contract, `r` came from `Box::into_raw` in `qinit_request_new` and is
-        // freed once; dropping it cannot panic.
+        // freed once.
         drop(unsafe { Box::from_raw(r) });
     }
 }
@@ -164,6 +192,7 @@ pub unsafe extern "C" fn qinit_request_free(r: *mut qinit_request) {
 /// `r` is NULL or a live request.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qinit_request_error(r: *const qinit_request) -> *const c_char {
+    // No `catch_unwind` here: a null check and a pointer read cannot panic.
     // SAFETY: by the contract, `r` is null or a live request.
     match unsafe { r.as_ref() } {
         Some(req) => req.error.as_ptr(),
@@ -174,11 +203,14 @@ pub unsafe extern "C" fn qinit_request_error(r: *const qinit_request) -> *const 
 /// Checks the request and lays it out: on success `*ptr` and `*len` give its bytes (QLR1) for
 /// `qinit_run_args.request`. The bytes are the request's, valid until the next call on it
 /// other than `qinit_request_error`, or until it is freed. The check is the one `qctl` makes
-/// (`cwd` absolute, `deadline_ms` at least 1, `umask` at most 0o777, at most
-/// `QINIT_REQUEST_MAX` bytes), and also refuses syscalls listed with seccomp none or default.
-/// A request that fails it is `QINIT_E_ARGUMENT`, with `*ptr` NULL, `*len` 0 and the reason in
-/// `qinit_request_error`; nothing else is checked here, so colony may still refuse the request
-/// (`QINIT_E_SERVER` from `qinit_run_begin`).
+/// (`cwd` absolute, `deadline_ms` at least 1, `umask` at most 0o777, a deny or allow filter
+/// with at least one syscall, at most `QINIT_REQUEST_MAX` bytes), and also refuses syscalls
+/// listed with seccomp none or default. A request that fails it is `QINIT_E_ARGUMENT`, with
+/// `*ptr` NULL, `*len` 0 and the reason in `qinit_request_error`; nothing else is checked here,
+/// so colony may still refuse the request (`QINIT_E_SERVER` from `qinit_run_begin`).
+///
+/// `ptr` and `len` must both be non-NULL: a NULL one is `QINIT_E_ARGUMENT` (reason `ptr: NULL`
+/// or `len: NULL`), and then nothing is written through the other.
 ///
 /// # Safety
 /// `r` is NULL or a live request; `ptr` NULL or writable for a pointer; `len` NULL or writable
@@ -196,9 +228,13 @@ pub unsafe extern "C" fn qinit_request_bytes(
         if len.is_null() {
             return Err(refused("len: NULL"));
         }
-        let checked = seccomp(req.seccomp, &req.syscalls).and_then(|s| {
-            req.spec.seccomp = s;
-            req.spec.check().map_err(|e| refused(e.to_string()))
+        let fields = &req.fields;
+        let checked = seccomp(fields.seccomp, &fields.syscalls).and_then(|s| {
+            let spec = RequestSpec {
+                seccomp: s,
+                ..fields.spec.clone()
+            };
+            spec.check().map_err(|e| refused(e.to_string()))
         });
         let (p, n, result) = match checked {
             Ok(bytes) => {
@@ -213,8 +249,8 @@ pub unsafe extern "C" fn qinit_request_bytes(
         unsafe { put(len, n) };
         result
     };
-    // SAFETY: the contract of `on` is this function's.
-    unsafe { on(r, body) }
+    // SAFETY: the contract of `call` is this function's.
+    unsafe { call(r, body) }
 }
 
 /// Runs `set` with the string at `s` for the field `what`, through [`on`].
@@ -225,9 +261,9 @@ unsafe fn set_string(
     r: *mut qinit_request,
     s: *const c_char,
     what: &str,
-    set: impl FnOnce(&mut qinit_request, String),
+    set: impl FnOnce(&mut Fields, String),
 ) -> c_int {
-    let body = |req: &mut qinit_request| -> Result<(), Refused> {
+    let body = |req: &mut Fields| -> Result<(), Refused> {
         // SAFETY: by the contract, `s` is null or a NUL-terminated string.
         let v = unsafe { owned(s, what) }?;
         set(req, v);
@@ -328,7 +364,7 @@ pub unsafe extern "C" fn qinit_request_set_rlimit(
     resource: u32,
     value: u64,
 ) -> c_int {
-    let body = |req: &mut qinit_request| -> Result<(), Refused> {
+    let body = |req: &mut Fields| -> Result<(), Refused> {
         let slot = usize::try_from(resource)
             .ok()
             .and_then(|i| req.spec.rlimits.get_mut(i))
@@ -591,7 +627,7 @@ pub unsafe extern "C" fn qinit_request_set_stderr_same(r: *mut qinit_request) ->
 /// `r` is NULL or a live request.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qinit_request_set_ready_fd(r: *mut qinit_request, fd: c_int) -> c_int {
-    let body = |req: &mut qinit_request| -> Result<(), Refused> {
+    let body = |req: &mut Fields| -> Result<(), Refused> {
         req.spec.ready_fd = match fd {
             -1 => None,
             n => Some(
@@ -635,5 +671,42 @@ pub unsafe extern "C" fn qinit_request_set_deadline_ms(r: *mut qinit_request, ms
             req.spec.deadline_ms = ms;
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The working directory of the live request `r`.
+    fn cwd(r: *mut qinit_request) -> String {
+        // SAFETY: the tests pass only a live request used by this thread.
+        unsafe { &*r }.fields.spec.cwd.clone()
+    }
+
+    #[test]
+    fn a_setter_that_fails_part_way_changes_nothing() {
+        // SAFETY: it reads nothing.
+        let r = unsafe { qinit_request_new() };
+        // SAFETY: `r` is a live request used by this thread only.
+        let rc = unsafe {
+            on(r, |req| {
+                req.spec.cwd = "/half".into();
+                panic!("part way")
+            })
+        };
+        assert_eq!(rc, QINIT_E_UNEXPECTED);
+        assert_eq!(cwd(r), "/", "a panic part way left the request changed");
+        // SAFETY: as above.
+        let rc = unsafe {
+            on(r, |req| {
+                req.spec.cwd = "/half".into();
+                Err(refused("refused after a change"))
+            })
+        };
+        assert_eq!(rc, QINIT_E_ARGUMENT);
+        assert_eq!(cwd(r), "/", "a refusal part way left the request changed");
+        // SAFETY: `r` came from `qinit_request_new` and is freed once.
+        unsafe { qinit_request_free(r) };
     }
 }

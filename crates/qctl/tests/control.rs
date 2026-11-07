@@ -158,6 +158,11 @@ fn status_and_list_in_json() {
         expected.insert("pid".into(), pid.clone());
     }
     assert_eq!(*o, expected);
+    // The numbers are JSON numbers, not their text.
+    for key in ["backoff_ms", "since_ms", "restarts"] {
+        assert!(o[key].is_u64(), "{key}: {}", o[key]);
+    }
+    assert!(o.get("pid").is_none_or(serde_json::Value::is_u64), "{o:?}");
     let (code, out, err) = qctl(&["list", "--json", "--socket", &path]);
     assert_eq!(code, 0, "{err}");
     assert!(
@@ -202,6 +207,44 @@ fn a_state_with_a_detail_splits_in_json() {
         qctl::json::change(qinit_client::Outcome::Pending(w(6, 3))),
         json!({"result": "pending", "state": "quarantined", "detail": "stop-failed"})
     );
+    // A detail the table does not know is a JSON number, as is an unknown state's.
+    assert_eq!(
+        qctl::json::change(qinit_client::Outcome::Settled(w(6, 4))),
+        json!({"result": "settled", "state": "quarantined", "detail": 4})
+    );
+    assert_eq!(
+        qctl::json::change(qinit_client::Outcome::Settled(w(7, 0))),
+        json!({"result": "settled", "state": "state7", "detail": 0})
+    );
+}
+
+#[test]
+fn refresh_in_json() {
+    use serde_json::json;
+    let s = Served::start(&["db"], true, instant(None));
+    let path = sock(&s);
+    let dir = TempDir::new("control-json");
+    let db = dir.join("expected.db");
+    std::fs::write(&db, database(&frames(), &["db"])).unwrap();
+    let (code, out, err) = qctl(&["--socket", &path, "--json", "refresh", db.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(json_lines(&out), [json!({"result": "accepted"})]);
+}
+
+#[test]
+fn a_name_with_a_quote_and_a_control_character_stays_one_line() {
+    use qctl::json::Output;
+    let name = "a\"b\u{1}\n#3";
+    let mut out = Vec::new();
+    Output::Json
+        .line(&mut out, "", &qctl::json::event("started", name, None))
+        .unwrap();
+    let out = String::from_utf8(out).unwrap();
+    assert_eq!(
+        out,
+        "{\"event\":\"started\",\"name\":\"a\\\"b\\u0001\\n#3\"}\n"
+    );
+    assert_eq!(json_lines(&out)[0]["name"], name);
 }
 
 #[test]

@@ -170,6 +170,14 @@ fn the_checks_are_the_launch_crates() {
             &format!("env = [\"K={}\"]", "v".repeat(70_000)),
             spec(|s| s.env = vec![format!("K={}", "v".repeat(70_000))]),
         ),
+        (
+            "seccomp = \"deny\"",
+            spec(|s| s.seccomp = Seccomp::Deny(Vec::new())),
+        ),
+        (
+            "seccomp = \"allow\"\nsyscalls = []",
+            spec(|s| s.seccomp = Seccomp::Allow(Vec::new())),
+        ),
     ] {
         assert_eq!(parse(&format!("{base}{body}\n")).unwrap_err(), want);
     }

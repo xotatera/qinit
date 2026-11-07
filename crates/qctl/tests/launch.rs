@@ -595,6 +595,50 @@ fn a_frame_that_cannot_run_is_refused_naming_its_key() {
 }
 
 #[test]
+fn a_refusal_for_a_key_a_lower_layer_set_names_that_layers_file_and_line() {
+    let tree = Tree::new("lower-key");
+    let lower = tree.dir.join("vendor/logged.toml");
+    std::fs::write(
+        &lower,
+        "[forager.logged]\ncredentials = { uid = \"svc\" }\nexec = [\"/x\"]\n\
+         output = { pipe = \"logd\" }\n",
+    )
+    .unwrap();
+    // The file amends the frame and leaves its output alone.
+    let file = tree.frame("[forager.logged]\nenv = { B = \"2\" }\n");
+    let (code, out, err) = tree.qctl(&[
+        "--socket",
+        "/nonexistent/qctl-sock",
+        "run",
+        "--frame",
+        &file,
+    ]);
+    assert_eq!((code, out.as_str()), (1, ""), "{err}");
+    let want = format!(
+        "{}:4: forager.logged.output: a Run has no logger",
+        lower.display()
+    );
+    assert!(err.contains(&want), "{err}");
+    assert!(!err.contains(&file), "the frame file did not set it: {err}");
+}
+
+#[test]
+fn a_frame_over_64_kib_is_refused_in_the_request_checks_words() {
+    let big = "v".repeat(70_000);
+    let (err, file) = refused(
+        "big",
+        &format!(
+            "[forager.x]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"/x\"]\nenv = {{ K = \"{big}\" }}\n"
+        ),
+    );
+    let words = qinit_launch::CheckError::TooLarge.to_string();
+    assert!(
+        err.contains(&format!("qctl: {file}: forager.x: {words}")),
+        "{err}"
+    );
+}
+
+#[test]
 fn a_file_with_no_frame_or_two_is_refused() {
     let (err, file) = refused("none", "# nothing here\n");
     assert!(err.contains(&file) && err.contains("no frame"), "{err}");
@@ -661,7 +705,7 @@ fn ready_pipe_waits_for_ready() {
         exit_after: None,
         ..qinit_colony::sim::Script::default()
     };
-    let s = served_for_run(script);
+    let s = served_for_run(script.clone());
     let path = sock(&s);
     let (code, out, err) = tree.qctl(&[
         "--socket",
@@ -681,6 +725,23 @@ fn ready_pipe_waits_for_ready() {
         .expect("started");
     assert_eq!(out, format!("started {target}\nready {target}\n"));
     let colony = s.finish();
+    // The same run in JSON: the readiness is the `ready` event.
+    let s = served_for_run(script);
+    let path = sock(&s);
+    let (code, out, err) = tree.qctl(&[
+        "--socket", &path, "--json", "run", "--frame", &file, "--wait", "5000",
+    ]);
+    assert_eq!(code, 0, "{out}{err}");
+    let lines = json_lines(&out);
+    let name = started_name(&lines);
+    assert_eq!(
+        lines,
+        [
+            serde_json::json!({"event": "started", "name": name}),
+            serde_json::json!({"event": "ready", "name": name}),
+        ]
+    );
+    drop(s.finish());
     let ready: Vec<_> = colony.effects.instance_ready.iter().map(|r| r.1).collect();
     assert_eq!(ready, [Some(qctl::frame_run::READY_FD)]);
     let counts: Vec<usize> = colony.effects.instance_fds.values().map(Vec::len).collect();
@@ -785,7 +846,7 @@ fn colony_takes_every_stream_with_the_readiness_pipe() {
         stdout: true,
         stderr: true,
     };
-    let run = spec(
+    let framed = spec(
         std::path::Path::new(&file),
         &tree.defaults,
         routed(all),
@@ -816,11 +877,11 @@ fn colony_takes_every_stream_with_the_readiness_pipe() {
         )
     };
     assert!(
-        matches!(send(&run.spec), Ok(Begun::Started(_))),
+        matches!(send(&framed.run.spec), Ok(Begun::Started(_))),
         "{:?}",
-        run.spec
+        framed.run.spec
     );
-    let mut on_stdin = run.spec.clone();
+    let mut on_stdin = framed.run.spec.clone();
     on_stdin.ready_fd = Some(5);
     assert!(
         matches!(

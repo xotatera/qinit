@@ -26,12 +26,18 @@ pub const STREAM_FDS: [u32; 3] = [5, 6, 7];
 /// finds the pipe at `QINIT_READY_FD` whatever this is.
 pub const READY_FD: u32 = 8;
 
-/// What `run --frame` sends: the instance's name, its request and the `Run`'s settings, each
-/// the frame's.
+/// What `run --frame` sends: the frame's name and the frame's [`Run`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameRun {
     /// The frame's name, the default of `--name`.
     pub name: String,
+    /// The request and the `Run`'s settings, each the frame's.
+    pub run: Run,
+}
+
+/// What a `Run` sends besides the instance's name: the request and the `Run`'s settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
     /// The request colony is sent.
     pub spec: RequestSpec,
     /// `cell.memory_max` in KiB, 0 for none.
@@ -42,7 +48,8 @@ pub struct FrameRun {
     pub stop_mode: StopMode,
     /// `stop.grace` in milliseconds.
     pub stop_grace_ms: u32,
-    /// `ready = "pipe"`: the request routes a readiness pipe, and the run waits for its byte.
+    /// The request routes a readiness pipe (`ready = "pipe"` for a frame), and the run waits
+    /// for its byte.
     pub wait_ready: bool,
 }
 
@@ -122,15 +129,15 @@ pub fn spec(
         )),
         Ready::Pipe | Ready::Exit => {}
     }
-    let pipe = |r: Option<u32>| r.and_then(|i| model.routes.get(i as usize));
-    let logger = |r: Option<u32>| matches!(pipe(r), Some(Route::Pipe(_)));
+    let route = |r: Option<u32>| r.and_then(|i| model.routes.get(i as usize));
+    let to_logger = |r: Option<u32>| matches!(route(r), Some(Route::Pipe(_)));
     let why = "a Run has no logger: route the stream to a path, or send it with --fds";
-    if routed.stdout.is_none() && logger(node.output) {
+    if routed.stdout.is_none() && to_logger(node.output) {
         refused.push(at.line(node, "output", why));
     }
     // Standard error that follows standard output needs no route of its own.
-    let follows = node.output.is_some() && pipe(node.output) == pipe(node.errors);
-    if routed.stderr.is_none() && logger(node.errors) && !follows {
+    let follows = node.output.is_some() && route(node.output) == route(node.errors);
+    if routed.stderr.is_none() && to_logger(node.errors) && !follows {
         refused.push(at.line(node, "errors", why));
     }
     if !refused.is_empty() {
@@ -144,27 +151,30 @@ pub fn spec(
     let deadline = deadline_ms(node.start_timeout_ms);
     let spec = from_instance(node, model, &routed, &[], &[], deadline)
         .map_err(|e| format!("qctl: {}: {kind}.{name}: no request: {e:?}", file.display()))?;
-    if spec.bytes().is_err() {
-        return Err(format!(
-            "qctl: {}: {kind}.{name}: the request is over 64 KiB once laid out",
-            file.display()
-        ));
-    }
+    // What a request file is checked against too, so the words are the same.
+    spec.check()
+        .map_err(|e| format!("qctl: {}: {kind}.{name}: {e}", file.display()))?;
     Ok(FrameRun {
         name,
-        spec,
-        memory_max_kib: node.memory_max_kib,
-        pids_max: node.pids_max,
-        stop_mode: match node.stop.mode {
-            qinit_db::StopMode::Main => StopMode::Main,
-            qinit_db::StopMode::Cell => StopMode::Cell,
+        run: Run {
+            spec,
+            memory_max_kib: node.memory_max_kib,
+            pids_max: node.pids_max,
+            stop_mode: match node.stop.mode {
+                qinit_db::StopMode::Main => StopMode::Main,
+                qinit_db::StopMode::Cell => StopMode::Cell,
+            },
+            stop_grace_ms: node.stop.grace_ms,
+            wait_ready,
         },
-        stop_grace_ms: node.stop.grace_ms,
-        wait_ready,
     })
 }
 
-/// The `(kind, name)` of the one frame in `file`.
+/// The `(kind, name)` of the one frame in `file`. Every table below a top-level table counts,
+/// whatever its kind: a file with a `[template.t]` and a `[worker.x]` holds two frames, and
+/// is refused. The file (the caller's own) is read again after the compile read it: a change
+/// between the two reads can name a frame other than the one compiled, and what runs is then
+/// the compiled node of that name, or nothing (`expands to no node`).
 fn one_frame(file: &Path) -> Result<(String, String), String> {
     let fail = |why: &dyn std::fmt::Display| format!("qctl: {}: {why}", file.display());
     let text = std::fs::read_to_string(file).map_err(|e| fail(&e))?;

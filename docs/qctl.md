@@ -33,8 +33,8 @@ qctl watch --all | <target>
 ```
 
 Options are `--key value` or `--key=value`. `--` ends the options. An unknown option or command
-is a usage error. `--socket`, `--json` and `--help` are accepted anywhere; `--help` prints the synopsis and
-exits 0.
+is a usage error. `--socket`, `--json` and `--help` are accepted anywhere; `--help` prints the
+synopsis and exits 0.
 
 | Option | Commands | Meaning |
 |---|---|---|
@@ -150,7 +150,9 @@ the user is taken as root, so the check runs rather than being skipped.
 ## show
 
 `qctl show` prints the effective frames as TOML. It compiles the layers (so a compile error
-stops it with exit 1) and prints each target in the order given, separated by a blank line.
+stops it with exit 1) and prints each target in the order given, separated by a blank line. An
+error in an `enable.toml` for `show enable`, or in the policy file for `show policy`, is printed
+as `compile` prints it, one line per error, and is exit 1.
 
 - A frame starts with `[<kind>.<name>]` and has one line `key = value  # <origin>` per key, in the
   order of the compiler's dump, with nested keys as dotted keys. The origin is `vendor`, `etc` (the
@@ -400,7 +402,7 @@ Everything below is exit 1, with nothing sent to colony:
 | Problem | Message |
 |---|---|
 | A compile error | As `compile` prints it: `<file>:<line>: <key>: <message>`. An error in the frame file names that file and line. |
-| No frame, or more than one | `qctl: <file>: no frame; run --frame takes a file of one frame`, or `qctl: <file>: 2 frames (forager.a, forager.b); run --frame takes one`. |
+| No frame, or more than one | `qctl: <file>: no frame; run --frame takes a file of one frame`, or `qctl: <file>: 2 frames (forager.a, forager.b); run --frame takes one`. Every table of every kind counts, a template too: a file with `[template.t]` and `[worker.x]` holds 2 frames. |
 | A brood or a template | `<file>:<line>: brood.<name>: a brood has nothing to run`; a template is no node either. |
 | A frame that expands to more than one node (`instances`), or to none | `<file>:<line>: worker.<name>.instances: the frame expands to 2 nodes; run takes one`. |
 | `output` or `errors` to a logger (`{ pipe = ... }`) that `--fds` does not replace | `<file>:<line>: <kind>.<name>.output: a Run has no logger: ...`. Standard error that follows standard output needs no route of its own. |
@@ -464,7 +466,11 @@ line per notice and waits without limit. There is no timestamp.
 `<report>` is one of `current`, `started`, `ready`, `done`, `stopped`, `failed`, `quarantined`,
 `refused`, `lost`, `starting`, `running`, `stopping`, `exited`. A watch of everything goes on past
 an instance's exit. When the colony closes the connection, or sends a reply that is not a notice
-`qctl` knows (an unknown report word, for example), `qctl: the stream ended: colony closed it or sent a reply that is not a notice` is printed and the exit code is 1.
+`qctl` knows (an unknown report word, for example), the exit code is 1 after
+
+```
+qctl: the stream ended: colony closed it or sent a reply that is not a notice
+```
 
 ## JSON output
 
@@ -474,9 +480,15 @@ Errors do not change: they are text on standard error and the exit codes are the
 JSON object on standard output. `--json=VALUE` is a usage error.
 
 A state is split in two: `state` is the name (`waiting`, `quarantined`, ...) and `detail`, present
-only where the word has one, is the part after the slash in the text form (`backoff`, `breaker`,
-or a number for a detail the table does not know). `waiting/backoff` is
-`"state":"waiting","detail":"backoff"`. An instance's `state` has no detail.
+only where the word has one, is the part after the slash in the text form: a string (`backoff`,
+`breaker`) or, for a detail the table does not know, a JSON number. `waiting/backoff` is
+`"state":"waiting","detail":"backoff"` and `quarantined/4` is `"state":"quarantined","detail":4`;
+a state the table does not know is `state<n>` with its detail as a number (`"state":"state7",
+"detail":0`). An instance's `state` has no detail.
+
+An instance is named three ways in JSON: `status <frame>#<id>` gives `frame` and
+`id`; a watch notice gives `name` (the frame) and `id`; the `launch` and `run` events give `name`
+as the whole `<frame>#<id>`, the string to pass to `status` or `watch`.
 
 `status <node>`: `name`, `kind`, `state`, `detail`, `blocking` (`{"group":N,"target":"..."}`, only
 when blocked), `backoff_ms`, `since_ms`, `restarts`, `pid` (only with a process).
@@ -508,6 +520,6 @@ one object: `result` (`accepted`, `settled`, `pending`, `superseded`) and, excep
 | `instance` | `name` (the frame), `id`, `report`, `state`, `status` (when the notice has one) |
 | `swapped` | none |
 | `shutdown_complete` | `still_populated` |
-| `ended` | `state`, `detail` (a node's); the last object of the stream |
+| `ended` | The last object of the stream. For an instance's watch, `state` is the instance state (`exited`) with no `detail`; otherwise `state` and `detail` are the node's final state. |
 
 `report` is the same word as in the text form.

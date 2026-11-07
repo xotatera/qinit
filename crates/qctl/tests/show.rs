@@ -347,3 +347,51 @@ fn show_enable_is_accepted_unchanged_by_the_compiler() {
     assert_eq!(got, want);
     assert_eq!(got.roots, ["b"]);
 }
+
+#[test]
+fn a_malformed_enable_toml_is_reported_as_compile_reports_it() {
+    let (t, layers) = enable_layers("enable-bad", Some("enable = [\n"), None);
+    let (code, out, err) = show_enable(&layers);
+    assert_eq!((code, out.as_str()), (1, ""), "{err}");
+    // The same lines `compile` prints for the same file: no `qctl: ` before an error line, and
+    // the parse error's own lines as the parser wrote them.
+    let db = t.0.join("x.db");
+    let mut args: Vec<&str> = vec!["compile", "--no-policy", "--output", db.to_str().unwrap()];
+    args.extend(layers.iter().map(String::as_str));
+    let (compile_code, _, compile_err) = qctl(&args);
+    assert_eq!(compile_code, 1, "{compile_err}");
+    assert_eq!(err, compile_err);
+    let file = t.0.join("vendor/enable.toml");
+    let first = format!("{}: TOML parse error", file.display());
+    assert!(err.lines().any(|l| l.starts_with(&first)), "{err}");
+    assert!(
+        !err.lines()
+            .any(|l| l.starts_with("qctl: ") && l.contains("enable.toml")),
+        "{err}"
+    );
+}
+
+#[test]
+fn show_enable_skips_a_middle_layer_without_the_file() {
+    let tmp = TempDir::new("enable-middle");
+    let mut layers = Vec::new();
+    for (name, text) in [
+        ("vendor", Some("enable = [\"a\"]\n")),
+        ("mid", None),
+        ("etc", Some("enable = { append = [\"c\"] }\n")),
+    ] {
+        let dir = tmp.0.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Some(text) = text {
+            std::fs::write(dir.join("enable.toml"), text).unwrap();
+        }
+        layers.push("--layer".to_owned());
+        layers.push(format!("{name}={}", dir.display()));
+    }
+    let (code, out, err) = show_enable(&layers);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out,
+        "enable = [\"a\", \"c\"]  # etc\nsyslog = []  # default\n"
+    );
+}

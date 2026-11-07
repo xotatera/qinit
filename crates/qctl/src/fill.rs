@@ -257,15 +257,9 @@ pub fn plan(c: &Compiled, targets: &Targets) -> Result<Vec<Edit>, String> {
             });
         }
     }
-    // A key some layer set is left alone: a plain array over an existing list is a compile error.
-    for key in targets.enable.into_iter().flat_map(|_| ENABLE_KEYS) {
-        if targets.enable.is_some_and(|set| !set.contains_key(key)) {
-            push(Edit {
-                file: targets.last.dir.join("enable.toml"),
-                table: Vec::new(),
-                key: key.into(),
-                value: "[]".into(),
-            });
+    if let Some(set) = targets.enable {
+        for e in enable_edits(targets.last, set) {
+            push(e);
         }
     }
     if let Some((path, raw)) = targets.policy {
@@ -287,6 +281,21 @@ pub fn plan(c: &Compiled, targets: &Targets) -> Result<Vec<Edit>, String> {
         }
     }
     Ok(edits)
+}
+
+/// An empty list in `enable.toml` of the layer `last` for each key no layer set (`set`). A key
+/// some layer set is left alone: a plain array over an existing list is a compile error.
+fn enable_edits(last: &LayerInput, set: &BTreeMap<String, Origin>) -> Vec<Edit> {
+    ENABLE_KEYS
+        .into_iter()
+        .filter(|key| !set.contains_key(*key))
+        .map(|key| Edit {
+            file: last.dir.join("enable.toml"),
+            table: Vec::new(),
+            key: key.into(),
+            value: "[]".into(),
+        })
+        .collect()
 }
 
 /// A table being edited: a standard (or dotted) table or an inline one.

@@ -251,6 +251,25 @@ fn a_list_with_no_filter_to_hold_it_is_refused() {
 }
 
 #[test]
+fn a_filter_with_no_syscall_is_refused() {
+    for mode in [QINIT_SECCOMP_DENY, QINIT_SECCOMP_ALLOW] {
+        let b = Builder::new();
+        ok(c!(qinit_request_add_arg(b.0, c"/x".as_ptr())));
+        ok(c!(qinit_request_set_user(b.0, c"svc".as_ptr())));
+        ok(c!(qinit_request_set_seccomp(b.0, mode)));
+        assert_eq!(
+            b.bytes(),
+            Err((
+                QINIT_E_ARGUMENT,
+                "syscalls: a deny or allow filter needs at least one syscall".into()
+            ))
+        );
+        ok(c!(qinit_request_add_syscall(b.0, 101)));
+        assert!(b.bytes().is_ok(), "{}", b.error());
+    }
+}
+
+#[test]
 fn a_failure_is_cleared_by_the_next_call() {
     let b = Builder::new();
     ok(c!(qinit_request_set_deadline_ms(b.0, 0)));
@@ -358,5 +377,19 @@ fn each_setter_takes_null_safely() {
     let rc = c!(qinit_request_bytes(b.0, &raw mut p, ptr::null_mut()));
     assert_eq!(rc, QINIT_E_ARGUMENT);
     assert!(b.error().starts_with("len"), "{}", b.error());
+    // With one out pointer NULL, nothing is written through the other.
+    let mark = 0x1000 as *const u8;
+    let mut p = mark;
+    assert_eq!(
+        c!(qinit_request_bytes(b.0, &raw mut p, ptr::null_mut())),
+        QINIT_E_ARGUMENT
+    );
+    assert_eq!(p, mark, "nothing is written through ptr");
+    let mut len = 7;
+    assert_eq!(
+        c!(qinit_request_bytes(b.0, ptr::null_mut(), &raw mut len)),
+        QINIT_E_ARGUMENT
+    );
+    assert_eq!(len, 7, "nothing is written through len");
     assert_eq!(b.bytes().unwrap(), before);
 }

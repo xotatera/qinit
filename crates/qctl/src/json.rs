@@ -5,7 +5,7 @@
 //! Every shape is built from the same value the text line is printed from, and a state is
 //! named by [`crate::text`], so the two forms cannot name different things. An absent optional
 //! field is left out, never `null`.
-use crate::text;
+use crate::text::{self, Detail};
 use qinit_client::{Entry, Event, InstanceInfo, NodeInfo, Outcome, StateWord};
 use serde_json::{Map, Value, json};
 use std::io::Write;
@@ -39,21 +39,21 @@ impl Output {
     }
 }
 
-/// An object from `fields`.
-fn object(fields: Value) -> Map<String, Value> {
-    match fields {
-        Value::Object(m) => m,
-        _ => Map::new(),
-    }
+/// An object of `fields`, in their order.
+fn object<const N: usize>(fields: [(&str, Value); N]) -> Map<String, Value> {
+    fields.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()
 }
 
-/// Add `state` (and `detail` where the word has one) to `m`.
+/// Add `state` (and `detail` where the word has one) to `m`: a detail the table knows is its
+/// name, one it does not know is a number.
 fn put_state(m: &mut Map<String, Value>, w: StateWord) {
     let (state, detail) = text::state_parts(w);
     m.insert("state".into(), state.into());
-    if let Some(d) = detail {
-        m.insert("detail".into(), d.into());
-    }
+    match detail {
+        Some(Detail::Name(d)) => m.insert("detail".into(), d.into()),
+        Some(Detail::Number(n)) => m.insert("detail".into(), n.into()),
+        None => None,
+    };
 }
 
 /// The state words of `w` as `state` and `detail`.
@@ -66,7 +66,10 @@ fn state_fields(w: StateWord) -> Map<String, Value> {
 /// A node's status.
 #[must_use]
 pub fn status(n: &NodeInfo) -> Value {
-    let mut m = object(json!({"name": n.name, "kind": text::kind(n.kind)}));
+    let mut m = object([
+        ("name", n.name.as_str().into()),
+        ("kind", text::kind(n.kind).into()),
+    ]);
     put_state(&mut m, n.state);
     if let Some((group, target)) = &n.blocking {
         m.insert("blocking".into(), json!({"group": group, "target": target}));
@@ -83,11 +86,11 @@ pub fn status(n: &NodeInfo) -> Value {
 /// An instance's status.
 #[must_use]
 pub fn instance_status(i: &InstanceInfo) -> Value {
-    let mut m = object(json!({
-        "frame": i.frame,
-        "id": i.id,
-        "state": text::instance_state(i.state),
-    }));
+    let mut m = object([
+        ("frame", i.frame.as_str().into()),
+        ("id", i.id.into()),
+        ("state", text::instance_state(i.state).into()),
+    ]);
     if let Some(status) = i.status {
         m.insert("status".into(), status.into());
     }
@@ -100,7 +103,10 @@ pub fn instance_status(i: &InstanceInfo) -> Value {
 /// One entry of a list.
 #[must_use]
 pub fn entry(e: &Entry) -> Value {
-    let mut m = object(json!({"kind": text::kind(e.kind), "name": e.name}));
+    let mut m = object([
+        ("kind", text::kind(e.kind).into()),
+        ("name", e.name.as_str().into()),
+    ]);
     m.extend(state_fields(e.state));
     Value::Object(m)
 }
@@ -114,7 +120,7 @@ pub fn change(outcome: Outcome) -> Value {
         Outcome::Pending(s) => ("pending", Some(s)),
         Outcome::Superseded(s) => ("superseded", Some(s)),
     };
-    let mut m = object(json!({"result": result}));
+    let mut m = object([("result", result.into())]);
     if let Some(s) = state {
         m.extend(state_fields(s));
     }
@@ -125,7 +131,7 @@ pub fn change(outcome: Outcome) -> Value {
 /// `signal`.
 #[must_use]
 pub fn event(event: &str, name: &str, extra: Option<(&str, i32)>) -> Value {
-    let mut m = object(json!({"event": event, "name": name}));
+    let mut m = object([("event", event.into()), ("name", name.into())]);
     if let Some((key, n)) = extra {
         m.insert(key.into(), n.into());
     }
@@ -142,11 +148,11 @@ pub fn notice(e: &Event) -> Value {
             state,
             status,
         } => {
-            let mut m = object(json!({
-                "kind": "node",
-                "name": name,
-                "report": text::report(*report),
-            }));
+            let mut m = object([
+                ("kind", "node".into()),
+                ("name", name.as_str().into()),
+                ("report", text::report(*report).into()),
+            ]);
             m.extend(state_fields(*state));
             if let Some(s) = status {
                 m.insert("status".into(), (*s).into());
@@ -160,13 +166,13 @@ pub fn notice(e: &Event) -> Value {
             state,
             status,
         } => {
-            let mut m = object(json!({
-                "kind": "instance",
-                "name": frame,
-                "id": id,
-                "report": text::report(*report),
-                "state": text::instance_state(*state),
-            }));
+            let mut m = object([
+                ("kind", "instance".into()),
+                ("name", frame.as_str().into()),
+                ("id", (*id).into()),
+                ("report", text::report(*report).into()),
+                ("state", text::instance_state(*state).into()),
+            ]);
             if let Some(s) = status {
                 m.insert("status".into(), (*s).into());
             }
@@ -182,7 +188,7 @@ pub fn notice(e: &Event) -> Value {
 /// The last object of a watch: the final node `state`.
 #[must_use]
 pub fn ended(state: StateWord) -> Value {
-    let mut m = object(json!({"kind": "ended"}));
+    let mut m = object([("kind", "ended".into())]);
     m.extend(state_fields(state));
     Value::Object(m)
 }

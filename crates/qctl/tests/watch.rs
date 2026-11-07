@@ -140,6 +140,45 @@ fn an_instance_watch_ends_at_the_exit() {
 }
 
 #[test]
+fn an_instance_watch_in_json_ends_in_the_instance_state() {
+    use serde_json::json;
+    let s = Served::start(&[], true, instant(Some(5 << 8)));
+    let path = s.path.to_str().unwrap().to_owned();
+    let (code, out, err) = qctl(&["--socket", &path, "launch", "backup"]);
+    assert_eq!(code, 5, "{err}");
+    let target = out
+        .lines()
+        .find_map(|l| l.strip_prefix("started "))
+        .expect("the instance is named")
+        .to_owned();
+    let (frame, id) = target.split_once('#').unwrap();
+    let id: u64 = id.parse().unwrap();
+    let (mut lines, thread) = spawn(&["--socket", &path, "--json", "watch", &target]);
+    let mut seen = Vec::new();
+    while let Some(l) = line(&mut lines) {
+        seen.push(serde_json::from_str::<serde_json::Value>(&l).unwrap());
+    }
+    assert_eq!(
+        seen,
+        [
+            json!({"kind": "instance", "name": frame, "id": id, "report": "exited",
+                   "state": "exited", "status": 1280}),
+            json!({"kind": "ended", "state": "exited"}),
+        ]
+    );
+    assert_eq!(thread.join().unwrap().0, 0);
+    // The end of an instance's watch has the instance's state words, never a detail.
+    assert_eq!(
+        qctl::json::ended_instance(5),
+        json!({"kind": "ended", "state": "stopping"})
+    );
+    assert_eq!(
+        qctl::json::ended_instance(9),
+        json!({"kind": "ended", "state": "state9"})
+    );
+}
+
+#[test]
 fn a_watch_of_an_unknown_target_exits_1() {
     let s = Served::start(&["db"], true, instant(None));
     let path = s.path.to_str().unwrap().to_owned();

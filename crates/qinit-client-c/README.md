@@ -65,18 +65,23 @@ field fills it, and `qinit_request_bytes` checks it and lays it out.
 | securebits, user map | `_set_securebits` (`QINIT_SECUREBITS_*`), `_set_user_map` (`QINIT_USER_MAP_*`) |
 | `no_new_privs`, `die_with_parent` | `_set_nnp`, `_set_die_with_parent`: 0 or 1 |
 | inside ids | `_set_inside_ids(r, uid, gid)` |
-| streams | `_set_stdin_path`, `_set_stdin_fd`, and the same for stdout and stderr; `_set_stderr_same` |
+| streams | `_set_stdin_path`, `_set_stdin_fd`, and the same for stdout and stderr; `_set_stderr_same` (see below) |
 | readiness pipe | `_set_ready_fd`: a routed number, -1 for none |
+
+Only standard error has a "same" setter: "same" means wherever standard output goes, and
+nothing goes before standard input or standard output for them to follow (the launch request
+refuses "same" for both, `docs/launch-request.md`).
 
 The setters return 0 or `QINIT_E_ARGUMENT` (a NULL request or string, a string that is empty or
 not UTF-8, a word out of range), and a refused call changes nothing. `qinit_request_bytes(r,
 &ptr, &len)` runs the check `qctl run` makes on a request file (`cwd` absolute, `deadline_ms` at
-least 1, `umask` at most `0o777`, at most 64 KiB laid out; a syscall list needs a deny or allow
-filter). A request that fails it is `QINIT_E_ARGUMENT` with `ptr` NULL and `len` 0, so it is never
-sent. Colony still judges the rest when the request arrives (`QINIT_E_SERVER`). A request has no
-client, so `qinit_last_error` does not see its failures: `qinit_request_error(r)` gives the reason
-of the last failed call on `r`, in `qctl`'s words (``cwd: `work` is not an absolute path``), or an
-empty string after a success.
+least 1, `umask` at most `0o777`, a deny or allow filter with at least one syscall, at most 64 KiB
+laid out; a syscall list needs a deny or allow filter). A request that fails it is
+`QINIT_E_ARGUMENT` with `ptr` NULL and `len` 0, so it is never sent; a NULL `ptr` or `len` is
+`QINIT_E_ARGUMENT` too, and nothing is written through the other. Colony still judges the rest
+when the request arrives (`QINIT_E_SERVER`). A request has no client, so `qinit_last_error` does
+not see its failures: `qinit_request_error(r)` gives the reason of the last failed call on `r`, in
+`qctl`'s words (``cwd: `work` is not an absolute path``), or an empty string after a success.
 
 Ownership: the request is the caller's to free with `qinit_request_free`. Every string a setter
 takes is copied. The bytes and the reason belong to the request: they stay valid until the next

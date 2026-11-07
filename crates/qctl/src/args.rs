@@ -159,23 +159,22 @@ pub struct LaunchOpts {
     pub args: Vec<String>,
 }
 
-/// What `qctl run` runs.
+/// What `qctl run` runs, with the instance's name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunSource {
-    /// A request file.
-    Request(PathBuf),
-    /// `--frame FILE`: a file of one frame, compiled over the layers.
-    Frame(PathBuf),
+    /// A request file and `--name`, which a request file requires.
+    Request { file: PathBuf, name: String },
+    /// `--frame FILE`: a file of one frame, compiled over the layers, and `--name` if given
+    /// (the frame's name by default).
+    Frame { file: PathBuf, name: Option<String> },
 }
 
 /// `qctl run`. An option left out is `None`: a request file then takes the client's defaults,
 /// a frame its own values.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunOpts {
-    /// The request file or the frame file.
+    /// The request file or the frame file, and `--name`.
     pub source: RunSource,
-    /// `--name`; required with a request file, the frame's name by default.
-    pub name: Option<String>,
     /// `--fds`.
     pub fds: Fds,
     /// `--wait-ready`.
@@ -619,17 +618,15 @@ fn parse_command(word: &str, s: &mut Scan<'_>) -> Result<Command, String> {
             args: tail,
         }),
         "run" => Command::Run(RunOpts {
-            source: match frame {
-                Some(f) if pos.is_empty() => RunSource::Frame(f),
-                Some(_) => return Err("run: a request file and --frame are exclusive".into()),
-                None => {
-                    if name.is_none() {
-                        return Err("run: --name is required with a request file".into());
-                    }
-                    RunSource::Request(PathBuf::from(one("request file", pos)?))
-                }
+            source: match (frame, name) {
+                (Some(file), name) if pos.is_empty() => RunSource::Frame { file, name },
+                (Some(_), _) => return Err("run: a request file and --frame are exclusive".into()),
+                (None, None) => return Err("run: --name is required with a request file".into()),
+                (None, Some(name)) => RunSource::Request {
+                    file: PathBuf::from(one("request file", pos)?),
+                    name,
+                },
             },
-            name,
             fds: fd,
             wait_ready,
             memory_max,

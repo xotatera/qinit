@@ -43,10 +43,12 @@ struct File {
 /// The TOML error (an unknown key, a missing `argv`, a value of the wrong type), or the key and
 /// why its value is not one: an unknown capability, namespace, syscall or mode, a stream that
 /// is not a path, `"fd:N"` or `"same"`, a limit out of range, a `cwd` that is not absolute, a
-/// `deadline_ms` of 0, a `umask` over `0o777`; or a request over 64 KiB once laid out.
+/// `deadline_ms` of 0, a `umask` over `0o777`, a deny or allow filter with no syscall; or a
+/// request over 64 KiB once laid out.
 pub fn parse(text: &str) -> Result<RequestSpec, String> {
     let spec = spec(text)?;
-    // `cwd`, `deadline_ms` and `umask`, then the layout: what the client sends is these bytes.
+    // `cwd`, `deadline_ms`, `umask` and the syscall list, then the layout: what the client
+    // sends is these bytes.
     spec.check().map_err(|e| e.to_string())?;
     Ok(spec)
 }
@@ -127,14 +129,12 @@ fn securebits(s: Option<&str>) -> Result<Securebits, String> {
     }
 }
 
-/// `seccomp` names the mode; `syscalls` is the list of a `deny` or `allow` filter, by name.
+/// `seccomp` names the mode; `syscalls` is the list of a `deny` or `allow` filter, by name. An
+/// empty list is [`RequestSpec::check`]'s to refuse.
 fn seccomp(mode: Option<&str>, syscalls: Option<&[String]>) -> Result<Seccomp, String> {
     let list = || -> Result<Vec<u32>, String> {
-        let names = syscalls.unwrap_or_default();
-        if names.is_empty() {
-            return Err("syscalls: a deny or allow filter needs at least one syscall".into());
-        }
-        names
+        syscalls
+            .unwrap_or_default()
             .iter()
             .map(|n| {
                 qinit_frames::syscalls::number(n)

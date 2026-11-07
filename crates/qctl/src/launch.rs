@@ -6,7 +6,7 @@
 use crate::args::{Fds, LaunchOpts, RunOpts, RunSource};
 use crate::compile::Defaults;
 use crate::control::{Failure, wait_ms};
-use crate::frame_run::{self, FrameRun};
+use crate::frame_run::{self, Run};
 use crate::json::{self, Output};
 use crate::request;
 use qinit_client::{
@@ -99,32 +99,31 @@ pub fn run(
         Ok(w) => w,
         Err(msg) => return usage(err, &msg),
     };
-    let run = match &opts.source {
-        RunSource::Request(file) => match std::fs::read_to_string(file)
+    let (name, run) = match &opts.source {
+        RunSource::Request { file, name } => match std::fs::read_to_string(file)
             .map_err(|e| e.to_string())
             .and_then(|text| request::parse(&text))
         {
             Ok(spec) => {
                 let (memory_max_kib, pids_max, stop_mode, stop_grace_ms) = REQUEST_DEFAULTS;
-                FrameRun {
-                    // The parser requires `--name` with a request file.
-                    name: opts.name.clone().unwrap_or_default(),
+                let run = Run {
                     spec,
                     memory_max_kib,
                     pids_max,
                     stop_mode,
                     stop_grace_ms,
                     wait_ready: opts.wait_ready,
-                }
+                };
+                (name.clone(), run)
             }
             Err(why) => {
                 let _ = writeln!(err, "qctl: {}: {why}", file.display());
                 return 1;
             }
         },
-        RunSource::Frame(file) => {
+        RunSource::Frame { file, name } => {
             match frame_run::spec(file, defaults, frame_run::routed(opts.fds), err) {
-                Ok(r) if opts.wait_ready && !r.wait_ready => {
+                Ok(r) if opts.wait_ready && !r.run.wait_ready => {
                     let _ = writeln!(
                         err,
                         "qctl: {}: --wait-ready needs the frame's ready = \"pipe\"",
@@ -132,7 +131,7 @@ pub fn run(
                     );
                     return 1;
                 }
-                Ok(r) => r,
+                Ok(r) => (name.clone().unwrap_or(r.name), r.run),
                 Err(why) => {
                     let _ = writeln!(err, "{why}");
                     return 1;
@@ -140,7 +139,6 @@ pub fn run(
             }
         }
     };
-    let name = opts.name.as_deref().unwrap_or(&run.name);
     let streams = Streams::new();
     let [stdin, stdout, stderr] = streams.pick(opts.fds);
     let args = RunArgs {
@@ -158,7 +156,7 @@ pub fn run(
         wait_ready: run.wait_ready,
     };
     let result = Client::connect(socket).and_then(|mut c| {
-        let begun = c.begin_run(name, &run.spec, &args, false, wait)?;
+        let begun = c.begin_run(&name, &run.spec, &args, false, wait)?;
         Ok((c, begun))
     });
     settle(result, &format!("~{name}"), output, out, err)

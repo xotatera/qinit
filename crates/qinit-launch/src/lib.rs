@@ -126,6 +126,8 @@ pub enum CheckError {
     Deadline,
     /// `umask` is over `0o777` (the value).
     Umask(u32),
+    /// A deny or allow seccomp filter lists no syscall.
+    NoSyscalls,
     /// The request is longer than `MAX_REQUEST` once laid out.
     TooLarge,
     /// Standard input or output was [`Stream::Same`].
@@ -148,6 +150,9 @@ impl fmt::Display for CheckError {
             CheckError::Cwd(cwd) => write!(f, "cwd: `{cwd}` is not an absolute path"),
             CheckError::Deadline => f.write_str("deadline_ms: must be at least 1"),
             CheckError::Umask(umask) => write!(f, "umask: {umask:#o} is over 0o777"),
+            CheckError::NoSyscalls => {
+                f.write_str("syscalls: a deny or allow filter needs at least one syscall")
+            }
             CheckError::TooLarge => f.write_str("the request is over 64 KiB once laid out"),
             CheckError::BadStream => f.write_str("stdin and stdout cannot be \"same\""),
         }
@@ -173,8 +178,9 @@ impl Pool {
 }
 
 impl RequestSpec {
-    /// The bytes of a request a client may send: `cwd` absolute, `deadline_ms` at least 1 and
-    /// `umask` at most `0o777`, checked in that order, then laid out by [`RequestSpec::bytes`].
+    /// The bytes of a request a client may send: `cwd` absolute, `deadline_ms` at least 1,
+    /// `umask` at most `0o777` and a deny or allow seccomp filter with at least one syscall,
+    /// checked in that order, then laid out by [`RequestSpec::bytes`].
     /// The overseer refuses each of these too; checking them here means a bad request is never
     /// sent. Everything else is still `decode`'s to judge.
     ///
@@ -189,6 +195,11 @@ impl RequestSpec {
         }
         if self.umask > 0o777 {
             return Err(CheckError::Umask(self.umask));
+        }
+        if let Seccomp::Deny(list) | Seccomp::Allow(list) = &self.seccomp
+            && list.is_empty()
+        {
+            return Err(CheckError::NoSyscalls);
         }
         Ok(self.bytes()?)
     }
