@@ -46,7 +46,7 @@ pub struct qinit_client {
 enum Inner {
     Client(Client),
     Watching(Watcher),
-    /// A failed `qinit_watch` consumed the connection.
+    /// A `qinit_watch` lost the connection.
     Spent,
 }
 

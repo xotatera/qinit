@@ -414,6 +414,35 @@ impl Watcher {
     }
 }
 
+/// A watch colony did not accept.
+pub struct WatchRefused {
+    /// The connection, still good: `Some` only when colony answered with an error.
+    pub client: Option<Client>,
+    /// Why.
+    pub error: ClientError,
+}
+
+impl std::fmt::Debug for WatchRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WatchRefused")
+            .field("client", &self.client.is_some())
+            .field("error", &self.error)
+            .finish()
+    }
+}
+
+impl std::fmt::Display for WatchRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl From<WatchRefused> for ClientError {
+    fn from(r: WatchRefused) -> ClientError {
+        r.error
+    }
+}
+
 /// A connection to colony.
 pub struct Client {
     fd: OwnedFd,
@@ -815,21 +844,36 @@ impl Client {
     /// first, then every change. Any user may watch.
     ///
     /// # Errors
-    /// [`ClientError`]; `Server(UnknownNode, _)` for a target that does not exist.
-    pub fn watch(mut self, scope: Scope<'_>) -> Result<Watcher, ClientError> {
+    /// [`WatchRefused`]; its `error` is `Server(UnknownNode, _)` for a target that does not
+    /// exist, and its `client` is the connection back when colony refused and left it good.
+    pub fn watch(mut self, scope: Scope<'_>) -> Result<Watcher, WatchRefused> {
         let (all, target) = match scope {
             Scope::All => (true, ""),
             Scope::Target(t) => (false, t),
         };
-        self.ask(Req::Watch { all, target }, &[])?;
-        match self.reply()? {
-            Reply::Accepted => Ok(Watcher {
+        let answer = self
+            .ask(Req::Watch { all, target }, &[])
+            .and_then(|()| self.reply());
+        match answer {
+            Ok(Reply::Accepted) => Ok(Watcher {
                 client: self,
                 spent: false,
                 // Only an instance target (`<frame>#<id>`) carries a `#`.
                 ends_on_exit: matches!(scope, Scope::Target(t) if t.contains('#')),
             }),
-            _ => Err(ClientError::Unexpected),
+            Ok(_) => Err(WatchRefused {
+                client: None,
+                error: ClientError::Unexpected,
+            }),
+            // A server error is a whole reply: the connection is as it was.
+            Err(error @ ClientError::Server(..)) => Err(WatchRefused {
+                client: Some(self),
+                error,
+            }),
+            Err(error) => Err(WatchRefused {
+                client: None,
+                error,
+            }),
         }
     }
 }

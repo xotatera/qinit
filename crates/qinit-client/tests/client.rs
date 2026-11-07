@@ -408,11 +408,32 @@ fn an_instance_watch_ends_at_the_exit() {
 }
 
 #[test]
-fn a_watch_of_an_unknown_target_is_unknown_node() {
+fn a_refused_watch_returns_the_client() {
     let s = Served::start(&["db"], true, instant(None));
+    let Err(refused) = s.client().watch(Scope::Target("nope")) else {
+        panic!("an unknown target is refused");
+    };
+    assert_eq!(
+        refused.error,
+        ClientError::Server(ErrorCode::UnknownNode, 0)
+    );
+    let mut c = refused.client.expect("the connection is still good");
+    assert!(matches!(c.status("db"), Ok(Status::Node(_))));
+}
+
+#[test]
+fn a_lost_connection_returns_no_client() {
+    let s = Served::start(&["db"], true, instant(None));
+    let c = s.client();
+    // Colony goes away, and its end of the connection with it.
+    drop(s.finish());
+    let Err(refused) = c.watch(Scope::All) else {
+        panic!("a closed connection cannot watch");
+    };
+    assert!(refused.client.is_none());
     assert!(matches!(
-        s.client().watch(Scope::Target("nope")),
-        Err(ClientError::Server(ErrorCode::UnknownNode, 0))
+        ClientError::from(refused),
+        ClientError::Unexpected | ClientError::Io(_)
     ));
 }
 
