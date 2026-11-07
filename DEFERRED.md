@@ -410,7 +410,7 @@ and every entry is a detached clone (`open_tree`, `mount_setattr`, `move_mount`)
 attributes before it is attached, so a launch no longer needs a writable host root and leaves no
 `/.qinit-view` behind.
 
-### D50 — A symlink planted in a writable directory the launch does not list · `OPEN`
+### D50 — A symlink planted in a writable directory the launch does not list · `ACCEPTED`
 
 D48 closes the symlink a service can plant below a *listed* writable entry. A symlink planted in
 a directory that is writable by the service but not listed `rw:` (a world-writable `/var/tmp`, a
@@ -453,19 +453,24 @@ wait and cancelled its deadline, and the reply was dropped, so the client was ne
 merge now goes through `Outcome::absorb`, which names each field, so a new field does not compile
 until it is merged. `tests/handle.rs` covers both phases of a refresh.
 
-### D57 — `Client::watch` spends the client on a refusal · `OPEN`
+### D57 — `Client::watch` spends the client on a refusal · `RESOLVED`
 
-`Client::watch(self)` consumes the client, and on a refusal (`UnknownNode`, `Denied`) it returns
-the error without the client, although the server keeps the connection open. The C interface
-inherits it: a refused `qinit_watch` spends its client, which must be connected again. Returning
-the client with the error would keep the connection.
+`Client::watch(self)` consumed the client, and on a refusal (`UnknownNode`, `Denied`) it returned
+the error without the client, although the server keeps the connection open; a refused
+`qinit_watch` spent its C client the same way. `watch` now fails with `WatchRefused { client,
+error }`: `client` is the connection back when colony refused, and `None` only when the connection
+itself failed (`From<WatchRefused> for ClientError` keeps `?` working). `qinit_watch` keeps its
+client on a refusal, so the same client goes on asking; only a lost connection ends it.
+`tests/client.rs` and the C test `tests/spent.rs` ask again on a refused client.
 
-### D58 — Defaults with no TOML word · `OPEN`
+### D58 — Defaults with no TOML word · `RESOLVED`
 
-Two defaults have no TOML spelling in the frame schema: no start timeout (`start_timeout =
-"none"`, a node ready on exit) and `sandbox.user_map = "own"` without a user namespace. `qctl
-show` and `qctl fill` print them as comments instead of keys, since a written key would not
-compile; a schema word for each would let them be written.
+Two defaults had no TOML spelling in the frame schema, no start timeout (a node ready on exit) and
+`sandbox.user_map = "own"` without a user namespace, so `qctl show` and `qctl fill` printed them as
+comments instead of keys. `start_timeout = "none"` now compiles to no start timeout on any node,
+and `sandbox.user_map = "own"` compiles without a user namespace (`"range"` still needs one). Both
+words compile to the database the default gives: `show` prints them as keys, `fill` writes them,
+and a test compiles the same database before and after `fill`.
 
 ### D59 — Intermittent failures of the xtask CLI tests · `RESOLVED`
 
@@ -479,14 +484,20 @@ duplicates in 400,000), though that one failure was never reproduced. The name n
 id and an atomic counter as well, and `fixture_roots_never_repeat` pins it. If these failures come
 back, the cause is something else.
 
-### D60 — `qctl fill` renames its files one by one · `OPEN`
+### D60 — `qctl fill` renames its files one by one · `RESOLVED`
 
-`qctl fill` edits every file and writes every new text to a temporary file, with the old file's
-owner and mode, before it renames any, so a failed edit, write, `chown` or `chmod` leaves every
-file as it was. The renames themselves then run one after another: a rename that fails after the
-first leaves the earlier files filled and the rest not. Each file is still whole, and a second
-`fill` completes the rest, but the files of one run are not replaced as one. Directories made
-for a new file are not removed when a later file fails.
+`qctl fill` staged every file before it renamed any, but the renames then ran one after another: a
+rename that failed after the first left the earlier files filled and the rest not, and the
+directories made for a new file stayed. The commit now has two passes. First every existing file
+is hard-linked to a backup name beside it, `.<name>.qctl-old-<pid>` (a name already taken stops the
+run with nothing changed and stays as it is); then each file is replaced, an existing one by a
+rename and a new one by a hard link and the removal of its temporary name. A step that fails is
+undone in reverse order: a replaced file gets its backup renamed back (the same inode: bytes, mode
+and owner), new files and the directories made for them are removed, and no temporary or backup
+name stays; when undoing fails too, the error names each old text left at its backup name. A crash
+part way is not undone (a second `fill` completes the rest), nor is a failure after the last file
+was replaced (removing a backup, syncing a directory): every file is filled then, and the error
+says so. `tests/fill.rs` fails each step of a commit in turn.
 
 ### D61 — Test directories left in `/tmp` by other crates · `RESOLVED`
 
@@ -524,30 +535,31 @@ adopted showed no pid in `Status` until it was started again. The adoption plan 
 of a recovered main to `restore` (`RestoredNode::pid`; none when the main is gone), and the
 `readopt` VM suite reads it back from `Status`.
 
-### D67 — A request's replies come before the state files are rewritten · `OPEN`
+### D67 — A request's replies come before the state files are rewritten · `RESOLVED`
 
-The daemon delivers the replies an event owes parked waits and watchers (a cell report, a timer, a
-path) after it has logged and saved state, so a client that sees a change can rely on both. The
-replies a *request* causes are sent by the server inside the request, before the `cells` and
-`nodes` files are rewritten: the one the request gets for itself (`Launched`, `Accepted`, a wait
-that is already met) and the ones it releases for other connections' waits and watchers. A client that kills colony the moment it has
-that reply can lose the record of what the request did: an instance launched in that window is
-unknown to the next colony, which leaves its cell running. Instances are transient and the window
-is microseconds, so it is accepted; closing it would make the server hand a request's reply back
-to the daemon instead of sending it.
+The daemon delivered the replies an event owes parked waits and watchers (a cell report, a timer, a
+path) after it had logged and saved state, so a client that sees a change can rely on both. The
+replies a *request* caused were sent by the server inside the request, before the `cells` and
+`nodes` state was saved: the one the request gets for itself (`Launched`, `Accepted`, a wait that
+is already met) and the ones it releases for other connections' waits and watchers. A client that
+killed colony the moment it had that reply could lose the record of what the request did: an
+instance launched in that window was unknown to the next colony, which left its cell running.
 
 The same window has a second face under queen: a colony killed after it made a cell and before it
 put the cell's directory in queen's store leaves a cell nobody holds. The next colony cannot adopt
 it and a later start of the same node fails to create its cell. The `queen` suite's kills wait for
 the state to reach queen for this reason.
 
-The server now holds a request's own reply, with the descriptors that travel with it, and the
-daemon sends it at the end of the wake-up after the state is saved, before the replies the
-request's outcome owes. One case is left: the replies go out once the saves were tried, whether or
-not they went. A save that waits more than a second for a queen that does not read is dropped,
-logged and tried again at the next wake-up, and a reply sent meanwhile comes before the state it
-reports. Holding the replies until the save goes would stop colony answering under a parked
-queen, which D69 says colony keeps serving.
+The server now holds a request's own reply, with the descriptors that travel with it
+(`Server::flush`), and the daemon sends it at the end of the wake-up after the state is saved,
+before the replies the request's outcome owes; the `readopt` suite no longer makes a round trip
+before a kill. `tests/daemon.rs` reads the channel to queen and the client's socket after one
+wake-up: the client has nothing until the `cells` entry naming its instance was saved. One case is
+left: the replies go out once the saves were tried, whether or not they went. A save that waits
+more than a second for a queen that does not read is dropped, logged and tried again at the next
+wake-up, and a reply sent meanwhile comes before the state it reports. Holding the replies until
+the save goes would stop colony answering under a parked queen, which D69 says colony keeps
+serving.
 
 ### D68 — A configurable shutdown bound · `RESOLVED`
 

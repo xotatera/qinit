@@ -160,10 +160,11 @@ stops it with exit 1) and prints each target in the order given, separated by a 
 - An instance name prints its frame, after the line `# <frame>@<inst> is an instance of
   <kind>.<frame>`; the `instances` list is printed. Instances have no tables of their own.
 - A `template.<name>` target prints the template as its layers merged it, with each key's origin.
-- A few defaults that TOML cannot express are printed as comments, so the output compiles back to
-  the same nodes: `# start_timeout = "none"` (a node ready on exit), `# sandbox.user_map = "own"`
-  (without a user namespace), and for a policy rule `# users: any user`. Derived values (`errors`
-  following `output`) are left out.
+- Every default is printed as a key, so the output compiles back to the same nodes. Two of them
+  have words of their own: `start_timeout = "none"` (no start timeout, the default of a node that
+  is ready when it exits) and `sandbox.user_map = "own"`, which compiles with or without a user
+  namespace (`"range"` needs one). Only a policy rule's `# users: any user` is a comment. Derived
+  values (`errors` following `output`) are left out.
 - `show policy` prints the policy with every rule and every key, a default marked `# default` and
   a value from the file marked `# policy`. It needs a policy file: with `--no-policy` or without a
   file it exits 1.
@@ -182,7 +183,7 @@ restart.delay = "1000ms"  # default
 ...
 output = { pipe = "logd" }  # vendor
 ...
-# sandbox.user_map = "own"  # default
+sandbox.user_map = "own"  # default
 ...
 ```
 
@@ -196,8 +197,8 @@ line is touched, no value is re-serialised.
 `ready`, `restart.*`, `stop.*`, `start_timeout`, `cell.*`, `cwd`, `umask`, `credentials.caps`,
 `credentials.nnp`, `credentials.securebits` and `sandbox.*`; for the policy, the rule keys
 `caps_max`, `require_nnp`, `require_seccomp`, `allow_userns`, `allow_inside_ids` and
-`allow_idmap` that a rule leaves out. It never writes the defaults that `show` prints as comments,
-nor derived values.
+`allow_idmap` that a rule leaves out, `start_timeout = "none"` and `sandbox.user_map = "own"`
+included. It never writes a rule's `users` (any user), nor derived values.
 
 **Which file.** Only the last layer is written, never the vendor layer (the lowest layer is the
 package manager's and an update would undo the edit). With `--layer` given exactly once `fill`
@@ -228,13 +229,44 @@ is). A file that is a symbolic link or not a regular file is refused. The owners
 as for `compile`.
 
 **Safety.** Every file is edited first, then the new text of every file is written to a new
-temporary file beside it with the old file's mode and owner, and only when all of them are
-written are they renamed over their files: a file that cannot be edited, or whose temporary file
-cannot be written or given the owner and mode, stops the run with no file changed. `--dry-run` prints the unified diff of every file (`--- <path>` / `+++ <path>`, or
+temporary file beside it, `.<name>.qctl-fill-<pid>`, with the old file's mode and owner, and
+synced: a file that cannot be edited, or whose temporary file cannot be written or given the owner
+and mode, stops the run with no file changed. Only when all of them are written does the commit
+start:
+
+1. Every existing file is hard-linked to a backup name beside it, `.<name>.qctl-old-<pid>`.
+   Nothing has changed yet. A backup name that is already taken (an earlier `fill` that stopped
+   part way may have left it) stops the run, and the file at that name stays as it is:
+
+   ```
+   qctl: fill: <backup>: the backup name is taken, perhaps by an earlier fill that stopped part way; look at the file beside it before removing it: <error>; every file is as it was
+   ```
+
+2. File by file, an existing file is replaced by renaming its temporary file over it, and a new
+   file is put in place by a hard link (which never replaces a file that appeared meanwhile) and
+   the removal of its temporary name.
+3. The backups are removed and the directories synced.
+
+A step of 1 or 2 that fails undoes the run, in reverse order: a file already replaced gets its
+backup renamed back (the same inode: bytes, mode and owner), new files and the directories made
+for them are removed, and no temporary or backup name stays. The error names the step's file and
+ends `; every file is as it was`. When undoing fails too, it ends `; undoing failed: ...` and names
+each file whose old text stays at its backup name and each name that stays. A failure in 3, after
+the last file was replaced, is not undone: every file is filled, and `fill` exits 1 with
+
+```
+qctl: fill: every file is filled, but <backup>: cannot remove this backup: <error>
+```
+
+(or `<directory>: cannot sync: <error>`, each failure joined by `; `). A crash part way is not
+undone either: a second `fill` completes the rest, and a backup the crash left stays at its name.
+
+`--dry-run` prints the unified diff of every file (`--- <path>` / `+++ <path>`, or
 `--- /dev/null` for a file that would be created) and writes nothing. When there is nothing to
 fill it prints `qctl: fill: nothing to fill` and exits 0, so a second `fill` is a no-op. A real
-fill prints `qctl: fill: <n> keys filled in <m> files`, counting the files written. After a fill, `compile` yields the same
-database as before: only defaults were written. The database itself is never touched.
+fill prints `qctl: fill: <n> keys filled in <m> files`, counting the files written. After a fill,
+`compile` yields the same database as before: only defaults were written. The database itself is
+never touched.
 
 Example (`etc/sshd.toml` contains `restart = { max = 9 }`; `qctl fill ... --dry-run worker.sshd`,
 excerpt):

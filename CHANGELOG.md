@@ -12,6 +12,11 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Words for the two defaults that had none (D58): `start_timeout = "none"` (no start timeout, on
+  any node) and `sandbox.user_map = "own"` without a user namespace (`"range"` still needs one).
+  Each compiles to the database its default gives, so `qctl show` prints them as keys, not
+  comments, and `qctl fill` writes them.
+
 - Queen's settings and heartbeat (D68, D70, D72), `docs/queen.md`: `qinit.shutdown_ms=` and
   `qinit.heartbeat_ms=` on the kernel command line set the shutdown bound (default 5 min) and the
   heartbeat period (default 30 s, 0 for none). Colony sends `Alive` every 2 s; queen kills a
@@ -257,6 +262,11 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `Client::watch` fails with `WatchRefused { client, error }` (D57): when colony refused the watch
+  (`UnknownNode`, `Denied`), `client` is the connection back, still good; it is `None` only when
+  the connection failed. `From<WatchRefused> for ClientError` keeps `?` working. A refused
+  `qinit_watch` keeps its C client, which goes on asking; only a lost connection ends it.
+
 - The kernel floor is 6.15 (`PIDFD_INFO_EXIT`). Colony's memory is queen's store, not files in `<run>/state`; re-adoption uses the held descriptors (D63, D64, D65).
 
 - The kernel floor is 6.15 (`PIDFD_INFO_EXIT`). Colony's memory is queen's store, not files in
@@ -324,6 +334,20 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   both workspaces, `cargo xtask proofs`) also stops at its first failure.
 
 ### Fixed
+
+- A booted colony no longer runs at the kernel's descriptor limit (D74): since D72 it started at
+  1024 soft, 4096 hard, and a hand-over of more held descriptors than that did not fit. Colony
+  raises its own `RLIMIT_NOFILE` to 65536, soft and hard, before it reads queen's hand-over, and
+  starts its services with the limit it started with; a frame's own `nofile` still applies.
+- A request's replies follow the state they report (D67): the server holds a request's own reply
+  (`Server::flush`) until the daemon has saved the wake-up's state, so a colony killed the moment
+  a client has its answer still leaves the record of what the request did, a launched instance
+  included. `Server::on_readable` sends only refusals now; its caller sends the held replies with
+  `flush` and then those the outcome owes with `on_outcome`.
+- `qctl fill` undoes a failed commit (D60): it links every existing file to a backup name first,
+  and a replacement that fails puts back every file already replaced (bytes, mode and owner) and
+  removes the new files and the directories made for them. A backup name already taken stops the
+  run with nothing changed.
 
 - Services no longer inherit queen's raised descriptor limit (D72): queen starts colony, rescue
   and zero with the `RLIMIT_NOFILE` it started with.
