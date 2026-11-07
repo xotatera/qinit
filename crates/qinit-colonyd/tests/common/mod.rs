@@ -22,7 +22,9 @@ use std::time::Duration;
 /// (`fs.inotify.max_user_instances`, 128 by default) shared with every program of the session.
 /// Without a bound the harness's threads (one per core) can take what is left and make a boot
 /// fail with `EMFILE`. Cargo runs the test binaries one after the other, so this bounds the
-/// tests' share of the host's instances.
+/// tests' share of the host's instances. The bound covers only colonyd's own tests: other crates'
+/// tests (for example `watch.rs`) and other programs draw from the same per-user pool
+/// (`/proc/sys/fs/inotify/max_user_instances`, 128), so an `EMFILE` at boot in a test points there.
 pub const INOTIFY_SLOTS: usize = 8;
 
 static INOTIFY_USED: Mutex<usize> = Mutex::new(0);

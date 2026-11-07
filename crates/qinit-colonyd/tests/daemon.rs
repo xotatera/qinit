@@ -554,9 +554,8 @@ fn a_successful_launch_closes_its_status_pipe_quietly() {
     // The overseer's exec closes fd 4: the fake spawn's copy stands in for it.
     let fds = std::mem::take(&mut r.d.colony.effects.cells.spawned[0].fds);
     drop(fds);
-    // The end of file arrives when the last copy of the write end is closed. Another test's
-    // `fork` may hold a copy for the moment before its `exec`, so this waits for the event (with
-    // a guard) instead of looking once.
+    // The end of file arrives when the last copy of the write end is closed. That can lag the
+    // `drop` slightly, so this waits for the event (with a guard) instead of looking once.
     r.d.colony
         .effects
         .events
