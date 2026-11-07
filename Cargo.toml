@@ -139,8 +139,9 @@ package = "qinit-proto-core"
 memory = "4G"
 timeout = "45s"
 
-# SP8 (2026-11-07), group 1, the channel records: 18 verified, 13.3 s (19.9 s CPU) wall, 1.0 GB peak,
-# warm build directory. 45s stands at about 2x a cold build (inferred).
+# SP8 (2026-11-07), groups 1-2, the channel records and the store: 18 verified, 13.3 s (19.9 s CPU)
+# wall, 1.0 GB peak, then 32 verified, 1.3 s (1.1 s CPU), 0.23 GB peak, warm build directory. 45s
+# stands at about 2x a cold build (inferred).
 [[workspace.metadata.disciplines.proof]]
 name = "qinit-queen-core"
 kind = "verus"

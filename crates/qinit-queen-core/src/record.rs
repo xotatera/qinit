@@ -171,8 +171,11 @@ pub open spec fn to_colony_spec(b: Seq<u8>, fds: int) -> Option<ToColony> {
 /// The record with these words, as 16 little-endian bytes. Trusted: `to_le_bytes` has no Verus
 /// spec; the postcondition is its definition.
 #[verifier::external_body]
-fn pack(kind: u32, arg: u32, key: u64) -> (b:
-    [u8; 16])  // disciplines:allow-trusted (to_le_bytes has no Verus spec)
+fn pack(  // disciplines:allow-trusted (to_le_bytes has no Verus spec)
+    kind: u32,
+    arg: u32,
+    key: u64,
+) -> (b: [u8; 16])
     ensures
         u32_le(b@, 0) == kind,
         u32_le(b@, 4) == arg,
@@ -187,8 +190,10 @@ fn pack(kind: u32, arg: u32, key: u64) -> (b:
 
 /// The little-endian `u32` at `b[off..off + 4]`. Trusted like [`pack`].
 #[verifier::external_body]
-fn read_u32(b: &[u8], off: usize) -> (v:
-    u32)  // disciplines:allow-trusted (from_le_bytes has no Verus spec)
+fn read_u32(  // disciplines:allow-trusted (from_le_bytes has no Verus spec)
+    b: &[u8],
+    off: usize,
+) -> (v: u32)
     requires
         off + 4 <= b@.len(),
     ensures
@@ -199,8 +204,10 @@ fn read_u32(b: &[u8], off: usize) -> (v:
 
 /// The little-endian `u64` at `b[off..off + 8]`. Trusted like [`pack`].
 #[verifier::external_body]
-fn read_u64(b: &[u8], off: usize) -> (v:
-    u64)  // disciplines:allow-trusted (from_le_bytes has no Verus spec)
+fn read_u64(  // disciplines:allow-trusted (from_le_bytes has no Verus spec)
+    b: &[u8],
+    off: usize,
+) -> (v: u64)
     requires
         off + 8 <= b@.len(),
     ensures

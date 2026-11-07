@@ -9,5 +9,6 @@
 #![forbid(unsafe_code)]
 
 mod record;
+pub mod store;
 
 pub use record::*;
