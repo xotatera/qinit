@@ -540,10 +540,12 @@ The same window has a second face under queen: a colony killed after it made a c
 put the cell's directory in queen's store leaves a cell nobody holds. The next colony cannot adopt
 it and a later start of the same node fails to create its cell. The `queen` suite's kills wait for
 the state to reach queen for this reason.
-### D68 — A configurable shutdown bound · `OPEN`
+### D68 — A configurable shutdown bound · `RESOLVED`
 
-Queen's shutdown bound is five minutes, then a kill and five seconds more (M12). A deployment that
-needs another figure needs a setting; today only the guests' `testing` build reads one.
+Queen's shutdown bound was a constant, five minutes. `qinit.shutdown_ms=` on the kernel command
+line now sets it (1 ms to a day; a value that is not allowed is logged and the default kept), and
+`qinit.heartbeat_ms=` sets D70's period. The guests' `testing` build still reads
+`/run/queen-test` over those.
 
 ### D69 — A parked queen reaps nothing · `ACCEPTED`
 
@@ -551,11 +553,13 @@ After a panic or a fault queen parks (M11): zombies pile up and nothing restarts
 is reset. The alternative, to exit, would panic the kernel, and a loop that carries on after a fault
 cannot be trusted. Colony, a process of its own, keeps serving.
 
-### D70 — A colony that hangs but is alive is not noticed · `OPEN`
+### D70 — A colony that hangs but is alive is not noticed · `RESOLVED`
 
-Queen restarts a colony that dies, and kills a colony that has not finished a shutdown in time. A
-colony that is alive and no longer serving (a stuck loop) is noticed by neither before a shutdown.
-A heartbeat on the channel would catch it.
+Colony sends `Alive` on the channel every 2 s from its loop, and queen kills a colony that sent
+nothing for a whole heartbeat period (30 s, `qinit.heartbeat_ms`, 0 for off): a stuck loop is
+restarted like a crash. The proof states both sides (`proof:qinit-queen-core`); the `queen` suite
+stops a colony with `SIGSTOP` and watches it killed and its worker adopted, and leaves a turning
+colony alone for two periods.
 
 ### D71 — Colony without queen does not re-adopt · `ACCEPTED`
 
@@ -563,10 +567,13 @@ Without `--queen-fd` colony holds nothing: a colony restart starts everything ag
 finds in the comb alone (one log line each) and fails the create of a node whose cell name is taken
 (M10).
 
-### D72 — Services inherit queen's descriptor limit · `OPEN`
+### D72 — Services inherit queen's descriptor limit · `RESOLVED`
 
-Queen raises `RLIMIT_NOFILE` to 65536 to hold the whole store and colony inherits it, so services
-whose frame sets no `nofile` start with that limit and not the kernel's default.
+Queen raises `RLIMIT_NOFILE` to 65536 to hold the whole store, and colony inherited it, so
+services whose frame sets no `nofile` started with that limit and not the kernel's default. Queen
+now starts colony, rescue and zero with the limit it started with (`Prepared::nofile`, set between
+the clone and the exec; a failed exec of zero raises queen's own again). The `queen` suite checks
+colony and rescue against queen's.
 
 ### D73 — `readopt` VM case `a_pipe_worker_still_starting_is_restarted` fails about one run in thirteen · `RESOLVED`
 

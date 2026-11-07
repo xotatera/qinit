@@ -36,7 +36,7 @@ colony [--db PATH] [--comb DIR] [--socket PATH] [--overseer PATH]
 | `--syslog` | `/dev/log` | The datagram socket colony's own messages go to. |
 | `--console` | `/dev/console` | Where those messages go when syslog is not there. |
 | `--run` | `/run/qinit` | The runtime directory (mode 0755, created if absent): the socket's parent. |
-| `--queen-fd` | none | The descriptor number of queen's channel, given when queen starts colony. |
+| `--queen-fd` | none | The descriptor number of queen's channel, given when queen starts colony. Colony sends queen an `Alive` record every 2 s, which queen's [heartbeat](queen.md#the-heartbeat) watches. |
 
 Each flag is given at most once, as `--flag value` or `--flag=value`. There is no other
 configuration: everything else is in the database. An argument it does not know is refused with a
