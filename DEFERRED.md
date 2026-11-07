@@ -60,16 +60,13 @@ indented. A file the parser cannot read whole falls back to the earlier text
 rules, which miss `r#verus!`, `verus ! {}` and a call after other code on its
 line. Revisit if real Verus code hits one.
 
-### D8 — Exit status of a handed-over main process · `ACCEPTED`
+### D8 — Exit status of a handed-over main process · `RESOLVED`
 
-A main process queen hands over on adoption need not be the runtime's child,
-so `qinit-cell` watches its pidfd without reaping it and reports its exit as
-`MainExited(None)`. If that handed-over main is actually our child, its exit
-is separately reported as an Orphan with its real status, while its cell gets
-`MainExited(None)`. The status of a process that is not a child is only readable
-through `PIDFD_INFO_EXIT` (Linux 6.15), above the 6.13 floor. Revisit
-if the floor reaches 6.15.
-
+A main queen handed over is read through `PIDFD_INFO_EXIT` (Linux 6.15, now the kernel floor): when
+the pidfd turns readable and the kernel has recorded a status, the cell reports it. A main whose
+parent has not reaped it yet is waited for (`Notice::StatusPending`): queen's `Reaped` wake lets
+colony read it, and after a second the exit is reported with an unknown status, as before. Without
+a queen nothing waits (`Cells::wait_for_status` is opt-in).
 ### D9 — Released child the loop refuses to watch · `ACCEPTED`
 
 When a cell lets go of a child that is still running (a late exec result
@@ -98,7 +95,8 @@ VM suites cannot produce an unkillable process (uninterruptible sleep): the
 'still populated after the kill deadline → Failed(Stuck)' path is covered by
 the Verus proof (`good`, obligation 6) and the host engine test
 `deadlines_escalate_then_report_stuck` only (spec §6.2).
-
+Queen's case of the same kind (a colony that cannot be reaped, so the shutdown ends at the kill
+wait) rests on the proof and the machine test `an_unreaped_colony_does_not_stop_the_way_down` too.
 ### D12 — Adoption open failure · `ACCEPTED`
 
 Adoption treats a cell that cannot be opened as an id mismatch
@@ -378,7 +376,7 @@ the service's own is not offered.
 ### D45 — `PIDFD_INFO_EXIT` for the pidfd reply · `RESOLVED`
 
 `qinit_client::pidfd_exit` reads the exit status from a launch's pidfd with `PIDFD_GET_INFO`
-and `PIDFD_INFO_EXIT` (Linux 6.15; the kernel floor stays 6.13): `Exited(status)` once the parent
+and `PIDFD_INFO_EXIT` (Linux 6.15, the kernel floor): `Exited(status)` once the parent
 has reaped the process (the kernel records the status at the reap, not at the exit), `Running` before
 that, `Unsupported` on a kernel without it. The implementation lives in `qinit-ipc` (MPL) because
 the client library cannot depend on `qinit-sys`.
@@ -395,8 +393,8 @@ bounded only by `wait_ms` and an explicit stop.
 
 The modes `rs:` and `ws:` leave their mounts slaves of the host's, so a mount the host makes later
 below the path appears in the view; every other mode is cut off as before. Making the host's own
-mounts shared is still queen's (SP8): the entry follows only if the host's tree is shared.
-
+mounts shared is zero's, early (SP10), not queen's: the entry follows only if the host's tree is
+shared.
 ### D48 — A listed path below a directory the service can write · `RESOLVED`
 
 An entry below a writable one (`rw:`, `wi:`, `ws:` above it in the list, by whole components) is
@@ -501,29 +499,24 @@ that removes it when dropped, as the qctl, client and protocol tests do.
 `ready = { socket }` means a socket is created at the path after the start, and colony watches for
 it. Colony does not bind and listen on the socket itself and hand the descriptor to the service
 (systemd and launchd do; dinit's `socket-listen` does), which would close the gap between the
-service's `bind` and `listen` and let clients connect before the service is up. It needs the fd
-store of queen (a later sub-project) to survive a colony restart.
+service's `bind` and `listen` and let clients connect before the service is up. Queen's store now
+exists to carry such a descriptor across a colony restart; the feature itself is still to do.
+### D63 — Logger pipes across a colony restart · `RESOLVED`
 
-### D63 — Logger pipes across a colony restart · `OPEN`
+Queen holds both ends of every logger pipe. A new colony takes them back and restarts neither the
+logger nor its producers, so nothing a producer wrote between the old colony's death and the new
+one's start is lost. A pipe queen no longer holds is made again and its nodes restarted.
+### D64 — Re-adoption through queen · `RESOLVED`
 
-Colony holds the logger pipes in its own descriptors, so a colony restart loses them: the new
-colony makes new pipes and restarts every logger and its producers, and what a producer wrote
-between the old colony's death and its own restart is lost. Keeping the pipes needs queen's fd
-store.
+Colony's state is in queen's store: each cell's directory descriptor, each main's pidfd and both
+ends of each logger pipe, with the text that names them. Re-adoption uses the held descriptors; the
+`/run/qinit/state` files and the pid, start time and cgroup id check are gone.
+### D65 — The exit status of a re-adopted main · `RESOLVED`
 
-### D64 — Re-adoption through queen · `OPEN`
-
-SP7 re-adopts from files in `/run/qinit/state` and a pidfd opened for a recorded pid, checked
-against its start time and cgroup id. The parent design gives queen cell directory descriptors and
-hand-over pidfds, which make the files and the check unnecessary; SP8 replaces them.
-
-### D65 — The exit status of a re-adopted main · `OPEN`
-
-A main that exits after a colony restart is not the new colony's child, so its wait status is
-unknown: colony counts the exit as a failure (`Report::Failed(None)`, as `MainExited(None)` does
-everywhere), and a one-shot that exited 0 after the restart is not told apart from a crash. Queen,
-as the parent through which the status can be passed, ends this (SP8).
-
+A main that exits after a colony restart has its wait status recorded by the kernel when queen, its
+new parent, reaps it, and colony reads it from the pidfd it adopted. A status of 0 is told apart
+from a crash; the unknown status remains only for a main whose status was not recorded within a
+second.
 ### D66 — A re-adopted node has no pid in `Status` · `RESOLVED`
 
 `Colony::pid` was the pid the effects layer reported when it started the node, so a node colony
@@ -542,3 +535,31 @@ that reply can lose the record of what the request did: an instance launched in 
 unknown to the next colony, which leaves its cell running. Instances are transient and the window
 is microseconds, so it is accepted; closing it would make the server hand a request's reply back
 to the daemon instead of sending it.
+
+### D68 — A configurable shutdown bound · `OPEN`
+
+Queen's shutdown bound is five minutes, then a kill and five seconds more (M12). A deployment that
+needs another figure needs a setting; today only the guests' `testing` build reads one.
+
+### D69 — A parked queen reaps nothing · `ACCEPTED`
+
+After a panic or a fault queen parks (M11): zombies pile up and nothing restarts, until the machine
+is reset. The alternative, to exit, would panic the kernel, and a loop that carries on after a fault
+cannot be trusted. Colony, a process of its own, keeps serving.
+
+### D70 — A colony that hangs but is alive is not noticed · `OPEN`
+
+Queen restarts a colony that dies, and kills a colony that has not finished a shutdown in time. A
+colony that is alive and no longer serving (a stuck loop) is noticed by neither before a shutdown.
+A heartbeat on the channel would catch it.
+
+### D71 — Colony without queen does not re-adopt · `ACCEPTED`
+
+Without `--queen-fd` colony holds nothing: a colony restart starts everything again, leaves what it
+finds in the comb alone (one log line each) and fails the create of a node whose cell name is taken
+(M10).
+
+### D72 — Services inherit queen's descriptor limit · `OPEN`
+
+Queen raises `RLIMIT_NOFILE` to 65536 to hold the whole store and colony inherits it, so services
+whose frame sets no `nofile` start with that limit and not the kernel's default.
