@@ -3,7 +3,7 @@
 //! The hand-written argument parser: the full grammar of spec §4.2 and §4.6.
 //!
 //! Options are `--key value` or `--key=value`; `--` ends the options; an unknown option is a
-//! usage error. `--socket PATH` and `--help` are accepted anywhere.
+//! usage error. `--socket PATH`, `--json` and `--help` are accepted anywhere.
 use std::path::PathBuf;
 
 /// The default colony socket.
@@ -15,7 +15,7 @@ pub const DEFAULT_LAUNCH_WAIT: u32 = 600_000;
 
 /// The text of `--help`.
 pub const HELP: &str = "\
-usage: qctl [--socket PATH] <command> ...   (default socket /run/qinit/colony)
+usage: qctl [--socket PATH] [--json] <command> ...   (default socket /run/qinit/colony)
 
   qctl compile [--layer NAME=DIR]... [--policy FILE | --no-policy] [--output FILE] [--dump FILE]
   qctl show    [--layer NAME=DIR]... [--policy FILE | --no-policy] <kind>.<name>... | policy
@@ -31,6 +31,8 @@ usage: qctl [--socket PATH] <command> ...   (default socket /run/qinit/colony)
            [--pids-max N] [--stop-mode main|cell] [--stop-grace MS] [--wait MS]
   qctl watch --all | <target>
 
+--json (status, list, the change commands, launch, run, watch): one JSON object per line.
+
 Defaults: layers vendor=/usr/lib/qinit/frames then etc=/etc/qinit/frames (the etc layer may be
 absent); policy /etc/qinit/policy.toml when it exists; output /etc/qinit/colony.db.
 Exit codes: 0 done, 1 refused or failed, 2 usage.
@@ -43,6 +45,8 @@ pub struct Parsed {
     pub socket: PathBuf,
     /// The command.
     pub command: Command,
+    /// `--json`: one JSON object per line instead of text.
+    pub json: bool,
 }
 
 /// The result of parsing: a command or a request for the help text.
@@ -273,6 +277,7 @@ struct Scan<'a> {
     only_positional: bool,
     help: bool,
     socket: Option<PathBuf>,
+    json: bool,
 }
 
 impl<'a> Scan<'a> {
@@ -282,6 +287,7 @@ impl<'a> Scan<'a> {
             only_positional: false,
             help: false,
             socket: None,
+            json: false,
         }
     }
 
@@ -310,6 +316,10 @@ impl<'a> Scan<'a> {
                 "--socket" => {
                     let v = self.value("--socket", inline)?;
                     self.socket = Some(PathBuf::from(v));
+                }
+                "--json" => {
+                    Scan::flag("--json", inline.as_deref())?;
+                    self.json = true;
                 }
                 _ => return Ok(Some(Item::Opt(name, inline))),
             }
@@ -637,8 +647,13 @@ pub fn parse(args: &[String]) -> Result<Outcome, String> {
     if s.help {
         return Ok(Outcome::Help);
     }
+    if s.json && matches!(word.as_str(), "compile" | "show" | "fill") {
+        return Err(format!("{word}: --json is not available"));
+    }
+    let command = command?;
     Ok(Outcome::Run(Parsed {
         socket: s.socket.unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET)),
-        command: command?,
+        command,
+        json: s.json,
     }))
 }

@@ -5,6 +5,7 @@
 //! first, with the instance's name printed.
 use crate::args::{Fds, LaunchOpts, RunOpts};
 use crate::control::{Failure, wait_ms};
+use crate::json::{self, Output};
 use crate::request;
 use qinit_client::{
     Begun, Client, LaunchArgs, LaunchOutcome, PidfdExit, RunArgs, Started, StopMode, pidfd_exit,
@@ -44,7 +45,13 @@ fn usage(err: &mut dyn Write, msg: &str) -> i32 {
 }
 
 /// `qctl launch`: an instance of the forager `opts.frame`.
-pub fn launch(opts: &LaunchOpts, socket: &Path, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+pub fn launch(
+    opts: &LaunchOpts,
+    socket: &Path,
+    output: Output,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
     let wait = match wait_ms(opts.wait) {
         Ok(w) => w,
         Err(msg) => return usage(err, &msg),
@@ -68,11 +75,17 @@ pub fn launch(opts: &LaunchOpts, socket: &Path, out: &mut dyn Write, err: &mut d
         let begun = c.begin_launch(&opts.frame, &args, opts.pidfd, wait)?;
         Ok((c, begun))
     });
-    settle(result, &opts.frame, out, err)
+    settle(result, &opts.frame, output, out, err)
 }
 
 /// `qctl run`: the request in the file `opts.request`, as `~<name>#<id>`.
-pub fn run(opts: &RunOpts, socket: &Path, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+pub fn run(
+    opts: &RunOpts,
+    socket: &Path,
+    output: Output,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
     let wait = match wait_ms(opts.wait) {
         Ok(w) => w,
         Err(msg) => return usage(err, &msg),
@@ -108,17 +121,18 @@ pub fn run(opts: &RunOpts, socket: &Path, out: &mut dyn Write, err: &mut dyn Wri
         let begun = c.begin_run(&opts.name, &spec, &args, false, wait)?;
         Ok((c, begun))
     });
-    settle(result, &format!("~{}", opts.name), out, err)
+    settle(result, &format!("~{}", opts.name), output, out, err)
 }
 
 /// Print the start, read the end, and return the exit code.
 fn settle(
     begun: Result<(Client, Begun), qinit_client::ClientError>,
     frame: &str,
+    output: Output,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
-    match ended(begun, frame, out) {
+    match ended(begun, frame, output, out) {
         Ok(code) => code,
         Err(Ended::Failure(f)) => f.report(err),
         Err(Ended::Failed { step, errno }) => {
@@ -157,6 +171,7 @@ impl From<std::io::Error> for Ended {
 fn ended(
     begun: Result<(Client, Begun), qinit_client::ClientError>,
     frame: &str,
+    output: Output,
     out: &mut dyn Write,
 ) -> Result<i32, Ended> {
     let (mut client, begun) = begun?;
@@ -165,7 +180,7 @@ fn ended(
         Begun::Failed { step, errno } => return Err(Ended::Failed { step, errno }),
     };
     let name = format!("{frame}#{id}");
-    writeln!(out, "started {name}")?;
+    say(output, out, &Say::Started, &name)?;
     out.flush()?;
     match client.finish(id)? {
         LaunchOutcome::Exited { status, .. } => {
@@ -176,26 +191,54 @@ fn ended(
             };
             match exit_of(status) {
                 Some(Exit::Code(code)) => {
-                    writeln!(out, "exited {name} code={code}")?;
+                    say(output, out, &Say::Exited(code), &name)?;
                     Ok(code)
                 }
                 Some(Exit::Signal(sig)) => {
-                    writeln!(out, "killed {name} signal={sig}")?;
+                    say(output, out, &Say::Killed(sig), &name)?;
                     Ok(128 + sig)
                 }
                 None => Err(Ended::Unseen(name)),
             }
         }
         LaunchOutcome::Pending { .. } => {
-            writeln!(out, "still running: {name}")?;
+            say(output, out, &Say::StillRunning, &name)?;
             Ok(0)
         }
         LaunchOutcome::Ready { .. } => {
-            writeln!(out, "ready {name}")?;
+            say(output, out, &Say::Ready, &name)?;
             Ok(0)
         }
         LaunchOutcome::Failed { step, errno } => Err(Ended::Failed { step, errno }),
     }
+}
+
+/// One event of a launch, printed as a line or as a JSON object.
+enum Say {
+    Started,
+    Exited(i32),
+    Killed(i32),
+    Ready,
+    StillRunning,
+}
+
+fn say(output: Output, out: &mut dyn Write, what: &Say, name: &str) -> std::io::Result<()> {
+    let (text, word, extra) = match what {
+        Say::Started => (format!("started {name}"), "started", None),
+        Say::Exited(code) => (
+            format!("exited {name} code={code}"),
+            "exited",
+            Some(("code", *code)),
+        ),
+        Say::Killed(sig) => (
+            format!("killed {name} signal={sig}"),
+            "killed",
+            Some(("signal", *sig)),
+        ),
+        Say::Ready => (format!("ready {name}"), "ready", None),
+        Say::StillRunning => (format!("still running: {name}"), "still_running", None),
+    };
+    output.line(out, &text, &json::event(word, name, extra))
 }
 
 /// How a process ended, from its wait status.

@@ -183,3 +183,104 @@ fn fds_routes_the_named_streams_and_only_those() {
     assert!(err.starts_with("qctl: colony refused: "), "{err}");
     assert!(counts.is_empty(), "{counts:?}");
 }
+
+fn json_lines(out: &str) -> Vec<serde_json::Value> {
+    out.lines()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{l:?}: {e}")))
+        .collect()
+}
+
+/// The `name` of the first object, which must be a `started` event.
+fn started_name(lines: &[serde_json::Value]) -> String {
+    assert_eq!(lines[0]["event"], "started", "{lines:?}");
+    lines[0]["name"].as_str().unwrap().to_owned()
+}
+
+#[test]
+fn launch_events_in_json() {
+    use serde_json::json;
+    let s = Served::start(&[], true, instant(Some(3 << 8)));
+    let path = sock(&s);
+    let (code, out, err) = qctl(&[
+        "--socket", &path, "launch", "backup", "--json", "--wait", "5000",
+    ]);
+    assert_eq!(code, 3, "{out}{err}");
+    let lines = json_lines(&out);
+    let name = started_name(&lines);
+    assert!(name.starts_with("backup#"), "{name}");
+    assert_eq!(
+        lines,
+        [
+            json!({"event": "started", "name": name}),
+            json!({"event": "exited", "name": name, "code": 3}),
+        ]
+    );
+    let s = Served::start(&[], true, instant(Some(9)));
+    let path = sock(&s);
+    let (code, out, err) = qctl(&["--socket", &path, "--json", "launch", "backup"]);
+    assert_eq!(code, 137, "{err}");
+    let lines = json_lines(&out);
+    let name = started_name(&lines);
+    assert_eq!(
+        lines[1],
+        json!({"event": "killed", "name": name, "signal": 9})
+    );
+}
+
+#[test]
+fn launch_pending_in_json() {
+    use serde_json::json;
+    let s = Served::start_ticking(&[], true, instant(None), Vec::new(), None, 1000);
+    let path = sock(&s);
+    let (code, out, err) = qctl(&[
+        "--socket", &path, "--json", "launch", "backup", "--wait", "100",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let lines = json_lines(&out);
+    let name = started_name(&lines);
+    assert_eq!(lines[1], json!({"event": "still_running", "name": name}));
+    assert_eq!(lines.len(), 2);
+}
+
+#[test]
+fn run_events_in_json() {
+    use serde_json::json;
+    let s = Served::start_policy(
+        &[],
+        true,
+        instant(Some(0)),
+        Vec::new(),
+        Some("default = \"allow\"\n"),
+    );
+    let path = sock(&s);
+    let req = Request::new("runjson", "argv = [\"/bin/job\"]\nuser = \"svc\"\n");
+    let (code, out, err) = qctl(&[
+        "--socket",
+        &path,
+        "run",
+        &req.path(),
+        "--name",
+        "job",
+        "--wait",
+        "5000",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{out}{err}");
+    let lines = json_lines(&out);
+    let name = started_name(&lines);
+    assert!(name.starts_with("~job#"), "{name}");
+    assert_eq!(
+        lines[1],
+        json!({"event": "exited", "name": name, "code": 0})
+    );
+}
+
+#[test]
+fn a_launch_failure_stays_text_in_json_mode() {
+    let s = Served::start(&[], false, instant(Some(0)));
+    let path = sock(&s);
+    let (code, out, err) = qctl(&["--socket", &path, "--json", "launch", "backup"]);
+    assert_eq!(code, 1);
+    assert_eq!(out, "");
+    assert!(err.starts_with("qctl: colony refused: Denied"), "{err}");
+}

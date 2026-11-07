@@ -7,6 +7,15 @@ use qinit_client::{Report, StateWord};
 /// `quarantined/breaker`. A word the table does not know prints as its number.
 #[must_use]
 pub fn state(w: StateWord) -> String {
+    match state_parts(w) {
+        (name, Some(detail)) => format!("{name}/{detail}"),
+        (name, None) => name,
+    }
+}
+
+/// The two halves of [`state`]: the name and the detail, if the word has one.
+#[must_use]
+pub fn state_parts(w: StateWord) -> (String, Option<String>) {
     let name = match w.state {
         0 => "off",
         1 => "waiting",
@@ -15,19 +24,19 @@ pub fn state(w: StateWord) -> String {
         4 => "done",
         5 => "stopping",
         6 => "quarantined",
-        n => return format!("state{n}/{}", w.detail),
+        n => return (format!("state{n}"), Some(w.detail.to_string())),
     };
     let detail = match (w.state, w.detail) {
-        (1, 0) => "dependency",
-        (1, 1) => "backoff",
-        (6, 0) => "breaker",
-        (6, 1) => "cascade",
-        (6, 2) => "start-timeout",
-        (6, 3) => "stop-failed",
-        (_, 0) => return name.to_owned(),
-        (_, d) => return format!("{name}/{d}"),
+        (1, 0) => "dependency".to_owned(),
+        (1, 1) => "backoff".to_owned(),
+        (6, 0) => "breaker".to_owned(),
+        (6, 1) => "cascade".to_owned(),
+        (6, 2) => "start-timeout".to_owned(),
+        (6, 3) => "stop-failed".to_owned(),
+        (_, 0) => return (name.to_owned(), None),
+        (_, d) => d.to_string(),
     };
-    format!("{name}/{detail}")
+    (name.to_owned(), Some(detail))
 }
 
 /// The name of a node kind word.

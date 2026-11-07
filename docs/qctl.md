@@ -14,7 +14,7 @@ launch request of `docs/launch-request.md`.
 ## Synopsis
 
 ```
-qctl [--socket PATH] <command> ...
+qctl [--socket PATH] [--json] <command> ...
 
 qctl compile [--layer NAME=DIR]... [--policy FILE | --no-policy] [--output FILE] [--dump FILE]
 qctl show    [--layer NAME=DIR]... [--policy FILE | --no-policy] <kind>.<name>... | policy
@@ -32,12 +32,13 @@ qctl watch --all | <target>
 ```
 
 Options are `--key value` or `--key=value`. `--` ends the options. An unknown option or command
-is a usage error. `--socket` and `--help` are accepted anywhere; `--help` prints the synopsis and
+is a usage error. `--socket`, `--json` and `--help` are accepted anywhere; `--help` prints the synopsis and
 exits 0.
 
 | Option | Commands | Meaning |
 |---|---|---|
 | `--socket PATH` | all | The colony socket. Default `/run/qinit/colony`. |
+| `--json` | status, list, start, stop, restart, clear, refresh, poweroff, reboot, halt, launch, run, watch | One JSON object per line of standard output; see [JSON output](#json-output). A usage error (exit 2) on compile, show and fill. |
 | `--layer NAME=DIR` | compile, show, fill | One layer, lowest first; may repeat. |
 | `--policy FILE` | compile, show, fill | The policy file. Excludes `--no-policy`. |
 | `--no-policy` | compile, show, fill | No policy check. Excludes `--policy`. |
@@ -409,3 +410,49 @@ line per notice and waits without limit. There is no timestamp.
 `refused`, `lost`, `starting`, `running`, `stopping`, `exited`. A watch of everything goes on past
 an instance's exit. When the colony closes the connection, or sends a reply that is not a notice
 `qctl` knows (an unknown report word, for example), `qctl: the stream ended: colony closed it or sent a reply that is not a notice` is printed and the exit code is 1.
+
+## JSON output
+
+With `--json` each line of standard output is one JSON object, built from the same data as the
+text line and with the same state words. An absent optional field is absent, never `null`.
+Errors do not change: they are text on standard error and the exit codes are the same, with no
+JSON object on standard output. `--json=VALUE` is a usage error.
+
+A state is split in two: `state` is the name (`waiting`, `quarantined`, ...) and `detail`, present
+only where the word has one, is the part after the slash in the text form (`backoff`, `breaker`,
+or a number for a detail the table does not know). `waiting/backoff` is
+`"state":"waiting","detail":"backoff"`. An instance's `state` has no detail.
+
+`status <node>`: `name`, `kind`, `state`, `detail`, `blocking` (`{"group":N,"target":"..."}`, only
+when blocked), `backoff_ms`, `since_ms`, `restarts`, `pid` (only with a process).
+
+`status <frame>#<id>`: `frame`, `id`, `state`, `status` (once exited; the raw wait status),
+`pid` (with a process).
+
+`list`: one object per entry: `kind`, `name`, `state`, `detail`.
+
+Change commands (`start`, `stop`, `restart`, `clear`, `refresh`, `poweroff`, `reboot`, `halt`):
+one object: `result` (`accepted`, `settled`, `pending`, `superseded`) and, except for `accepted`,
+`state` and `detail`.
+
+`launch`, `run`: one object per event, `event` being one of:
+
+| `event` | Other fields |
+|---|---|
+| `started` | `name` (`<frame>#<id>`; `~NAME#<id>` for `run`) |
+| `exited` | `name`, `code` |
+| `killed` | `name`, `signal` |
+| `ready` | `name` |
+| `still_running` | `name` |
+
+`watch`: one object per notice, `kind` being one of:
+
+| `kind` | Other fields |
+|---|---|
+| `node` | `name`, `report`, `state`, `detail`, `status` (when the notice has one) |
+| `instance` | `name` (the frame), `id`, `report`, `state`, `status` (when the notice has one) |
+| `swapped` | none |
+| `shutdown_complete` | `still_populated` |
+| `ended` | `state`, `detail` (a node's); the last object of the stream |
+
+`report` is the same word as in the text form.

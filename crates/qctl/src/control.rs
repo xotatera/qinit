@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The control commands over the client library (spec 2026-11-05 §4.6).
 use crate::args::{self, Command};
+use crate::json::{self, Output};
 use crate::text;
 use qinit_client::{Client, ClientError, Outcome, Status, Wait};
 use std::io::Write;
@@ -14,7 +15,13 @@ const MAX_WAIT_MS: u32 = 600_000;
 
 /// Run one control command against the colony at `socket`; `command` is one of status, list,
 /// change, refresh or shutdown. Returns the exit code: 0 done, 1 refused or failed, 2 usage.
-pub fn run(command: &Command, socket: &Path, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+pub fn run(
+    command: &Command,
+    socket: &Path,
+    output: Output,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
     let wait = match wait_of(command) {
         Ok(w) => w,
         Err(msg) => {
@@ -22,7 +29,7 @@ pub fn run(command: &Command, socket: &Path, out: &mut dyn Write, err: &mut dyn 
             return 2;
         }
     };
-    match go(command, socket, wait, out) {
+    match go(command, socket, wait, output, out) {
         Ok(()) => 0,
         Err(f) => f.report(err),
     }
@@ -85,21 +92,22 @@ pub(crate) fn wait_ms(ms: u32) -> Result<Duration, String> {
     }
 }
 
-fn go(command: &Command, socket: &Path, wait: Wait, out: &mut dyn Write) -> Result<(), Failure> {
+fn go(
+    command: &Command,
+    socket: &Path,
+    wait: Wait,
+    output: Output,
+    out: &mut dyn Write,
+) -> Result<(), Failure> {
     match command {
         Command::Status { target } => {
             let status = Client::connect(socket)?.status(target)?;
-            print_status(&status, out)?;
+            print_status(&status, output, out)?;
         }
         Command::List { kind } => {
             for e in Client::connect(socket)?.list(*kind)? {
-                writeln!(
-                    out,
-                    "{} {} {}",
-                    text::kind(e.kind),
-                    e.name,
-                    text::state(e.state)
-                )?;
+                let text = format!("{} {} {}", text::kind(e.kind), e.name, text::state(e.state));
+                output.line(out, &text, &json::entry(&e))?;
             }
         }
         Command::Change { target, action, .. } => {
@@ -110,13 +118,13 @@ fn go(command: &Command, socket: &Path, wait: Wait, out: &mut dyn Write) -> Resu
                 args::Action::Clear => qinit_client::Action::Clear,
             };
             let outcome = Client::connect(socket)?.change(target, action, wait)?;
-            print_outcome(outcome, out)?;
+            print_outcome(outcome, output, out)?;
         }
         Command::Refresh { db, .. } => {
             let file = std::fs::File::open(db)
                 .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", db.display())))?;
             let outcome = Client::connect(socket)?.refresh(file.as_fd(), wait)?;
-            print_outcome(outcome, out)?;
+            print_outcome(outcome, output, out)?;
         }
         Command::Shutdown { mode, .. } => {
             let mode = match mode {
@@ -125,7 +133,7 @@ fn go(command: &Command, socket: &Path, wait: Wait, out: &mut dyn Write) -> Resu
                 args::Mode::Halt => qinit_client::Mode::Halt,
             };
             let outcome = Client::connect(socket)?.shutdown(mode, wait)?;
-            print_outcome(outcome, out)?;
+            print_outcome(outcome, output, out)?;
         }
         other => {
             return Err(Failure::Io(std::io::Error::other(format!(
@@ -137,7 +145,14 @@ fn go(command: &Command, socket: &Path, wait: Wait, out: &mut dyn Write) -> Resu
     Ok(())
 }
 
-fn print_status(status: &Status, out: &mut dyn Write) -> std::io::Result<()> {
+fn print_status(status: &Status, output: Output, out: &mut dyn Write) -> std::io::Result<()> {
+    if output == Output::Json {
+        let value = match status {
+            Status::Node(n) => json::status(n),
+            Status::Instance(i) => json::instance_status(i),
+        };
+        return writeln!(out, "{value}");
+    }
     match status {
         Status::Node(n) => {
             writeln!(out, "name: {}", n.name)?;
@@ -168,11 +183,12 @@ fn print_status(status: &Status, out: &mut dyn Write) -> std::io::Result<()> {
     Ok(())
 }
 
-fn print_outcome(outcome: Outcome, out: &mut dyn Write) -> std::io::Result<()> {
-    match outcome {
-        Outcome::Accepted => writeln!(out, "accepted"),
-        Outcome::Settled(s) => writeln!(out, "settled {}", text::state(s)),
-        Outcome::Pending(s) => writeln!(out, "pending {}", text::state(s)),
-        Outcome::Superseded(s) => writeln!(out, "superseded {}", text::state(s)),
-    }
+fn print_outcome(outcome: Outcome, output: Output, out: &mut dyn Write) -> std::io::Result<()> {
+    let text = match outcome {
+        Outcome::Accepted => "accepted".to_owned(),
+        Outcome::Settled(s) => format!("settled {}", text::state(s)),
+        Outcome::Pending(s) => format!("pending {}", text::state(s)),
+        Outcome::Superseded(s) => format!("superseded {}", text::state(s)),
+    };
+    output.line(out, &text, &json::change(outcome))
 }

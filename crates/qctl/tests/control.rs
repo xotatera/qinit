@@ -123,10 +123,162 @@ fn a_command_that_is_not_a_control_command_is_an_error_not_a_panic() {
             target: String::new(),
         },
         std::path::Path::new("/nonexistent/qctl-sock"),
+        qctl::json::Output::Text,
         &mut Vec::new(),
         &mut err,
     );
     let err = String::from_utf8(err).unwrap();
     assert_eq!(code, 1, "{err}");
     assert!(err.starts_with("qctl: "), "{err}");
+}
+
+fn json_lines(out: &str) -> Vec<serde_json::Value> {
+    out.lines()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{l:?}: {e}")))
+        .collect()
+}
+
+#[test]
+fn status_and_list_in_json() {
+    use serde_json::json;
+    let s = Served::start(&["db"], true, instant(None));
+    let path = sock(&s);
+    let (code, out, err) = qctl(&["--socket", &path, "--json", "status", "db"]);
+    assert_eq!(code, 0, "{err}");
+    let lines = json_lines(&out);
+    assert_eq!(lines.len(), 1, "{out}");
+    let o = lines[0].as_object().unwrap();
+    // The dynamic numbers are read back; every other field is compared whole.
+    let expected = json!({
+        "name": "db", "kind": "worker", "state": "ready",
+        "backoff_ms": o["backoff_ms"], "since_ms": o["since_ms"], "restarts": o["restarts"],
+    });
+    let mut expected = expected.as_object().unwrap().clone();
+    if let Some(pid) = o.get("pid") {
+        expected.insert("pid".into(), pid.clone());
+    }
+    assert_eq!(*o, expected);
+    let (code, out, err) = qctl(&["list", "--json", "--socket", &path]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        json_lines(&out).contains(&json!({"kind": "worker", "name": "db", "state": "ready"})),
+        "{out}"
+    );
+    // The text form is untouched.
+    let (_, out, _) = qctl(&["--socket", &path, "list"]);
+    assert!(out.lines().any(|l| l == "worker db ready"), "{out}");
+}
+
+#[test]
+fn change_results_in_json() {
+    use serde_json::json;
+    let s = Served::start(&["db"], true, instant(None));
+    let path = sock(&s);
+    let (code, out, err) = qctl(&["--socket", &path, "stop", "db", "--wait", "5000", "--json"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        json_lines(&out),
+        [json!({"result": "settled", "state": "off"})]
+    );
+    let (code, out, err) = qctl(&["--socket", &path, "--json", "halt"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(json_lines(&out), [json!({"result": "accepted"})]);
+}
+
+#[test]
+fn a_state_with_a_detail_splits_in_json() {
+    use qinit_client::StateWord;
+    use serde_json::json;
+    let w = |state, detail| StateWord { state, detail };
+    assert_eq!(
+        qctl::json::entry(&qinit_client::Entry {
+            name: "x".into(),
+            kind: 0,
+            state: w(1, 1)
+        }),
+        json!({"kind": "worker", "name": "x", "state": "waiting", "detail": "backoff"})
+    );
+    assert_eq!(
+        qctl::json::change(qinit_client::Outcome::Pending(w(6, 3))),
+        json!({"result": "pending", "state": "quarantined", "detail": "stop-failed"})
+    );
+}
+
+#[test]
+fn an_absent_optional_field_is_absent() {
+    use qinit_client::{InstanceInfo, NodeInfo, StateWord};
+    use serde_json::json;
+    let node = NodeInfo {
+        name: "db".into(),
+        kind: 0,
+        state: StateWord {
+            state: 0,
+            detail: 0,
+        },
+        blocking: None,
+        backoff_ms: 0,
+        since_ms: 5,
+        restarts: 1,
+        pid: None,
+    };
+    assert_eq!(
+        qctl::json::status(&node),
+        json!({"name": "db", "kind": "worker", "state": "off",
+               "backoff_ms": 0, "since_ms": 5, "restarts": 1})
+    );
+    let blocked = NodeInfo {
+        blocking: Some((2, "worker.x".into())),
+        pid: Some(77),
+        ..node
+    };
+    assert_eq!(
+        qctl::json::status(&blocked),
+        json!({"name": "db", "kind": "worker", "state": "off",
+               "blocking": {"group": 2, "target": "worker.x"},
+               "backoff_ms": 0, "since_ms": 5, "restarts": 1, "pid": 77})
+    );
+    let inst = InstanceInfo {
+        frame: "backup".into(),
+        id: 4,
+        state: 3,
+        status: None,
+        pid: None,
+    };
+    assert_eq!(
+        qctl::json::instance_status(&inst),
+        json!({"frame": "backup", "id": 4, "state": "running"})
+    );
+    let done = InstanceInfo {
+        state: 4,
+        status: Some(256),
+        pid: Some(9),
+        ..inst
+    };
+    assert_eq!(
+        qctl::json::instance_status(&done),
+        json!({"frame": "backup", "id": 4, "state": "exited", "status": 256, "pid": 9})
+    );
+}
+
+#[test]
+fn json_is_a_usage_error_for_compile_show_and_fill() {
+    for cmd in ["compile", "show", "fill"] {
+        let (code, out, err) = qctl(&[cmd, "--json"]);
+        assert_eq!((code, out.as_str()), (2, ""), "{cmd}: {err}");
+        assert!(err.contains("--json") && err.contains(cmd), "{err}");
+    }
+    let (code, _, err) = qctl(&["--json", "compile"]);
+    assert_eq!(code, 2, "{err}");
+    let (code, _, err) = qctl(&["status", "db", "--json=1"]);
+    assert_eq!(code, 2, "{err}");
+}
+
+#[test]
+fn a_refusal_stays_text_on_stderr() {
+    let s = Served::start(&["db"], false, instant(None));
+    let path = sock(&s);
+    let (code, out, err) = qctl(&["--socket", &path, "--json", "stop", "db"]);
+    assert_eq!(code, 1);
+    assert_eq!(out, "");
+    assert!(err.starts_with("qctl: colony refused: Denied ("), "{err}");
 }
