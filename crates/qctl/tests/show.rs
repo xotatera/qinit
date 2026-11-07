@@ -14,6 +14,7 @@ fn golden_frames() -> Vec<String> {
     let layer = |name: &str| LayerInput {
         name: name.into(),
         dir: PathBuf::from(format!("{GOLDEN}/{name}")),
+        only: None,
     };
     let input = CompileInput {
         layers: vec![layer("vendor"), layer("etc")],
@@ -88,6 +89,7 @@ fn compile_one(dir: &Path) -> Vec<u8> {
         layers: vec![LayerInput {
             name: "shown".into(),
             dir: dir.to_path_buf(),
+            only: None,
         }],
         policy: None,
     };
@@ -272,4 +274,148 @@ fn show_prints_the_two_defaults_as_keys_not_comments() {
             "{text}"
         );
     }
+}
+
+/// Two layers with an `enable.toml` each: vendor sets both lists, etc appends to `enable`.
+fn enable_layers(tag: &str, vendor: Option<&str>, etc: Option<&str>) -> (TempDir, Vec<String>) {
+    let tmp = TempDir::new(tag);
+    let mut args = Vec::new();
+    for (name, text) in [("vendor", vendor), ("etc", etc)] {
+        let dir = tmp.0.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Some(text) = text {
+            std::fs::write(dir.join("enable.toml"), text).unwrap();
+        }
+        args.push("--layer".to_owned());
+        args.push(format!("{name}={}", dir.display()));
+    }
+    (tmp, args)
+}
+
+fn show_enable(layers: &[String]) -> (i32, String, String) {
+    let mut args: Vec<&str> = vec!["show", "--no-policy"];
+    args.extend(layers.iter().map(String::as_str));
+    args.push("enable");
+    qctl(&args)
+}
+
+#[test]
+fn show_enable_prints_both_lists_with_origins() {
+    let (_t, layers) = enable_layers(
+        "enable-origins",
+        Some("enable = [\"a\", \"b\"]\nsyslog = [\"s\"]\n"),
+        Some("enable = { append = [\"c\"] }\n"),
+    );
+    let (code, out, err) = show_enable(&layers);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out,
+        "enable = [\"a\", \"b\", \"c\"]  # etc\nsyslog = [\"s\"]  # vendor\n"
+    );
+}
+
+#[test]
+fn show_enable_of_an_unset_list_is_empty_and_a_default() {
+    let (_t, layers) = enable_layers("enable-unset", None, None);
+    let (code, out, err) = show_enable(&layers);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out, "enable = []  # default\nsyslog = []  # default\n");
+}
+
+#[test]
+fn show_enable_is_accepted_unchanged_by_the_compiler() {
+    let (t, layers) = enable_layers(
+        "enable-round",
+        Some("enable = [\"a\", \"b\"]\nsyslog = [\"s\"]\n"),
+        Some("enable = { remove = [\"a\"] }\n"),
+    );
+    let (_, out, _) = show_enable(&layers);
+    let shown = t.0.join("shown");
+    std::fs::create_dir_all(&shown).unwrap();
+    std::fs::write(shown.join("enable.toml"), &out).unwrap();
+    let layer = |name: &str, dir: PathBuf| LayerInput {
+        name: name.into(),
+        dir,
+        only: None,
+    };
+    let want = qinit_frames::layers::load_enable(&[
+        layer("vendor", t.0.join("vendor")),
+        layer("etc", t.0.join("etc")),
+    ])
+    .expect("loads");
+    let got = qinit_frames::layers::load_enable(&[layer("shown", shown)]).expect("loads");
+    assert_eq!(got, want);
+    assert_eq!(got.roots, ["b"]);
+}
+
+#[test]
+fn a_malformed_enable_toml_is_reported_as_compile_reports_it() {
+    let (t, layers) = enable_layers("enable-bad", Some("enable = [\n"), None);
+    let (code, out, err) = show_enable(&layers);
+    assert_eq!((code, out.as_str()), (1, ""), "{err}");
+    // The same lines `compile` prints for the same file: no `qctl: ` before an error line, and
+    // the parse error's own lines as the parser wrote them.
+    let db = t.0.join("x.db");
+    let mut args: Vec<&str> = vec!["compile", "--no-policy", "--output", db.to_str().unwrap()];
+    args.extend(layers.iter().map(String::as_str));
+    let (compile_code, _, compile_err) = qctl(&args);
+    assert_eq!(compile_code, 1, "{compile_err}");
+    assert_eq!(err, compile_err);
+    let file = t.0.join("vendor/enable.toml");
+    let first = format!("{}: TOML parse error", file.display());
+    assert!(err.lines().any(|l| l.starts_with(&first)), "{err}");
+    assert!(
+        !err.lines()
+            .any(|l| l.starts_with("qctl: ") && l.contains("enable.toml")),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_malformed_policy_is_reported_as_compile_reports_it() {
+    let tmp = TempDir::new("policy-bad");
+    let policy = tmp.0.join("policy.toml");
+    std::fs::write(&policy, "rule = [\n").unwrap();
+    let p = policy.display().to_string();
+    let layer = format!("--layer=vendor={GOLDEN}/vendor");
+    let (code, out, err) = qctl(&["show", &layer, "--policy", &p, "policy"]);
+    assert_eq!((code, out.as_str()), (1, ""), "{err}");
+    // The same lines `compile` prints for the same file.
+    let db = tmp.0.join("x.db");
+    let (compile_code, _, compile_err) = qctl(&[
+        "compile",
+        &layer,
+        "--policy",
+        &p,
+        "--output",
+        db.to_str().unwrap(),
+    ]);
+    assert_eq!(compile_code, 1, "{compile_err}");
+    assert!(!err.is_empty(), "no error text");
+    assert_eq!(err, compile_err);
+}
+
+#[test]
+fn show_enable_skips_a_middle_layer_without_the_file() {
+    let tmp = TempDir::new("enable-middle");
+    let mut layers = Vec::new();
+    for (name, text) in [
+        ("vendor", Some("enable = [\"a\"]\n")),
+        ("mid", None),
+        ("etc", Some("enable = { append = [\"c\"] }\n")),
+    ] {
+        let dir = tmp.0.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Some(text) = text {
+            std::fs::write(dir.join("enable.toml"), text).unwrap();
+        }
+        layers.push("--layer".to_owned());
+        layers.push(format!("{name}={}", dir.display()));
+    }
+    let (code, out, err) = show_enable(&layers);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out,
+        "enable = [\"a\", \"c\"]  # etc\nsyslog = []  # default\n"
+    );
 }

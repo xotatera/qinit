@@ -14,30 +14,32 @@ launch request of `docs/launch-request.md`.
 ## Synopsis
 
 ```
-qctl [--socket PATH] <command> ...
+qctl [--socket PATH] [--json] <command> ...
 
 qctl compile [--layer NAME=DIR]... [--policy FILE | --no-policy] [--output FILE] [--dump FILE]
-qctl show    [--layer NAME=DIR]... [--policy FILE | --no-policy] <kind>.<name>... | policy
+qctl show    [--layer NAME=DIR]... [--policy FILE | --no-policy] <kind>.<name>... | enable | policy
 qctl fill    [--layer NAME=DIR]... [--policy FILE | --no-policy] [--dry-run]
-             <kind>.<name>... | policy | all
+             <kind>.<name>... | enable | policy | all
 qctl status <target>
 qctl list [all | workers | foragers | broods]
 qctl start | stop | restart | clear <node> [--wait MS]
 qctl refresh <db> [--wait MS]
 qctl poweroff | reboot | halt [--wait MS]
 qctl launch <frame> [--env K=V]... [--fds stdin,stdout,stderr] [--pidfd] [--wait MS] [-- ARG...]
-qctl run <request.toml> --name NAME [--fds ...] [--wait-ready] [--memory-max KIB]
-         [--pids-max N] [--stop-mode main|cell] [--stop-grace MS] [--wait MS]
+qctl run <request.toml> --name NAME | --frame FILE [--name NAME]
+         [--fds ...] [--wait-ready] [--memory-max KIB] [--pids-max N]
+         [--stop-mode main|cell] [--stop-grace MS] [--wait MS]
 qctl watch --all | <target>
 ```
 
 Options are `--key value` or `--key=value`. `--` ends the options. An unknown option or command
-is a usage error. `--socket` and `--help` are accepted anywhere; `--help` prints the synopsis and
-exits 0.
+is a usage error. `--socket`, `--json` and `--help` are accepted anywhere; `--help` prints the
+synopsis and exits 0.
 
 | Option | Commands | Meaning |
 |---|---|---|
 | `--socket PATH` | all | The colony socket. Default `/run/qinit/colony`. |
+| `--json` | status, list, start, stop, restart, clear, refresh, poweroff, reboot, halt, launch, run, watch | One JSON object per line of standard output; see [JSON output](#json-output). A usage error (exit 2) on compile, show and fill. |
 | `--layer NAME=DIR` | compile, show, fill | One layer, lowest first; may repeat. |
 | `--policy FILE` | compile, show, fill | The policy file. Excludes `--no-policy`. |
 | `--no-policy` | compile, show, fill | No policy check. Excludes `--policy`. |
@@ -48,16 +50,18 @@ exits 0.
 | `--env K=V` | launch | An environment entry of the instance; may repeat. |
 | `--fds ROLES` | launch, run | Pass `qctl`'s own standard streams for these roles (comma-separated `stdin`, `stdout`, `stderr`). Default none. |
 | `--pidfd` | launch | Ask for a pidfd; the outcome is read from it where the kernel can say. |
-| `--name NAME` | run | The instance's name (required). |
-| `--wait-ready` | run | End the wait when the instance reports readiness. |
-| `--memory-max KIB` | run | Memory ceiling in KiB. Default 0: none. |
-| `--pids-max N` | run | Process-count ceiling. Default 0: none. |
-| `--stop-mode main\|cell` | run | Stop the main process or the whole cell. Default `main`. |
-| `--stop-grace MS` | run | Grace before the kill. Default 10000. |
+| `--frame FILE` | run | Run the one frame in `FILE` instead of a request file; see [The frame file for run](#the-frame-file-for-run). Giving both is a usage error. |
+| `--name NAME` | run | The instance's name. Required with a request file; with `--frame` the frame's name by default. |
+| `--wait-ready` | run | End the wait when the instance reports readiness. With `--frame`, implied by `ready = "pipe"` and an error without it. |
+| `--memory-max KIB` | run | Memory ceiling in KiB. Default 0: none; with `--frame`, the frame's `cell.memory_max`. |
+| `--pids-max N` | run | Process-count ceiling. Default 0: none; with `--frame`, the frame's `cell.pids_max`. |
+| `--stop-mode main\|cell` | run | Stop the main process or the whole cell. Default `main`; with `--frame`, the frame's `stop.mode`. |
+| `--stop-grace MS` | run | Grace before the kill. Default 10000; with `--frame`, the frame's `stop.grace`. |
 | `--all` | watch | Every node and instance. |
 
 `show` and `fill` take a target `<kind>.<name>` where kind is `worker`, `forager`, `brood` or
-`template`; `show` also takes `policy`, and `fill` takes `policy` and `all`. An instance name
+`template`; both also take `enable` (the `enable.toml` lists), `show` also takes `policy`, and
+`fill` takes `policy` and `all`. An instance name
 (`worker.getty@tty1`) is accepted and means its frame.
 
 ## Defaults
@@ -146,7 +150,9 @@ the user is taken as root, so the check runs rather than being skipped.
 ## show
 
 `qctl show` prints the effective frames as TOML. It compiles the layers (so a compile error
-stops it with exit 1) and prints each target in the order given, separated by a blank line.
+stops it with exit 1) and prints each target in the order given, separated by a blank line. An
+error in an `enable.toml` for `show enable`, or in the policy file for `show policy`, is printed
+as `compile` prints it, one line per error, and is exit 1.
 
 - A frame starts with `[<kind>.<name>]` and has one line `key = value  # <origin>` per key, in the
   order of the compiler's dump, with nested keys as dotted keys. The origin is `vendor`, `etc` (the
@@ -168,6 +174,11 @@ stops it with exit 1) and prints each target in the order given, separated by a 
 - `show policy` prints the policy with every rule and every key, a default marked `# default` and
   a value from the file marked `# policy`. It needs a policy file: with `--no-policy` or without a
   file it exits 1.
+- `show enable` prints the merged `enable` and `syslog` lists of the layers' `enable.toml` files,
+  one line each, `<key> = [...]  # <origin>`: the origin is the layer that set the key last (an
+  `append` or `remove` counts as setting it) and `default` for a list no layer set, which prints
+  as `[]`. A layer without an `enable.toml` is skipped, as the compiler skips it, so no file is
+  an error here. The output is a valid `enable.toml` and gives the compiler the same lists.
 
 Example, from a vendor layer and an `etc` layer (excerpt):
 
@@ -207,6 +218,14 @@ layer, created when absent (as root only below directories that pass the ownersh
 goes into the file of that layer that already has a table for the frame; when there is none, into a
 file of the same base name as the file that declared the frame, with a new `[<kind>.<name>]`
 header. The policy is written in place. A target that is an instance fills its frame.
+
+**enable.toml.** `fill enable` writes `enable = []` and `syslog = []`, whichever no layer
+set, into `enable.toml` of the last layer, in the same `# default, filled by qctl` form and the
+same commit as the frames. A list a lower layer set is left alone: a plain array over an existing
+list is a compile error, and the list already has a value. An absent `enable.toml` in the last
+layer is created like an absent layer directory; a file that exists keeps its content and the
+key is added after its keys (comments only: after them). The database is unchanged, since an
+unset list is empty. `fill all` includes `enable`.
 
 **Templates.** A key goes into the template's table, once, when the frame takes the field from
 the template (it does not set that field itself) and every frame using the template that does
@@ -354,6 +373,45 @@ cpu = "infinity"
 as = "64M"
 ```
 
+## The frame file for run
+
+`qctl run --frame FILE [--name NAME]` runs one frame as an instance `~NAME#<id>`, `NAME` being the
+frame's name unless `--name` is given. `FILE` holds exactly one frame, `[worker.<name>]` or
+`[forager.<name>]`, and may have any file name. It is compiled as one more layer, named `run`,
+on top of the layers and the policy `compile` uses by default (`vendor`, `etc`, and the policy
+file when it exists, with the same notices and, as root, the same ownership check of those; the
+file itself is the caller's, as a request file is). So a template, the defaults, the amend rules
+and the policy check apply as to any frame, and a frame whose name a lower layer already defines
+is amended by the file as a layer amends it: `exec = { replace = [...] }` replaces the list, a new
+`env` key joins the lower layer's. The layer has no `enable.toml`.
+
+The node the frame compiles to becomes the request as colony builds one for an instance of a
+frame (`qinit_overseer::request`), with no argv tail and no environment additions. `deadline_ms`
+is the frame's `start_timeout`, capped at 30000, and 30000 when it is `none`. The cell's
+`memory_max` and `pids_max`, and the `stop` mode and grace, are the frame's unless the matching
+option is given. With `ready = "pipe"` the request routes a readiness pipe and the run waits for
+it, as `ready_fd` with `--wait-ready` does for a request file; `--wait-ready` on a frame with any
+other readiness is an error.
+
+A stream that `--fds` sends takes the place of the frame's route for that stream, as for
+`launch`: the streams arrive as descriptors 5, 6 and 7 (stdin, stdout, stderr), and the readiness
+pipe is routed at 8. The service finds the pipe at `QINIT_READY_FD`, as any service does.
+
+Everything below is exit 1, with nothing sent to colony:
+
+| Problem | Message |
+|---|---|
+| A compile error | As `compile` prints it: `<file>:<line>: <key>: <message>`. An error in the frame file names that file and line. |
+| No frame, or more than one | `qctl: <file>: no frame; run --frame takes a file of one frame`, or `qctl: <file>: 2 frames (forager.a, forager.b); run --frame takes one`. Every table of every kind counts, a template too: a file with `[template.t]` and `[worker.x]` holds 2 frames. |
+| A brood or a template | `<file>:<line>: brood.<name>: a brood has nothing to run`; a template is no node either. |
+| A frame that expands to more than one node (`instances`), or to none | `<file>:<line>: worker.<name>.instances: the frame expands to 2 nodes; run takes one`. |
+| `output` or `errors` to a logger (`{ pipe = ... }`) that `--fds` does not replace | `<file>:<line>: <kind>.<name>.output: a Run has no logger: ...`. Standard error that follows standard output needs no route of its own. |
+| `ready = { socket = ... }` or `ready = { path = ... }` | `<file>:<line>: <kind>.<name>.ready: a Run has no socket readiness; ...`. |
+| A `launch` table | `<file>:<line>: forager.<name>.launch: a frame with a launch table is for qctl launch, not run`. |
+
+The `<file>` and `<line>` of a key are where it was set: a key a lower layer set names that
+layer's file. The output, and with `--json` the objects, are those of any `run`.
+
 ## Control commands
 
 These commands connect to the colony socket. A refusal by the colony is exit 1 with
@@ -376,9 +434,9 @@ database read-only and passes the descriptor.
 
 ### launch and run
 
-`launch` starts an instance of a frame; `run` starts one from a request file. Neither
-passes a standard stream unless `--fds` names its role; the frame decides which roles it takes and
-the colony refuses the rest. Output, in order:
+`launch` starts an instance of a frame; `run` starts one from a request file or a frame file.
+Neither passes a standard stream unless `--fds` names its role; the frame decides which roles it
+takes and the colony refuses the rest. Output, in order:
 
 | Line | When |
 |---|---|
@@ -408,4 +466,60 @@ line per notice and waits without limit. There is no timestamp.
 `<report>` is one of `current`, `started`, `ready`, `done`, `stopped`, `failed`, `quarantined`,
 `refused`, `lost`, `starting`, `running`, `stopping`, `exited`. A watch of everything goes on past
 an instance's exit. When the colony closes the connection, or sends a reply that is not a notice
-`qctl` knows (an unknown report word, for example), `qctl: the stream ended: colony closed it or sent a reply that is not a notice` is printed and the exit code is 1.
+`qctl` knows (an unknown report word, for example), the exit code is 1 after
+
+```
+qctl: the stream ended: colony closed it or sent a reply that is not a notice
+```
+
+## JSON output
+
+With `--json` each line of standard output is one JSON object, built from the same data as the
+text line and with the same state words. An absent optional field is absent, never `null`.
+Errors do not change: they are text on standard error and the exit codes are the same, with no
+JSON object on standard output. `--json=VALUE` is a usage error.
+
+A state is split in two: `state` is the name (`waiting`, `quarantined`, ...) and `detail`, present
+only where the word has one, is the part after the slash in the text form: a string (`backoff`,
+`breaker`) or, for a detail the table does not know, a JSON number. `waiting/backoff` is
+`"state":"waiting","detail":"backoff"` and `quarantined/4` is `"state":"quarantined","detail":4`;
+a state the table does not know is `state<n>` with its detail as a number (`"state":"state7",
+"detail":0`). An instance's `state` has no detail.
+
+An instance is named three ways in JSON: `status <frame>#<id>` gives `frame` and
+`id`; a watch notice gives `name` (the frame) and `id`; the `launch` and `run` events give `name`
+as the whole `<frame>#<id>`, the string to pass to `status` or `watch`.
+
+`status <node>`: `name`, `kind`, `state`, `detail`, `blocking` (`{"group":N,"target":"..."}`, only
+when blocked), `backoff_ms`, `since_ms`, `restarts`, `pid` (only with a process).
+
+`status <frame>#<id>`: `frame`, `id`, `state`, `status` (once exited; the raw wait status),
+`pid` (with a process).
+
+`list`: one object per entry: `kind`, `name`, `state`, `detail`.
+
+Change commands (`start`, `stop`, `restart`, `clear`, `refresh`, `poweroff`, `reboot`, `halt`):
+one object: `result` (`accepted`, `settled`, `pending`, `superseded`) and, except for `accepted`,
+`state` and `detail`.
+
+`launch`, `run`: one object per event, `event` being one of:
+
+| `event` | Other fields |
+|---|---|
+| `started` | `name` (`<frame>#<id>`; `~NAME#<id>` for `run`) |
+| `exited` | `name`, `code` |
+| `killed` | `name`, `signal` |
+| `ready` | `name` |
+| `still_running` | `name` |
+
+`watch`: one object per notice, `kind` being one of:
+
+| `kind` | Other fields |
+|---|---|
+| `node` | `name`, `report`, `state`, `detail`, `status` (when the notice has one) |
+| `instance` | `name` (the frame), `id`, `report`, `state`, `status` (when the notice has one) |
+| `swapped` | none |
+| `shutdown_complete` | `still_populated` |
+| `ended` | The last object of the stream. For an instance's watch, `state` is the instance state (`exited`) with no `detail`; otherwise `state` and `detail` are the node's final state. |
+
+`report` is the same word as in the text form.

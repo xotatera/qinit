@@ -70,6 +70,7 @@ fn a_target_masked_by_disable_is_missing_target_for_require() {
         LayerInput {
             name: name.into(),
             dir,
+            only: None,
         }
     };
     let ls = [

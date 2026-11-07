@@ -64,6 +64,7 @@ pub fn try_database(frames: &str, enable: &[&str]) -> Option<Vec<u8>> {
         layers: vec![LayerInput {
             name: "vendor".to_owned(),
             dir: vendor,
+            only: None,
         }],
         policy: None,
     };
@@ -116,6 +117,7 @@ pub fn database_with_policy(frames: &str, enable: &[&str], policy: &str) -> Vec<
         layers: vec![LayerInput {
             name: "vendor".to_owned(),
             dir: vendor,
+            only: None,
         }],
         policy: Some(path),
     };

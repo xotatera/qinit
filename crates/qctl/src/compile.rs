@@ -57,11 +57,13 @@ pub fn input(
         chosen.push(LayerInput {
             name: "vendor".into(),
             dir: defaults.vendor.clone(),
+            only: None,
         });
         if defaults.etc.is_dir() {
             chosen.push(LayerInput {
                 name: "etc".into(),
                 dir: defaults.etc.clone(),
+                only: None,
             });
         } else {
             let _ = writeln!(
@@ -81,6 +83,7 @@ pub fn input(
             chosen.push(LayerInput {
                 name: name.clone(),
                 dir: dir.clone(),
+                only: None,
             });
         }
     }
@@ -124,16 +127,26 @@ pub fn checked_input(
     defaults: &Defaults,
     err: &mut dyn Write,
 ) -> Result<CompileInput, i32> {
-    let input = input(layers, policy, defaults, err).map_err(|m| {
-        let _ = writeln!(err, "qctl: {m}");
+    checked(layers, policy, defaults, err).map_err(|m| {
+        let _ = writeln!(err, "{m}");
         1
-    })?;
+    })
+}
+
+/// [`checked_input`], with the reason as its line instead of on `err`.
+///
+/// # Errors
+/// The line that [`checked_input`] prints.
+pub fn checked(
+    layers: &[(String, PathBuf)],
+    policy: &PolicyChoice,
+    defaults: &Defaults,
+    err: &mut dyn Write,
+) -> Result<CompileInput, String> {
+    let input = input(layers, policy, defaults, err).map_err(|m| format!("qctl: {m}"))?;
     let mut roots: Vec<&Path> = input.layers.iter().map(|l| l.dir.as_path()).collect();
     roots.extend(input.policy.as_deref());
-    owner::check(&roots, defaults.euid, err).map_err(|r| {
-        let _ = writeln!(err, "{r}");
-        1
-    })?;
+    owner::check(&roots, defaults.euid, err).map_err(|r| r.to_string())?;
     Ok(input)
 }
 

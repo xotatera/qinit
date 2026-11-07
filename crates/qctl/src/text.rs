@@ -7,6 +7,32 @@ use qinit_client::{Report, StateWord};
 /// `quarantined/breaker`. A word the table does not know prints as its number.
 #[must_use]
 pub fn state(w: StateWord) -> String {
+    match state_parts(w) {
+        (name, Some(detail)) => format!("{name}/{detail}"),
+        (name, None) => name,
+    }
+}
+
+/// The detail of a state word: its name, or its number when the table does not know it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Detail {
+    Name(&'static str),
+    Number(u32),
+}
+
+impl std::fmt::Display for Detail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Detail::Name(n) => f.write_str(n),
+            Detail::Number(n) => write!(f, "{n}"),
+        }
+    }
+}
+
+/// The two halves of [`state`]: the name and the detail, if the word has one. A state the
+/// table does not know is `state<n>` and always has its detail.
+#[must_use]
+pub fn state_parts(w: StateWord) -> (String, Option<Detail>) {
     let name = match w.state {
         0 => "off",
         1 => "waiting",
@@ -15,19 +41,19 @@ pub fn state(w: StateWord) -> String {
         4 => "done",
         5 => "stopping",
         6 => "quarantined",
-        n => return format!("state{n}/{}", w.detail),
+        n => return (format!("state{n}"), Some(Detail::Number(w.detail))),
     };
     let detail = match (w.state, w.detail) {
-        (1, 0) => "dependency",
-        (1, 1) => "backoff",
-        (6, 0) => "breaker",
-        (6, 1) => "cascade",
-        (6, 2) => "start-timeout",
-        (6, 3) => "stop-failed",
-        (_, 0) => return name.to_owned(),
-        (_, d) => return format!("{name}/{d}"),
+        (1, 0) => Detail::Name("dependency"),
+        (1, 1) => Detail::Name("backoff"),
+        (6, 0) => Detail::Name("breaker"),
+        (6, 1) => Detail::Name("cascade"),
+        (6, 2) => Detail::Name("start-timeout"),
+        (6, 3) => Detail::Name("stop-failed"),
+        (_, 0) => return (name.to_owned(), None),
+        (_, d) => Detail::Number(d),
     };
-    format!("{name}/{detail}")
+    (name.to_owned(), Some(detail))
 }
 
 /// The name of a node kind word.

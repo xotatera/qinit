@@ -140,6 +140,45 @@ fn an_instance_watch_ends_at_the_exit() {
 }
 
 #[test]
+fn an_instance_watch_in_json_ends_in_the_instance_state() {
+    use serde_json::json;
+    let s = Served::start(&[], true, instant(Some(5 << 8)));
+    let path = s.path.to_str().unwrap().to_owned();
+    let (code, out, err) = qctl(&["--socket", &path, "launch", "backup"]);
+    assert_eq!(code, 5, "{err}");
+    let target = out
+        .lines()
+        .find_map(|l| l.strip_prefix("started "))
+        .expect("the instance is named")
+        .to_owned();
+    let (frame, id) = target.split_once('#').unwrap();
+    let id: u64 = id.parse().unwrap();
+    let (mut lines, thread) = spawn(&["--socket", &path, "--json", "watch", &target]);
+    let mut seen = Vec::new();
+    while let Some(l) = line(&mut lines) {
+        seen.push(serde_json::from_str::<serde_json::Value>(&l).unwrap());
+    }
+    assert_eq!(
+        seen,
+        [
+            json!({"kind": "instance", "name": frame, "id": id, "report": "exited",
+                   "state": "exited", "status": 1280}),
+            json!({"kind": "ended", "state": "exited"}),
+        ]
+    );
+    assert_eq!(thread.join().unwrap().0, 0);
+    // The end of an instance's watch has the instance's state words, never a detail.
+    assert_eq!(
+        qctl::json::ended_instance(5),
+        json!({"kind": "ended", "state": "stopping"})
+    );
+    assert_eq!(
+        qctl::json::ended_instance(9),
+        json!({"kind": "ended", "state": "state9"})
+    );
+}
+
+#[test]
 fn a_watch_of_an_unknown_target_exits_1() {
     let s = Served::start(&["db"], true, instant(None));
     let path = s.path.to_str().unwrap().to_owned();
@@ -179,7 +218,7 @@ fn watch_all_goes_on_after_an_instance_exit() {
     let thread = std::thread::spawn(move || {
         let mut out = std::fs::File::from(wr);
         let mut err = Vec::new();
-        let code = qctl::watch::follow(w, false, &mut out, &mut err);
+        let code = qctl::watch::follow(w, false, qctl::json::Output::Text, &mut out, &mut err);
         (code, String::from_utf8(err).unwrap())
     });
     let mut lines = Lines::new(r);
@@ -211,5 +250,80 @@ fn watch_all_goes_on_after_an_instance_exit() {
             1,
             "qctl: the stream ended: colony closed it or sent a reply that is not a notice\n"
         )
+    );
+}
+
+#[test]
+fn watch_json_lines() {
+    use serde_json::json;
+    let s = Served::start(&["db"], true, instant(None));
+    let path = s.path.to_str().unwrap().to_owned();
+    let (mut lines, thread) = spawn(&["--socket", &path, "--json", "watch", "db"]);
+    let next = |l: &mut Lines| -> serde_json::Value {
+        let t = line(l).expect("the watch ended early");
+        serde_json::from_str(&t).unwrap_or_else(|e| panic!("{t:?}: {e}"))
+    };
+    assert_eq!(
+        next(&mut lines),
+        json!({"kind": "node", "name": "db", "report": "current", "state": "ready"})
+    );
+    let (code, _, err) = qctl(&["--socket", &path, "stop", "db"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        next(&mut lines),
+        json!({"kind": "node", "name": "db", "report": "stopped", "state": "off"})
+    );
+    let dir = TempDir::new("watchjson");
+    let db = dir.join("without-db.db");
+    let frames = "[forager.backup]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/backup\"]\n";
+    std::fs::write(&db, database(frames, &[])).unwrap();
+    let (code, _, err) = qctl(&["--socket", &path, "refresh", db.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    let mut last = None;
+    while let Some(l) = line(&mut lines) {
+        last = Some(serde_json::from_str::<serde_json::Value>(&l).unwrap());
+    }
+    assert_eq!(last, Some(json!({"kind": "ended", "state": "off"})));
+    let (code, err) = thread.join().unwrap();
+    assert_eq!(code, 0, "{err}");
+}
+
+#[test]
+fn watch_notice_shapes() {
+    use qinit_client::{Event, Report, StateWord};
+    use serde_json::json;
+    let ev = Event::Instance {
+        frame: "backup".into(),
+        id: 4,
+        report: Report::Exited,
+        state: 4,
+        status: Some(256),
+    };
+    assert_eq!(
+        qctl::json::notice(&ev),
+        json!({"kind": "instance", "name": "backup", "id": 4, "report": "exited",
+               "state": "exited", "status": 256})
+    );
+    let ev = Event::Node {
+        name: "db".into(),
+        report: Report::Failed,
+        state: StateWord {
+            state: 1,
+            detail: 1,
+        },
+        status: None,
+    };
+    assert_eq!(
+        qctl::json::notice(&ev),
+        json!({"kind": "node", "name": "db", "report": "failed",
+               "state": "waiting", "detail": "backoff"})
+    );
+    assert_eq!(
+        qctl::json::notice(&Event::Swapped),
+        json!({"kind": "swapped"})
+    );
+    assert_eq!(
+        qctl::json::notice(&Event::ShutdownComplete { still_populated: 2 }),
+        json!({"kind": "shutdown_complete", "still_populated": 2})
     );
 }

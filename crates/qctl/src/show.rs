@@ -17,6 +17,8 @@ use crate::{report, toml_text};
 use qinit_db::{RLIMIT_KEYS, Userns};
 use qinit_frames::compile::{Compiled, compile};
 use qinit_frames::dump::{self, Line};
+use qinit_frames::error::Error;
+use qinit_frames::layers::load_enable_origins;
 use qinit_frames::policy;
 use qinit_frames::provenance::{Provenance, Seg, parse_path, set_by};
 use std::fmt::Write as _;
@@ -30,12 +32,15 @@ pub(crate) const KINDS: [&str; 4] = ["worker", "forager", "brood", "template"];
 /// One target of the command line.
 enum Target<'a> {
     Policy,
+    Enable,
     Frame { kind: &'a str, name: &'a str },
 }
 
 fn target(t: &str) -> Option<Target<'_>> {
-    if t == "policy" {
-        return Some(Target::Policy);
+    match t {
+        "policy" => return Some(Target::Policy),
+        "enable" => return Some(Target::Enable),
+        _ => {}
     }
     let (kind, name) = t.split_once('.')?;
     (KINDS.contains(&kind) && !name.is_empty()).then_some(Target::Frame { kind, name })
@@ -48,7 +53,7 @@ pub fn run(opts: &ShowOpts, defaults: &Defaults, out: &mut dyn Write, err: &mut 
         let Some(parsed) = target(t) else {
             let _ = writeln!(
                 err,
-                "qctl: show: '{t}' is not <kind>.<name> or policy\nTry 'qctl --help'."
+                "qctl: show: '{t}' is not <kind>.<name>, enable or policy\nTry 'qctl --help'."
             );
             return 2;
         };
@@ -79,8 +84,9 @@ pub fn run(opts: &ShowOpts, defaults: &Defaults, out: &mut dyn Write, err: &mut 
     let mut text = Vec::new();
     for t in &targets {
         let shown = match (t, &compiled) {
-            (Target::Frame { kind, name }, Some(c)) => frame(c, kind, name),
+            (Target::Frame { kind, name }, Some(c)) => frame(c, kind, name).map_err(Unshown::from),
             (Target::Frame { .. }, None) => Err("show: the frames were not compiled".into()),
+            (Target::Enable, _) => show_enable(&input.layers),
             (Target::Policy, _) => match (&input.policy, &opts.policy) {
                 (Some(p), _) => show_policy(p),
                 (None, PolicyChoice::None) => Err("show policy: --no-policy was given".into()),
@@ -89,14 +95,58 @@ pub fn run(opts: &ShowOpts, defaults: &Defaults, out: &mut dyn Write, err: &mut 
         };
         match shown {
             Ok(s) => text.push(s),
-            Err(m) => {
+            Err(Unshown::Message(m)) => {
                 let _ = writeln!(err, "qctl: {m}");
+                return 1;
+            }
+            Err(Unshown::Errors(errors)) => {
+                for e in &errors {
+                    let _ = writeln!(err, "{}", report::error_line(e));
+                }
                 return 1;
             }
         }
     }
     let _ = out.write_all(text.join("\n").as_bytes());
     0
+}
+
+/// Why a target is not shown.
+enum Unshown {
+    /// A message of `qctl`'s, printed after `qctl: `.
+    Message(String),
+    /// The errors of reading a file, printed one per line as `compile` prints them.
+    Errors(Vec<Error>),
+}
+
+impl From<String> for Unshown {
+    fn from(m: String) -> Self {
+        Unshown::Message(m)
+    }
+}
+
+impl From<&str> for Unshown {
+    fn from(m: &str) -> Self {
+        Unshown::Message(m.to_owned())
+    }
+}
+
+/// The merged `enable` and `syslog` lists as an `enable.toml`, each with the layer that set it
+/// last (`default` when none did, then the list is empty). A layer given as one file has no
+/// `enable.toml`, as for the compiler.
+fn show_enable(layers: &[qinit_frames::layers::LayerInput]) -> Result<String, Unshown> {
+    let (list, origins) = load_enable_origins(layers).map_err(Unshown::Errors)?;
+    let mut text = String::new();
+    for (key, items) in [("enable", list.roots), ("syslog", list.syslog)] {
+        let items: Vec<Value> = items.into_iter().map(Value::String).collect();
+        let origin = dump::label(origins.get(key));
+        let _ = writeln!(
+            text,
+            "{key} = {}  # {origin}",
+            toml_text::value(&Value::Array(items))
+        );
+    }
+    Ok(text)
 }
 
 /// The table at `kind.name` of the merged frames.
@@ -298,13 +348,8 @@ fn flat(c: &Compiled, name: &str, t: &Table, path: &mut Vec<String>, text: &mut 
 }
 
 /// The policy file `path` with every rule and every key; implicit defaults marked `# default`.
-fn show_policy(path: &Path) -> Result<String, String> {
-    let p = policy::load_policy(path).map_err(|errs| {
-        errs.iter()
-            .map(report::error_line)
-            .collect::<Vec<_>>()
-            .join("\nqctl: ")
-    })?;
+fn show_policy(path: &Path) -> Result<String, Unshown> {
+    let p = policy::load_policy(path).map_err(Unshown::Errors)?;
     let m = policy::to_model(&p);
     let raw = std::fs::read_to_string(path)
         .ok()

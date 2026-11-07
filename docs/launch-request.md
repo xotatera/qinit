@@ -83,7 +83,9 @@ A stream is `(kind, a, b)`:
 ### Readiness
 
 With `ready_kind` 1 the readiness pipe arrives on `ready_fd`, which must be a routed
-descriptor (below). `Run` refuses a request with a readiness pipe.
+descriptor (below). `Run` takes a request with a readiness pipe only with its `wait_ready` flag,
+and then requires one: on a routed number from 5 to 37 that no stream uses
+(`docs/control-protocol.md`, `Run`).
 
 ## Descriptors
 

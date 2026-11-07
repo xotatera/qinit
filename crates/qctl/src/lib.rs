@@ -9,6 +9,8 @@ pub mod args;
 pub mod compile;
 pub mod control;
 pub mod fill;
+pub mod frame_run;
+pub mod json;
 pub mod launch;
 pub mod owner;
 pub mod report;
@@ -44,8 +46,11 @@ pub fn run_with(
         }
     };
     let Parsed {
-        command, socket, ..
+        command,
+        socket,
+        json,
     } = parsed;
+    let output = json::Output::of(json);
     match command {
         Command::Compile(opts) => compile::run(&opts, defaults, out, err),
         Command::Show(opts) => show::run(&opts, defaults, out, err),
@@ -54,9 +59,9 @@ pub fn run_with(
         | Command::List { .. }
         | Command::Change { .. }
         | Command::Refresh { .. }
-        | Command::Shutdown { .. } => control::run(&command, &socket, out, err),
-        Command::Launch(opts) => launch::launch(&opts, &socket, out, err),
-        Command::Run(opts) => launch::run(&opts, &socket, out, err),
-        Command::Watch { all, target } => watch::run(all, &target, &socket, out, err),
+        | Command::Shutdown { .. } => control::run(&command, &socket, output, out, err),
+        Command::Launch(opts) => launch::launch(&opts, &socket, output, out, err),
+        Command::Run(opts) => launch::run(&opts, &socket, defaults, output, out, err),
+        Command::Watch { all, target } => watch::run(all, &target, &socket, output, out, err),
     }
 }

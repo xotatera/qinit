@@ -3,7 +3,7 @@
 //! The hand-written argument parser: the full grammar of spec §4.2 and §4.6.
 //!
 //! Options are `--key value` or `--key=value`; `--` ends the options; an unknown option is a
-//! usage error. `--socket PATH` and `--help` are accepted anywhere.
+//! usage error. `--socket PATH`, `--json` and `--help` are accepted anywhere.
 use std::path::PathBuf;
 
 /// The default colony socket.
@@ -15,21 +15,24 @@ pub const DEFAULT_LAUNCH_WAIT: u32 = 600_000;
 
 /// The text of `--help`.
 pub const HELP: &str = "\
-usage: qctl [--socket PATH] <command> ...   (default socket /run/qinit/colony)
+usage: qctl [--socket PATH] [--json] <command> ...   (default socket /run/qinit/colony)
 
   qctl compile [--layer NAME=DIR]... [--policy FILE | --no-policy] [--output FILE] [--dump FILE]
-  qctl show    [--layer NAME=DIR]... [--policy FILE | --no-policy] <kind>.<name>... | policy
+  qctl show    [--layer NAME=DIR]... [--policy FILE | --no-policy] <kind>.<name>... | enable | policy
   qctl fill    [--layer NAME=DIR]... [--policy FILE | --no-policy] [--dry-run]
-               <kind>.<name>... | policy | all
+               <kind>.<name>... | enable | policy | all
   qctl status <target>
   qctl list [all | workers | foragers | broods]
   qctl start | stop | restart | clear <node> [--wait MS]
   qctl refresh <db> [--wait MS]
   qctl poweroff | reboot | halt [--wait MS]
   qctl launch <frame> [--env K=V]... [--fds stdin,stdout,stderr] [--pidfd] [--wait MS] [-- ARG...]
-  qctl run <request.toml> --name NAME [--fds ...] [--wait-ready] [--memory-max KIB]
-           [--pids-max N] [--stop-mode main|cell] [--stop-grace MS] [--wait MS]
+  qctl run <request.toml> --name NAME | --frame FILE [--name NAME]
+           [--fds ...] [--wait-ready] [--memory-max KIB] [--pids-max N]
+           [--stop-mode main|cell] [--stop-grace MS] [--wait MS]
   qctl watch --all | <target>
+
+--json (status, list, the change commands, launch, run, watch): one JSON object per line.
 
 Defaults: layers vendor=/usr/lib/qinit/frames then etc=/etc/qinit/frames (the etc layer may be
 absent); policy /etc/qinit/policy.toml when it exists; output /etc/qinit/colony.db.
@@ -43,6 +46,8 @@ pub struct Parsed {
     pub socket: PathBuf,
     /// The command.
     pub command: Command,
+    /// `--json`: one JSON object per line instead of text.
+    pub json: bool,
 }
 
 /// The result of parsing: a command or a request for the help text.
@@ -154,25 +159,34 @@ pub struct LaunchOpts {
     pub args: Vec<String>,
 }
 
-/// `qctl run`.
+/// What `qctl run` runs, with the instance's name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunSource {
+    /// A request file and `--name`, which a request file requires.
+    Request { file: PathBuf, name: String },
+    /// `--frame FILE`: a file of one frame, compiled over the layers, and `--name` if given
+    /// (the frame's name by default).
+    Frame { file: PathBuf, name: Option<String> },
+}
+
+/// `qctl run`. An option left out is `None`: a request file then takes the client's defaults,
+/// a frame its own values.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunOpts {
-    /// The request file.
-    pub request: PathBuf,
-    /// `--name`.
-    pub name: String,
+    /// The request file or the frame file, and `--name`.
+    pub source: RunSource,
     /// `--fds`.
     pub fds: Fds,
     /// `--wait-ready`.
     pub wait_ready: bool,
     /// `--memory-max` in KiB, 0 for none.
-    pub memory_max: u32,
+    pub memory_max: Option<u32>,
     /// `--pids-max`, 0 for none.
-    pub pids_max: u32,
+    pub pids_max: Option<u32>,
     /// `--stop-mode`: true for the whole cell.
-    pub stop_cell: bool,
+    pub stop_cell: Option<bool>,
     /// `--stop-grace` in ms.
-    pub stop_grace: u32,
+    pub stop_grace: Option<u32>,
     /// `--wait`.
     pub wait: u32,
 }
@@ -273,6 +287,7 @@ struct Scan<'a> {
     only_positional: bool,
     help: bool,
     socket: Option<PathBuf>,
+    json: bool,
 }
 
 impl<'a> Scan<'a> {
@@ -282,6 +297,7 @@ impl<'a> Scan<'a> {
             only_positional: false,
             help: false,
             socket: None,
+            json: false,
         }
     }
 
@@ -310,6 +326,10 @@ impl<'a> Scan<'a> {
                 "--socket" => {
                     let v = self.value("--socket", inline)?;
                     self.socket = Some(PathBuf::from(v));
+                }
+                "--json" => {
+                    Scan::flag("--json", inline.as_deref())?;
+                    self.json = true;
                 }
                 _ => return Ok(Some(Item::Opt(name, inline))),
             }
@@ -421,8 +441,8 @@ fn parse_command(word: &str, s: &mut Scan<'_>) -> Result<Command, String> {
     let mut pidfd = false;
     let mut name = None;
     let mut wait_ready = false;
-    // The defaults of the client's `RunArgs`: no ceilings, the main process, the frames' 10 s grace.
-    let (mut memory_max, mut pids_max, mut stop_cell, mut stop_grace) = (0, 0, false, 10_000);
+    let mut frame = None;
+    let (mut memory_max, mut pids_max, mut stop_cell, mut stop_grace) = (None, None, None, None);
     let mut tail = Vec::new();
     let launch_like = matches!(word, "launch" | "run");
     while let Some(item) = s.next()? {
@@ -473,21 +493,26 @@ fn parse_command(word: &str, s: &mut Scan<'_>) -> Result<Command, String> {
                         pidfd = true;
                     }
                     ("run", "--name") => name = Some(s.value(o, inline)?),
+                    ("run", "--frame") => frame = Some(PathBuf::from(s.value(o, inline)?)),
                     ("run", "--wait-ready") => {
                         Scan::flag(o, inline.as_deref())?;
                         wait_ready = true;
                     }
-                    ("run", "--memory-max") => memory_max = number(o, &s.value(o, inline)?)?,
-                    ("run", "--pids-max") => pids_max = number(o, &s.value(o, inline)?)?,
-                    ("run", "--stop-grace") => stop_grace = number(o, &s.value(o, inline)?)?,
+                    ("run", "--memory-max") => {
+                        memory_max = Some(number(o, &s.value(o, inline)?)?);
+                    }
+                    ("run", "--pids-max") => pids_max = Some(number(o, &s.value(o, inline)?)?),
+                    ("run", "--stop-grace") => {
+                        stop_grace = Some(number(o, &s.value(o, inline)?)?);
+                    }
                     ("run", "--stop-mode") => {
-                        stop_cell = match s.value(o, inline)?.as_str() {
+                        stop_cell = Some(match s.value(o, inline)?.as_str() {
                             "main" => false,
                             "cell" => true,
                             other => {
                                 return Err(format!("--stop-mode: '{other}' is not main or cell"));
                             }
-                        };
+                        });
                     }
                     _ => return Err(unknown(o)),
                 }
@@ -593,8 +618,15 @@ fn parse_command(word: &str, s: &mut Scan<'_>) -> Result<Command, String> {
             args: tail,
         }),
         "run" => Command::Run(RunOpts {
-            request: PathBuf::from(one("request file", pos)?),
-            name: name.ok_or("run: --name is required")?,
+            source: match (frame, name) {
+                (Some(file), name) if pos.is_empty() => RunSource::Frame { file, name },
+                (Some(_), _) => return Err("run: a request file and --frame are exclusive".into()),
+                (None, None) => return Err("run: --name is required with a request file".into()),
+                (None, Some(name)) => RunSource::Request {
+                    file: PathBuf::from(one("request file", pos)?),
+                    name,
+                },
+            },
             fds: fd,
             wait_ready,
             memory_max,
@@ -637,8 +669,13 @@ pub fn parse(args: &[String]) -> Result<Outcome, String> {
     if s.help {
         return Ok(Outcome::Help);
     }
+    if s.json && matches!(word.as_str(), "compile" | "show" | "fill") {
+        return Err(format!("{word}: --json is not available"));
+    }
+    let command = command?;
     Ok(Outcome::Run(Parsed {
         socket: s.socket.unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET)),
-        command: command?,
+        command,
+        json: s.json,
     }))
 }

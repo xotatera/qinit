@@ -26,7 +26,8 @@ typedef struct qinit_launch_args qinit_launch_args;
 typedef struct qinit_run_args qinit_run_args;
 typedef struct qinit_begun qinit_begun;
 typedef struct qinit_finish qinit_finish;
-typedef struct qinit_event qinit_event;"""
+typedef struct qinit_event qinit_event;
+typedef struct qinit_request qinit_request;"""
 
 [const]
 allow_static_const = false

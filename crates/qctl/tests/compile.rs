@@ -229,14 +229,14 @@ fn the_grammar_parses_every_command() {
     else {
         panic!()
     };
-    assert!(r.stop_cell && r.wait_ready);
-    // The run defaults are the client's `RunArgs` and the frames' (10 s grace, no ceilings).
+    assert!(r.stop_cell == Some(true) && r.wait_ready);
+    // An option left out is none: a request file takes the client's defaults, a frame its own.
     let Command::Run(r) = parsed(&["run", "r.toml", "--name", "n"]).command else {
         panic!()
     };
     assert_eq!(
         (r.stop_grace, r.memory_max, r.pids_max, r.stop_cell, r.wait),
-        (10_000, 0, 0, false, 600_000)
+        (None, None, None, None, 600_000)
     );
     assert!(matches!(
         parsed(&["fill", "--dry-run", "all"]).command,
@@ -257,6 +257,30 @@ fn the_grammar_parses_every_command() {
     assert!(
         args::parse(&strings(&["run", "r.toml"])).is_err(),
         "--name is required"
+    );
+}
+
+#[test]
+fn run_takes_a_request_file_or_a_frame() {
+    let Command::Run(r) = parsed(&["run", "r.toml", "--name", "n"]).command else {
+        panic!()
+    };
+    assert_eq!(
+        r.source,
+        args::RunSource::Request {
+            file: "r.toml".into(),
+            name: "n".into()
+        }
+    );
+    let Command::Run(r) = parsed(&["run", "--frame", "f.toml"]).command else {
+        panic!()
+    };
+    assert_eq!(
+        r.source,
+        args::RunSource::Frame {
+            file: "f.toml".into(),
+            name: None
+        }
     );
 }
 

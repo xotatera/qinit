@@ -435,6 +435,7 @@ pub fn database(frames: &str, enable: &[&str]) -> Vec<u8> {
         layers: vec![LayerInput {
             name: "vendor".to_owned(),
             dir: vendor,
+            only: None,
         }],
         policy: None,
     };

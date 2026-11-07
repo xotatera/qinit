@@ -127,6 +127,7 @@ pub fn compile_input(root: &Path, layers: &[&str]) -> CompileInput {
             LayerInput {
                 name: (*l).to_string(),
                 dir,
+                only: None,
             }
         })
         .collect();

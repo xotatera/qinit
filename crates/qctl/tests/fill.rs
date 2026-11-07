@@ -69,6 +69,7 @@ impl TempDir {
         let layer = |name: &str| LayerInput {
             name: name.into(),
             dir: self.0.join(name),
+            only: None,
         };
         let input = CompileInput {
             layers: vec![layer("vendor"), layer("etc")],
@@ -1026,4 +1027,115 @@ fn a_failure_after_the_last_file_is_replaced_is_reported_and_not_undone() {
     // The other backups are removed all the same.
     assert!(!backup_of(&t, "etc/b.toml").exists());
     assert!(!backup_of(&t, "vendor/c.toml").exists());
+}
+
+/// A tree with one worker and no `enable.toml` in either layer.
+fn no_enable(tag: &str) -> TempDir {
+    one_worker(tag, None)
+}
+
+#[test]
+fn fill_enable_writes_an_unset_key_to_the_last_layer() {
+    let t = no_enable("enable-unset");
+    let before = t.db(None);
+    let (code, _out, err) = t.fill(&["enable"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        t.read("etc/enable.toml"),
+        format!("enable = []{FILLED}\nsyslog = []{FILLED}\n")
+    );
+    assert!(!std::path::Path::new(&t.0.join("vendor/enable.toml")).exists());
+    assert!(t.db(None) == before, "the database changed");
+    let once = t.snapshot();
+    let (code, out, err) = t.fill(&["enable"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("nothing to fill"), "{out}");
+    assert!(t.snapshot() == once, "the second fill changed a file");
+}
+
+#[test]
+fn fill_enable_leaves_a_key_a_lower_layer_set() {
+    let t = no_enable("enable-lower");
+    t.write("vendor/enable.toml", "enable = [\"x\"]\n");
+    t.write("etc/enable.toml", "# mine\n");
+    let (code, _out, err) = t.fill(&["enable"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        t.read("etc/enable.toml"),
+        format!("# mine\nsyslog = []{FILLED}\n")
+    );
+    assert_eq!(t.read("vendor/enable.toml"), "enable = [\"x\"]\n");
+}
+
+#[test]
+fn fill_all_includes_enable() {
+    let t = no_enable("enable-all");
+    let (code, _out, err) = t.fill(&["all"]);
+    assert_eq!(code, 0, "{err}");
+    let text = t.read("etc/enable.toml");
+    assert!(text.contains("enable = []"), "{text}");
+    assert!(text.contains("syslog = []"), "{text}");
+}
+
+#[test]
+fn the_database_is_byte_identical_after_fill_all() {
+    let t = TempDir::golden("enable-db");
+    t.write("vendor/enable.toml", "syslog = [\"syslog-ng\"]\n");
+    let before = t.db(None);
+    let (code, _out, err) = t.fill(&["all"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(t.read("etc/enable.toml").contains("enable = []"));
+    assert!(t.db(None) == before, "the database changed");
+}
+
+#[test]
+fn fill_enable_reports_a_malformed_enable_toml_as_compile_does() {
+    let t = no_enable("enable-bad");
+    t.write("etc/enable.toml", "enable = [\n");
+    let before = t.snapshot();
+    let (code, out, err) = t.fill(&["enable"]);
+    assert_eq!((code, out.as_str()), (1, ""), "{err}");
+    assert!(t.snapshot() == before, "a file changed");
+    let mut args = vec![
+        "compile".to_owned(),
+        "--no-policy".to_owned(),
+        "--output".to_owned(),
+    ];
+    args.push(t.0.join("x.db").display().to_string());
+    args.extend(t.layer_args());
+    let (compile_code, _, compile_err) = qctl(&args);
+    assert_eq!(compile_code, 1, "{compile_err}");
+    assert_eq!(err, compile_err);
+    // `show enable` says the same.
+    let mut args = vec!["show".to_owned(), "--no-policy".to_owned()];
+    args.extend(t.layer_args());
+    args.push("enable".into());
+    let (show_code, _, show_err) = qctl(&args);
+    assert_eq!((show_code, show_err.as_str()), (1, err.as_str()));
+    let first = format!(
+        "{}: TOML parse error",
+        t.0.join("etc/enable.toml").display()
+    );
+    assert!(err.lines().any(|l| l.starts_with(&first)), "{err}");
+}
+
+#[test]
+fn fill_enable_writes_the_last_layer_past_a_middle_one_without_the_file() {
+    let t = no_enable("enable-middle");
+    std::fs::create_dir_all(t.0.join("mid")).unwrap();
+    t.write("vendor/enable.toml", "syslog = [\"x\"]\n");
+    let mut args = vec!["fill".to_owned(), "--no-policy".to_owned()];
+    for name in ["vendor", "mid", "etc"] {
+        args.push("--layer".into());
+        args.push(format!("{name}={}", t.0.join(name).display()));
+    }
+    args.push("enable".into());
+    let (code, _out, err) = qctl(&args);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(t.read("etc/enable.toml"), format!("enable = []{FILLED}\n"));
+    assert!(
+        !t.0.join("mid/enable.toml").exists(),
+        "the middle layer is not written"
+    );
+    assert_eq!(t.read("vendor/enable.toml"), "syslog = [\"x\"]\n");
 }

@@ -125,6 +125,7 @@ mod tests {
             .map(|l| LayerInput {
                 name: (*l).to_string(),
                 dir: golden.join(l),
+                only: None,
             })
             .collect();
         assert_estimate_is_exact(&load(&layers).expect("loads"), "golden");

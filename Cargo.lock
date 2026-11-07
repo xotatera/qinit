@@ -197,9 +197,11 @@ dependencies = [
  "qinit-frames",
  "qinit-ipc",
  "qinit-launch",
+ "qinit-overseer",
  "qinit-proto",
  "qinit-sys",
  "serde",
+ "serde_json",
  "toml 1.1.8+spec-1.1.0",
  "toml_edit",
 ]
@@ -255,6 +257,7 @@ dependencies = [
  "qinit-colony-core",
  "qinit-frames",
  "qinit-ipc",
+ "qinit-launch",
  "qinit-proto",
  "qinit-sys",
 ]
