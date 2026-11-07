@@ -13,7 +13,8 @@ use crate::notes::describe;
 use crate::readopt::{self, Plan, Procs, RealProcs};
 use crate::route::Owner;
 use crate::state::{
-    CellLine, NodeLine, PipeLine, format_cells, format_nodes, parse_cells, parse_nodes,
+    CellLine, NodeLine, PipeLine, check_disjoint, format_cells, format_nodes, parse_cells,
+    parse_nodes,
 };
 use crate::store::{KEY_CELLS, KEY_DB, KEY_NODES, Store};
 use crate::syslog::{Sev, Syslog};
@@ -222,7 +223,15 @@ impl<C: CellOps> Daemon<C> {
         // one in force.
         let (saved_nodes, saved_pipes) = if from_state {
             match text(&mut effects.store, KEY_NODES).map(|t| t.and_then(|t| parse_nodes(&t))) {
-                Some(Ok((nodes, pipes))) => (Some(nodes), pipes),
+                Some(Ok((nodes, pipes))) => {
+                    match check_disjoint(left.as_deref().unwrap_or_default(), &pipes) {
+                        Ok(()) => (Some(nodes), pipes),
+                        Err(why) => {
+                            log.log(Sev::Err, &format!("the saved node state is refused: {why}"));
+                            (None, Vec::new())
+                        }
+                    }
+                }
                 Some(Err(why)) => {
                     log.log(Sev::Err, &format!("the saved node state is refused: {why}"));
                     (None, Vec::new())
@@ -765,8 +774,18 @@ impl<C: CellOps> Daemon<C> {
         self.pump_cells();
         self.report_faults();
         self.persist();
+        self.release_lost_link();
         self.flush_replies();
         self.rearm();
+    }
+
+    /// A send that failed for good ended the channel to queen: take it out of the loop before
+    /// the descriptor is closed, so a number reused later is not removed by mistake.
+    fn release_lost_link(&mut self) {
+        if let Some(lost) = self.colony.effects.store.take_lost() {
+            let _ = self.colony.effects.events.remove(QUEEN);
+            drop(lost);
+        }
     }
 
     /// What the effects could not return an error for (a removal that failed, a poll that did):

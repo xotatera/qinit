@@ -405,6 +405,34 @@ fn a_corrupt_nodes_entry_is_refused_and_only_cells_are_adopted() {
 }
 
 #[test]
+fn a_pipe_that_shares_a_key_with_a_cell_refuses_the_nodes_entry() {
+    let site = Site::new("clash");
+    first_colony(&site, WORKER);
+    let cells = site.cells();
+    assert_eq!(cells.len(), 1);
+    // Two entries that name one descriptor would have it taken twice.
+    site.put_entry(KEY_NODES, &format!("pipe lg {} 90\n", cells[0].dir_key));
+    let procs = Table {
+        now: MainNow::Alive(4001),
+        cgroup: cells[0].cgroup_id,
+    };
+    let b = site.boot(WORKER, &["db"], FakeCells::default(), &procs);
+    let logged = site.logged();
+    assert!(
+        logged
+            .iter()
+            .any(|l| l.contains("saved node state is refused") && l.contains("twice")),
+        "{logged:?}"
+    );
+    let db = b.colony.node_index("db").unwrap();
+    assert_eq!(
+        b.colony.state(db),
+        Some(State::Ready),
+        "the cell is adopted all the same"
+    );
+}
+
+#[test]
 fn a_malformed_cells_entry_is_as_good_as_none() {
     let site = Site::new("garbled");
     first_colony(&site, WORKER);

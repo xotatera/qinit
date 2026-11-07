@@ -38,6 +38,21 @@ fn usage_errors_exit_2() {
     assert_eq!(out.status.code(), Some(i32::from(exit::USAGE)));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("--bogus") && err.contains("usage"), "{err}");
+    for flag in [
+        "--db",
+        "--comb",
+        "--socket",
+        "--overseer",
+        "--syslog",
+        "--console",
+        "--run",
+        "--queen-fd",
+    ] {
+        assert!(
+            err.contains(flag),
+            "the usage line leaves out {flag}: {err}"
+        );
+    }
     assert_eq!(
         colony_bin().args(["--db"]).output().unwrap().status.code(),
         Some(i32::from(exit::USAGE))
@@ -1147,6 +1162,27 @@ fn queen_going_away_does_not_stop_colony() {
         .pending
         .push(Notice::Cell(CellId(0), Report::Ready));
     assert_eq!(r.d.turn(Vec::new()), None);
+    assert_eq!(r.d.colony.state(0), Some(State::Ready));
+}
+
+#[test]
+fn a_save_that_fails_for_good_lets_the_loop_go_of_the_channel() {
+    let mut r = boot(WORKER, &["db"], "lost");
+    let queen = std::mem::replace(&mut r.queen, FakeQueen::new().0);
+    drop(queen);
+    // A state change saves before the loop has seen the hang-up: the send is what finds it.
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::Ready));
+    assert_eq!(r.d.turn(Vec::new()), None);
+    assert!(r.d.colony.effects.store.link().is_none());
+    assert!(
+        r.d.colony.effects.store.take_lost().is_none(),
+        "the daemon removed the channel from its loop and closed it"
+    );
+    assert_eq!(r.d.pump(), None);
     assert_eq!(r.d.colony.state(0), Some(State::Ready));
 }
 

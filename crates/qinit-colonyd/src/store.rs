@@ -15,7 +15,8 @@ use std::time::Duration;
 pub const KEY_CELLS: u64 = 1;
 /// Where the nodes' state is kept.
 pub const KEY_NODES: u64 = 2;
-/// Where the database colony runs from is kept.
+/// Where the database colony runs from is kept. Queen drops this key when the machine leaves
+/// rescue or the hold (`qinit_queen_core::store::DB_KEY`), so the next colony reads `--db`.
 pub const KEY_DB: u64 = 3;
 /// The first key colony allocates for a descriptor.
 const FIRST_KEY: u64 = 16;
@@ -30,6 +31,9 @@ const MAX_STATE: usize = 256 * 1024 * 1024;
 pub struct Store {
     /// Colony's end of the channel; `None` without a queen, or once queen is gone.
     link: Option<OwnedFd>,
+    /// The channel after a send that failed for good, still open: the loop that watches it lets
+    /// go of it first ([`Store::take_lost`]), so its number cannot be reused behind the loop.
+    lost: Option<OwnedFd>,
     /// What queen handed over and colony has not taken.
     held: BTreeMap<u64, OwnedFd>,
     /// Every key queen holds for colony, as far as colony knows.
@@ -55,6 +59,7 @@ impl Store {
     pub fn standalone() -> Store {
         Store {
             link: None,
+            lost: None,
             held: BTreeMap::new(),
             known: BTreeSet::new(),
             next_key: FIRST_KEY,
@@ -200,6 +205,11 @@ impl Store {
         self.link = None;
     }
 
+    /// The channel a failed send ended, once: the caller removes it from its loop and drops it.
+    pub fn take_lost(&mut self) -> Option<OwnedFd> {
+        self.lost.take()
+    }
+
     /// The channel, for the loop to watch.
     #[must_use]
     pub fn link(&self) -> Option<BorrowedFd<'_>> {
@@ -304,7 +314,7 @@ impl Store {
                 false
             }
             Err(e) => {
-                self.link = None;
+                self.lost = self.link.take();
                 self.warnings.push(format!(
                     "queen closed its channel ({e:?}): state is no longer saved"
                 ));

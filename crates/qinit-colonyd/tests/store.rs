@@ -243,3 +243,20 @@ fn a_queen_that_went_away_leaves_colony_standing() {
     assert!(store.link().is_none());
     assert_eq!(store.next(), Ok(None));
 }
+
+#[test]
+fn a_failed_send_leaves_the_descriptor_open_for_the_loop_to_let_go_of() {
+    use std::os::fd::AsRawFd;
+    let (mut q, _link) = FakeQueen::new();
+    let mut store = q.reattach();
+    drop(q);
+    store.save(KEY_CELLS, b"x");
+    let lost = store
+        .take_lost()
+        .expect("the channel is handed back, not closed");
+    assert!(
+        std::fs::metadata(format!("/proc/self/fd/{}", lost.as_raw_fd())).is_ok(),
+        "still open"
+    );
+    assert!(store.take_lost().is_none(), "handed back once");
+}

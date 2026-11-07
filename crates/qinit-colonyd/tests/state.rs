@@ -3,7 +3,8 @@
 //! The text colony keeps in queen's store: what a line says, and that one bad line refuses all.
 use qinit_colony::{Counters, Reason, SavedTerminal};
 use qinit_colonyd::state::{
-    CellLine, NodeLine, PipeLine, format_cells, format_nodes, parse_cells, parse_nodes,
+    CellLine, NodeLine, PipeLine, check_disjoint, format_cells, format_nodes, parse_cells,
+    parse_nodes,
 };
 
 fn cells() -> Vec<CellLine> {
@@ -155,4 +156,65 @@ fn a_node_named_pipe_is_not_a_pipe_line() {
     let (nodes, got) = parse_nodes(&text).unwrap();
     assert_eq!(nodes, [n]);
     assert_eq!(got, pipes());
+}
+
+#[test]
+fn the_three_fixed_keys_are_never_a_cell_or_pipe_key() {
+    for bad in [
+        "db 901 1 1 17\n",
+        "db 901 1 2 17\n",
+        "db 901 1 3 17\n",
+        "db 901 1 16 3\n",
+    ] {
+        let e = parse_cells(bad).unwrap_err();
+        assert!(e.contains("line 1"), "{bad:?}: {e}");
+    }
+    for bad in ["pipe l 1 5\n", "pipe l 5 2\n", "pipe l 3 3\n"] {
+        let e = parse_nodes(bad).unwrap_err();
+        assert!(e.contains("line 1"), "{bad:?}: {e}");
+    }
+}
+
+#[test]
+fn a_key_named_twice_in_one_entry_refuses_it() {
+    for bad in [
+        "a 1 0 16 17\nb 2 0 16 18\n",
+        "a 1 0 16 17\nb 2 0 18 17\n",
+        "a 1 0 16 18\nb 2 0 18 19\n",
+        "a 1 0 16 16\n",
+    ] {
+        let e = parse_cells(bad).unwrap_err();
+        assert!(e.contains("twice"), "{bad:?}: {e}");
+    }
+    // Several cells with no main share the main key 0.
+    assert_eq!(parse_cells("a 1 0 16 0\nb 2 0 17 0\n").unwrap().len(), 2);
+    let node = "a 1 off 0 0 0 0 0\n";
+    for bad in [
+        "pipe l 20 21\npipe m 20 22\n",
+        "pipe l 20 21\npipe m 22 21\n",
+        "pipe l 20 20\n",
+    ] {
+        let e = parse_nodes(&format!("{node}{bad}")).unwrap_err();
+        assert!(e.contains("twice"), "{bad:?}: {e}");
+    }
+}
+
+#[test]
+fn a_pipe_key_a_cell_also_names_is_a_clash() {
+    let cells = cells();
+    let ok = [PipeLine {
+        logger: "l".into(),
+        read: 30,
+        write: 31,
+    }];
+    assert_eq!(check_disjoint(&cells, &ok), Ok(()));
+    for key in [16, 17, 18] {
+        let clash = [PipeLine {
+            logger: "l".into(),
+            read: 30,
+            write: key,
+        }];
+        let e = check_disjoint(&cells, &clash).unwrap_err();
+        assert!(e.contains("twice") && e.contains(&key.to_string()), "{e}");
+    }
 }

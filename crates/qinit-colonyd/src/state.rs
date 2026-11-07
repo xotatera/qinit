@@ -6,7 +6,9 @@
 //! <burst_begin_ms> <burst_count> <backoff_exp> <last_start_ms> <ended_ms>`, and one `pipe
 //! <logger> <read key> <write key>` line per logger pipe. A line that does not parse refuses its
 //! whole entry, and colony carries on as if the entry were absent.
+use crate::store::{KEY_CELLS, KEY_DB, KEY_NODES};
 use qinit_colony::{Counters, Reason, SavedTerminal};
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 /// A cell colony has created and not yet removed.
@@ -66,8 +68,23 @@ fn flag(word: &str) -> Option<bool> {
     }
 }
 
+/// A store key a cell or pipe is held under: a number, and not one of the three that hold the
+/// state itself (0 is no key; callers that allow it say so).
 fn key(word: &str) -> Option<u64> {
-    word.parse().ok()
+    word.parse()
+        .ok()
+        .filter(|k| ![KEY_CELLS, KEY_NODES, KEY_DB].contains(k))
+}
+
+/// Whether every key in `keys` that is not 0 is there once, else the first that is not.
+fn once(keys: impl IntoIterator<Item = u64>) -> Result<(), u64> {
+    let mut seen = BTreeSet::new();
+    for k in keys.into_iter().filter(|k| *k != 0) {
+        if !seen.insert(k) {
+            return Err(k);
+        }
+    }
+    Ok(())
 }
 
 fn parse_cell(text: &str) -> Option<CellLine> {
@@ -180,9 +197,27 @@ fn lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
 ///
 /// Text naming the first malformed line.
 pub fn parse_cells(text: &str) -> Result<Vec<CellLine>, String> {
-    lines(text)
+    let cells: Vec<CellLine> = lines(text)
         .map(|(i, l)| parse_cell(l).ok_or_else(|| format!("cells: line {} is malformed", i + 1)))
-        .collect()
+        .collect::<Result<_, _>>()?;
+    once(cells.iter().flat_map(|c| [c.dir_key, c.main_key]))
+        .map_err(|k| format!("cells: key {k} is named twice"))?;
+    Ok(cells)
+}
+
+/// Whether no key is named by both a cell and a pipe.
+///
+/// # Errors
+///
+/// Text naming the first key that two descriptors would be taken from.
+pub fn check_disjoint(cells: &[CellLine], pipes: &[PipeLine]) -> Result<(), String> {
+    once(
+        cells
+            .iter()
+            .flat_map(|c| [c.dir_key, c.main_key])
+            .chain(pipes.iter().flat_map(|p| [p.read, p.write])),
+    )
+    .map_err(|k| format!("key {k} is named twice, by a cell and a pipe"))
 }
 
 /// The nodes and logger pipes in `text`. A `pipe` line is told from a node named `pipe` by its
@@ -202,5 +237,7 @@ pub fn parse_nodes(text: &str) -> Result<(Vec<NodeLine>, Vec<PipeLine>), String>
             nodes.push(parse_node(l).ok_or_else(bad)?);
         }
     }
+    once(pipes.iter().flat_map(|p| [p.read, p.write]))
+        .map_err(|k| format!("nodes: key {k} is named twice"))?;
     Ok((nodes, pipes))
 }
