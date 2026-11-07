@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Queen's turn against a fake system: scripted receive and reap queues.
-use qinit_queen::run::{Io, Message, Queen, Recv, Sent, Wake};
+use qinit_queen::run::{Io, Message, Queen, Recv, Sent, TURN_RECORDS, Wake};
 use qinit_queen_core::machine::{LIMITS, Phase};
 use qinit_queen_core::{FromColony, Mode, ToColony, decode_to_colony, encode_from_colony};
 use qinit_sys::Errno;
@@ -21,6 +21,7 @@ enum Ev {
     ExecZero(Mode),
     Log(String),
     Send(Option<ToColony>, bool),
+    CloseChannel,
 }
 
 #[derive(Default)]
@@ -33,11 +34,13 @@ struct Fake {
     next_pid: i32,
     writable: Vec<bool>,
     spawn_fails: bool,
+    /// Milliseconds added to the fake clock's 1000.
+    clock: u64,
 }
 
 impl Io for Fake {
     fn now_ms(&mut self) -> u64 {
-        1_000
+        1_000 + self.clock
     }
     fn spawn_colony(&mut self) -> Result<i32, Errno> {
         self.events.push(Ev::SpawnColony);
@@ -85,6 +88,9 @@ impl Io for Fake {
     }
     fn want_writable(&mut self, on: bool) {
         self.writable.push(on);
+    }
+    fn close_channel(&mut self) {
+        self.events.push(Ev::CloseChannel);
     }
 }
 
@@ -402,5 +408,125 @@ fn the_first_colony_is_handed_over_before_any_wake_up() {
         sent,
         [Some(ToColony::HeldEnd { count: 0 })],
         "an empty store, and nothing to wait for"
+    );
+}
+
+#[test]
+fn a_bad_record_closes_the_channel_and_nothing_after_it_is_read() {
+    let mut q = queen();
+    let mut bytes = [0u8; 32];
+    bytes[0] = 99;
+    q.io().recv_q.push_back(Recv::Message(Message {
+        bytes,
+        len: 16,
+        fds: Vec::new(),
+        truncated: false,
+    }));
+    q.io().recv_q.push_back(put_message(16, devnull()));
+    q.io().events.clear();
+    q.turn(&wake(&[]));
+    let ev = &q.io().events;
+    assert!(ev.contains(&Ev::Kill(101)), "{ev:?}");
+    assert!(ev.contains(&Ev::CloseChannel), "{ev:?}");
+    assert!(
+        q.table().iter().all(|e| e.key != 16),
+        "a Put behind a bad record must not reach the store"
+    );
+}
+
+#[test]
+fn a_broken_channel_is_not_waited_on_for_writable() {
+    let mut q = queen();
+    q.turn(&wake(&[]));
+    q.io().recv_q.push_back(put_message(16, devnull()));
+    q.turn(&wake(&[]));
+    // A restart owes the new colony an entry and HeldEnd; the first meets a full socket.
+    q.io().reap_q.push_back((101, 9));
+    q.io().send_q.push_back(Sent::Again);
+    q.turn(&wake(&[CHLD]));
+    assert_eq!(q.io().writable.last(), Some(&true));
+    // Then the channel breaks: asking to be woken for writable would wake queen for nothing.
+    q.io().send_q.push_back(Sent::Gone);
+    q.turn(&Wake {
+        signals: &[],
+        channel: true,
+        timer: false,
+        writable: true,
+    });
+    assert_eq!(q.io().writable.last(), Some(&false));
+}
+
+#[test]
+fn a_turn_reads_a_bounded_number_of_records_and_the_next_reads_the_rest() {
+    let mut q = queen();
+    let total = TURN_RECORDS + 40;
+    for key in 16..16 + total as u64 {
+        q.io().recv_q.push_back(put_message(key, devnull()));
+    }
+    q.turn(&wake(&[]));
+    let held = |q: &Queen<Fake>| q.table().iter().filter(|e| e.key != 0).count();
+    assert_eq!(held(&q), TURN_RECORDS, "one turn reads its share");
+    q.turn(&wake(&[]));
+    assert_eq!(held(&q), total, "the next turn reads the rest");
+}
+
+#[test]
+fn a_flood_does_not_keep_a_signal_waiting() {
+    let mut q = queen();
+    for key in 16..16 + 3 * TURN_RECORDS as u64 {
+        q.io().recv_q.push_back(put_message(key, devnull()));
+    }
+    q.io().events.clear();
+    q.turn(&wake(&[libc::SIGTERM as u32]));
+    let ev = &q.io().events;
+    assert!(
+        ev.iter()
+            .any(|e| matches!(e, Ev::Log(l) if l.contains("signal 15"))),
+        "the signal is handled in the same turn as the flood: {ev:?}"
+    );
+    assert!(
+        q.io().recv_q.len() >= TURN_RECORDS,
+        "the flood was not drained"
+    );
+}
+
+#[test]
+fn a_stream_of_orphans_is_logged_once_a_minute_with_the_count() {
+    let mut q = queen();
+    q.turn(&wake(&[]));
+    let orphan_lines = |q: &mut Queen<Fake>| -> Vec<String> {
+        let lines = q
+            .io()
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                Ev::Log(l) if l.contains("orphans") => Some(l.clone()),
+                _ => None,
+            })
+            .collect();
+        q.io().events.clear();
+        lines
+    };
+    q.io().events.clear();
+    for pid in [900, 901] {
+        q.io().reap_q.push_back((pid, 0));
+    }
+    q.turn(&wake(&[CHLD]));
+    let first = orphan_lines(&mut q);
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert!(first[0].contains("2 orphans"), "{first:?}");
+    // A second drain in the same minute adds nothing to the log.
+    q.io().reap_q.push_back((902, 0));
+    q.turn(&wake(&[CHLD]));
+    assert!(orphan_lines(&mut q).is_empty());
+    // The next minute's line counts the one that was held back.
+    q.io().clock = 60_000;
+    q.io().reap_q.push_back((903, 0));
+    q.turn(&wake(&[CHLD]));
+    let again = orphan_lines(&mut q);
+    assert_eq!(again.len(), 1, "{again:?}");
+    assert!(
+        again[0].contains("2 orphans") && again[0].contains("903"),
+        "{again:?}"
     );
 }

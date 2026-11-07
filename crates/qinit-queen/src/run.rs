@@ -18,6 +18,11 @@ use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 /// Descriptor numbers queen can hold: `RLIMIT_NOFILE` is set to this.
 pub const NOFILE: usize = 65_536;
 
+/// The most records one turn reads from colony's channel: a colony that floods the channel gets
+/// a turn's worth of attention at a time, and the signals, the reap and the timer keep theirs.
+/// The rest waits in the socket, which keeps epoll awake.
+pub const TURN_RECORDS: usize = 128;
+
 /// What `Io::recv` found on colony's channel.
 pub enum Recv {
     /// Nothing more until colony sends again.
@@ -73,6 +78,8 @@ pub trait Io {
     fn send(&mut self, record: &[u8; 16], fd: Option<BorrowedFd<'_>>) -> Sent;
     /// Asks for a wake-up when the channel can be written to (or stops asking).
     fn want_writable(&mut self, on: bool);
+    /// Drops colony's channel: nothing more is read from it or sent on it.
+    fn close_channel(&mut self);
 }
 
 /// What woke queen.
@@ -188,7 +195,7 @@ impl<I: Io> Queen<I> {
     /// # Panics
     /// With the `testing` feature, on `SIGUSR1`, on purpose.
     pub fn turn(&mut self, ready: &Wake<'_>) {
-        self.read_channel();
+        self.read_channel(TURN_RECORDS);
         let mut sigchld = false;
         for &signo in ready.signals {
             match i32::try_from(signo).unwrap_or(0) {
@@ -220,9 +227,9 @@ impl<I: Io> Queen<I> {
         self.send_pending();
     }
 
-    /// Everything colony has queued, one input each.
-    fn read_channel(&mut self) {
-        loop {
+    /// What colony has queued, one input each, up to `limit` records.
+    fn read_channel(&mut self, limit: usize) {
+        for _ in 0..limit {
             match self.io.recv() {
                 Recv::Empty => return,
                 Recv::Closed => {
@@ -231,7 +238,14 @@ impl<I: Io> Queen<I> {
                 }
                 Recv::Message(m) => {
                     let input = self.decode(m);
+                    let bad = matches!(input, Input::ChannelBad);
                     self.feed(input);
+                    if bad {
+                        // The sender is killed; what it queued behind the bad record is not
+                        // trusted, and what it sends before the reap is not read.
+                        self.io.close_channel();
+                        return;
+                    }
                 }
             }
         }
@@ -258,8 +272,9 @@ impl<I: Io> Queen<I> {
         while let Some((pid, status)) = self.io.reap() {
             let colony = pid != 0 && pid == self.s.colony;
             if colony {
-                // Whatever the dying colony queued last is in the store before it restarts.
-                self.read_channel();
+                // Whatever the dying colony queued last is in the store before it restarts: all
+                // of it, which the socket's queue bounds and no live sender can add to.
+                self.read_channel(usize::MAX);
             }
             let rescue = pid != 0 && pid == self.s.rescue;
             if !(colony || rescue) {
@@ -270,9 +285,12 @@ impl<I: Io> Queen<I> {
             self.feed(Input::Child { pid, status });
         }
         if orphans > 0 {
-            let mut buf = [0u8; 128];
-            let n = kmsg::format_orphans(orphans, last, &mut buf);
-            self.io.log(&buf[..n]);
+            let now = self.io.now_ms();
+            if let Some(count) = self.quiet.orphans(orphans, now) {
+                let mut buf = [0u8; 128];
+                let n = kmsg::format_orphans(count, last, &mut buf);
+                self.io.log(&buf[..n]);
+            }
         }
     }
 
@@ -296,7 +314,10 @@ impl<I: Io> Queen<I> {
                     self.io.want_writable(true);
                     return;
                 }
-                Sent::Gone => return,
+                Sent::Gone => {
+                    self.io.want_writable(false);
+                    return;
+                }
             }
         }
     }

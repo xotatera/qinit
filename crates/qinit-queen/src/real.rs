@@ -8,7 +8,7 @@ use qinit_ipc::{recv, send_nowait, seqpacket_pair};
 use qinit_queen_core::Mode;
 use qinit_sys::spawn::{Session, exec_in_place};
 use qinit_sys::{Errno, event, fd, proc, signal, timer};
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::{CStr, CString, OsStr, OsString};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::time::Duration;
@@ -17,6 +17,23 @@ use std::time::Duration;
 pub const SIGNALS: u64 = 1;
 pub const TIMER: u64 = 2;
 pub const CHANNEL: u64 = 3;
+
+/// Opens the first of `paths` that opens, for writing and without ever blocking: the log
+/// descriptor. A console that flow control has stopped must cost a line, not PID 1.
+///
+/// # Errors
+/// The errno of the last path tried.
+pub fn open_log(paths: &[&CStr]) -> Result<OwnedFd, Errno> {
+    let mut last = Errno(libc::ENOENT);
+    for path in paths {
+        let flags = libc::O_WRONLY | libc::O_NOCTTY | libc::O_NONBLOCK;
+        match fd::open_cloexec(path, flags, 0) {
+            Ok(f) => return Ok(f),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
 
 /// The descriptors and settings queen works with.
 pub struct RealIo {
@@ -67,6 +84,18 @@ impl RealIo {
         self.channel.as_ref().map(AsRawFd::as_raw_fd)
     }
 
+    /// Watches `mine`, colony's end of a new channel, in place of the old one.
+    ///
+    /// # Errors
+    /// The errno of the step that failed; no channel is held then.
+    pub fn attach_channel(&mut self, mine: OwnedFd) -> Result<(), Errno> {
+        self.drop_channel();
+        fd::set_nonblocking(&mine)?;
+        event::epoll_add(&self.ep, mine.as_raw_fd(), Self::events(false), CHANNEL)?;
+        self.channel = Some(mine);
+        Ok(())
+    }
+
     fn env(&self) -> Vec<&OsStr> {
         self.env.iter().map(OsString::as_os_str).collect()
     }
@@ -95,22 +124,22 @@ impl Io for RealIo {
 
     fn spawn_colony(&mut self) -> Result<i32, Errno> {
         let (mine, theirs) = seqpacket_pair().map_err(|e| Errno(e.0))?;
-        fd::set_nonblocking(&mine)?;
+        // Watched before colony exists: a channel that cannot be watched is a colony that cannot
+        // be heard, and no process must be left running behind that failure.
+        self.attach_channel(mine)?;
         let env = self.env();
-        let pid = spawn::start(
+        let started = spawn::start(
             spawn::COLONY,
             &spawn::colony_argv(),
             &env,
             self.console.as_fd(),
             Some(theirs.as_fd()),
             Session::New,
-        )?;
-        drop(theirs);
-        self.drop_channel();
-        // A channel that cannot be watched is a colony that cannot be heard.
-        event::epoll_add(&self.ep, mine.as_raw_fd(), Self::events(false), CHANNEL)?;
-        self.channel = Some(mine);
-        Ok(pid)
+        );
+        if started.is_err() {
+            self.drop_channel();
+        }
+        started
     }
 
     fn spawn_rescue(&mut self) -> Result<i32, Errno> {
@@ -200,8 +229,17 @@ impl Io for RealIo {
         match send_nowait(chan.as_fd(), record, &fds) {
             Ok(()) => Sent::Ok,
             Err(qinit_ipc::Errno(libc::EAGAIN)) => Sent::Again,
-            Err(_) => Sent::Gone,
+            Err(_) => {
+                // A peer that went away, or a socket broken for good: it stays registered and
+                // would wake queen on every pass for nothing.
+                self.drop_channel();
+                Sent::Gone
+            }
         }
+    }
+
+    fn close_channel(&mut self) {
+        self.drop_channel();
     }
 
     fn want_writable(&mut self, on: bool) {

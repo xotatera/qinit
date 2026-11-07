@@ -29,3 +29,24 @@ fn a_huge_signal_number_cannot_index_out_of_bounds() {
     assert!(q.log(u32::MAX, 0));
     assert!(!q.log(u32::MAX, 1));
 }
+
+#[test]
+fn orphans_log_once_a_minute_and_the_next_line_counts_what_was_held_back() {
+    let mut q = Quiet::new();
+    assert_eq!(q.orphans(2, 1_000), Some(2));
+    assert_eq!(q.orphans(1, 1_001), None);
+    assert_eq!(q.orphans(4, 60_999), None);
+    assert_eq!(
+        q.orphans(1, 61_000),
+        Some(6),
+        "1 + 4 + 1 since the last line"
+    );
+    assert_eq!(q.orphans(1, 61_001), None);
+}
+
+#[test]
+fn a_clock_that_went_back_does_not_silence_orphans_for_good() {
+    let mut q = Quiet::new();
+    assert_eq!(q.orphans(1, 500_000), Some(1));
+    assert_eq!(q.orphans(1, 10), Some(1));
+}

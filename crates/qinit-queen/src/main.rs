@@ -3,7 +3,7 @@
 
 //! The `queen` binary: PID 1. Start-up runs in the order of the spec's section 3.1; after it
 //! nothing in this file returns or exits except the exec of zero.
-use qinit_queen::real::{CHANNEL, RealIo, SIGNALS, TIMER};
+use qinit_queen::real::{CHANNEL, RealIo, SIGNALS, TIMER, open_log};
 use qinit_queen::run::{NOFILE, Queen, Wake};
 use qinit_sys::limits::{RLIMIT_NOFILE, chdir, set_rlimit};
 use qinit_sys::{event, fd, proc, signal};
@@ -23,13 +23,6 @@ fn open_console() -> OwnedFd {
         }
     }
     die("no console and no /dev/null")
-}
-
-/// Every signal queen reads from its signalfd: all the standard ones except the fault signals.
-fn read_signals() -> Vec<i32> {
-    (1..=31)
-        .filter(|s| !signal::FATAL.contains(s) && *s != libc::SIGKILL && *s != libc::SIGSTOP)
-        .collect()
 }
 
 fn main() {
@@ -53,8 +46,9 @@ fn main() {
     if chdir(root).is_err() {
         die("cannot enter /");
     }
-    let log_fd = fd::open_cloexec(c"/dev/kmsg", libc::O_WRONLY | libc::O_NOCTTY, 0)
-        .or_else(|_| fd::dup_above(console.as_fd(), 3))
+    // Never the console's own description: a line must not block on a stopped tty, and children
+    // use that description as their standard streams.
+    let log_fd = open_log(&[c"/dev/kmsg", c"/dev/console", c"/dev/null"])
         .unwrap_or_else(|_| die("no log descriptor"));
     signal::set_park_fd(log_fd.as_fd());
     // 5. The whole store plus queen's own descriptors.
@@ -63,7 +57,7 @@ fn main() {
         die("cannot raise the descriptor limit");
     }
     // 6. The tables, the signalfd, the timerfd and the epoll instance.
-    let Ok(sigfd) = event::signalfd_blocking(&read_signals()) else {
+    let Ok(sigfd) = event::signalfd_blocking(&signal::readable()) else {
         die("cannot make the signalfd")
     };
     let Ok(timerfd) = event::timer_unarmed() else {
