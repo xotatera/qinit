@@ -73,6 +73,15 @@ fn now_ms() -> u64 {
     qinit_sys::timer::now_monotonic_ns() / 1_000_000
 }
 
+/// Queen's name for a mode, as colony's.
+fn shutdown_mode(m: qinit_queen_core::Mode) -> ShutdownMode {
+    match m {
+        qinit_queen_core::Mode::Halt => ShutdownMode::Halt,
+        qinit_queen_core::Mode::Poweroff => ShutdownMode::Poweroff,
+        qinit_queen_core::Mode::Reboot => ShutdownMode::Reboot,
+    }
+}
+
 /// The exit status a completed shutdown ends in.
 fn exit_of(mode: Option<ShutdownMode>) -> u8 {
     match mode {
@@ -635,6 +644,16 @@ impl<C: CellOps> Daemon<C> {
                     Sev::Err,
                     &format!("queen's store is full: the descriptor for key {key} was refused"),
                 ),
+                Ok(Some(ToColony::Request { mode })) => {
+                    self.say(
+                        Sev::Info,
+                        &format!("queen asks for a shutdown ending in {mode:?}"),
+                    );
+                    let out = self
+                        .colony
+                        .request_shutdown(shutdown_mode(mode), self.now_ms);
+                    self.settle(out, true);
+                }
                 Ok(Some(_)) => {}
                 Err(why) => {
                     self.say(Sev::Err, &format!("{why}: state is no longer saved"));

@@ -57,6 +57,8 @@ pub enum Call {
     StartInstance(u32, String),
     InstancePidfd(u32),
     StopInstance(u32, StopMode, u32),
+    /// A shutdown was announced, ending in this mode.
+    ShuttingDown(crate::ShutdownMode),
     ReleaseInstance(u32),
     ArmWait(u64, u32),
     CancelWait(u64),
@@ -181,6 +183,7 @@ impl Sim {
                 | Call::Cancel(n, _)
                 | Call::Signal(n, _) => *n == node,
                 Call::Watch(_)
+                | Call::ShuttingDown(_)
                 | Call::StartInstance(..)
                 | Call::InstancePidfd(_)
                 | Call::StopInstance(..)
@@ -377,6 +380,10 @@ impl Effects for Sim {
         let key = self.schedule(self.now + u64::from(ms), Due::Wait(wait));
         self.wait_timers.insert(wait, key);
         Ok(())
+    }
+
+    fn shutting_down(&mut self, mode: crate::ShutdownMode) {
+        self.calls.push(Call::ShuttingDown(mode));
     }
 
     fn cancel_wait(&mut self, wait: u64) {

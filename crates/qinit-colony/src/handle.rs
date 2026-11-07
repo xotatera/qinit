@@ -882,6 +882,20 @@ impl<E: Effects> Colony<E> {
         }
     }
 
+    /// A request for a shutdown ending in `mode` that no client made (queen's, from Ctrl-Alt-Del
+    /// or `SIGPWR`): the same as a protocol shutdown, with nothing to reply to. The first starts
+    /// the shutdown; a later one only changes the mode, and the last wins.
+    pub fn request_shutdown(&mut self, mode: ShutdownMode, now: u64) -> Outcome {
+        let mut h = Handled {
+            reply: OwnedRep::Accepted,
+            reply_fds: Vec::new(),
+            waiting: false,
+            outcome: Outcome::default(),
+        };
+        self.shutdown_request(mode, None, WaitId(0), now, &mut h);
+        h.outcome
+    }
+
     fn shutdown_request(
         &mut self,
         mode: ShutdownMode,
@@ -907,6 +921,10 @@ impl<E: Effects> Colony<E> {
             // Instances first, then the nodes: `shutdown` does both.
             let out = self.shutdown(now);
             h.outcome.absorb(out);
+        }
+        if !first {
+            // A later request may change the mode: queen is told again.
+            self.announce(mode);
         }
         h.reply = OwnedRep::Accepted;
         if let Some(ms) = wait_ms {

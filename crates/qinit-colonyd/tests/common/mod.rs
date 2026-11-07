@@ -73,6 +73,8 @@ pub struct FakeCells {
     pub pending: Vec<Notice>,
     /// Runs inside `spawn`, before it returns (a service that acts at once).
     pub on_spawn: Option<Box<dyn FnMut()>>,
+    /// Runs inside `stop`, before it returns, the first time (once taken).
+    pub on_stop: Option<Box<dyn FnOnce()>>,
     /// `wait_for_status` was called.
     pub waits: bool,
     /// Slots whose status the next `settle_status` delivers.
@@ -136,6 +138,9 @@ impl CellOps for FakeCells {
         grace: Duration,
         kill: Duration,
     ) -> Result<(), Error> {
+        if let Some(f) = self.on_stop.take() {
+            f();
+        }
         self.calls.push(Call::Stop(id.0, polite, grace, kill));
         Ok(())
     }
@@ -378,6 +383,8 @@ pub struct FakeQueen {
     pub shutdowns: Vec<qinit_queen_core::Mode>,
     /// What colony sent, in the order it arrived.
     pub events: Vec<Sent>,
+    /// Records queen sends a new colony right after the hand-over.
+    pub queued: Vec<qinit_queen_core::ToColony>,
 }
 
 /// One record colony sent.
@@ -399,6 +406,7 @@ impl FakeQueen {
                 held: BTreeMap::new(),
                 shutdowns: Vec::new(),
                 events: Vec::new(),
+                queued: Vec::new(),
             },
             link,
         )
@@ -476,6 +484,9 @@ impl FakeQueen {
             },
             None,
         );
+        for rec in std::mem::take(&mut self.queued) {
+            self.send(rec, None);
+        }
         qinit_colonyd::store::Store::attach(link).unwrap()
     }
 }

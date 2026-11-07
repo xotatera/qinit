@@ -1149,3 +1149,135 @@ fn queen_going_away_does_not_stop_colony() {
     assert_eq!(r.d.turn(Vec::new()), None);
     assert_eq!(r.d.colony.state(0), Some(State::Ready));
 }
+
+/// Gets a booted `db` ready, then lets the cells of its shutdown come back.
+fn ready(r: &mut Rig) {
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::Ready));
+    assert_eq!(r.d.turn(Vec::new()), None);
+}
+
+fn graph_down(r: &mut Rig) -> Option<u8> {
+    for report in [Report::MainExited(Some(0)), Report::Empty, Report::Removed] {
+        r.d.colony
+            .effects
+            .cells
+            .pending
+            .push(Notice::Cell(CellId(0), report));
+    }
+    r.d.turn(Vec::new())
+}
+
+#[test]
+fn a_shutdown_record_reaches_queen_before_a_cell_is_stopped() {
+    let tmp = Tmp::new("announce-order");
+    let _ = tmp;
+    let seen = std::rc::Rc::new(std::cell::Cell::new(None));
+    let mut cells = FakeCells::default();
+    let bytes = database(WORKER, &["db"]);
+    let (d, _tmp, _log, mut queen) = try_boot(&bytes, "announce", FakeCells::default(), |_, _| {});
+    let mut d = d.expect("boots");
+    let peer = queen.peer.try_clone().unwrap();
+    let flag = seen.clone();
+    cells.on_stop = Some(Box::new(move || {
+        let mut found = false;
+        loop {
+            let mut buf = [0u8; 32];
+            let Ok(r) = qinit_ipc::recv(std::os::fd::AsFd::as_fd(&peer), &mut buf) else {
+                break;
+            };
+            found |= matches!(
+                qinit_queen_core::decode_from_colony(&buf[..r.len], r.fds.len()),
+                Some(qinit_queen_core::FromColony::Shutdown {
+                    mode: qinit_queen_core::Mode::Poweroff
+                })
+            );
+        }
+        flag.set(Some(found));
+    }));
+    // Swap the fake cell layer's hook in: the stop must find the record already sent.
+    d.colony.effects.cells.on_stop = cells.on_stop.take();
+    d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::Ready));
+    assert_eq!(d.turn(Vec::new()), None);
+    let out = d
+        .colony
+        .request_shutdown(qinit_colony::ShutdownMode::Poweroff, 0);
+    assert!(out.errors.is_empty());
+    assert_eq!(
+        seen.get(),
+        Some(true),
+        "the first stop found the Shutdown record in queen's socket"
+    );
+    let _ = &mut queen;
+}
+
+#[test]
+fn a_queen_request_shuts_down_in_its_mode() {
+    for (mode, code) in [
+        (qinit_queen_core::Mode::Poweroff, exit::POWEROFF),
+        (qinit_queen_core::Mode::Reboot, exit::REBOOT),
+        (qinit_queen_core::Mode::Halt, exit::HALT),
+    ] {
+        let mut r = boot(WORKER, &["db"], "queenreq");
+        ready(&mut r);
+        r.queen.send(ToColony::Request { mode }, None);
+        assert_eq!(r.d.pump(), None, "the graph is not down yet");
+        assert!(
+            r.d.colony
+                .effects
+                .cells
+                .calls
+                .iter()
+                .any(|c| matches!(c, Call::Stop(0, ..))),
+            "{mode:?}: the node is stopped"
+        );
+        assert_eq!(graph_down(&mut r), Some(code), "{mode:?}");
+        r.queen.pump();
+        assert!(
+            r.queen.shutdowns.contains(&match mode {
+                qinit_queen_core::Mode::Poweroff => qinit_queen_core::Mode::Poweroff,
+                qinit_queen_core::Mode::Reboot => qinit_queen_core::Mode::Reboot,
+                qinit_queen_core::Mode::Halt => qinit_queen_core::Mode::Halt,
+            }),
+            "colony announced the mode it ends in: {:?}",
+            r.queen.shutdowns
+        );
+    }
+}
+
+#[test]
+fn a_request_read_at_boot_starts_the_shutdown() {
+    let bytes = database(WORKER, &["db"]);
+    let (d, _tmp, _log, _queen) = try_boot(&bytes, "bootreq", FakeCells::default(), |_, q| {
+        // Ctrl-Alt-Del came before colony was up: queen sends it right after the hand-over.
+        q.queued.push(ToColony::Request {
+            mode: qinit_queen_core::Mode::Reboot,
+        });
+    });
+    let mut d = d.expect("boots");
+    assert_eq!(d.pump(), None);
+    assert!(
+        d.colony
+            .effects
+            .cells
+            .calls
+            .iter()
+            .any(|c| matches!(c, Call::Stop(0, ..))),
+        "the shutdown has begun"
+    );
+    for report in [Report::MainExited(Some(0)), Report::Empty, Report::Removed] {
+        d.colony
+            .effects
+            .cells
+            .pending
+            .push(Notice::Cell(CellId(0), report));
+    }
+    assert_eq!(d.turn(Vec::new()), Some(exit::REBOOT));
+}

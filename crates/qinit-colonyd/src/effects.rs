@@ -1123,6 +1123,10 @@ impl<C: CellOps> Effects for RealEffects<C> {
         self.deadlines.cancel(Key::Wait(wait));
     }
 
+    fn shutting_down(&mut self, mode: qinit_colony::ShutdownMode) {
+        self.store.announce(mode);
+    }
+
     fn signal(&mut self, node: u32, sig: i32) -> Result<(), Errno> {
         let id = self
             .routes

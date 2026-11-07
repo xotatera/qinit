@@ -102,4 +102,7 @@ pub trait Effects {
     fn cancel_wait(&mut self, wait: u64);
     /// Sends the node's main process the Linux signal `sig` (its reload signal).
     fn signal(&mut self, node: u32, sig: i32) -> Result<(), Errno>;
+    /// A shutdown has begun, ending in `mode`: called before anything is stopped, and again when
+    /// a later request changes the mode.
+    fn shutting_down(&mut self, mode: crate::ShutdownMode);
 }

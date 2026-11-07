@@ -143,3 +143,61 @@ fn shutdown_stops_instances_too_whoever_asks() {
         .count();
     assert_eq!(stopped, 1);
 }
+
+fn announced(c: &qinit_colony::Colony<Sim>) -> Vec<qinit_colony::ShutdownMode> {
+    c.effects
+        .calls
+        .iter()
+        .filter_map(|call| match call {
+            Call::ShuttingDown(m) => Some(*m),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn shutting_down_comes_before_the_first_stop() {
+    let (mut c, _) = boot("two.toml", &["a"], Sim::new());
+    pass(&mut c, 5);
+    let t0 = c.effects.now();
+    let _ = c.shutdown(t0);
+    let calls = &c.effects.calls;
+    let said = calls
+        .iter()
+        .position(|x| matches!(x, Call::ShuttingDown(_)))
+        .expect("announced");
+    let first_stop = calls
+        .iter()
+        .position(|x| matches!(x, Call::Stop(..) | Call::StopInstance(..)))
+        .expect("something was stopped");
+    assert!(said < first_stop, "{calls:?}");
+    assert_eq!(
+        announced(&c),
+        [qinit_colony::ShutdownMode::Halt],
+        "a signal's mode is halt"
+    );
+}
+
+#[test]
+fn a_changed_mode_is_announced_again() {
+    use qinit_colony::ShutdownMode::{Poweroff, Reboot};
+    let (mut c, _) = boot("two.toml", &["a"], Sim::new());
+    pass(&mut c, 5);
+    let t0 = c.effects.now();
+    let _ = c.request_shutdown(Poweroff, t0);
+    let _ = c.request_shutdown(Reboot, t0);
+    assert_eq!(announced(&c), [Poweroff, Reboot]);
+    assert_eq!(c.shutdown_mode(), Some(Reboot), "the last request wins");
+}
+
+#[test]
+fn the_same_mode_is_announced_once() {
+    use qinit_colony::ShutdownMode::Reboot;
+    let (mut c, _) = boot("two.toml", &["a"], Sim::new());
+    pass(&mut c, 5);
+    let t0 = c.effects.now();
+    let _ = c.request_shutdown(Reboot, t0);
+    let _ = c.request_shutdown(Reboot, t0);
+    let _ = c.shutdown(t0);
+    assert_eq!(announced(&c), [Reboot]);
+}
