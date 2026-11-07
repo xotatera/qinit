@@ -16,11 +16,16 @@ fn child() {
     let _ = qinit_sys::fd::write_all(out.as_fd(), b"ready\n");
     let mut stdin = std::io::stdin();
     let mut byte = [0u8; 1];
-    while let Ok(n) = stdin.read(&mut byte) {
-        if n == 0 {
-            break;
+    loop {
+        match stdin.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) => {
+                let _ = qinit_sys::fd::write_all(out.as_fd(), b"alive\n");
+            }
+            // The handler returned: the signal interrupts the read, which is retried.
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
         }
-        let _ = qinit_sys::fd::write_all(out.as_fd(), b"alive\n");
     }
 }
 
