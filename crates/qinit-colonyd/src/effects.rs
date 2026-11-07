@@ -191,6 +191,8 @@ pub struct Heard {
     pub strays: Vec<(CellId, Report)>,
     /// `(pid, wait status)` of children nobody tracks.
     pub orphans: Vec<(libc::pid_t, i32)>,
+    /// Cells whose handed-over main exited with no status recorded yet.
+    pub status_pending: Vec<CellId>,
 }
 
 /// The seconds `deadline_ms` of a launch request: the start timeout capped at 30 s, 30 s when the
@@ -309,6 +311,7 @@ impl<C: CellOps> RealEffects<C> {
                     }
                 }
                 Notice::Orphan { pid, status } => self.inbox.orphans.push((pid, status)),
+                Notice::StatusPending(id) => self.inbox.status_pending.push(id),
             }
         }
     }

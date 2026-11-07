@@ -82,4 +82,16 @@ pub trait Effects {
     fn dup_main_pidfd(&mut self, slot: u16) -> Result<OwnedFd, Errno>;
     /// The cell's cgroup id, once opened.
     fn cgroup_id(&self, slot: u16) -> Option<u64>;
+    /// The exit status the kernel recorded for the tracked main (`PIDFD_INFO_EXIT`, Linux 6.15):
+    /// `Some` once the main has been reaped by anyone, `None` while it runs, has not been
+    /// reaped yet, or none is tracked.
+    fn main_status(&mut self, slot: u16) -> Option<i32>;
+    /// Takes the tracked main out of the loop and keeps its pidfd, so a later `main_status`
+    /// can still read it. The next `close(slot, Source::Main)` drops it.
+    fn unwatch_main(&mut self, slot: u16);
+    /// Hands over the cell's directory: the next `open_existing` for the slot uses it instead of
+    /// opening the cell by name.
+    fn hand_dir(&mut self, slot: u16, dir: OwnedFd);
+    /// A duplicate of the cell's directory descriptor; `EBADF` when none is open.
+    fn dup_dir(&mut self, slot: u16) -> Result<OwnedFd, Errno>;
 }

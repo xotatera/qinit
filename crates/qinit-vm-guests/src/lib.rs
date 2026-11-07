@@ -1333,7 +1333,7 @@ fn subreaper_host() -> Result<(), String> {
         .iter()
         .filter_map(|n| match *n {
             Notice::Orphan { pid, status } => Some((pid, status)),
-            Notice::Cell(..) => None,
+            Notice::Cell(..) | Notice::StatusPending(_) => None,
         })
         .collect();
     match orphans.as_slice() {

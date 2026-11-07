@@ -25,7 +25,7 @@ fn reports(e: &mut Engine<Sim>) -> Vec<Report> {
         .into_iter()
         .filter_map(|n| match n {
             Notice::Cell(_, r) => Some(r),
-            Notice::Orphan { .. } => None,
+            Notice::Orphan { .. } | Notice::StatusPending(_) => None,
         })
         .collect()
 }
@@ -776,4 +776,161 @@ fn the_main_pidfd_exists_only_while_a_main_is_tracked() {
     ));
     e.spawn(id, cmd(), ReadyMode::Pipe).unwrap();
     assert!(e.main_pidfd(id).is_ok());
+}
+
+fn devnull() -> std::os::fd::OwnedFd {
+    std::fs::File::open("/dev/null").unwrap().into()
+}
+
+/// An engine with one adopted cell whose main was handed over.
+fn adopted() -> (Engine<Sim>, CellId) {
+    let mut e = Engine::new(Sim::default());
+    e.effects.existing = Some((77, true));
+    let id = e.adopt("old", 77, Some(devnull())).unwrap();
+    assert_eq!(reports(&mut e), [Report::Running]);
+    (e, id)
+}
+
+fn main_readable(e: &mut Engine<Sim>) {
+    e.on_ready(&Ready::Readable(token(0, Source::Main)))
+        .unwrap();
+}
+
+#[test]
+fn a_handed_over_main_with_a_recorded_status_reports_it() {
+    let (mut e, id) = adopted();
+    e.effects.statuses.insert(0, 9);
+    main_readable(&mut e);
+    assert_eq!(count(&e, &Call::Close(0, Source::Main)), 1);
+    assert_eq!(e.phase(id), Some(Phase::Exited));
+    assert_eq!(reports(&mut e), [Report::MainExited(Some(9))]);
+}
+
+#[test]
+fn without_the_wait_an_unrecorded_status_is_none_as_before() {
+    let (mut e, id) = adopted();
+    main_readable(&mut e);
+    assert_eq!(count(&e, &Call::UnwatchMain(0)), 0);
+    assert_eq!(e.phase(id), Some(Phase::Exited));
+    let notices = e.take_notices();
+    assert_eq!(notices, [Notice::Cell(id, Report::MainExited(None))]);
+}
+
+#[test]
+fn with_the_wait_an_unrecorded_status_is_pending_and_watching_stops() {
+    let (mut e, id) = adopted();
+    e.wait_for_status();
+    main_readable(&mut e);
+    assert_eq!(e.take_notices(), [Notice::StatusPending(id)]);
+    assert_eq!(count(&e, &Call::UnwatchMain(0)), 1);
+    assert_eq!(
+        count(&e, &Call::Close(0, Source::Main)),
+        0,
+        "the pidfd is kept"
+    );
+    assert_eq!(
+        e.phase(id),
+        Some(Phase::Running),
+        "the machine has not heard yet"
+    );
+}
+
+#[test]
+fn a_recorded_status_is_not_pending_even_with_the_wait() {
+    let (mut e, id) = adopted();
+    e.wait_for_status();
+    e.effects.statuses.insert(0, 3 << 8);
+    main_readable(&mut e);
+    assert_eq!(
+        e.take_notices(),
+        [Notice::Cell(id, Report::MainExited(Some(3 << 8)))]
+    );
+}
+
+#[test]
+fn settle_delivers_a_status_that_has_arrived() {
+    let (mut e, id) = adopted();
+    e.wait_for_status();
+    main_readable(&mut e);
+    e.take_notices();
+    e.effects.statuses.insert(0, 3 << 8);
+    assert_eq!(e.settle_status(id, false), Ok(true));
+    assert_eq!(count(&e, &Call::Close(0, Source::Main)), 1);
+    assert_eq!(reports(&mut e), [Report::MainExited(Some(3 << 8))]);
+    assert_eq!(
+        e.settle_status(id, false),
+        Ok(false),
+        "nothing is pending any more"
+    );
+}
+
+#[test]
+fn settle_stays_pending_until_given_up() {
+    let (mut e, id) = adopted();
+    e.wait_for_status();
+    main_readable(&mut e);
+    e.take_notices();
+    assert_eq!(e.settle_status(id, false), Ok(false));
+    assert_eq!(e.settle_status(id, false), Ok(false));
+    assert_eq!(e.phase(id), Some(Phase::Running));
+    assert!(reports(&mut e).is_empty());
+}
+
+#[test]
+fn giving_up_delivers_none() {
+    let (mut e, id) = adopted();
+    e.wait_for_status();
+    main_readable(&mut e);
+    e.take_notices();
+    assert_eq!(e.settle_status(id, true), Ok(true));
+    assert_eq!(reports(&mut e), [Report::MainExited(None)]);
+    assert_eq!(e.phase(id), Some(Phase::Exited));
+}
+
+#[test]
+fn a_cell_stopped_while_pending_still_ends() {
+    let (mut e, id) = adopted();
+    e.wait_for_status();
+    main_readable(&mut e);
+    e.take_notices();
+    e.stop(id, Polite::Main, SEC, SEC).unwrap();
+    assert_eq!(e.settle_status(id, true), Ok(true));
+    e.effects.levels.push_back((false, false));
+    e.on_ready(&Ready::Priority(token(0, Source::Events)))
+        .unwrap();
+    assert_eq!(
+        reports(&mut e),
+        [Report::Empty],
+        "the stop ends, as it would have"
+    );
+    assert_eq!(e.phase(id), Some(Phase::Empty));
+}
+
+#[test]
+fn a_held_directory_is_used_and_the_id_still_checked() {
+    let mut e = Engine::new(Sim::default());
+    e.effects.existing = Some((77, true));
+    e.adopt_held("old", 77, devnull(), None).unwrap();
+    e.adopt_held("other", 78, devnull(), None).unwrap();
+    assert_eq!(
+        reports(&mut e),
+        [Report::Running, Report::Failed(Failure::IdMismatch)]
+    );
+    let calls = &e.effects.calls;
+    let hand = calls.iter().position(|c| *c == Call::HandDir(0)).unwrap();
+    let open = calls
+        .iter()
+        .position(|c| *c == Call::OpenExisting(0, "old".into()))
+        .unwrap();
+    assert!(
+        hand < open,
+        "the directory is handed before the cell is opened: {calls:?}"
+    );
+}
+
+#[test]
+fn a_directory_can_be_duplicated_for_the_store() {
+    let (mut e, id) = adopted();
+    assert!(e.dir_fd(id).is_ok());
+    assert!(matches!(e.dir_fd(CellId(5)), Err(Error::NoSuchCell(5))));
 }

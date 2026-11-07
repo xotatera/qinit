@@ -93,12 +93,47 @@ fn handed_over_main() -> Result<(), String> {
     }
 }
 
+/// A cell adopted from its directory descriptor, as colony does with the one queen held: the
+/// directory is used as handed over, and the recorded cgroup id is still compared.
+fn a_held_directory_adopts_a_cell() -> Result<(), String> {
+    let (cg, _pid) = left_running("ah")?;
+    let open = || qinit_sys::cgroup::open_dir(std::path::Path::new(&format!("{COMB}/ah")));
+    let mut wrong = cells()?;
+    let bad = e(wrong.adopt_held("ah", cg + 1, e(open())?, None))?;
+    let refused = expect(&mut wrong, bad, Report::Failed(Failure::IdMismatch))?;
+    remove(&mut wrong, bad)?;
+    drop(wrong);
+    let mut second = cells()?;
+    let id = e(second.adopt_held("ah", cg, e(open())?, None))?;
+    let mut seen = expect(&mut second, id, Report::Running)?;
+    let dup = e(second.dir_fd(id))?;
+    drop(dup);
+    e(second.stop(id, Polite::Cell, HANG_GUARD, HANG_GUARD))?;
+    seen.extend(expect(&mut second, id, Report::Empty)?);
+    remove(&mut second, id)?;
+    let rest = reap_expected(1)?;
+    let (got_bad, got) = (reports_of(&refused, bad), reports_of(&seen, id));
+    if got_bad != [Report::Failed(Failure::IdMismatch)] {
+        Err(format!("reports with the wrong id {got_bad:?}"))
+    } else if got != [Report::Running, Report::Empty] {
+        Err(format!("reports {got:?}, want [Running, Empty]"))
+    } else if rest != [0] {
+        Err(format!("the helper's statuses {rest:?}, want [0]"))
+    } else {
+        Ok(())
+    }
+}
+
 fn main() {
     run(
         "adopt",
         &[
             ("adopt_by_name_and_id", adopt_by_name_and_id),
             ("handed_over_main", handed_over_main),
+            (
+                "a_held_directory_adopts_a_cell",
+                a_held_directory_adopts_a_cell,
+            ),
         ],
     )
 }
