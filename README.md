@@ -41,7 +41,7 @@ The reasoning behind these limits, and how to apply it to a proposal, is in
 Sub-project 2 provides the cell substrate, not a daemon: `qinit-sys` supplies
 Linux primitives, `qinit-event` the event loop, `qinit-cell` the cell runtime,
 and `qinit-vm` the QEMU guest tests. Verus proves the event and cell core
-machines and cell routing. The runtime refuses kernels older than Linux 6.13.
+machines and cell routing. The runtime refuses kernels older than Linux 6.15.
 
 Not part of qinit, now or later:
 

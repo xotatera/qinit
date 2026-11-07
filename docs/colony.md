@@ -46,7 +46,7 @@ debug level.
 
 ### Start-up, in order
 
-1. The kernel must be Linux 6.13 or later (`PIDFD_GET_INFO`).
+1. The kernel must be Linux 6.15 or later (`PIDFD_INFO_EXIT`).
 2. Colony is not inside the comb.
 3. The database is read and validated (the proved validator).
 4. The run directory and `state/` are made; `state/` must be a directory of the running user's, not
