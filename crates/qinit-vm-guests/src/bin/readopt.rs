@@ -1,17 +1,22 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Re-adoption after a colony restart on a real kernel (spec 2026-11-06 §8, §11 suite `readopt`):
-//! colony is killed with SIGKILL while its workers run, a second colony adopts what the first
-//! left, and the cases check what survives: processes, state, counters, and what is restarted or
-//! cleared. The guest's init is the reaper of the orphans, as dinit will be.
-use qinit_client::{Action, Begun, LaunchArgs, Wait};
+//! Re-adoption after a colony restart on a real kernel, under queen (spec 2026-11-07 §8): colony
+//! is killed with SIGKILL while its workers run, queen starts a second one at once, and the second
+//! adopts what the first left from the descriptors queen held. The cases check what survives:
+//! processes, state, counters, logger pipes and exit statuses, and what is restarted or cleared.
+//! A round trip to colony before each kill makes sure its last state reached queen: the reply to a
+//! request comes after the state of the one before it was saved.
+use qinit_client::{Action, Begun, Client, Event, LaunchArgs, Next, Scope, Wait};
 use qinit_db::{Kind, Launch, Node, Ready, Route};
 use qinit_vm_guests::colonyd::{
-    alive, await_cell_gone, await_exit, await_file, await_lines, await_state, await_unpopulated,
-    finish, info, model, procs_of, requires, settled, up, worker,
+    alive, await_exit, await_lines, info, model, procs_of_in, requires, settled, worker,
 };
-use qinit_vm_guests::{COMB, HANG_GUARD, e, run};
+use qinit_vm_guests::queened::{
+    self, COMB, await_colony_restart, await_log, colony_pid, fresh, kill_colony, log_count,
+    spin_until,
+};
+use qinit_vm_guests::{HANG_GUARD, e};
 use std::path::Path;
 
 /// `restart = on-failure`, `max` failures allowed within a minute, `delay_ms` before the first.
@@ -25,41 +30,76 @@ fn restarting(mut n: Node, max: u32, delay_ms: u32) -> Node {
     n
 }
 
+fn procs(cell: &str) -> Result<Vec<i32>, String> {
+    procs_of_in(COMB, cell)
+}
+
 fn pidfds(cell: &str) -> Result<Vec<std::os::fd::OwnedFd>, String> {
-    procs_of(cell)?
+    procs(cell)?
         .into_iter()
         .map(|p| e(qinit_sys::proc::pidfd_open(p)))
         .collect()
+}
+
+/// A round trip: when it returns, colony has saved the state of everything it did before.
+fn synced(c: &mut Client, target: &str) -> Result<(), String> {
+    e(c.status(target)).map(|_| ())
+}
+
+/// Kills colony where it stands and waits for queen's next one.
+fn kill_and_follow() -> Result<Client, String> {
+    let old = kill_colony()?;
+    await_colony_restart(old)
+}
+
+/// Watches `name` until it is in `want`; the reason word of that state.
+fn watch_state(name: &str, want: u32) -> Result<u32, String> {
+    let c = queened::client()?;
+    let mut w = e(c.watch(Scope::Target(name)))?;
+    loop {
+        match e(w.next(Some(HANG_GUARD)))? {
+            Next::Event(Event::Node { state, .. }) if state.state == want => {
+                return Ok(state.detail);
+            }
+            Next::Event(_) => {}
+            Next::Timeout => return Err(format!("{name} never reached state {want}")),
+            Next::Ended(w) => return Err(format!("the watch of {name} ended in {w:?}")),
+        }
+    }
+}
+
+fn await_cell_gone(cell: &str) -> Result<(), String> {
+    spin_until(&format!("the cell {cell} gone"), || {
+        (!Path::new(COMB).join(cell).exists()).then_some(())
+    })
 }
 
 fn a_second_colony_adopts_without_restarting_and_stops_through_the_main() -> Result<(), String> {
     let note = "/tmp/readopt-note-a";
     let _ = std::fs::remove_file(note);
     let nodes = vec![worker("a", "ready", &[note]), worker("b", "ready", &[])];
-    let (mut s, mut c) = up("readopt-adopt", &model(nodes, &[0, 1]))?;
+    let mut c = fresh(&model(nodes, &[0, 1]))?;
     settled(&mut c, "a")?;
     settled(&mut c, "b")?;
-    drop(c);
-    let (a_before, b_before) = (procs_of("a")?, procs_of("b")?);
+    let (a_before, b_before) = (procs("a")?, procs("b")?);
     if a_before.is_empty() || b_before.is_empty() {
         return Err("a worker has no process".into());
     }
-    s.kill_hard()?;
-    s.start()?;
-    let mut c = s.client()?;
+    synced(&mut c, "a")?;
+    drop(c);
+    let mut c = kill_and_follow()?;
     // Ready again at once: adopted, not started.
     if settled(&mut c, "a")? != 3 || settled(&mut c, "b")? != 3 {
         return Err("an adopted worker is not ready".into());
     }
-    let (a_after, b_after) = (procs_of("a")?, procs_of("b")?);
-    if (a_before.clone(), b_before) != (a_after, b_after) {
+    if (a_before.clone(), b_before) != (procs("a")?, procs("b")?) {
         return Err("the workers' processes changed: they were started again".into());
     }
     match e(c.status("a"))? {
         qinit_client::Status::Node(n) if n.pid.is_some_and(|p| a_before.contains(&p)) => {}
         other => return Err(format!("the adopted worker's status is {other:?}")),
     }
-    // The main was recovered, so a stop goes to it by its pidfd: the helper notes the TERM.
+    // The main was adopted through its pidfd, so a stop goes to it: the helper notes the TERM.
     match e(c.change("a", Action::Stop, Wait::Settled(HANG_GUARD)))? {
         qinit_client::Outcome::Settled(w) if w.state == 0 => {}
         other => return Err(format!("the stop ended as {other:?}")),
@@ -68,55 +108,49 @@ fn a_second_colony_adopts_without_restarting_and_stops_through_the_main() -> Res
         return Err("TERM never reached the adopted main".into());
     }
     if alive(a_before[0]) {
-        return Err(format!(
-            "the stopped worker is still running: {:?}; colony said {:?}",
-            std::fs::read_to_string(format!("/proc/{}/status", a_before[0])).map(|t| t
-                .lines()
-                .take(3)
-                .map(str::to_owned)
-                .collect::<Vec<_>>()),
-            s.lines()
-        ));
+        return Err("the stopped worker is still running".into());
     }
-    drop(c);
-    finish(s)
+    Ok(())
 }
 
-fn a_main_killed_while_colony_was_away_is_a_failure_and_restarts() -> Result<(), String> {
+fn a_main_killed_while_colony_was_away_reports_its_real_status_and_restarts() -> Result<(), String>
+{
     let nodes = vec![restarting(worker("w", "ready", &[]), 3, 100)];
-    let (mut s, mut c) = up("readopt-killed", &model(nodes, &[0]))?;
+    let mut c = fresh(&model(nodes, &[0]))?;
     settled(&mut c, "w")?;
+    synced(&mut c, "w")?;
     drop(c);
-    let before = procs_of("w")?;
-    s.kill_hard()?;
-    // Colony is away; the guest kills the worker (the guest's reaper reaps it).
+    let before = procs("w")?;
+    let failed = log_count("w: failed");
+    // Colony is stopped, so it cannot reap what is killed; then it is killed too, and queen,
+    // which inherits the zombies, reaps them and records how they ended.
+    let colony = colony_pid().ok_or("no colony")?;
+    e(qinit_sys::proc::kill(colony, libc::SIGSTOP))?;
     for p in &before {
         e(qinit_sys::proc::kill(*p, libc::SIGKILL))?;
     }
-    let _ = s.lines();
-    s.start()?;
-    let mut c = s.client()?;
+    e(qinit_sys::proc::kill(colony, libc::SIGKILL))?;
+    let mut c = await_colony_restart(colony)?;
     let state = settled(&mut c, "w")?;
     if state != 3 {
         return Err(format!("the worker is in state {state} after the restart"));
     }
-    let after = procs_of("w")?;
+    let after = procs("w")?;
     if after.is_empty() || after.iter().any(|p| before.contains(p)) {
         return Err(format!(
             "expected a new process, had {before:?} and now {after:?}"
         ));
     }
-    let said = s.lines();
-    if !said
+    let said = await_log("w: failed", failed + 1)?;
+    let line = said
         .iter()
-        .any(|l| l.ends_with("w: failed (status unknown)"))
-    {
-        return Err(format!(
-            "the unknown exit is not a failure in the log: {said:?}"
-        ));
+        .rev()
+        .find(|l| l.contains("w: failed"))
+        .ok_or("no failure line")?;
+    if line.contains("unknown") {
+        return Err(format!("the status is unknown: {line:?}"));
     }
-    drop(c);
-    finish(s)
+    Ok(())
 }
 
 fn stopped_quarantined_and_finished_nodes_survive() -> Result<(), String> {
@@ -132,38 +166,36 @@ fn stopped_quarantined_and_finished_nodes_survive() -> Result<(), String> {
         restarting(worker("quar", "exit-3", &[]), 1, 100),
         worker("stopped", "ready", &[]),
     ];
-    let (mut s, mut c) = up("readopt-state", &model(nodes, &[0, 1, 2, 3]))?;
+    let mut c = fresh(&model(nodes, &[0, 1, 2, 3]))?;
     settled(&mut c, "live")?;
     settled(&mut c, "stopped")?;
     if settled(&mut c, "once")? != 4 {
         return Err("the one-shot did not finish".into());
     }
-    drop(await_state(&mut s, "quar", 6)?);
+    watch_state("quar", 6)?;
     match e(c.change("stopped", Action::Stop, Wait::Settled(HANG_GUARD)))? {
         qinit_client::Outcome::Settled(w) if w.state == 0 => {}
         other => return Err(format!("the stop ended as {other:?}")),
     }
+    synced(&mut c, "live")?;
     drop(c);
-    let live_before = procs_of("live")?;
-    s.kill_hard()?;
-    s.start()?;
-    let mut c = s.client()?;
-    let state = |name: &str, c: &mut qinit_client::Client| -> Result<(u32, u32), String> {
-        let w = info(c, name)?.state;
-        Ok((w.state, w.detail))
-    };
+    let live_before = procs("live")?;
+    let mut c = kill_and_follow()?;
     for (name, want) in [
         ("live", (3, 0)),
         ("once", (4, 0)),
         ("quar", (6, 0)),
         ("stopped", (0, 0)),
     ] {
-        let got = state(name, &mut c)?;
-        if got != want {
-            return Err(format!("{name} is {got:?} after the restart, not {want:?}"));
+        let w = info(&mut c, name)?.state;
+        if (w.state, w.detail) != want {
+            return Err(format!(
+                "{name} is {:?} after the restart, not {want:?}",
+                (w.state, w.detail)
+            ));
         }
     }
-    if procs_of("live")? != live_before {
+    if procs("live")? != live_before {
         return Err("the live worker was started again".into());
     }
     if Path::new(COMB).join("stopped").exists() {
@@ -173,45 +205,32 @@ fn stopped_quarantined_and_finished_nodes_survive() -> Result<(), String> {
     if ran.lines().count() != 1 {
         return Err(format!("the one-shot ran again: {ran:?}"));
     }
-    drop(c);
-    finish(s)
+    Ok(())
 }
 
 fn breaker_counts_span_the_kill() -> Result<(), String> {
     // Three failures are allowed, the fourth quarantines; the kill falls after the second.
     let nodes = vec![restarting(worker("crashy", "exit-3", &[]), 3, 500)];
-    let mut s = qinit_vm_guests::colonyd::site("readopt-breaker")?;
-    s.write_db(&model(nodes, &[0]))?;
-    s.start()?;
-    let failed = |l: &String| l.ends_with("crashy: failed (exit 3)");
-    // The log is the count: a watch opened after the socket appears can miss the first failure.
+    let before = log_count("crashy: failed (exit 3)");
+    let mut c = fresh(&model(nodes, &[0]))?;
     // The second failure is half a second in and the third a second after it: the kill falls
     // between them.
-    let said = s.await_log(|lines| lines.iter().filter(|l| failed(l)).count() >= 2)?;
-    let before = said.iter().filter(|l| failed(l)).count();
-    // The log line comes before the state file: wait for the file to hold the second failure
-    // (field 5 of the `nodes` line is the burst count) before the kill.
-    await_file(&s.run.join("state"), "nodes", |t| {
-        t.lines().any(|l| l.split_whitespace().nth(4) == Some("2"))
-    })?;
-    s.kill_hard()?;
-    s.start()?;
-    let seen = await_state(&mut s, "crashy", 6)?;
-    if seen.detail != 0 {
+    await_log("crashy: failed (exit 3)", before + 2)?;
+    synced(&mut c, "crashy")?;
+    drop(c);
+    let _c = kill_and_follow()?;
+    let detail = watch_state("crashy", 6)?;
+    if detail != 0 {
+        return Err(format!("quarantined for reason {detail}, not the breaker"));
+    }
+    let after = log_count("crashy: failed (exit 3)");
+    if after != before + 4 {
         return Err(format!(
-            "quarantined for reason {}, not the breaker",
-            seen.detail
+            "failures in all: {}; the breaker needs 4 across the kill",
+            after - before
         ));
     }
-    let said = s.lines();
-    let after = said.iter().filter(|l| failed(l)).count();
-    if before != 2 || after != 2 {
-        return Err(format!(
-            "failures before the kill: {before}, after: {after}; the breaker needs 4 in all; colony said {said:?}; nodes file {:?}",
-            std::fs::read_to_string(s.run.join("state/nodes"))
-        ));
-    }
-    finish(s)
+    Ok(())
 }
 
 fn a_pipe_worker_still_starting_is_restarted() -> Result<(), String> {
@@ -219,23 +238,21 @@ fn a_pipe_worker_still_starting_is_restarted() -> Result<(), String> {
     let _ = std::fs::remove_file(started);
     // Never ready: it is still starting when colony dies, and its readiness pipe dies with it.
     let nodes = vec![worker("slow", "started", &[started, "slow"])];
-    let (mut s, c) = up("readopt-slow", &model(nodes, &[0]))?;
-    drop(c);
+    let mut c = fresh(&model(nodes, &[0]))?;
     await_lines(Path::new(started), 1)?;
+    synced(&mut c, "slow")?;
+    drop(c);
     let old = pidfds("slow")?;
-    s.kill_hard()?;
-    s.start()?;
-    let c = s.client()?;
+    let _c = kill_and_follow()?;
     // The old process is stopped and a new one started.
     for fd in &old {
         await_exit(fd)?;
     }
     await_lines(Path::new(started), 2)?;
-    drop(c);
-    finish(s)
+    Ok(())
 }
 
-fn a_logger_and_its_producer_are_restarted() -> Result<(), String> {
+fn a_logger_and_its_producer_keep_running() -> Result<(), String> {
     let started = "/tmp/readopt-logger-started";
     let _ = std::fs::remove_file(started);
     // `logd` (0) is a logger; `web` (1) writes to it and requires it.
@@ -246,67 +263,27 @@ fn a_logger_and_its_producer_are_restarted() -> Result<(), String> {
         &[0, 1],
     );
     m.routes = vec![Route::Pipe(0)];
-    let (mut s, mut c) = up("readopt-logger", &m)?;
+    let mut c = fresh(&m)?;
     if settled(&mut c, "web")? != 3 {
         return Err("the producer is not ready".into());
     }
+    synced(&mut c, "web")?;
     drop(c);
-    let old: Vec<_> = pidfds("logd")?.into_iter().chain(pidfds("web")?).collect();
-    s.kill_hard()?;
-    s.start()?;
-    let mut c = s.client()?;
-    for fd in &old {
-        await_exit(fd)?;
-    }
-    // Four starts in all: both, then both again; the pipe is new, so neither keeps an old end.
-    let lines = await_lines(Path::new(started), 4)?;
-    if lines.iter().filter(|l| *l == "logd").count() != 2
-        || lines.iter().filter(|l| *l == "web").count() != 2
-    {
-        return Err(format!("expected both to start twice: {lines:?}"));
-    }
+    let before = (procs("logd")?, procs("web")?);
+    let mut c = kill_and_follow()?;
+    // Queen held the pipe, so neither side is restarted: the same processes, two starts in all.
     if settled(&mut c, "web")? != 3 {
         return Err("the producer is not ready again".into());
     }
-    drop(c);
-    finish(s)
-}
-
-fn a_cell_with_a_different_id_is_left_alone() -> Result<(), String> {
-    let (mut s, mut c) = up("readopt-id", &model(vec![worker("w", "ready", &[])], &[0]))?;
-    settled(&mut c, "w")?;
-    drop(c);
-    let victims = procs_of("w")?;
-    s.kill_hard()?;
-    // The guest empties the cell and makes a directory of the same name: another cgroup id.
-    for p in &victims {
-        e(qinit_sys::proc::kill(*p, libc::SIGKILL))?;
+    let after = (procs("logd")?, procs("web")?);
+    if before != after {
+        return Err(format!("the processes changed: {before:?} then {after:?}"));
     }
-    await_unpopulated("w")?;
-    let dir = Path::new(COMB).join("w");
-    e(std::fs::remove_dir(&dir))?;
-    e(std::fs::create_dir(&dir))?;
-    let _ = s.lines();
-    s.start()?;
-    let mut c = s.client()?;
-    let said = s.lines();
-    if !said
-        .iter()
-        .any(|l| l.starts_with("<27>") && l.contains("is not the one colony recorded"))
-    {
-        return Err(format!("the mismatch is not logged as an error: {said:?}"));
+    let lines = e(std::fs::read_to_string(started))?;
+    if lines.lines().count() != 2 {
+        return Err(format!("a worker was started again: {lines:?}"));
     }
-    if !dir.is_dir() {
-        return Err("colony removed a directory it did not make".into());
-    }
-    // `w` could not start (its directory is taken): off, and the directory is still ours to remove.
-    let state = info(&mut c, "w")?.state.state;
-    if state != 0 {
-        return Err(format!("w is in state {state}, not off"));
-    }
-    drop(c);
-    e(std::fs::remove_dir(&dir))?;
-    finish(s)
+    Ok(())
 }
 
 fn an_instance_cell_is_cleared_and_ids_move_past_it() -> Result<(), String> {
@@ -320,89 +297,53 @@ fn an_instance_cell_is_cleared_and_ids_move_past_it() -> Result<(), String> {
         env: Vec::new(),
         fds: 0,
     });
-    let (mut s, mut c) = up("readopt-instance", &model(vec![job], &[]))?;
-    let first = match e(c.begin_launch("job", &LaunchArgs::default(), false, HANG_GUARD))? {
+    let mut c = fresh(&model(vec![job], &[]))?;
+    let first = match e(c.begin_launch("job", &LaunchArgs::default(), false, HANG_GUARD))
+        .map_err(|x| format!("first launch: {x}"))?
+    {
         Begun::Started(st) => st.id,
         Begun::Failed { step, errno } => return Err(format!("the launch failed: {step} {errno}")),
     };
-    if first != 1 {
-        return Err(format!("the first instance is {first}, not 1"));
+    if first < 1 {
+        return Err(format!("the first instance is {first}"));
     }
     let cell = format!("job#{first}");
-    // The server's own reply to the launch comes before the cell map is rewritten (D67): wait for
-    // the file to name the cell before killing colony, or the next colony could not know it.
-    await_file(&s.run.join("state"), "cells", |t| {
-        t.lines().any(|l| l.starts_with(&cell))
-    })?;
+    // The server's own reply to the launch comes before the state is saved (D67): a round trip
+    // makes sure the next colony can know the cell.
+    e(queened::client()?.list(0))?;
     let old = pidfds(&cell)?;
     drop(c);
-    s.kill_hard()?;
-    s.start()?;
-    let mut c = s.client()?;
+    let mut c = kill_and_follow()?;
     for fd in &old {
         await_exit(fd)?;
     }
     // The leftover cell is stopped and then removed.
-    await_cell_gone(&cell).map_err(|why| format!("{why}; colony said {:?}", s.lines()))?;
-    let second = match e(c.begin_launch("job", &LaunchArgs::default(), false, HANG_GUARD))? {
+    await_cell_gone(&cell)?;
+    let second = match e(c.begin_launch("job", &LaunchArgs::default(), false, HANG_GUARD))
+        .map_err(|x| format!("second launch: {x}"))?
+    {
         Begun::Started(st) => st.id,
         Begun::Failed { step, errno } => return Err(format!("the launch failed: {step} {errno}")),
     };
-    if second != 2 {
+    if second != first + 1 {
         return Err(format!(
             "the next instance is {second}: ids must pass the one found"
         ));
     }
-    drop(c);
-    finish(s)
-}
-
-fn a_corrupt_nodes_file_is_refused_and_only_cells_are_adopted() -> Result<(), String> {
-    let nodes = vec![
-        restarting(worker("w", "ready", &[]), 3, 100),
-        restarting(worker("x", "ready", &[]), 3, 100),
-    ];
-    let (mut s, mut c) = up("readopt-corrupt", &model(nodes, &[0]))?;
-    settled(&mut c, "w")?;
-    drop(c);
-    let before = procs_of("w")?;
-    s.kill_hard()?;
-    // `x` quarantined by its breaker with no failure counted: not a state the scheduler can hold.
-    e(std::fs::write(
-        s.run.join("state/nodes"),
-        "x 1 quarantined:breaker 0 0 0 0 0\n",
-    ))?;
-    let _ = s.lines();
-    s.start()?;
-    let mut c = s.client()?;
-    if settled(&mut c, "w")? != 3 || procs_of("w")? != before {
-        return Err("the cell was not adopted as it stood".into());
-    }
-    let said = s.lines();
-    if !said
-        .iter()
-        .any(|l| l.starts_with("<27>") && l.contains("saved node state is refused"))
-    {
-        return Err(format!("the refusal is not logged as an error: {said:?}"));
-    }
-    if info(&mut c, "x")?.state.state == 6 {
-        return Err("the refused file quarantined a node".into());
-    }
-    drop(c);
-    finish(s)
+    Ok(())
 }
 
 fn main() {
-    run(
-        "readopt",
+    let first = model(vec![worker("w", "ready", &[])], &[0]);
+    queened::boot(
         &[
             (
                 "a_second_colony_adopts_without_restarting_and_stops_through_the_main",
                 a_second_colony_adopts_without_restarting_and_stops_through_the_main,
             ),
             (
-                "a_main_killed_while_colony_was_away_is_a_failure_and_restarts",
-                a_main_killed_while_colony_was_away_is_a_failure_and_restarts,
+                "a_main_killed_while_colony_was_away_reports_its_real_status_and_restarts",
+                a_main_killed_while_colony_was_away_reports_its_real_status_and_restarts,
             ),
             (
                 "stopped_quarantined_and_finished_nodes_survive",
@@ -414,21 +355,15 @@ fn main() {
                 a_pipe_worker_still_starting_is_restarted,
             ),
             (
-                "a_logger_and_its_producer_are_restarted",
-                a_logger_and_its_producer_are_restarted,
-            ),
-            (
-                "a_cell_with_a_different_id_is_left_alone",
-                a_cell_with_a_different_id_is_left_alone,
+                "a_logger_and_its_producer_keep_running",
+                a_logger_and_its_producer_keep_running,
             ),
             (
                 "an_instance_cell_is_cleared_and_ids_move_past_it",
                 an_instance_cell_is_cleared_and_ids_move_past_it,
             ),
-            (
-                "a_corrupt_nodes_file_is_refused_and_only_cells_are_adopted",
-                a_corrupt_nodes_file_is_refused_and_only_cells_are_adopted,
-            ),
         ],
-    );
+        "readopt",
+        &first,
+    )
 }

@@ -13,8 +13,15 @@ use qinit_event::{Loop, Ready as LoopReady};
 use std::io::Read;
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::net::UnixDatagram;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
+
+/// Colony's syslog, received by the driver: bound before queen starts, so no line is lost.
+static LOG: OnceLock<UnixDatagram> = OnceLock::new();
+/// Every line colony has sent, oldest first.
+static LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Where the initrd puts queen.
 pub const QUEEN: &str = "/usr/lib/qinit/queen";
@@ -75,6 +82,9 @@ fn prepare(first: &Model) -> Result<(), String> {
     e(std::fs::create_dir_all("/etc/qinit"))?;
     // The limits the cases run under: a rescue minimum short enough to wait out.
     limits(300_000, 5_000, 300)?;
+    let log = e(UnixDatagram::bind("/dev/log"))?;
+    e(log.set_nonblocking(true))?;
+    let _ = LOG.set(log);
     write_db(first)
 }
 
@@ -309,5 +319,41 @@ pub fn clear_comb() {
         let path = entry.path();
         let _ = std::fs::write(path.join("cgroup.kill"), b"1");
         let _ = spin_until("a removable cell", || std::fs::remove_dir(&path).ok());
+    }
+}
+
+/// Takes what colony has logged into the history; the history.
+fn log_history() -> Vec<String> {
+    let mut lines = LINES.lock().map(|g| g.clone()).unwrap_or_default();
+    let mut buf = [0u8; 1024];
+    if let Some(log) = LOG.get() {
+        while let Ok(n) = log.recv(&mut buf) {
+            lines.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+        }
+    }
+    if let Ok(mut g) = LINES.lock() {
+        g.clone_from(&lines);
+    }
+    lines
+}
+
+/// How many lines colony has logged that contain `text`.
+#[must_use]
+pub fn log_count(text: &str) -> usize {
+    log_history().iter().filter(|l| l.contains(text)).count()
+}
+
+/// Waits until colony has logged `n` lines containing `text` (an event wait on its syslog).
+pub fn await_log(text: &str, n: usize) -> Result<Vec<String>, String> {
+    let log = LOG.get().ok_or("no syslog receiver")?;
+    let ms = i32::try_from(HANG_GUARD.as_millis()).unwrap_or(i32::MAX);
+    loop {
+        let lines = log_history();
+        if lines.iter().filter(|l| l.contains(text)).count() >= n {
+            return Ok(lines);
+        }
+        if !e(qinit_ipc::poll_readable(log.as_fd(), ms))? {
+            return Err(format!("colony never logged {text:?} {n} times"));
+        }
     }
 }

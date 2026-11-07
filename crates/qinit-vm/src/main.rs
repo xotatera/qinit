@@ -36,7 +36,7 @@ const SUITES: &[&str] = &[
 ];
 
 /// The suites whose PID 1 is queen: their files are at the paths queen uses.
-const QUEEN_SUITES: &[&str] = &["queen", "queen_panic", "queen_fault"];
+const QUEEN_SUITES: &[&str] = &["queen", "queen_panic", "queen_fault", "readopt"];
 
 /// The guest binary of a suite: `queen`'s is `queen_suite`, since `queen` is the program.
 fn bin_name(suite: &str) -> &str {
