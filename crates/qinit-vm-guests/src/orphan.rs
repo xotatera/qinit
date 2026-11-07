@@ -49,15 +49,25 @@ pub fn start() -> Result<Orphan, String> {
 }
 
 impl Orphan {
-    /// Lets the orphan exit and waits until it has.
-    pub fn exit(&self) -> Result<(), String> {
-        e(qinit_sys::fd::write_all(self.go.as_fd(), b"x"))?;
+    /// Lets the orphan exit, without waiting for it.
+    pub fn release(&self) -> Result<(), String> {
+        e(qinit_sys::fd::write_all(self.go.as_fd(), b"x"))
+    }
+
+    /// Waits until the orphan has exited.
+    pub fn await_exit(&self) -> Result<(), String> {
         let ms = i32::try_from(crate::HANG_GUARD.as_millis()).unwrap_or(i32::MAX);
         if e(qinit_ipc::poll_readable(self.pidfd.as_fd(), ms))? {
             Ok(())
         } else {
             Err("the orphan never exited".into())
         }
+    }
+
+    /// Lets the orphan exit and waits until it has.
+    pub fn exit(&self) -> Result<(), String> {
+        self.release()?;
+        self.await_exit()
     }
 
     /// Whether the orphan is a zombie nobody has reaped.

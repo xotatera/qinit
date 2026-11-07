@@ -10,9 +10,9 @@ use qinit_db::Model;
 use qinit_vm_guests::colonyd::{model, settled, worker};
 use qinit_vm_guests::orphan;
 use qinit_vm_guests::queened::{
-    COMB, RESCUE, RESCUE_LOG, ZERO, await_colony_restart, await_kmsg, await_zero_lines, clear_comb,
-    client, colony_pid, fresh, kill_colony, kmsg_count, limits, rescue_role, signal_queen,
-    spin_until, wait_until, write_db, zero_lines,
+    COMB, REPAIRED, RESCUE, RESCUE_LOG, ZERO, await_colony_restart, await_kmsg, await_zero_lines,
+    clear_comb, client, colony_pid, fresh, kill_colony, kmsg_count, limits, rescue_role,
+    signal_queen, spin_until, wait_until, write_db, zero_lines,
 };
 use qinit_vm_guests::{e, queened};
 
@@ -100,6 +100,25 @@ fn an_orphan_is_reaped() -> Result<(), String> {
     Ok(())
 }
 
+/// Sixteen orphans let go at once exit within a few milliseconds of each other, and their
+/// `SIGCHLD`s coalesce: queen must reap until nothing is left, not once per wake-up.
+fn a_burst_of_orphans_is_reaped_whole() -> Result<(), String> {
+    let _c = fresh(&basic())?;
+    let orphans = (0..16)
+        .map(|_| orphan::start())
+        .collect::<Result<Vec<_>, _>>()?;
+    for o in &orphans {
+        o.release()?;
+    }
+    for o in &orphans {
+        o.await_exit()?;
+    }
+    for o in &orphans {
+        o.await_reaped()?;
+    }
+    Ok(())
+}
+
 fn a_killed_colony_is_restarted_and_workers_keep_their_pids() -> Result<(), String> {
     let mut c = fresh(&basic())?;
     settled(&mut c, "w")?;
@@ -142,6 +161,17 @@ fn rescue_exiting_zero_late_brings_colony_back() -> Result<(), String> {
     let mut c = client()?;
     settled(&mut c, "w")?;
     Ok(())
+}
+
+fn a_clean_rescue_makes_colony_read_the_repaired_database() -> Result<(), String> {
+    // The repaired file runs a worker the held copy has not: colony runs it only if it read the
+    // file, and queen dropped the copy it held.
+    let repaired = model(vec![worker("w2", "ready", &[])], &[0]);
+    let bytes = qinit_db::write(&repaired).map_err(|x| format!("write the database: {x:?}"))?;
+    e(std::fs::write(REPAIRED, bytes))?;
+    trip_limit("repair")?;
+    let mut c = client()?;
+    settled(&mut c, "w2").map(drop)
 }
 
 fn rescue_exiting_non_zero_holds() -> Result<(), String> {
@@ -325,6 +355,20 @@ fn sigterm_is_ignored_and_logged() -> Result<(), String> {
     Ok(())
 }
 
+fn a_real_time_signal_is_ignored_and_logged() -> Result<(), String> {
+    let _c = fresh(&basic())?;
+    let sig = libc::SIGRTMIN() + 6;
+    let line = format!("signal {sig} ignored");
+    let said = kmsg_count(&line)?;
+    let pid = colony_pid();
+    signal_queen(sig)?;
+    await_kmsg(&line, said + 1)?;
+    if colony_pid() != pid || pid.is_none() {
+        return Err("colony changed: a real-time signal did something".into());
+    }
+    Ok(())
+}
+
 fn a_colony_killed_during_a_shutdown_is_not_restarted() -> Result<(), String> {
     killed_during_a_shutdown()
         .map_err(|why| format!("{why}; colony said {:?}", queened::log_tail(15)))
@@ -395,6 +439,10 @@ fn main() {
             ("boots_and_serves", boots_and_serves),
             ("an_orphan_is_reaped", an_orphan_is_reaped),
             (
+                "a_burst_of_orphans_is_reaped_whole",
+                a_burst_of_orphans_is_reaped_whole,
+            ),
+            (
                 "a_killed_colony_is_restarted_and_workers_keep_their_pids",
                 a_killed_colony_is_restarted_and_workers_keep_their_pids,
             ),
@@ -406,6 +454,10 @@ fn main() {
             (
                 "rescue_exiting_zero_late_brings_colony_back",
                 rescue_exiting_zero_late_brings_colony_back,
+            ),
+            (
+                "a_clean_rescue_makes_colony_read_the_repaired_database",
+                a_clean_rescue_makes_colony_read_the_repaired_database,
             ),
             (
                 "rescue_exiting_non_zero_holds",
@@ -436,6 +488,10 @@ fn main() {
             (
                 "sigterm_is_ignored_and_logged",
                 sigterm_is_ignored_and_logged,
+            ),
+            (
+                "a_real_time_signal_is_ignored_and_logged",
+                a_real_time_signal_is_ignored_and_logged,
             ),
             (
                 "a_colony_killed_during_a_shutdown_is_not_restarted",

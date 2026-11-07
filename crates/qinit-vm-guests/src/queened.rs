@@ -32,6 +32,8 @@ pub const ZERO_LOG: &str = "/tmp/zero-log";
 pub const RESCUE: &str = "/etc/qinit/rescue";
 pub const RESCUE_ROLE: &str = "/tmp/rescue-role";
 pub const RESCUE_LOG: &str = "/tmp/rescue-log";
+/// The database the `repair` role of rescue puts in place.
+pub const REPAIRED: &str = "/tmp/repaired.db";
 /// Colony's control socket and database, at their defaults.
 pub const SOCKET: &str = "/run/qinit/colony";
 pub const DB: &str = "/etc/qinit/colony.db";
@@ -100,8 +102,24 @@ pub fn write_db(model: &Model) -> Result<(), String> {
     e(std::fs::write(DB, bytes))
 }
 
+/// Waits 400 ms, then exits 0: a rescue that ran long enough to count.
+fn late() -> i32 {
+    let Ok(t) = qinit_sys::event::timer(std::time::Duration::from_millis(400)) else {
+        return 2;
+    };
+    let Ok(mut l) = Loop::new() else { return 2 };
+    if l.add_fd(t.as_fd(), 1).is_err() {
+        return 2;
+    }
+    match l.wait() {
+        Ok(_) => 0,
+        Err(_) => 2,
+    }
+}
+
 /// The rescue program: logs its session, pid and controlling terminal, then does what
-/// `/tmp/rescue-role` says: `late` (waits 400 ms, exits 0), `now` (exits 0) or `fail` (exits 3).
+/// `/tmp/rescue-role` says: `late` (waits 400 ms, exits 0), `repair` (copies `REPAIRED` over the database, then as `late`),
+/// `now` (exits 0) or `fail` (exits 3).
 fn rescue() -> i32 {
     let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
     let rest = stat.rsplit_once(')').map_or("", |x| x.1);
@@ -123,18 +141,13 @@ fn rescue() -> i32 {
         .trim()
     {
         "now" => 0,
-        "late" => {
-            let Ok(t) = qinit_sys::event::timer(std::time::Duration::from_millis(400)) else {
-                return 2;
-            };
-            let Ok(mut l) = Loop::new() else { return 2 };
-            if l.add_fd(t.as_fd(), 1).is_err() {
+        "late" => late(),
+        // What an administrator does in rescue: puts a repaired database where colony reads it.
+        "repair" => {
+            if std::fs::copy(REPAIRED, DB).is_err() {
                 return 2;
             }
-            match l.wait() {
-                Ok(_) => 0,
-                Err(_) => 2,
-            }
+            late()
         }
         _ => 3,
     }
@@ -309,7 +322,7 @@ pub fn await_kmsg(text: &str, n: usize) -> Result<(), String> {
     }
 }
 
-/// Tells what rescue does next: `late`, `now` or `fail`.
+/// Tells what rescue does next: `late`, `repair`, `now` or `fail`.
 pub fn rescue_role(role: &str) -> Result<(), String> {
     e(std::fs::write(RESCUE_ROLE, role))
 }
