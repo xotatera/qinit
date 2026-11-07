@@ -9,6 +9,10 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[[test]]
+name = "park_foreign"
+harness = false
+
 [dependencies]
 libc = { workspace = true, features = ["std"] }
 qinit-ipc = { path = "../qinit-ipc" }

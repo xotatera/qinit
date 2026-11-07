@@ -134,32 +134,49 @@ impl Store {
     }
 
     /// Asks queen to hold `fd` under `key`, replacing what it held. A send that finds the
-    /// socket full waits at most one second, then is dropped (the next save replaces it).
-    pub fn put(&mut self, key: u64, fd: BorrowedFd<'_>) {
-        if self.send(&encode_from_colony(FromColony::Put { key }), Some(fd)) {
+    /// socket full waits at most one second, then is dropped. Whether it went: a caller that
+    /// names the key in a state must not do so until it has, and tries again if it has not.
+    /// Without a queen nothing is held and nothing is named, so it is `true`.
+    pub fn put(&mut self, key: u64, fd: BorrowedFd<'_>) -> bool {
+        if self.link.is_none() {
+            return true;
+        }
+        let sent = self.send(&encode_from_colony(FromColony::Put { key }), Some(fd));
+        if sent {
             self.known.insert(key);
             self.held.remove(&key);
         }
+        sent
     }
 
-    /// Asks queen to close and forget `key`.
-    pub fn forget(&mut self, key: u64) {
-        if self.known.remove(&key) {
+    /// Asks queen to close and forget `key`. Whether it went (`true` too when queen was never
+    /// told of the key): a key whose `Drop` was dropped stays to be forgotten again.
+    pub fn forget(&mut self, key: u64) -> bool {
+        if !self.known.contains(&key) {
+            return true;
+        }
+        if self.send(&encode_from_colony(FromColony::Drop { key }), None) {
+            self.known.remove(&key);
             self.held.remove(&key);
-            self.send(&encode_from_colony(FromColony::Drop { key }), None);
+            true
+        } else {
+            self.link.is_none()
         }
     }
 
-    /// Saves `bytes` under `key`, as a sealed memory file.
-    pub fn save(&mut self, key: u64, bytes: &[u8]) {
+    /// Saves `bytes` under `key`, as a sealed memory file. Whether it went, as for
+    /// [`Store::put`].
+    pub fn save(&mut self, key: u64, bytes: &[u8]) -> bool {
         if self.link.is_none() {
-            return;
+            return true;
         }
         match sealed(c"qinit-state", bytes) {
             Ok(fd) => self.put(key, fd.as_fd()),
-            Err(e) => self
-                .warnings
-                .push(format!("cannot make a state entry: {e:?}")),
+            Err(e) => {
+                self.warnings
+                    .push(format!("cannot make a state entry: {e:?}"));
+                false
+            }
         }
     }
 
@@ -228,7 +245,7 @@ impl Store {
         let keys: Vec<u64> = self.held.keys().copied().collect();
         for key in keys {
             if ![KEY_CELLS, KEY_NODES, KEY_DB].contains(&key) {
-                self.forget(key);
+                let _ = self.forget(key);
             }
         }
     }
@@ -237,7 +254,7 @@ impl Store {
     /// re-adopt.
     pub fn clear(&mut self) {
         for key in std::mem::take(&mut self.known) {
-            self.send(&encode_from_colony(FromColony::Drop { key }), None);
+            let _ = self.send(&encode_from_colony(FromColony::Drop { key }), None);
         }
         self.held.clear();
     }

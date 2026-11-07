@@ -105,7 +105,22 @@ fn write_line(line: &[u8]) {
     }
 }
 
-extern "C" fn on_fatal(_sig: libc::c_int) {
+extern "C" fn on_fatal(_sig: libc::c_int, info: *mut libc::siginfo_t, _ctx: *mut libc::c_void) {
+    // A fault signal another process sent (`kill -SEGV 1`) is not a fault: PID 1 ignores a signal
+    // with a default action, and the handler must not turn it into a park. The kernel's own
+    // (`si_code` above 0), and the process's own `raise`, `abort` and `tkill` (`si_pid` is its
+    // own), park.
+    // SAFETY: the kernel passes a valid siginfo for an `SA_SIGINFO` handler.
+    let i = unsafe { &*info };
+    // SAFETY: `si_pid` is valid for a signal sent by `kill`, which is the case when `si_code` is
+    // not above 0.
+    let from = unsafe { i.si_pid() };
+    // SAFETY: getpid takes no arguments.
+    let own = unsafe { libc::getpid() };
+    let foreign = i.si_code <= 0 && from != own;
+    if foreign {
+        return;
+    }
     write_line(FATAL_LINE);
     loop {
         // SAFETY: pause takes no arguments; every other signal is blocked by `sa_mask`.
@@ -126,8 +141,9 @@ pub fn install_fault_park() -> Result<()> {
     check(unsafe { libc::sigaltstack(&raw const stack, std::ptr::null_mut()) })?;
     // SAFETY: an all-zero sigaction is a valid starting value.
     let mut act: libc::sigaction = unsafe { std::mem::zeroed() };
-    act.sa_sigaction = on_fatal as extern "C" fn(libc::c_int) as usize;
-    act.sa_flags = libc::SA_ONSTACK | libc::SA_NODEFER;
+    act.sa_sigaction =
+        on_fatal as extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void) as usize;
+    act.sa_flags = libc::SA_ONSTACK | libc::SA_NODEFER | libc::SA_SIGINFO;
     // SAFETY: `act.sa_mask` is a valid set to fill.
     unsafe { libc::sigfillset(&raw mut act.sa_mask) };
     for sig in FATAL {

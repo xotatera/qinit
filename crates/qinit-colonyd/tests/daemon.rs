@@ -1368,3 +1368,59 @@ fn a_second_shutdown_request_on_one_connection_is_accepted_and_changes_the_mode(
     );
     qinit_sys::signal::unblock_all().unwrap();
 }
+
+#[test]
+fn saves_dropped_while_queen_did_not_read_are_sent_again_and_never_name_a_missing_key() {
+    let mut r = boot(WORKER, &["db"], "stalled");
+    ready(&mut r);
+    // Queen stops reading until colony's socket is full and one send has given up.
+    let mut n = 0;
+    while r.d.colony.effects.store.warnings_pending() == 0 {
+        let _ = r.d.colony.effects.store.save(KEY_DB, b"filler");
+        n += 1;
+        assert!(n < 100_000, "the socket never filled");
+    }
+    // The node is stopped and started again while queen is deaf: new descriptors, new texts.
+    let out = r.d.colony.request(0, qinit_colony::Request::Stop, 0);
+    assert!(out.errors.is_empty());
+    for report in [Report::MainExited(Some(0)), Report::Empty, Report::Removed] {
+        r.d.colony
+            .effects
+            .cells
+            .pending
+            .push(Notice::Cell(CellId(0), report));
+    }
+    assert_eq!(r.d.turn(Vec::new()), None);
+    assert_eq!(r.d.colony.state(0), Some(State::Off), "stopped");
+    let out = r.d.colony.request(0, qinit_colony::Request::Start, 0);
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert_eq!(r.d.turn(Vec::new()), None);
+    // The start waits out a backoff; it is due now.
+    r.d.colony
+        .effects
+        .deadlines
+        .arm(Key::Node(0, qinit_colony::TimerKind::Backoff), 0);
+    assert_eq!(r.d.turn(Vec::new()), None);
+    assert_eq!(r.d.colony.state(0), Some(State::Starting), "started again");
+    // Queen reads again (whatever got through is applied), and colony wakes once more.
+    r.queen.pump();
+    assert_eq!(r.d.turn(Vec::new()), None);
+    r.queen.pump();
+    assert_eq!(r.d.turn(Vec::new()), None);
+    let cells = parse_cells(&r.queen.text(KEY_CELLS).expect("the cells entry")).unwrap();
+    assert_eq!(
+        cells.len(),
+        1,
+        "{cells:?}; calls {:?}; events {:?}; log {:?}",
+        r.d.colony.effects.cells.calls,
+        r.queen.events,
+        r.logged()
+    );
+    for key in [cells[0].dir_key, cells[0].main_key] {
+        assert!(
+            r.queen.held.contains_key(&key),
+            "the state names key {key}, which queen does not hold: {:?}",
+            r.queen.held.keys().collect::<Vec<_>>()
+        );
+    }
+}

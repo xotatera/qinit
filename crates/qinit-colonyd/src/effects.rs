@@ -511,8 +511,13 @@ impl<C: CellOps> RealEffects<C> {
             if dir == 0
                 && let Ok(fd) = self.cells.dir_fd(id)
             {
-                dir = self.store.allocate();
-                self.store.put(dir, fd.as_fd());
+                let key = self.store.allocate();
+                // A put that was dropped is tried again at the next sync: until it goes, the
+                // cell is not in the text (`cell_lines` skips a cell with no keys).
+                if self.store.put(key, fd.as_fd()) {
+                    dir = key;
+                    self.dirty = true;
+                }
             }
             let has_main = self.cells.main_pid(id).is_some();
             if main != 0 && !has_main {
@@ -523,8 +528,11 @@ impl<C: CellOps> RealEffects<C> {
                 && has_main
                 && let Ok(fd) = self.cells.main_pidfd(id)
             {
-                main = self.store.allocate();
-                self.store.put(main, fd.as_fd());
+                let key = self.store.allocate();
+                if self.store.put(key, fd.as_fd()) {
+                    main = key;
+                    self.dirty = true;
+                }
             }
             if dir != 0 {
                 self.keys.insert(id, (dir, main));
@@ -545,9 +553,19 @@ impl<C: CellOps> RealEffects<C> {
         for (name, r, w) in self.pipes.entries() {
             if !self.pipe_keys.contains_key(name) {
                 let (rk, wk) = (self.store.allocate(), self.store.allocate());
-                self.store.put(rk, r);
-                self.store.put(wk, w);
-                self.pipe_keys.insert(name.to_owned(), (rk, wk));
+                let (rd, wr) = (self.store.put(rk, r), self.store.put(wk, w));
+                if rd && wr {
+                    self.pipe_keys.insert(name.to_owned(), (rk, wk));
+                } else {
+                    // One end may be held: it is forgotten, and both are tried again.
+                    self.retired.extend(
+                        [rk, wk]
+                            .into_iter()
+                            .zip([rd, wr])
+                            .filter(|(_, ok)| *ok)
+                            .map(|(k, _)| k),
+                    );
+                }
             }
         }
     }
@@ -555,7 +573,9 @@ impl<C: CellOps> RealEffects<C> {
     /// Tells queen to forget the keys retired since the last call.
     pub fn forget_retired(&mut self) {
         for k in std::mem::take(&mut self.retired) {
-            self.store.forget(k);
+            if !self.store.forget(k) {
+                self.retired.push(k);
+            }
         }
     }
 

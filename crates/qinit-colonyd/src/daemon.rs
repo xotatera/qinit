@@ -379,7 +379,7 @@ impl<C: CellOps> Daemon<C> {
             .filter(|r| r.phase == Restored::Ready)
             .map(|r| Owner::Node(r.node))
             .collect();
-        d.colony.effects.store.save(KEY_DB, &chosen);
+        let _ = d.colony.effects.store.save(KEY_DB, &chosen);
         d.colony.effects.store.forget_unclaimed();
         d.say(
             Sev::Info,
@@ -517,7 +517,13 @@ impl<C: CellOps> Daemon<C> {
     /// the logger pipes follow the new set of loggers.
     fn swapped(&mut self) {
         let db = self.colony.db().to_vec();
-        self.colony.effects.store.save(KEY_DB, &db);
+        // A dropped copy is the old database in queen's store, until the next refresh: noted.
+        if !self.colony.effects.store.save(KEY_DB, &db) {
+            self.say(
+                Sev::Err,
+                "the new database could not be saved for a restart",
+            );
+        }
         let model = self.colony.model().clone();
         if let Err(e) = self.colony.effects.pipes.rebuild(&model) {
             self.say(Sev::Err, &format!("logger pipes after a refresh: {e}"));
@@ -808,8 +814,10 @@ impl<C: CellOps> Daemon<C> {
         let pipes: Vec<PipeLine> = self.colony.effects.pipe_lines();
         let text = format_nodes(&nodes, &pipes);
         if self.last_nodes.as_ref() != Some(&text) {
-            self.colony.effects.store.save(KEY_NODES, text.as_bytes());
-            self.last_nodes = Some(text);
+            // Remembered only once it went: a dropped save is tried again at the next wake-up.
+            if self.colony.effects.store.save(KEY_NODES, text.as_bytes()) {
+                self.last_nodes = Some(text);
+            }
         }
         if self.cells_dirty || self.colony.effects.dirty {
             let lines: Vec<CellLine> = self.colony.effects.cell_lines();
@@ -817,8 +825,11 @@ impl<C: CellOps> Daemon<C> {
             self.cells_dirty = false;
             let text = format_cells(&lines);
             if self.last_cells.as_ref() != Some(&text) {
-                self.colony.effects.store.save(KEY_CELLS, text.as_bytes());
-                self.last_cells = Some(text);
+                if self.colony.effects.store.save(KEY_CELLS, text.as_bytes()) {
+                    self.last_cells = Some(text);
+                } else {
+                    self.cells_dirty = true;
+                }
             }
         }
         self.colony.effects.forget_retired();
