@@ -7,7 +7,7 @@ use crate::effects::{Command, Effects, Reaped};
 use qinit_cell_core::{Effect, Handle, ReadyMode, Sig, Timer};
 use qinit_cell_drive::Source;
 use qinit_sys::Errno;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CStr;
 use std::os::fd::OwnedFd;
 
@@ -28,6 +28,8 @@ pub enum Call {
     Release(u16),
     WriteLimits(u16, u64, u32),
     SignalNumber(u16, i32),
+    UnwatchMain(u16),
+    HandDir(u16),
 }
 
 #[derive(Default)]
@@ -53,6 +55,8 @@ pub struct Sim {
     pub children: VecDeque<Reaped>,
     /// `take_reaped` answers, all at once.
     pub reaped: Vec<(libc::pid_t, i32)>,
+    /// `main_status` answers by slot; none for a slot with no entry.
+    pub statuses: HashMap<u16, i32>,
     /// Slots with a tracked main (spawned or adopted, not yet closed).
     mains: HashSet<u16>,
 }
@@ -179,5 +183,19 @@ impl Effects for Sim {
     }
     fn cgroup_id(&self, _slot: u16) -> Option<u64> {
         None
+    }
+    fn main_status(&mut self, slot: u16) -> Option<i32> {
+        self.statuses.get(&slot).copied()
+    }
+    fn unwatch_main(&mut self, slot: u16) {
+        self.calls.push(Call::UnwatchMain(slot));
+    }
+    fn hand_dir(&mut self, slot: u16, _dir: OwnedFd) {
+        self.calls.push(Call::HandDir(slot));
+    }
+    fn dup_dir(&mut self, _slot: u16) -> Result<OwnedFd, Errno> {
+        std::fs::File::open("/dev/null")
+            .map(OwnedFd::from)
+            .map_err(|_| Errno(libc::EIO))
     }
 }

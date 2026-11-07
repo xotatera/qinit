@@ -51,9 +51,18 @@ pub fn seals(fd: BorrowedFd<'_>) -> Result<i32> {
 /// The whole content of `fd` read from offset 0 with `pread`, at most `max` bytes: `EFBIG` when
 /// the file is longer.
 pub fn read_all(fd: BorrowedFd<'_>, max: usize) -> Result<Vec<u8>> {
-    let mut out = vec![0u8; max + 1];
+    // `max` is a ceiling, not a reservation: the buffer starts small and doubles up to one byte
+    // past it (a file that fills that is too long), and what is returned is trimmed to its size.
+    let ceiling = max.saturating_add(1);
+    let mut out = vec![0u8; ceiling.min(4096)];
     let mut have = 0usize;
     loop {
+        if have == out.len() {
+            if have >= ceiling {
+                return Err(Errno(libc::EFBIG));
+            }
+            out.resize(have.saturating_mul(2).min(ceiling), 0);
+        }
         let off = libc::off_t::try_from(have).map_err(|_| Errno(libc::EFBIG))?;
         // SAFETY: the tail of `out` is writable for its length.
         let n = unsafe {
@@ -72,6 +81,7 @@ pub fn read_all(fd: BorrowedFd<'_>, max: usize) -> Result<Vec<u8>> {
         }
         if n == 0 {
             out.truncate(have);
+            out.shrink_to_fit();
             return Ok(out);
         }
         #[allow(clippy::cast_sign_loss)] // checked non-negative above

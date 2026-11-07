@@ -16,8 +16,9 @@ It is built from the crates `qinit-colonyd` (the program, this page), `qinit-col
 `qinit-proto` (the server) and `qinit-overseer` (the launch executor).
 
 Status: tested in QEMU guests on a real kernel (the VM suites `daemon`, `readiness`, `readopt`,
-`logger` and `syslog`). It is not yet run under dinit or any other init on a host; queen, which
-will start it as PID 1's child, is a later sub-project.
+`logger` and `syslog`). [Queen](queen.md), the PID 1 that starts it, holds its state across a
+restart and is tested with it in the suites `queen` and `readopt`. It is not yet run under dinit or
+any other init on a host.
 
 ## Running it
 
@@ -34,7 +35,8 @@ colony [--db PATH] [--comb DIR] [--socket PATH] [--overseer PATH]
 | `--overseer` | `/usr/lib/qinit/overseer` | The launch executor. |
 | `--syslog` | `/dev/log` | The datagram socket colony's own messages go to. |
 | `--console` | `/dev/console` | Where those messages go when syslog is not there. |
-| `--run` | `/run/qinit` | The runtime directory (mode 0755, created if absent); `state/` lives in it. |
+| `--run` | `/run/qinit` | The runtime directory (mode 0755, created if absent): the socket's parent. |
+| `--queen-fd` | none | The descriptor number of queen's channel, given when queen starts colony. |
 
 Each flag is given at most once, as `--flag value` or `--flag=value`. There is no other
 configuration: everything else is in the database. An argument it does not know is refused with a
@@ -46,11 +48,11 @@ debug level.
 
 ### Start-up, in order
 
-1. The kernel must be Linux 6.13 or later (`PIDFD_GET_INFO`).
+1. The kernel must be Linux 6.15 or later (`PIDFD_INFO_EXIT`).
 2. Colony is not inside the comb.
-3. The database is read and validated (the proved validator).
-4. The run directory and `state/` are made; `state/` must be a directory of the running user's, not
-   a symbolic link.
+3. With `--queen-fd`, queen's hand-over is read (each wait bounded by 10 s).
+4. The database is chosen and validated (the proved validator): the copy queen held, if it loads,
+   replaces `--db`; exit 3 is for when there is neither. The run directory is made.
 5. The comb is opened, and `+memory +pids` is written to its `cgroup.subtree_control`: a node with a
    limit does not start without the controller. The comb's parent must offer both.
 6. The loop is built: signals, the one timer, the cells' own descriptor, the path watcher.
@@ -75,10 +77,11 @@ exit status that names it.
 | 11 | The shutdown was a reboot. |
 | 2 | Usage: a flag it does not know, a missing value, a repeated flag. |
 | 3 | The database was refused (unreadable, or rejected by the validator). |
-| 4 | Start-up could not finish: kernel floor, colony inside the comb, the controllers, the state directory, the socket. |
+| 4 | Start-up could not finish: kernel floor, colony inside the comb, the controllers, queen's hand-over, the socket. |
 | 5 | The loop failed while serving. The workers keep running in the comb, for the next colony to re-adopt. |
 
-Under queen (a later sub-project) the code says what to do next; under any other parent it is only
+Under [queen](queen.md) the code says what to do next: 0, 10 and 11 end in zero, 2 and 3 go to
+rescue at once, anything else is counted and colony is restarted. Under any other parent it is only
 information.
 
 ## Signals
@@ -91,8 +94,10 @@ information.
 A shutdown, from a signal or from the `Shutdown` request, stops the instances first, then the nodes
 in reverse dependency order. Colony leaves when the graph is down **and** every cell it made is
 removed (a cell the cell layer gave up on, `Failed(Stuck)`, is not waited for). It then closes its
-connections, removes `state/` and the socket file and exits with the code above. A clean shutdown
-leaves the comb empty.
+connections, tells queen to forget what it held, removes the socket file and exits with the code
+above. A clean shutdown leaves the comb empty. Colony tells queen the shutdown has begun, and in
+which mode, before it stops anything; a request from queen (Ctrl-Alt-Del, `SIGPWR`) starts it too,
+and the last request's mode wins.
 
 ## Cells and limits
 
@@ -183,59 +188,64 @@ Nothing is read back, and a send never blocks.
 
 ## What survives a colony restart
 
-Colony keeps its own memory in `<run>/state` (mode 0700, owned by the running user), three files
-of mode 0600, each written whole to a temporary file in the directory and renamed over the old
-one after the change it records and before the loop waits again:
+Colony's memory is in [queen's store](queen.md): colony *puts* a descriptor under a key it
+allocates, saves text that names the keys, and forgets a key once no saved text names it. It puts
+before it saves and forgets after, so a state never names a key queen does not hold.
 
-* **`cells`**, one line per cell colony made and has not removed:
-  `<name> <cgroup id> <ready 0|1> <main pid> <main start time>`. The start time is field 22 of
-  `/proc/<pid>/stat`.
-* **`nodes`**, one line per node that is not plain off and unwanted:
+* **Descriptors:** each cell's directory, each main's pidfd and both ends of each logger pipe.
+* **`cells`** (key 1), one line per cell colony made and has not removed:
+  `<name> <cgroup id> <ready 0|1> <dir key> <main key>`; the main key is 0 for none.
+* **`nodes`** (key 2), one line per node that is not plain off and unwanted:
   `<name> <wanted 0|1> <off|done|quarantined:<reason>> <burst_begin_ms> <burst_count> <backoff_exp>
-  <last_start_ms> <ended_ms>`, the reason one of `breaker cascade start_timeout stop_failed`. The
-  times are `CLOCK_MONOTONIC` milliseconds, valid across a colony restart within one boot.
-* **`colony.db`**, the database colony runs, written at start and after every completed refresh, so a
-  restart runs the graph its workers were started from.
+  <last_start_ms> <ended_ms>`, the reason one of `breaker cascade start_timeout stop_failed`, and
+  one `pipe <logger> <read key> <write key>` line per logger pipe. The times are
+  `CLOCK_MONOTONIC` milliseconds, valid across a colony restart within one boot.
+* **`colony.db`** (key 3), the database colony runs, saved at start and after every completed
+  refresh. A copy that loads wins over `--db`, so a database broken on disk after a bad compile does
+  not stop a restart.
 
-A line that does not parse refuses its whole file: it is logged as an error and colony goes on as
-if the file were absent.
+A line that does not parse refuses its whole entry: it is logged as an error and colony goes on as
+if the entry were absent. A clean shutdown forgets every key.
 
-If `cells` exists, the new colony loads `colony.db` (falling back to `--db` with the node file
-ignored when it is missing or refused), then adopts each cell in this order:
+If `cells` is there, the new colony adopts each cell in this order:
 
 1. **Look up.** A line naming an instance, or a node the database no longer has, is a cell to
    clear: it is adopted without a main, stopped as a cell and removed. Instance ids continue past
-   the highest id seen.
-2. **Recover the main first.** A pidfd is opened for the recorded pid and **three** things are
-   checked: that the process's start time and its cgroup id (`PIDFD_GET_INFO`) are the recorded
-   ones. A pid alone never names a process. Only then is the cell adopted, with that pidfd, or
-   without a main if a check failed. A cell whose directory is gone or whose cgroup id differs was
-   made by somebody else: it is logged as an error and left alone, and only its table slot is given
-   back.
-3. **Decide.** A cell that was ready with its main recovered is adopted ready. A cell that was
-   ready whose main did not come back is adopted, and its exit is reported as a failure of unknown
-   status. A cell not ready whose node is `ready = exit`, main recovered, runs on and is adopted
-   starting (its start timeout runs again from now). Any other cell not ready is stopped and
-   started again. A **logger and every node with a pipe route** is stopped and started again,
-   after the new pipes exist.
+   the highest id seen. A line whose directory key queen no longer holds is dropped and logged.
+2. **The main, by its pidfd.** Nothing is recovered by pid. The main's pidfd says whether the
+   process runs (and its cgroup id must be the recorded one), has exited (its wait status is read
+   from the pidfd, `PIDFD_INFO_EXIT`) or is gone. A cell is adopted with its directory as queen held
+   it, and with the main only if it runs. A cell whose cgroup id differs from the recorded one was
+   made by somebody else: logged as an error and left alone, and only its table slot is given back.
+3. **Decide.** A cell that was ready with its main running is adopted ready. A cell that was ready
+   whose main exited is adopted and the exit is reported with its status (`Failed(None)` only when
+   the status is unknown). A cell not ready whose node is `ready = exit` and whose main runs on is
+   adopted starting; if the main finished, it is not started again. Any other cell not ready is
+   stopped and started again. A **logger and every node with a pipe route** is stopped and started
+   again only if its pipe was not held.
 4. **Restore.** The `nodes` lines and the adopted cells become the node table. The scheduler's
    invariant is checked first; a table that breaks it is refused whole (logged as an error) and only
    the cells are adopted.
+5. **Statuses.** A main that exited while colony was away and is not yet reaped is waited for: queen
+   tells colony when it reaped, and colony delivers the status; after a second it gives up and
+   reports an unknown one.
 
 A node the administrator stopped stays stopped; a quarantined node stays quarantined; a finished
-one-shot is not run again; a crash-looping worker's failure count carries over, so its breaker
-counts failures from before and after the restart. A cell directory in the comb that no line names
-is logged and left alone.
+one-shot is not run again; a crash-looping worker's failure count carries over. A held key no state
+names is forgotten.
 
-Lost across a restart: the readiness pipes (their nodes are restarted), the logger pipes (D63),
-the exit status of a re-adopted main (D65), the parked waits and watchers (their connections
-closed with the old colony), the instance exit ring, and the instances themselves, which are
-transient and are cleared. Under queen the `/run` files give way to queen's fd store (D64).
+**Without queen** (no `--queen-fd`) nothing is held: colony writes nothing, re-adopts nothing and
+logs a line for each directory it finds in the comb (D71). A name that collides with one makes that
+node's create fail.
+
+Lost across a restart: the readiness pipes (their nodes are restarted), the parked waits and
+watchers (their connections closed with the old colony), the instance exit ring, and the instances
+themselves, which are transient and are cleared.
 
 ## Tests
 
 `cargo test -p qinit-colonyd` runs the host tests without root: the argument parser, the deadline
-queue, the path watcher over real inotify, the state files, the syslog writer, the effects and the
-loop over a fake cell layer, and re-adoption over a fake process table. `cargo run -p qinit-vm --
-run daemon readiness readopt logger syslog` runs the real program in QEMU guests, with the guest's
+queue, the path watcher over real inotify, the state text, the store client against a fake queen, the syslog writer, the effects and the
+loop over a fake cell layer, and re-adoption over fake descriptors. `cargo run -p qinit-vm --
+run daemon readiness logger syslog` runs the real program in QEMU guests, and `queen readopt` under queen, with the guest's
 own helper programs as services.

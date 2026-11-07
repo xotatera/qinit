@@ -34,6 +34,7 @@ qinit-ipc = { path = "../qinit-ipc" }
 qinit-launch = { path = "../qinit-launch" }
 qinit-overseer = { path = "../qinit-overseer" }
 qinit-proto = { path = "../qinit-proto" }
+qinit-queen-core = { path = "../qinit-queen-core" }
 qinit-sys = { path = "../qinit-sys" }
 
 [dev-dependencies]
@@ -60,5 +61,6 @@ allow = [
     "qinit-launch",
     "qinit-overseer",
     "qinit-proto",
+    "qinit-queen-core",
     "qinit-sys",
 ]

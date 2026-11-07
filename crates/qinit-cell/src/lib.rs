@@ -28,7 +28,7 @@ pub struct Cells {
 }
 
 impl Cells {
-    /// Opens comb `root`; refuses a kernel below the floor (Linux 6.13).
+    /// Opens comb `root`; refuses a kernel below the floor (Linux 6.15).
     ///
     /// # Errors
     ///
@@ -84,6 +84,44 @@ impl Cells {
         main: Option<OwnedFd>,
     ) -> Result<CellId, Error> {
         self.engine.adopt(name, expected_id, main)
+    }
+
+    /// See [`Engine::adopt_held`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::adopt_held`].
+    pub fn adopt_held(
+        &mut self,
+        name: &str,
+        expected_id: u64,
+        dir: OwnedFd,
+        main: Option<OwnedFd>,
+    ) -> Result<CellId, Error> {
+        self.engine.adopt_held(name, expected_id, dir, main)
+    }
+
+    /// See [`Engine::dir_fd`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::dir_fd`].
+    pub fn dir_fd(&mut self, id: CellId) -> Result<OwnedFd, Error> {
+        self.engine.dir_fd(id)
+    }
+
+    /// See [`Engine::wait_for_status`]. Only a caller whose mains are reaped by a queen asks.
+    pub fn wait_for_status(&mut self) {
+        self.engine.wait_for_status();
+    }
+
+    /// See [`Engine::settle_status`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::settle_status`].
+    pub fn settle_status(&mut self, id: CellId, give_up: bool) -> Result<bool, Error> {
+        self.engine.settle_status(id, give_up)
     }
 
     /// See [`Engine::stop`].

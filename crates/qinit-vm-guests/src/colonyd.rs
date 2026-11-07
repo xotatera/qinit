@@ -583,8 +583,13 @@ pub fn await_file(dir: &Path, name: &str, want: impl Fn(&str) -> bool) -> Result
 
 /// The processes of `cell`, sorted.
 pub fn procs_of(cell: &str) -> Result<Vec<i32>, String> {
+    procs_of_in(COMB, cell)
+}
+
+/// The process ids of the cell `cell` under the comb `comb`, in order.
+pub fn procs_of_in(comb: &str, cell: &str) -> Result<Vec<i32>, String> {
     let text = e(std::fs::read_to_string(
-        Path::new(COMB).join(cell).join("cgroup.procs"),
+        Path::new(comb).join(cell).join("cgroup.procs"),
     ))?;
     let mut pids: Vec<i32> = text.lines().filter_map(|l| l.trim().parse().ok()).collect();
     pids.sort_unstable();

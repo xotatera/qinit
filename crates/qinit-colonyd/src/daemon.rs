@@ -6,20 +6,27 @@
 //! refresh swapped the database or a shutdown completed, to the work that follows. See
 //! `docs/colony.md`.
 use crate::args::Args;
+use crate::deadlines::Key;
 use crate::effects::{CellOps, Heard, PathEvent, RealEffects, WatchLoss, status_owner};
 use crate::exit;
 use crate::notes::describe;
 use crate::readopt::{self, Plan, Procs, RealProcs};
 use crate::route::Owner;
-use crate::state::{NodeLine, State};
+use crate::state::{
+    CellLine, NodeLine, PipeLine, check_disjoint, format_cells, format_nodes, parse_cells,
+    parse_nodes,
+};
+use crate::store::{KEY_CELLS, KEY_DB, KEY_NODES, Store};
 use crate::syslog::{Sev, Syslog};
-use qinit_cell::Report as CellReport;
+use qinit_cell::{CellId, Report as CellReport};
 use qinit_colony::{
     Colony, Error, Notice, Outcome, Report, Request, Restored, ShutdownMode, TimerKind, WaitId,
 };
 use qinit_event::{Loop, Ready, Token};
 use qinit_ipc::{accept, listen_seqpacket};
 use qinit_proto::{ConnId, Limits, Server};
+use qinit_queen_core::ToColony;
+use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::Path;
@@ -39,6 +46,11 @@ const TIMER: Token = BASE | 1;
 const SIGNALS: Token = BASE | 2;
 /// The path watcher's inotify set.
 const INOTIFY: Token = BASE | 3;
+/// The channel to queen.
+const QUEEN: Token = BASE | 4;
+
+/// How long a handed-over main's status is waited for after it exited.
+pub const STATUS_WAIT_MS: u64 = 1_000;
 
 /// How long a leftover cell is given to stop before it is killed.
 const CLEAR_GRACE: Duration = Duration::from_secs(5);
@@ -62,6 +74,15 @@ fn now_ms() -> u64 {
     qinit_sys::timer::now_monotonic_ns() / 1_000_000
 }
 
+/// Queen's name for a mode, as colony's.
+fn shutdown_mode(m: qinit_queen_core::Mode) -> ShutdownMode {
+    match m {
+        qinit_queen_core::Mode::Halt => ShutdownMode::Halt,
+        qinit_queen_core::Mode::Poweroff => ShutdownMode::Poweroff,
+        qinit_queen_core::Mode::Reboot => ShutdownMode::Reboot,
+    }
+}
+
 /// The exit status a completed shutdown ends in.
 fn exit_of(mode: Option<ShutdownMode>) -> u8 {
     match mode {
@@ -76,11 +97,11 @@ pub struct Daemon<C: CellOps> {
     pub colony: Colony<RealEffects<C>>,
     server: Server,
     listener: OwnedFd,
-    state: State,
     log: Syslog,
     socket: std::path::PathBuf,
-    last_nodes: Option<Vec<NodeLine>>,
-    last_cells: Option<Vec<crate::state::CellLine>>,
+    /// The text last saved under each state key.
+    last_nodes: Option<String>,
+    last_cells: Option<String>,
     cells_dirty: bool,
     now_ms: u64,
     /// The exit status once the daemon is done; `shutdown_done` says whether the graph is down.
@@ -90,6 +111,8 @@ pub struct Daemon<C: CellOps> {
     exit_after: Option<u8>,
     /// Outcomes whose replies are not yet delivered (see [`Daemon::settle`]).
     owed: Vec<Outcome>,
+    /// Cells whose handed-over main exited and whose status is awaited.
+    status_pending: BTreeSet<CellId>,
 }
 
 impl<C: CellOps> Daemon<C> {
@@ -103,17 +126,17 @@ impl<C: CellOps> Daemon<C> {
         cells: C,
         args: &Args,
         bytes: &[u8],
-        state: State,
+        store: Store,
         log: Syslog,
     ) -> Result<Daemon<C>, u8> {
-        Self::boot_with(cells, args, bytes, state, log, &RealProcs)
+        Self::boot_with(cells, args, bytes, store, log, &RealProcs)
     }
 
     /// Brings the daemon up over `cells`: the loop and its sources, the logger pipes, the
-    /// database, whatever an earlier colony left in the comb (adopted, spec §8), the control
-    /// socket and the saved state. `bytes` is the database of `--db`; a saved copy of the one the
-    /// earlier colony ran takes its place when there are cells to adopt. Refusals are returned as
-    /// the exit status and logged.
+    /// database, whatever an earlier colony left in the comb (adopted from the descriptors queen
+    /// held, spec §8), the control socket and the saved state. `bytes` is the database of
+    /// `--db`; the copy queen held, if it loads, takes its place. Refusals are returned as the
+    /// exit status and logged.
     ///
     /// # Errors
     ///
@@ -124,35 +147,33 @@ impl<C: CellOps> Daemon<C> {
         cells: C,
         args: &Args,
         bytes: &[u8],
-        state: State,
+        mut store: Store,
         mut log: Syslog,
         procs: &impl Procs,
     ) -> Result<Daemon<C>, u8> {
-        // What the earlier colony left: a file that does not parse is as good as none.
-        let left = match state.read_cells() {
-            Ok(lines) => lines,
-            Err(why) => {
+        // What the earlier colony left in queen's store: an entry that does not parse is as
+        // good as none.
+        let text = |store: &mut Store, key: u64| {
+            store
+                .load(key)
+                .map(|b| String::from_utf8(b).map_err(|_| "not text".to_owned()))
+        };
+        let left = match text(&mut store, KEY_CELLS).map(|t| t.and_then(|t| parse_cells(&t))) {
+            Some(Ok(lines)) => Some(lines),
+            Some(Err(why)) => {
                 log.log(Sev::Err, &format!("the saved cell map is refused: {why}"));
                 None
             }
+            None => None,
         };
-        let mut from_state = false;
-        let mut chosen = bytes.to_vec();
-        if left.is_some() {
-            match state.read_db() {
-                Ok(Some(saved)) if qinit_db::open(&saved).is_ok() => {
-                    chosen = saved;
-                    from_state = true;
-                }
-                Ok(_) => log.log(
-                    Sev::Err,
-                    "no usable saved database copy: starting from --db, saved node state ignored",
-                ),
-                Err(why) => log.log(
-                    Sev::Err,
-                    &format!("the saved database copy is refused ({why}): starting from --db"),
-                ),
-            }
+        let saved_db = store.load(KEY_DB).filter(|b| qinit_db::open(b).is_ok());
+        let from_state = saved_db.is_some();
+        let chosen = saved_db.unwrap_or_else(|| bytes.to_vec());
+        if left.is_some() && !from_state {
+            log.log(
+                Sev::Err,
+                "no usable saved database copy: starting from --db, saved node state ignored",
+            );
         }
         let refuse = |log: &mut Syslog, code: u8, why: String| {
             log.log(Sev::Err, &why);
@@ -189,11 +210,63 @@ impl<C: CellOps> Daemon<C> {
             INOTIFY,
         )
         .map_err(|e| refuse(&mut log, exit::STARTUP, format!("path watcher: {e}")))?;
+        effects.store = store;
+        if let Some(link) = effects.store.link() {
+            // Queen reaps a handed-over main's parent's orphans: its status is awaited.
+            effects
+                .events
+                .add_fd(link, QUEEN)
+                .map_err(|e| refuse(&mut log, exit::STARTUP, format!("loop: {e}")))?;
+            effects.cells.wait_for_status();
+        }
+        // The node state and the logger pipes the earlier colony left, if its database is the
+        // one in force.
+        let (saved_nodes, saved_pipes) = if from_state {
+            match text(&mut effects.store, KEY_NODES).map(|t| t.and_then(|t| parse_nodes(&t))) {
+                Some(Ok((nodes, pipes))) => {
+                    match check_disjoint(left.as_deref().unwrap_or_default(), &pipes) {
+                        Ok(()) => (Some(nodes), pipes),
+                        Err(why) => {
+                            log.log(Sev::Err, &format!("the saved node state is refused: {why}"));
+                            (None, Vec::new())
+                        }
+                    }
+                }
+                Some(Err(why)) => {
+                    log.log(Sev::Err, &format!("the saved node state is refused: {why}"));
+                    (None, Vec::new())
+                }
+                None => (None, Vec::new()),
+            }
+        } else {
+            (None, Vec::new())
+        };
+        let mut seeded = Vec::new();
+        for p in &saved_pipes {
+            let ends = (effects.store.take(p.read), effects.store.take(p.write));
+            if let (Some(r), Some(w)) = ends {
+                effects.pipes.seed(&p.logger, r, w);
+                seeded.push(p.clone());
+            } else {
+                effects.retire(p.read);
+                effects.retire(p.write);
+            }
+        }
         // Before the first start: a producer needs its logger's pipe.
         effects
             .pipes
             .rebuild(&model)
             .map_err(|e| refuse(&mut log, exit::STARTUP, format!("logger pipes: {e}")))?;
+        let mut held_pipes = BTreeSet::new();
+        for p in seeded {
+            if effects.pipes.entries().any(|(n, _, _)| n == p.logger) {
+                effects.adopt_pipe(&p.logger, (p.read, p.write));
+                held_pipes.insert(p.logger);
+            } else {
+                effects.retire(p.read);
+                effects.retire(p.write);
+            }
+        }
         // Before anything is started: a socket that cannot be had must not leave services
         // running that no colony tracks. Clients that connect meanwhile wait in its backlog.
         let listener = bind(&args.socket).map_err(|e| {
@@ -209,24 +282,35 @@ impl<C: CellOps> Daemon<C> {
             .map_err(|e| refuse(&mut log, exit::STARTUP, format!("loop: {e}")))?;
         let now = now_ms();
         effects.now_ms = now;
+        if effects.store.link().is_none() {
+            // Without queen nothing is held to re-adopt a cell from: what an earlier colony left
+            // in the comb stays, one line each.
+            if let Ok(dir) = std::fs::read_dir(&args.comb) {
+                let mut names: Vec<String> = dir
+                    .flatten()
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect();
+                names.sort();
+                for name in names {
+                    log.log(
+                        Sev::Info,
+                        &format!(
+                            "the cell {name} was found in the comb: left alone (without queen nothing is re-adopted)"
+                        ),
+                    );
+                }
+            }
+        }
 
         let mut plan = Plan::default();
         let (colony, first) = if let Some(lines) = &left {
-            let saved_nodes = if from_state {
-                match state.read_nodes() {
-                    Ok(n) => n,
-                    Err(why) => {
-                        log.log(Sev::Err, &format!("the saved node state is refused: {why}"));
-                        None
-                    }
-                }
-            } else {
-                None
-            };
             plan = readopt::plan(
                 lines,
                 saved_nodes.as_deref(),
+                &held_pipes,
                 &model,
+                &mut effects.store,
                 &mut effects.cells,
                 procs,
                 now,
@@ -235,7 +319,10 @@ impl<C: CellOps> Daemon<C> {
                 log.log(*sev, text);
             }
             for a in &plan.adopted {
-                effects.adopt_cell(a.id, a.owner, &a.name);
+                effects.adopt_cell(a.id, a.owner, &a.name, (a.dir_key, a.main_key));
+            }
+            for key in &plan.dropped {
+                effects.retire(*key);
             }
             for id in &plan.clear {
                 if let Err(e) = effects.clear_cell(*id, CLEAR_GRACE) {
@@ -283,7 +370,6 @@ impl<C: CellOps> Daemon<C> {
             colony,
             server: Server::new(Limits::default()),
             listener,
-            state,
             log,
             socket: args.socket.clone(),
             last_nodes: None,
@@ -294,6 +380,7 @@ impl<C: CellOps> Daemon<C> {
             shutdown_done: false,
             exit_after: None,
             owed: Vec::new(),
+            status_pending: BTreeSet::new(),
         };
         d.colony.effects.ready = plan
             .restored
@@ -301,12 +388,8 @@ impl<C: CellOps> Daemon<C> {
             .filter(|r| r.phase == Restored::Ready)
             .map(|r| Owner::Node(r.node))
             .collect();
-        if let Err(e) = d.state.write_db(&chosen) {
-            d.say(
-                Sev::Err,
-                &format!("cannot save the database copy for a restart: {e}"),
-            );
-        }
+        let _ = d.colony.effects.store.save(KEY_DB, &chosen);
+        d.colony.effects.store.forget_unclaimed();
         d.say(
             Sev::Info,
             &format!(
@@ -318,8 +401,8 @@ impl<C: CellOps> Daemon<C> {
         d.settle(first, true);
         // The exits and restarts adoption calls for come after the table is restored and before
         // the notices the adoption held are delivered: an exit, then the empty cell it leaves.
-        for node in &plan.exited {
-            let out = d.colony.adopted_exit(*node, now);
+        for (node, status) in &plan.exited {
+            let out = d.colony.adopted_exit(*node, *status, now);
             d.settle(out, true);
         }
         for node in &plan.restart {
@@ -442,10 +525,12 @@ impl<C: CellOps> Daemon<C> {
     /// A refresh finished: the database now in force is the one a restart must start from, and
     /// the logger pipes follow the new set of loggers.
     fn swapped(&mut self) {
-        if let Err(e) = self.state.write_db(self.colony.db()) {
+        let db = self.colony.db().to_vec();
+        // A dropped copy is the old database in queen's store, until the next refresh: noted.
+        if !self.colony.effects.store.save(KEY_DB, &db) {
             self.say(
                 Sev::Err,
-                &format!("cannot save the database copy for a restart: {e}"),
+                "the new database could not be saved for a restart",
             );
         }
         let model = self.colony.model().clone();
@@ -466,7 +551,11 @@ impl<C: CellOps> Daemon<C> {
                     return;
                 }
             };
-            if heard.cells.is_empty() && heard.orphans.is_empty() && heard.strays.is_empty() {
+            if heard.cells.is_empty()
+                && heard.orphans.is_empty()
+                && heard.strays.is_empty()
+                && heard.status_pending.is_empty()
+            {
                 return;
             }
             self.on_heard(heard);
@@ -486,6 +575,13 @@ impl<C: CellOps> Daemon<C> {
     }
 
     fn on_heard(&mut self, heard: Heard) {
+        for id in heard.status_pending {
+            self.status_pending.insert(id);
+            self.colony
+                .effects
+                .deadlines
+                .arm(Key::Status(id), self.now_ms + STATUS_WAIT_MS);
+        }
         for (id, report) in heard.strays {
             match report {
                 CellReport::Empty => self.colony.effects.remove_cleared(id),
@@ -546,8 +642,61 @@ impl<C: CellOps> Daemon<C> {
                     self.resume_listener();
                     continue;
                 }
+                crate::deadlines::Key::Status(id) => {
+                    self.settle_status(id, true);
+                    continue;
+                }
             };
             self.settle(out, true);
+        }
+    }
+
+    /// Asks the cell layer for the status of a pending main; a delivered one ends the wait.
+    fn settle_status(&mut self, id: CellId, give_up: bool) {
+        match self.colony.effects.cells.settle_status(id, give_up) {
+            Ok(true) => {
+                self.status_pending.remove(&id);
+                self.colony.effects.deadlines.cancel(Key::Status(id));
+            }
+            Ok(false) => {}
+            Err(e) => self.say(Sev::Err, &format!("a main's status: {e}")),
+        }
+    }
+
+    /// Queen has something for colony: a reap (statuses may be readable now), a refusal, a
+    /// request. A channel that fails is dropped, and colony serves on without queen.
+    fn on_queen(&mut self) {
+        loop {
+            match self.colony.effects.store.next() {
+                Ok(None) => return,
+                Ok(Some(ToColony::Reaped)) => {
+                    let pending: Vec<CellId> = self.status_pending.iter().copied().collect();
+                    for id in pending {
+                        self.settle_status(id, false);
+                    }
+                }
+                Ok(Some(ToColony::Refused { key })) => self.say(
+                    Sev::Err,
+                    &format!("queen's store is full: the descriptor for key {key} was refused"),
+                ),
+                Ok(Some(ToColony::Request { mode })) => {
+                    self.say(
+                        Sev::Info,
+                        &format!("queen asks for a shutdown ending in {mode:?}"),
+                    );
+                    let out = self
+                        .colony
+                        .request_shutdown(shutdown_mode(mode), self.now_ms);
+                    self.settle(out, true);
+                }
+                Ok(Some(_)) => {}
+                Err(why) => {
+                    self.say(Sev::Err, &format!("{why}: state is no longer saved"));
+                    let _ = self.colony.effects.events.remove(QUEEN);
+                    self.colony.effects.store.detach();
+                    return;
+                }
+            }
         }
     }
 
@@ -612,6 +761,7 @@ impl<C: CellOps> Daemon<C> {
                     self.on_status(owner);
                 }
             }
+            Ready::Readable(QUEEN) | Ready::Hangup(QUEEN) => self.on_queen(),
             Ready::Signal(SIGNALS, signo) => self.on_signal(signo),
             Ready::InotifySet(INOTIFY, evs) => self.on_inotify(&evs),
             _ => {}
@@ -624,8 +774,18 @@ impl<C: CellOps> Daemon<C> {
         self.pump_cells();
         self.report_faults();
         self.persist();
+        self.release_lost_link();
         self.flush_replies();
         self.rearm();
+    }
+
+    /// A send that failed for good ended the channel to queen: take it out of the loop before
+    /// the descriptor is closed, so a number reused later is not removed by mistake.
+    fn release_lost_link(&mut self) {
+        if let Some(lost) = self.colony.effects.store.take_lost() {
+            let _ = self.colony.effects.events.remove(QUEEN);
+            drop(lost);
+        }
     }
 
     /// What the effects could not return an error for (a removal that failed, a poll that did):
@@ -654,8 +814,11 @@ impl<C: CellOps> Daemon<C> {
         }
     }
 
-    /// Rewrites the state files whose content changed.
+    /// Saves the state whose content changed, in queen's store: the descriptors first (a state
+    /// must never name a key queen does not hold), then the text that names them, then the
+    /// forgetting of the keys the new text no longer names.
     fn persist(&mut self) {
+        self.colony.effects.sync_store();
         let nodes: Vec<NodeLine> = self
             .colony
             .saved()
@@ -667,22 +830,30 @@ impl<C: CellOps> Daemon<C> {
                 counters,
             })
             .collect();
-        if self.last_nodes.as_ref() != Some(&nodes) {
-            match self.state.write_nodes(&nodes) {
-                Ok(()) => self.last_nodes = Some(nodes),
-                Err(e) => self.say(Sev::Err, &format!("cannot save node state: {e}")),
+        let pipes: Vec<PipeLine> = self.colony.effects.pipe_lines();
+        let text = format_nodes(&nodes, &pipes);
+        if self.last_nodes.as_ref() != Some(&text) {
+            // Remembered only once it went: a dropped save is tried again at the next wake-up.
+            if self.colony.effects.store.save(KEY_NODES, text.as_bytes()) {
+                self.last_nodes = Some(text);
             }
         }
         if self.cells_dirty || self.colony.effects.dirty {
-            let lines = self.colony.effects.cell_lines();
+            let lines: Vec<CellLine> = self.colony.effects.cell_lines();
             self.colony.effects.dirty = false;
             self.cells_dirty = false;
-            if self.last_cells.as_ref() != Some(&lines) {
-                match self.state.write_cells(&lines) {
-                    Ok(()) => self.last_cells = Some(lines),
-                    Err(e) => self.say(Sev::Err, &format!("cannot save the cell map: {e}")),
+            let text = format_cells(&lines);
+            if self.last_cells.as_ref() != Some(&text) {
+                if self.colony.effects.store.save(KEY_CELLS, text.as_bytes()) {
+                    self.last_cells = Some(text);
+                } else {
+                    self.cells_dirty = true;
                 }
             }
+        }
+        self.colony.effects.forget_retired();
+        while let Some(line) = self.colony.effects.store.warnings() {
+            self.say(Sev::Err, &line);
         }
     }
 
@@ -762,11 +933,11 @@ impl<C: CellOps> Daemon<C> {
         Ok(self.turn(ready))
     }
 
-    /// Ends the daemon with `code`. A completed shutdown leaves nothing behind: the state files
-    /// and the socket file go. A loop failure leaves them, and the workers, for the next colony.
-    pub fn finish(self, code: u8) -> u8 {
+    /// Ends the daemon with `code`. A completed shutdown leaves nothing behind: queen forgets
+    /// what it held for colony, and the socket file goes. A loop failure leaves them, and the workers, for the next colony.
+    pub fn finish(mut self, code: u8) -> u8 {
         if self.shutdown_done {
-            self.state.clear();
+            self.colony.effects.store.clear();
             let _ = std::fs::remove_file(&self.socket);
         }
         code

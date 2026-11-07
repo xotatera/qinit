@@ -11,10 +11,12 @@ use qinit_colonyd::args::Args;
 use qinit_colonyd::daemon::{Daemon, inside_comb};
 use qinit_colonyd::deadlines::Key;
 use qinit_colonyd::exit;
-use qinit_colonyd::state::State as Saved;
+use qinit_colonyd::state::{parse_cells, parse_nodes};
+use qinit_colonyd::store::{KEY_CELLS, KEY_DB, KEY_NODES, Store};
 use qinit_colonyd::syslog::Syslog;
 use qinit_ipc::{connect_seqpacket, recv, send};
 use qinit_proto_core::MAX_MESSAGE;
+use qinit_queen_core::ToColony;
 use qinit_wire::{Mode, Msg, Rep, Req, decode, encode};
 use std::ffi::CString;
 use std::os::fd::{AsFd, OwnedFd};
@@ -36,6 +38,21 @@ fn usage_errors_exit_2() {
     assert_eq!(out.status.code(), Some(i32::from(exit::USAGE)));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("--bogus") && err.contains("usage"), "{err}");
+    for flag in [
+        "--db",
+        "--comb",
+        "--socket",
+        "--overseer",
+        "--syslog",
+        "--console",
+        "--run",
+        "--queen-fd",
+    ] {
+        assert!(
+            err.contains(flag),
+            "the usage line leaves out {flag}: {err}"
+        );
+    }
     assert_eq!(
         colony_bin().args(["--db"]).output().unwrap().status.code(),
         Some(i32::from(exit::USAGE))
@@ -142,6 +159,8 @@ struct Rig {
     tmp: Tmp,
     log: UnixDatagram,
     bytes: Vec<u8>,
+    /// Queen, holding what the daemon puts.
+    queen: FakeQueen,
 }
 
 impl Rig {
@@ -161,12 +180,13 @@ impl Rig {
 
 fn boot(frames: &str, enable: &[&str], tag: &str) -> Rig {
     let bytes = database(frames, enable);
-    let (d, tmp, log) = try_boot(&bytes, tag, FakeCells::default(), |_| {});
+    let (d, tmp, log, queen) = try_boot(&bytes, tag, FakeCells::default(), |_, _| {});
     Rig {
         d: d.expect("boots"),
         tmp,
         log,
         bytes,
+        queen,
     }
 }
 
@@ -175,8 +195,8 @@ fn try_boot(
     bytes: &[u8],
     tag: &str,
     cells: FakeCells,
-    prep: impl FnOnce(&mut Args),
-) -> (Result<Daemon<FakeCells>, u8>, Tmp, UnixDatagram) {
+    prep: impl FnOnce(&mut Args, &mut FakeQueen),
+) -> (Result<Daemon<FakeCells>, u8>, Tmp, UnixDatagram, FakeQueen) {
     let tmp = Tmp::new(tag);
     let run = tmp.0.join("run");
     std::fs::create_dir_all(&run).unwrap();
@@ -193,12 +213,14 @@ fn try_boot(
         syslog: tmp.0.join("log"),
         console: tmp.0.join("console"),
         run: run.clone(),
+        queen_fd: None,
     };
-    prep(&mut args);
+    let (mut queen, _link) = FakeQueen::new();
+    prep(&mut args, &mut queen);
     let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
-    let state = Saved::open(&run).unwrap();
-    let d = Daemon::boot(cells, &args, bytes, state, syslog);
-    (d, tmp, log)
+    let store = queen.reattach();
+    let d = Daemon::boot(cells, &args, bytes, store, syslog);
+    (d, tmp, log, queen)
 }
 
 fn lines_of(log: &UnixDatagram) -> Vec<String> {
@@ -252,7 +274,7 @@ fn answer<R>(client: &OwnedFd, f: impl FnOnce(Rep<'_>) -> R) -> Option<R> {
 
 #[test]
 fn boot_starts_the_enabled_nodes_and_saves_what_a_restart_needs() {
-    let r = boot(WORKER, &["db"], "boot");
+    let mut r = boot(WORKER, &["db"], "boot");
     assert!(
         r.d.colony
             .effects
@@ -262,19 +284,30 @@ fn boot_starts_the_enabled_nodes_and_saves_what_a_restart_needs() {
             .any(|c| matches!(c, Call::Create(n) if n == "db")),
         "the enabled node was started"
     );
-    let saved = Saved::open(&r.run()).unwrap();
     assert_eq!(
-        saved.read_db().unwrap().as_deref(),
+        r.queen.bytes(KEY_DB).as_deref(),
         Some(&r.bytes[..]),
         "the database in force"
     );
-    let cells = saved.read_cells().unwrap().unwrap();
+    let cells = parse_cells(&r.queen.text(KEY_CELLS).unwrap()).unwrap();
     assert_eq!(cells.len(), 1);
     assert_eq!(
         (cells[0].name.as_str(), cells[0].cgroup_id, cells[0].ready),
         ("db", 900, false)
     );
-    let nodes = saved.read_nodes().unwrap().unwrap();
+    assert!(
+        cells[0].dir_key >= 16 && cells[0].main_key >= 16,
+        "{cells:?}"
+    );
+    assert!(
+        r.queen.held.contains_key(&cells[0].dir_key),
+        "the directory is held"
+    );
+    assert!(
+        r.queen.held.contains_key(&cells[0].main_key),
+        "the main is held"
+    );
+    let (nodes, _) = parse_nodes(&r.queen.text(KEY_NODES).unwrap()).unwrap();
     assert!(
         nodes.iter().any(|n| n.name == "db" && n.wanted),
         "{nodes:?}"
@@ -302,11 +335,8 @@ fn a_cell_report_reaches_its_node_the_log_and_the_cells_file() {
         logged.iter().any(|l| l.ends_with("db: ready")),
         "{logged:?}"
     );
-    let saved = Saved::open(&r.run()).unwrap();
-    assert!(
-        saved.read_cells().unwrap().unwrap()[0].ready,
-        "the ready flag is saved"
-    );
+    let cells = parse_cells(&r.queen.text(KEY_CELLS).unwrap()).unwrap();
+    assert!(cells[0].ready, "the ready flag is saved");
 }
 
 #[test]
@@ -356,12 +386,15 @@ fn sigterm_runs_the_ordered_shutdown_and_exits_0() {
         .pending
         .push(Notice::Cell(CellId(0), Report::Empty));
     assert_eq!(r.d.turn(Vec::new()), Some(exit::HALT));
-    let (socket, run) = (r.socket(), r.run());
+    let socket = r.socket();
     assert_eq!(r.d.finish(exit::HALT), exit::HALT);
     assert!(!socket.exists(), "the socket file is removed");
-    let saved = Saved::open(&run).unwrap();
-    assert_eq!(saved.read_cells(), Ok(None), "nothing is left to re-adopt");
-    assert_eq!(saved.read_db(), Ok(None));
+    r.queen.pump();
+    assert!(
+        r.queen.held.is_empty(),
+        "nothing is left to re-adopt: {:?}",
+        r.queen.held.keys().collect::<Vec<_>>()
+    );
     qinit_sys::signal::unblock_all().unwrap();
 }
 
@@ -407,9 +440,8 @@ fn a_refresh_that_completes_inside_the_request_writes_colony_db() {
         &[fd.as_fd()],
     );
     assert_eq!(r.d.pump(), None);
-    let saved = Saved::open(&r.run()).unwrap();
     assert_eq!(
-        saved.read_db().unwrap().as_deref(),
+        r.queen.bytes(KEY_DB).as_deref(),
         Some(&new[..]),
         "the new database is the saved one"
     );
@@ -496,11 +528,11 @@ fn a_failed_start_shows_as_a_spawn_failure_not_a_crash() {
         syslog: tmp.0.join("nolog"),
         console: tmp.0.join("console"),
         run: run.clone(),
+        queen_fd: None,
     };
     let bytes = database(frames, &["db"]);
     let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
-    let state = Saved::open(&run).unwrap();
-    let mut d = Daemon::boot(cells, &args, &bytes, state, syslog).expect("boots");
+    let mut d = Daemon::boot(cells, &args, &bytes, Store::standalone(), syslog).expect("boots");
     assert_eq!(
         d.colony.state(0),
         Some(State::Off),
@@ -777,8 +809,7 @@ fn a_refresh_that_renumbers_nodes_keeps_the_ready_flags_with_their_cells() {
     );
     assert_eq!(r.d.pump(), None);
     assert_eq!(r.d.colony.model().nodes[0].name, "a", "the swap happened");
-    let saved = Saved::open(&r.run()).unwrap();
-    let lines = saved.read_cells().unwrap().unwrap();
+    let lines = parse_cells(&r.queen.text(KEY_CELLS).unwrap()).unwrap();
     let ready = |name: &str| lines.iter().find(|l| l.name == name).map(|l| l.ready);
     assert_eq!(ready("b"), Some(true), "b is still ready: {lines:?}");
     assert_eq!(ready("c"), Some(false), "c never was: {lines:?}");
@@ -851,15 +882,16 @@ fn a_listener_that_cannot_accept_is_paused_and_comes_back() {
 
 #[test]
 fn what_boot_noticed_is_logged_even_when_it_then_refuses() {
-    let (d, _tmp, log) = try_boot(
+    let (d, _tmp, log, _queen) = try_boot(
         b"not a database",
         "refusenotes",
         FakeCells::default(),
-        |a| {
+        |_, q| {
             // An earlier colony's cell map that does not parse, and a database that is refused.
-            let state = Saved::open(&a.run).unwrap();
-            drop(state);
-            std::fs::write(a.run.join("state/cells"), b"garbage\n").unwrap();
+            q.held.insert(
+                KEY_CELLS,
+                qinit_ipc::memfd::sealed(c"cells", b"garbage\n").unwrap(),
+            );
         },
     );
     assert_eq!(d.err(), Some(exit::DATABASE));
@@ -879,7 +911,7 @@ fn a_socket_that_cannot_be_bound_stops_boot_before_any_service_starts() {
     let mut cells = FakeCells::default();
     cells.on_spawn = Some(Box::new(move || seen.set(true)));
     let bytes = database(WORKER, &["db"]);
-    let (d, _tmp, _log) = try_boot(&bytes, "nobind", cells, |a| {
+    let (d, _tmp, _log, _queen) = try_boot(&bytes, "nobind", cells, |a, _| {
         a.socket = a.run.join("no-such-dir/colony");
     });
     assert_eq!(d.err(), Some(exit::STARTUP));
@@ -887,4 +919,544 @@ fn a_socket_that_cannot_be_bound_stops_boot_before_any_service_starts() {
         !started.get(),
         "a service was started that no colony will track"
     );
+}
+
+#[test]
+fn a_new_cell_puts_its_descriptors_before_the_state_that_names_them() {
+    let mut r = boot(WORKER, &["db"], "putorder");
+    r.queen.pump();
+    let cells = parse_cells(&r.queen.text(KEY_CELLS).unwrap()).unwrap();
+    let (dir, main) = (cells[0].dir_key, cells[0].main_key);
+    let at = |e: Sent| {
+        r.queen
+            .events
+            .iter()
+            .position(|x| *x == e)
+            .unwrap_or_else(|| panic!("{e:?} in {:?}", r.queen.events))
+    };
+    assert!(
+        at(Sent::Put(dir)) < at(Sent::Put(KEY_CELLS)),
+        "the directory first"
+    );
+    assert!(
+        at(Sent::Put(main)) < at(Sent::Put(KEY_CELLS)),
+        "the main first"
+    );
+    assert!(at(Sent::Put(KEY_DB)) < at(Sent::Put(KEY_CELLS)));
+}
+
+#[test]
+fn a_removed_cell_is_forgotten_after_the_state_that_dropped_it() {
+    let mut r = boot(WORKER, &["db"], "forgetorder");
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::Ready));
+    assert_eq!(r.d.turn(Vec::new()), None);
+    let cells = parse_cells(&r.queen.text(KEY_CELLS).unwrap()).unwrap();
+    let (dir, main) = (cells[0].dir_key, cells[0].main_key);
+    // The node stops: the main exits and the cell empties and is removed.
+    let out = r.d.colony.request(0, qinit_colony::Request::Stop, 0);
+    assert!(out.errors.is_empty());
+    for report in [Report::MainExited(Some(0)), Report::Empty, Report::Removed] {
+        r.d.colony
+            .effects
+            .cells
+            .pending
+            .push(Notice::Cell(CellId(0), report));
+    }
+    assert_eq!(r.d.turn(Vec::new()), None);
+    let _ = r.queen.text(KEY_CELLS);
+    let events = r.queen.events.clone();
+    let last_cells = events
+        .iter()
+        .rposition(|e| *e == Sent::Put(KEY_CELLS))
+        .unwrap();
+    for key in [dir, main] {
+        let at = events.iter().position(|e| *e == Sent::Drop(key));
+        let at = at.unwrap_or_else(|| panic!("{key} was not forgotten: {events:?}"));
+        assert!(
+            at > last_cells,
+            "{key} forgotten before the state stopped naming it: {events:?}"
+        );
+    }
+    assert!(!r.queen.held.contains_key(&dir));
+}
+
+#[test]
+fn without_a_queen_nothing_is_saved() {
+    let tmp = Tmp::new("noqueen");
+    let run = tmp.0.join("run");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::create_dir_all(tmp.0.join("comb")).unwrap();
+    for f in ["console", "kmsg"] {
+        std::fs::write(tmp.0.join(f), b"").unwrap();
+    }
+    let args = Args {
+        db: tmp.0.join("colony.db"),
+        comb: tmp.0.join("comb"),
+        socket: run.join("colony"),
+        overseer: "/o".into(),
+        syslog: tmp.0.join("nolog"),
+        console: tmp.0.join("console"),
+        run: run.clone(),
+        queen_fd: None,
+    };
+    let bytes = database(WORKER, &["db"]);
+    let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
+    let mut d = Daemon::boot(
+        FakeCells::default(),
+        &args,
+        &bytes,
+        Store::standalone(),
+        syslog,
+    )
+    .expect("boots");
+    assert_eq!(d.turn(Vec::new()), None);
+    assert!(d.colony.effects.store.link().is_none());
+    assert!(
+        !run.join("state").exists(),
+        "no state directory is made any more"
+    );
+}
+
+fn status_pending(r: &mut Rig) {
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::Running));
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::StatusPending(CellId(0)));
+    assert_eq!(r.d.turn(Vec::new()), None);
+}
+
+fn settles(r: &Rig) -> Vec<Call> {
+    r.d.colony
+        .effects
+        .cells
+        .calls
+        .iter()
+        .filter(|c| matches!(c, Call::Settle(..)))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_daemon_with_a_queen_waits_for_statuses() {
+    let r = boot(WORKER, &["db"], "waits");
+    assert!(
+        r.d.colony.effects.cells.waits,
+        "the cell layer was told to wait for a reap"
+    );
+    let standalone = {
+        let tmp = Tmp::new("nowait");
+        std::fs::create_dir_all(tmp.0.join("run")).unwrap();
+        std::fs::create_dir_all(tmp.0.join("comb")).unwrap();
+        for f in ["console", "kmsg"] {
+            std::fs::write(tmp.0.join(f), b"").unwrap();
+        }
+        let args = Args {
+            db: tmp.0.join("colony.db"),
+            comb: tmp.0.join("comb"),
+            socket: tmp.0.join("run/colony"),
+            overseer: "/o".into(),
+            syslog: tmp.0.join("nolog"),
+            console: tmp.0.join("console"),
+            run: tmp.0.join("run"),
+            queen_fd: None,
+        };
+        let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
+        let d = Daemon::boot(
+            FakeCells::default(),
+            &args,
+            &database(WORKER, &["db"]),
+            Store::standalone(),
+            syslog,
+        )
+        .expect("boots");
+        d.colony.effects.cells.waits
+    };
+    assert!(!standalone, "without queen nothing waits for a reap");
+}
+
+#[test]
+fn a_reaped_wake_delivers_a_pending_status() {
+    let mut r = boot(WORKER, &["db"], "reaped");
+    status_pending(&mut r);
+    assert!(
+        r.d.colony
+            .effects
+            .deadlines
+            .is_armed(Key::Status(CellId(0)))
+    );
+    r.d.colony.effects.cells.settled.insert(0);
+    r.queen.send(ToColony::Reaped, None);
+    assert_eq!(r.d.pump(), None);
+    assert_eq!(settles(&r), [Call::Settle(0, false)]);
+    assert!(
+        !r.d.colony
+            .effects
+            .deadlines
+            .is_armed(Key::Status(CellId(0))),
+        "a settled status needs no deadline"
+    );
+}
+
+#[test]
+fn a_wake_before_the_status_is_there_keeps_waiting() {
+    let mut r = boot(WORKER, &["db"], "early");
+    status_pending(&mut r);
+    r.queen.send(ToColony::Reaped, None);
+    assert_eq!(r.d.pump(), None);
+    assert_eq!(settles(&r), [Call::Settle(0, false)]);
+    assert!(
+        r.d.colony
+            .effects
+            .deadlines
+            .is_armed(Key::Status(CellId(0)))
+    );
+}
+
+#[test]
+fn a_status_that_never_comes_is_given_up_after_a_second() {
+    let mut r = boot(WORKER, &["db"], "giveup");
+    status_pending(&mut r);
+    r.d.colony.effects.cells.settled.insert(0);
+    r.d.colony.effects.deadlines.arm(Key::Status(CellId(0)), 0);
+    assert_eq!(r.d.turn(Vec::new()), None);
+    assert_eq!(settles(&r), [Call::Settle(0, true)]);
+    assert!(
+        !r.d.colony
+            .effects
+            .deadlines
+            .is_armed(Key::Status(CellId(0)))
+    );
+}
+
+#[test]
+fn a_wake_with_nothing_pending_does_nothing() {
+    let mut r = boot(WORKER, &["db"], "nothing");
+    r.queen.send(ToColony::Reaped, None);
+    assert_eq!(r.d.pump(), None);
+    assert!(settles(&r).is_empty());
+}
+
+#[test]
+fn queen_going_away_does_not_stop_colony() {
+    let mut r = boot(WORKER, &["db"], "gone");
+    let queen = std::mem::replace(&mut r.queen, FakeQueen::new().0);
+    drop(queen);
+    assert_eq!(r.d.pump(), None);
+    assert!(r.d.colony.effects.store.link().is_none());
+    let said = r.logged().iter().filter(|l| l.contains("queen")).count();
+    assert_eq!(said, 1, "logged once: {:?}", r.logged());
+    // Colony serves on: a report still reaches its node.
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::Ready));
+    assert_eq!(r.d.turn(Vec::new()), None);
+    assert_eq!(r.d.colony.state(0), Some(State::Ready));
+}
+
+#[test]
+fn a_save_that_fails_for_good_lets_the_loop_go_of_the_channel() {
+    let mut r = boot(WORKER, &["db"], "lost");
+    let queen = std::mem::replace(&mut r.queen, FakeQueen::new().0);
+    drop(queen);
+    // A state change saves before the loop has seen the hang-up: the send is what finds it.
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::Ready));
+    assert_eq!(r.d.turn(Vec::new()), None);
+    assert!(r.d.colony.effects.store.link().is_none());
+    assert!(
+        r.d.colony.effects.store.take_lost().is_none(),
+        "the daemon removed the channel from its loop and closed it"
+    );
+    assert_eq!(r.d.pump(), None);
+    assert_eq!(r.d.colony.state(0), Some(State::Ready));
+}
+
+/// Gets a booted `db` ready, then lets the cells of its shutdown come back.
+fn ready(r: &mut Rig) {
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::Ready));
+    assert_eq!(r.d.turn(Vec::new()), None);
+}
+
+fn graph_down(r: &mut Rig) -> Option<u8> {
+    for report in [Report::MainExited(Some(0)), Report::Empty, Report::Removed] {
+        r.d.colony
+            .effects
+            .cells
+            .pending
+            .push(Notice::Cell(CellId(0), report));
+    }
+    r.d.turn(Vec::new())
+}
+
+#[test]
+fn a_shutdown_record_reaches_queen_before_a_cell_is_stopped() {
+    let tmp = Tmp::new("announce-order");
+    let _ = tmp;
+    let seen = std::rc::Rc::new(std::cell::Cell::new(None));
+    let mut cells = FakeCells::default();
+    let bytes = database(WORKER, &["db"]);
+    let (d, _tmp, _log, mut queen) = try_boot(&bytes, "announce", FakeCells::default(), |_, _| {});
+    let mut d = d.expect("boots");
+    let peer = queen.peer.try_clone().unwrap();
+    let flag = seen.clone();
+    cells.on_stop = Some(Box::new(move || {
+        let mut found = false;
+        loop {
+            let mut buf = [0u8; 32];
+            let Ok(r) = qinit_ipc::recv(std::os::fd::AsFd::as_fd(&peer), &mut buf) else {
+                break;
+            };
+            found |= matches!(
+                qinit_queen_core::decode_from_colony(&buf[..r.len], r.fds.len()),
+                Some(qinit_queen_core::FromColony::Shutdown {
+                    mode: qinit_queen_core::Mode::Poweroff
+                })
+            );
+        }
+        flag.set(Some(found));
+    }));
+    // Swap the fake cell layer's hook in: the stop must find the record already sent.
+    d.colony.effects.cells.on_stop = cells.on_stop.take();
+    d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::Ready));
+    assert_eq!(d.turn(Vec::new()), None);
+    let out = d
+        .colony
+        .request_shutdown(qinit_colony::ShutdownMode::Poweroff, 0);
+    assert!(out.errors.is_empty());
+    assert_eq!(
+        seen.get(),
+        Some(true),
+        "the first stop found the Shutdown record in queen's socket"
+    );
+    let _ = &mut queen;
+}
+
+#[test]
+fn a_queen_request_shuts_down_in_its_mode() {
+    for (mode, code) in [
+        (qinit_queen_core::Mode::Poweroff, exit::POWEROFF),
+        (qinit_queen_core::Mode::Reboot, exit::REBOOT),
+        (qinit_queen_core::Mode::Halt, exit::HALT),
+    ] {
+        let mut r = boot(WORKER, &["db"], "queenreq");
+        ready(&mut r);
+        r.queen.send(ToColony::Request { mode }, None);
+        assert_eq!(r.d.pump(), None, "the graph is not down yet");
+        assert!(
+            r.d.colony
+                .effects
+                .cells
+                .calls
+                .iter()
+                .any(|c| matches!(c, Call::Stop(0, ..))),
+            "{mode:?}: the node is stopped"
+        );
+        assert_eq!(graph_down(&mut r), Some(code), "{mode:?}");
+        r.queen.pump();
+        assert!(
+            r.queen.shutdowns.contains(&match mode {
+                qinit_queen_core::Mode::Poweroff => qinit_queen_core::Mode::Poweroff,
+                qinit_queen_core::Mode::Reboot => qinit_queen_core::Mode::Reboot,
+                qinit_queen_core::Mode::Halt => qinit_queen_core::Mode::Halt,
+            }),
+            "colony announced the mode it ends in: {:?}",
+            r.queen.shutdowns
+        );
+    }
+}
+
+#[test]
+fn a_request_read_at_boot_starts_the_shutdown() {
+    let bytes = database(WORKER, &["db"]);
+    let (d, _tmp, _log, _queen) = try_boot(&bytes, "bootreq", FakeCells::default(), |_, q| {
+        // Ctrl-Alt-Del came before colony was up: queen sends it right after the hand-over.
+        q.queued.push(ToColony::Request {
+            mode: qinit_queen_core::Mode::Reboot,
+        });
+    });
+    let mut d = d.expect("boots");
+    assert_eq!(d.pump(), None);
+    assert!(
+        d.colony
+            .effects
+            .cells
+            .calls
+            .iter()
+            .any(|c| matches!(c, Call::Stop(0, ..))),
+        "the shutdown has begun"
+    );
+    for report in [Report::MainExited(Some(0)), Report::Empty, Report::Removed] {
+        d.colony
+            .effects
+            .cells
+            .pending
+            .push(Notice::Cell(CellId(0), report));
+    }
+    assert_eq!(d.turn(Vec::new()), Some(exit::REBOOT));
+}
+
+#[test]
+fn cells_left_in_the_comb_are_logged_and_left_alone() {
+    let tmp = Tmp::new("leftalone");
+    let run = tmp.0.join("run");
+    std::fs::create_dir_all(&run).unwrap();
+    let comb = tmp.0.join("comb");
+    std::fs::create_dir_all(comb.join("old-a")).unwrap();
+    std::fs::create_dir_all(comb.join("old-b")).unwrap();
+    std::fs::write(comb.join("cgroup.procs"), b"").unwrap();
+    for f in ["console", "kmsg"] {
+        std::fs::write(tmp.0.join(f), b"").unwrap();
+    }
+    let log = UnixDatagram::bind(tmp.0.join("log")).unwrap();
+    let args = Args {
+        db: tmp.0.join("colony.db"),
+        comb,
+        socket: run.join("colony"),
+        overseer: "/o".into(),
+        syslog: tmp.0.join("log"),
+        console: tmp.0.join("console"),
+        run,
+        queen_fd: None,
+    };
+    let bytes = database(WORKER, &["db"]);
+    let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
+    let d = Daemon::boot(
+        FakeCells::default(),
+        &args,
+        &bytes,
+        Store::standalone(),
+        syslog,
+    )
+    .expect("boots");
+    let said = lines_of(&log);
+    for name in ["old-a", "old-b"] {
+        let n = said
+            .iter()
+            .filter(|l| l.contains(&format!("the cell {name} was found in the comb")))
+            .count();
+        assert_eq!(n, 1, "{name}: {said:?}");
+    }
+    assert!(
+        !said.iter().any(|l| l.contains("cgroup.procs")),
+        "only directories are cells"
+    );
+    assert!(
+        !d.colony
+            .effects
+            .cells
+            .calls
+            .iter()
+            .any(|c| matches!(c, Call::Adopt(..))),
+        "nothing is re-adopted"
+    );
+    assert!(args.comb.join("old-a").exists(), "and nothing is removed");
+}
+
+#[test]
+fn a_second_shutdown_request_on_one_connection_is_accepted_and_changes_the_mode() {
+    let mut r = boot(WORKER, &["db"], "twoshut");
+    ready(&mut r);
+    let client = connect_root(&mut r);
+    for mode in [Mode::Poweroff, Mode::Reboot] {
+        ask(
+            &client,
+            Req::Shutdown {
+                mode,
+                settled: false,
+                wait_ms: 0,
+            },
+            &[],
+        );
+        assert_eq!(r.d.pump(), None, "the node is still stopping");
+        assert_eq!(
+            answer(&client, |rep| matches!(rep, Rep::Accepted)),
+            Some(true),
+            "{mode:?} was accepted on the same connection"
+        );
+    }
+    assert_eq!(
+        r.d.colony.shutdown_mode(),
+        Some(qinit_colony::ShutdownMode::Reboot),
+        "the last request wins"
+    );
+    qinit_sys::signal::unblock_all().unwrap();
+}
+
+#[test]
+fn saves_dropped_while_queen_did_not_read_are_sent_again_and_never_name_a_missing_key() {
+    let mut r = boot(WORKER, &["db"], "stalled");
+    ready(&mut r);
+    // Queen stops reading until colony's socket is full and one send has given up.
+    let mut n = 0;
+    while r.d.colony.effects.store.warnings_pending() == 0 {
+        let _ = r.d.colony.effects.store.save(KEY_DB, b"filler");
+        n += 1;
+        assert!(n < 100_000, "the socket never filled");
+    }
+    // The node is stopped and started again while queen is deaf: new descriptors, new texts.
+    let out = r.d.colony.request(0, qinit_colony::Request::Stop, 0);
+    assert!(out.errors.is_empty());
+    for report in [Report::MainExited(Some(0)), Report::Empty, Report::Removed] {
+        r.d.colony
+            .effects
+            .cells
+            .pending
+            .push(Notice::Cell(CellId(0), report));
+    }
+    assert_eq!(r.d.turn(Vec::new()), None);
+    assert_eq!(r.d.colony.state(0), Some(State::Off), "stopped");
+    let out = r.d.colony.request(0, qinit_colony::Request::Start, 0);
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert_eq!(r.d.turn(Vec::new()), None);
+    // The start waits out a backoff; it is due now.
+    r.d.colony
+        .effects
+        .deadlines
+        .arm(Key::Node(0, qinit_colony::TimerKind::Backoff), 0);
+    assert_eq!(r.d.turn(Vec::new()), None);
+    assert_eq!(r.d.colony.state(0), Some(State::Starting), "started again");
+    // Queen reads again (whatever got through is applied), and colony wakes once more.
+    r.queen.pump();
+    assert_eq!(r.d.turn(Vec::new()), None);
+    r.queen.pump();
+    assert_eq!(r.d.turn(Vec::new()), None);
+    let cells = parse_cells(&r.queen.text(KEY_CELLS).expect("the cells entry")).unwrap();
+    assert_eq!(
+        cells.len(),
+        1,
+        "{cells:?}; calls {:?}; events {:?}; log {:?}",
+        r.d.colony.effects.cells.calls,
+        r.queen.events,
+        r.logged()
+    );
+    for key in [cells[0].dir_key, cells[0].main_key] {
+        assert!(
+            r.queen.held.contains_key(&key),
+            "the state names key {key}, which queen does not hold: {:?}",
+            r.queen.held.keys().collect::<Vec<_>>()
+        );
+    }
 }

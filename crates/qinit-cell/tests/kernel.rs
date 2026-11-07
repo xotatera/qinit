@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `Kernel`'s handling of a handed-over main on the host: no cgroup is touched (the comb is
-//! only opened), and nothing above the 6.13 floor is used (pidfd polling is Linux 5.3).
+//! only opened), and nothing above the 6.15 floor is used (pidfd polling is Linux 5.3).
 use qinit_cell::effects::Effects;
 use qinit_cell::kernel::Kernel;
 use qinit_cell_drive::{Source, token};

@@ -238,3 +238,18 @@ fn a_frame_instance_without_caller_streams_uses_its_loggers_pipe() {
     assert_eq!(numbers, [3, 4, 6]);
     assert_eq!(ino(&sp.fds[2].0), pipe);
 }
+
+#[test]
+fn a_seeded_pipe_is_the_pipe_a_logger_keeps() {
+    let (r, w) = qinit_sys::fd::pipe(libc::O_CLOEXEC).unwrap();
+    let (r_id, w_id) = (ino(&r), ino(&w));
+    let mut p = Pipes::default();
+    p.seed("logd", r, w);
+    // A pipe seeded for something that is not a logger is closed by the rebuild.
+    let (r2, w2) = qinit_sys::fd::pipe(libc::O_CLOEXEC).unwrap();
+    p.seed("nobody", r2, w2);
+    p.rebuild(&with_logger()).unwrap();
+    assert_eq!(id(p.reader(0).unwrap()), r_id);
+    assert_eq!(id(p.writer(0).unwrap()), w_id);
+    assert_eq!(p.entries().count(), 1, "the other is gone");
+}

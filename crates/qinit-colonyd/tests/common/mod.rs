@@ -10,7 +10,7 @@ use qinit_db::{
     Cred, Kind, Model, Node, Ready, Restart, RestartPolicy, Seccomp, Securebits, Stop, StopMode,
     UserMap,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::os::fd::{OwnedFd, RawFd};
 use std::time::Duration;
 
@@ -27,6 +27,8 @@ pub enum Call {
     Poll,
     /// `(name, expected cgroup id, a main was handed over)`.
     Adopt(String, u64, bool),
+    /// `(slot, gave up)`.
+    Settle(u16, bool),
 }
 
 /// How a scripted adoption ends.
@@ -36,6 +38,8 @@ pub struct Adopt {
     pub mismatch: bool,
     /// The cell still has processes.
     pub populated: bool,
+    /// The main was reaped between the look and the adoption: handing it over fails with `ESRCH`.
+    pub main_gone: bool,
 }
 
 impl Default for Adopt {
@@ -43,6 +47,7 @@ impl Default for Adopt {
         Adopt {
             mismatch: false,
             populated: true,
+            main_gone: false,
         }
     }
 }
@@ -68,6 +73,12 @@ pub struct FakeCells {
     pub pending: Vec<Notice>,
     /// Runs inside `spawn`, before it returns (a service that acts at once).
     pub on_spawn: Option<Box<dyn FnMut()>>,
+    /// Runs inside `stop`, before it returns, the first time (once taken).
+    pub on_stop: Option<Box<dyn FnOnce()>>,
+    /// `wait_for_status` was called.
+    pub waits: bool,
+    /// Slots whose status the next `settle_status` delivers.
+    pub settled: std::collections::BTreeSet<u16>,
     /// How each adoption by cell name ends; the default is a populated cell with the right id.
     pub adopt_script: HashMap<String, Adopt>,
     next: u16,
@@ -127,6 +138,9 @@ impl CellOps for FakeCells {
         grace: Duration,
         kill: Duration,
     ) -> Result<(), Error> {
+        if let Some(f) = self.on_stop.take() {
+            f();
+        }
         self.calls.push(Call::Stop(id.0, polite, grace, kill));
         Ok(())
     }
@@ -194,6 +208,39 @@ impl CellOps for FakeCells {
         }
         self.pending.push(Notice::Cell(CellId(id), report));
         Ok(CellId(id))
+    }
+
+    fn adopt_held(
+        &mut self,
+        name: &str,
+        expected_id: u64,
+        _dir: OwnedFd,
+        main: Option<OwnedFd>,
+    ) -> Result<CellId, Error> {
+        if main.is_some() && self.adopt_script.get(name).is_some_and(|a| a.main_gone) {
+            self.calls
+                .push(Call::Adopt(name.to_owned(), expected_id, true));
+            return Err(Error::Sys(qinit_sys::Errno(libc::ESRCH)));
+        }
+        self.adopt(name, expected_id, main)
+    }
+
+    fn dir_fd(&mut self, id: CellId) -> Result<OwnedFd, Error> {
+        if !self.phases.contains_key(&id.0) {
+            return Err(Error::NoSuchCell(id.0));
+        }
+        std::fs::File::open("/dev/null")
+            .map(OwnedFd::from)
+            .map_err(|_| Error::Sys(qinit_sys::Errno(libc::EIO)))
+    }
+
+    fn wait_for_status(&mut self) {
+        self.waits = true;
+    }
+
+    fn settle_status(&mut self, id: CellId, give_up: bool) -> Result<bool, Error> {
+        self.calls.push(Call::Settle(id.0, give_up));
+        Ok(self.settled.remove(&id.0))
     }
 
     fn poll(&mut self) -> Result<Vec<Notice>, Error> {
@@ -325,4 +372,121 @@ pub fn database(frames: &str, enable: &[&str]) -> Vec<u8> {
         policy: None,
     };
     compile(&input).expect("the frames compile").bytes
+}
+
+/// Queen's side of the channel, for the tests: it holds what colony puts, as queen would, and
+/// hands it to a new colony.
+pub struct FakeQueen {
+    pub peer: OwnedFd,
+    pub held: BTreeMap<u64, OwnedFd>,
+    /// The modes colony announced.
+    pub shutdowns: Vec<qinit_queen_core::Mode>,
+    /// What colony sent, in the order it arrived.
+    pub events: Vec<Sent>,
+    /// Records queen sends a new colony right after the hand-over.
+    pub queued: Vec<qinit_queen_core::ToColony>,
+}
+
+/// One record colony sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sent {
+    Put(u64),
+    Drop(u64),
+    Shutdown(qinit_queen_core::Mode),
+}
+
+impl FakeQueen {
+    /// A queen and the colony end of its channel.
+    pub fn new() -> (FakeQueen, OwnedFd) {
+        let (peer, link) = qinit_ipc::seqpacket_pair().unwrap();
+        qinit_sys::fd::set_nonblocking(&peer).unwrap();
+        (
+            FakeQueen {
+                peer,
+                held: BTreeMap::new(),
+                shutdowns: Vec::new(),
+                events: Vec::new(),
+                queued: Vec::new(),
+            },
+            link,
+        )
+    }
+
+    /// Sends colony `rec`, with `fd` when given.
+    pub fn send(&self, rec: qinit_queen_core::ToColony, fd: Option<std::os::fd::BorrowedFd<'_>>) {
+        let bytes = qinit_queen_core::encode_to_colony(rec);
+        let fds: Vec<_> = fd.into_iter().collect();
+        qinit_ipc::send(std::os::fd::AsFd::as_fd(&self.peer), &bytes, &fds).unwrap();
+    }
+
+    /// Applies everything colony has sent so far.
+    pub fn pump(&mut self) {
+        use qinit_queen_core::{FromColony, decode_from_colony};
+        loop {
+            let mut buf = [0u8; 32];
+            let r = match qinit_ipc::recv(std::os::fd::AsFd::as_fd(&self.peer), &mut buf) {
+                Ok(r) => r,
+                Err(qinit_ipc::Errno(libc::EAGAIN)) => return,
+                Err(e) => panic!("{e:?}"),
+            };
+            if r.len == 0 && r.fds.is_empty() {
+                return;
+            }
+            let mut fds = r.fds;
+            match decode_from_colony(&buf[..r.len], fds.len()).expect("a well-formed record") {
+                FromColony::Put { key } => {
+                    self.events.push(Sent::Put(key));
+                    self.held.insert(key, fds.pop().unwrap());
+                }
+                FromColony::Drop { key } => {
+                    self.events.push(Sent::Drop(key));
+                    self.held.remove(&key);
+                }
+                FromColony::Shutdown { mode } => {
+                    self.events.push(Sent::Shutdown(mode));
+                    self.shutdowns.push(mode);
+                }
+            }
+        }
+    }
+
+    /// What queen holds under `key`, after applying what colony has sent.
+    pub fn bytes(&mut self, key: u64) -> Option<Vec<u8>> {
+        self.pump();
+        let fd = self.held.get(&key)?;
+        Some(qinit_ipc::memfd::read_all(std::os::fd::AsFd::as_fd(fd), 1 << 24).unwrap())
+    }
+
+    /// As [`FakeQueen::bytes`], as text.
+    pub fn text(&mut self, key: u64) -> Option<String> {
+        self.bytes(key).map(|b| String::from_utf8(b).unwrap())
+    }
+
+    /// A new colony's end: queen sends what it holds, then `HeldEnd`, as it does at a spawn.
+    pub fn reattach(&mut self) -> qinit_colonyd::store::Store {
+        use qinit_queen_core::ToColony;
+        self.pump();
+        let (peer, link) = qinit_ipc::seqpacket_pair().unwrap();
+        qinit_sys::fd::set_nonblocking(&peer).unwrap();
+        self.peer = peer;
+        for (&key, fd) in &self.held {
+            let bytes = qinit_queen_core::encode_to_colony(ToColony::Held { key });
+            qinit_ipc::send(
+                std::os::fd::AsFd::as_fd(&self.peer),
+                &bytes,
+                &[std::os::fd::AsFd::as_fd(fd)],
+            )
+            .unwrap();
+        }
+        self.send(
+            ToColony::HeldEnd {
+                count: u32::try_from(self.held.len()).unwrap(),
+            },
+            None,
+        );
+        for rec in std::mem::take(&mut self.queued) {
+            self.send(rec, None);
+        }
+        qinit_colonyd::store::Store::attach(link).unwrap()
+    }
 }

@@ -12,7 +12,7 @@ fn main() -> ExitCode {
             eprintln!("colony: {why}");
             eprintln!(
                 "usage: colony [--db P] [--comb P] [--socket P] [--overseer P] [--syslog P] \
-                 [--console P] [--run P]"
+                 [--console P] [--run P] [--queen-fd N]"
             );
             ExitCode::from(exit::USAGE)
         }

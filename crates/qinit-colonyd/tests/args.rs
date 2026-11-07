@@ -49,6 +49,7 @@ fn every_flag_overrides_its_field() {
         syslog: "/l".into(),
         console: "/t".into(),
         run: "/r".into(),
+        queen_fd: None,
     };
     assert_eq!(a, want);
 }
@@ -77,4 +78,26 @@ fn a_bad_command_line_names_what_is_wrong() {
         err(&["--db=a", "--db", "b"]).contains("repeated"),
         "repeated, mixed forms"
     );
+}
+
+#[test]
+fn queen_fd_is_a_number() {
+    assert_eq!(parse(&[]).unwrap().queen_fd, None);
+    assert_eq!(
+        parse(&argv(&["--queen-fd", "3"])).unwrap().queen_fd,
+        Some(3)
+    );
+    assert_eq!(parse(&argv(&["--queen-fd=7"])).unwrap().queen_fd, Some(7));
+    let e = parse(&argv(&["--queen-fd", "3", "--queen-fd", "4"])).unwrap_err();
+    assert!(e.contains("--queen-fd") && e.contains("repeated"), "{e}");
+    let e = parse(&argv(&["--queen-fd"])).unwrap_err();
+    assert!(e.contains("needs a value"), "{e}");
+}
+
+#[test]
+fn queen_fd_refuses_a_word() {
+    for bad in ["x", "-1", "3x", "", "99999999999"] {
+        let e = parse(&argv(&["--queen-fd", bad])).unwrap_err();
+        assert!(e.contains("--queen-fd"), "{bad}: {e}");
+    }
 }

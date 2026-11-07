@@ -43,12 +43,12 @@ fn the_pid_of_a_pidfd_from_fdinfo() {
 }
 
 #[test]
-fn the_kernel_floor_is_6_13() {
+fn the_kernel_floor_is_6_15() {
     assert!(kernel_supported("6.18.59").is_ok());
-    assert!(kernel_supported("6.13.0").is_ok());
+    assert!(kernel_supported("6.15.0").is_ok());
     assert!(kernel_supported("7.3.0-4.1-cachyos-eevdf").is_ok());
-    let e = kernel_supported("6.12.114").unwrap_err();
-    assert!(e.contains("6.12.114") && e.contains("6.13"), "{e}");
+    let e = kernel_supported("6.14.9").unwrap_err();
+    assert!(e.contains("6.14.9") && e.contains("6.15"), "{e}");
     assert!(kernel_supported("banana").is_err());
 }
 

@@ -12,6 +12,16 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Sub-project 8, queen (D8, D63, D64, D65), `docs/queen.md`: `queen` (`qinit-queen`, with the proved
+  core `qinit-queen-core`) is the PID 1. It starts colony, restarts it under a limit of five exits
+  in 60 s, holds colony's descriptors and state in a fixed store across a restart, runs
+  `/etc/qinit/rescue` (then holds) when colony cannot be kept up, takes Ctrl-Alt-Del and `SIGPWR`
+  as requests for an ordered shutdown, hands the machine to zero with the mode colony announced,
+  reaps every orphan, and parks on a panic or fault instead of exiting. Colony's channel is
+  `--queen-fd`. Leaving rescue or the hold, queen drops the database copy it held, so the next
+  colony reads the file the administrator repaired. Four VM suites run it as a real PID 1: `queen`,
+  `queen_panic`, `queen_fault` and `readopt`.
+
 - Sub-project 7, the colony daemon (D27, D29, D31), `docs/colony.md`: `colony` (`qinit-colonyd`,
   GPL-3.0-or-later) loads a compiled database and runs every node and instance in a real cgroup
   through the overseer, in one `qinit-event` loop with a userspace deadline queue behind one timer.
@@ -240,6 +250,12 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a README "Requirements" section listing them.
 
 ### Changed
+
+- The kernel floor is 6.15 (`PIDFD_INFO_EXIT`). Colony's memory is queen's store, not files in `<run>/state`; re-adoption uses the held descriptors (D63, D64, D65).
+
+- The kernel floor is 6.15 (`PIDFD_INFO_EXIT`). Colony's memory is queen's store, not files in
+  `<run>/state`; re-adoption uses the held descriptors, so a restart keeps the logger pipes and the
+  exit statuses of the mains that ended meanwhile. A database held by queen wins over `--db`.
 
 - `Effects::start` and `start_instance` are given the database model, and `NodeSpec` carries the
   node's cgroup limits. `Server::on_readable` returns the connections it closed and the request's

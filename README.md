@@ -22,7 +22,7 @@ plan; see the launch sequence in `crates/qinit-overseer/src/run.rs`.
 Status: cell substrate, frames, colony core, the overseer, the control protocol (with its client
 library) and the colony daemon implemented. The daemon is documented in
 [docs/colony.md](docs/colony.md) and tested in QEMU guests; it has not yet been run under dinit or
-any other init on a host, and queen (PID 1) is not written, so no init is usable yet.
+any other init on a host. Queen (PID 1) is written and tested in QEMU guests ([docs/queen.md](docs/queen.md)); zero is not, so no init is usable yet.
 
 qinit is a standalone project. Alloy Linux consumes it as a package.
 
@@ -41,7 +41,7 @@ The reasoning behind these limits, and how to apply it to a proposal, is in
 Sub-project 2 provides the cell substrate, not a daemon: `qinit-sys` supplies
 Linux primitives, `qinit-event` the event loop, `qinit-cell` the cell runtime,
 and `qinit-vm` the QEMU guest tests. Verus proves the event and cell core
-machines and cell routing. The runtime refuses kernels older than Linux 6.13.
+machines and cell routing. The runtime refuses kernels older than Linux 6.15.
 
 Not part of qinit, now or later:
 

@@ -59,6 +59,17 @@ struct KernelSigaction {
     mask: u64,
 }
 
+/// The session a child starts in.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Session {
+    /// The caller's.
+    Same,
+    /// A new one, led by the child (`setsid`).
+    New,
+    /// A new one, with descriptor 0 as the controlling terminal.
+    Console,
+}
+
 /// A program, its arguments, environment and descriptor routes, laid out before the clone.
 /// Borrows the route sources for `'a`: they stay open until `spawn` returns.
 pub struct Prepared<'a> {
@@ -74,6 +85,7 @@ pub struct Prepared<'a> {
     park: RawFd,
     /// Highest target number, or -1 with no routes.
     top: RawFd,
+    session: Session,
     _sources: PhantomData<BorrowedFd<'a>>,
 }
 
@@ -109,6 +121,11 @@ impl<'a> Prepared<'a> {
         routes: &[(BorrowedFd<'a>, RawFd)],
     ) -> Result<Prepared<'a>> {
         Self::build(CString::default(), Some(exe.as_raw_fd()), argv, env, routes)
+    }
+
+    /// Starts the child in session `s`, after routing and before exec.
+    pub fn session(&mut self, s: Session) {
+        self.session = s;
     }
 
     fn build(
@@ -147,6 +164,7 @@ impl<'a> Prepared<'a> {
             routes,
             park,
             top,
+            session: Session::Same,
             _sources: PhantomData,
         })
     }
@@ -242,6 +260,18 @@ fn child(p: &Prepared<'_>, err: RawFd, exe: Option<RawFd>) -> ! {
         if !p.routes.iter().any(|&(_, d)| d == n) {
             // SAFETY: closing an unrouted number below the highest target; EBADF is harmless.
             unsafe { libc::syscall(libc::SYS_close, n) };
+        }
+    }
+    if p.session != Session::Same {
+        // SAFETY: setsid takes no arguments.
+        if unsafe { libc::syscall(libc::SYS_setsid) } < 0 {
+            fail(err);
+        }
+    }
+    if p.session == Session::Console {
+        // SAFETY: TIOCSCTTY on descriptor 0 takes an integer argument; no memory is passed.
+        if unsafe { libc::syscall(libc::SYS_ioctl, 0, libc::TIOCSCTTY, 1) } < 0 {
+            fail(err);
         }
     }
     #[allow(clippy::cast_sign_loss)] // top + 1 is at least 0

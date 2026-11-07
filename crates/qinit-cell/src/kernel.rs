@@ -47,6 +47,8 @@ struct Slot {
     dir: Option<OwnedFd>,
     events: Option<OwnedFd>,
     id: u64,
+    /// A directory handed over for the next `open_existing`.
+    handed: Option<OwnedFd>,
     /// The main process until it is reaped or its exit is seen.
     main: Option<Tracked>,
     ready: Option<OwnedFd>,
@@ -262,7 +264,10 @@ impl Kernel {
 
     /// Opens `name`'s directory and `cgroup.events` and watches the latter.
     fn watch(&mut self, slot: u16, name: &CStr) -> Result<(), Errno> {
-        let dir = cgroup::open_dir_at(&self.comb, name)?;
+        let dir = match self.slot(slot)?.handed.take() {
+            Some(handed) => handed,
+            None => cgroup::open_dir_at(&self.comb, name)?,
+        };
         let events = cgroup::open_file_at(&dir, c"cgroup.events", libc::O_RDONLY)?;
         let id = cgroup::inode(&dir)?;
         let t = token(slot, Source::Events);
@@ -571,6 +576,28 @@ impl Effects for Kernel {
     fn dup_main_pidfd(&mut self, slot: u16) -> Result<OwnedFd, Errno> {
         let m = self.slot(slot)?.main.as_ref().ok_or(Errno(libc::ESRCH))?;
         fd::dup_above(m.pidfd.as_fd(), 0)
+    }
+
+    fn main_status(&mut self, slot: u16) -> Option<i32> {
+        let m = self.slot(slot).ok()?.main.as_ref()?;
+        match proc::pidfd_exit(&m.pidfd) {
+            Ok(proc::PidfdExit::Exited(status)) => Some(status),
+            _ => None,
+        }
+    }
+
+    fn unwatch_main(&mut self, slot: u16) {
+        let _ = self.l.remove(token(slot, Source::Main));
+    }
+
+    fn hand_dir(&mut self, slot: u16, dir: OwnedFd) {
+        if let Ok(s) = self.slot(slot) {
+            s.handed = Some(dir);
+        }
+    }
+
+    fn dup_dir(&mut self, slot: u16) -> Result<OwnedFd, Errno> {
+        fd::dup_above(self.dir(slot)?, 0)
     }
 
     fn cgroup_id(&self, slot: u16) -> Option<u64> {

@@ -30,7 +30,22 @@ const SUITES: &[&str] = &[
     "readopt",
     "logger",
     "syslog",
+    "queen",
+    "queen_panic",
+    "queen_fault",
 ];
+
+/// The suites whose PID 1 is queen: their files are at the paths queen uses.
+const QUEEN_SUITES: &[&str] = &["queen", "queen_panic", "queen_fault", "readopt"];
+
+/// The guest binary of a suite: `queen`'s is `queen_suite`, since `queen` is the program.
+fn bin_name(suite: &str) -> &str {
+    if suite == "queen" {
+        "queen_suite"
+    } else {
+        suite
+    }
+}
 
 /// The guest's accounts (`/etc/passwd`): `toor` is uid 0 under another name (spec R6).
 const PASSWD: &str = "root:x:0:0:root:/root:/bin/sh\nsvc:x:1000:1000:svc:/home/svc:/bin/sh\nnobody:x:65534:65534::/:/bin/sh\ntoor:x:0:0::/:/bin/sh\n";
@@ -41,12 +56,19 @@ const SUBIDS: &str = "svc:100000:65536\n";
 /// The guest's groups (`/etc/group`): `svc` is a member of `wheel`.
 const GROUP: &str = "root:x:0:\nsvc:x:1000:\nwheel:x:10:svc\nnobody:x:65534:\n";
 
+/// The programs of a `queen` suite: queen itself and zero's stand-in.
+struct QueenFiles<'a> {
+    queen: &'a Path,
+    zero: &'a Path,
+}
+
 fn suite_run(
     suite: &str,
     image: &Path,
     bin: &Path,
     overseer: &Path,
     colony: &Path,
+    queen: Option<&QueenFiles<'_>>,
     out: &Path,
 ) -> Result<usize, String> {
     let data = std::fs::read(bin).map_err(|e| format!("read {}: {e}", bin.display()))?;
@@ -64,18 +86,33 @@ fn suite_run(
     entries.push(Entry {
         path: "init".to_string(),
         mode: 0o100_755,
+        data: data.clone(),
+    });
+    let exe = |path: &str, data: Vec<u8>| Entry {
+        path: path.to_string(),
+        mode: 0o100_755,
         data,
-    });
-    entries.push(Entry {
-        path: "overseer".to_string(),
-        mode: 0o100_755,
-        data: overseer,
-    });
-    entries.push(Entry {
-        path: "colony".to_string(),
-        mode: 0o100_755,
-        data: colony,
-    });
+    };
+    if let Some(q) = queen {
+        // Queen's own layout: the executor, colony, queen and zero where queen looks for them,
+        // and the rescue program (the suite itself again, told by its name).
+        for d in ["run", "usr", "usr/lib", "usr/lib/qinit", "etc/qinit"] {
+            entries.push(Entry {
+                path: d.to_string(),
+                mode: 0o040_755,
+                data: Vec::new(),
+            });
+        }
+        let read = |p: &Path| std::fs::read(p).map_err(|e| format!("read {}: {e}", p.display()));
+        entries.push(exe("usr/lib/qinit/overseer", overseer));
+        entries.push(exe("usr/lib/qinit/colony", colony));
+        entries.push(exe("usr/lib/qinit/queen", read(q.queen)?));
+        entries.push(exe("usr/lib/qinit/zero", read(q.zero)?));
+        entries.push(exe("etc/qinit/rescue", data));
+    } else {
+        entries.push(exe("overseer", overseer));
+        entries.push(exe("colony", colony));
+    }
     for (path, text) in [
         ("etc/passwd", PASSWD),
         ("etc/group", GROUP),
@@ -119,11 +156,24 @@ fn run(selected: &[String]) -> Result<(), String> {
         .get("colony")
         .ok_or("no guest binary for the colony program")?;
     let mut failed = Vec::new();
+    let queen = match (bins.get("queen"), bins.get("zero_standin")) {
+        (Some(queen), Some(zero)) => Some(QueenFiles { queen, zero }),
+        _ => None,
+    };
     for s in suites {
         let bin = bins
-            .get(s)
+            .get(bin_name(s))
             .ok_or_else(|| format!("no guest binary for suite {s}"))?;
-        match suite_run(s, &image, bin, overseer, colony, &out) {
+        let files = if QUEEN_SUITES.contains(&s) {
+            Some(
+                queen
+                    .as_ref()
+                    .ok_or("no guest binaries for queen and zero's stand-in")?,
+            )
+        } else {
+            None
+        };
+        match suite_run(s, &image, bin, overseer, colony, files, &out) {
             Ok(n) => println!("PASS vm/{s} ({n} cases)"),
             Err(e) => {
                 println!("FAIL vm/{s}: {e}");

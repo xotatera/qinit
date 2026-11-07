@@ -8,6 +8,8 @@
 //! the cases spawn: `/init --qinit-helper <role> <args…>`.
 #![allow(clippy::missing_errors_doc)] // every fallible function returns one string naming the step and its cause
 pub mod colonyd;
+pub mod orphan;
+pub mod queened;
 use qinit_cell::{CellId, Cells, Notice, ReadyMode, Report};
 use qinit_event::{Loop, Ready, Token};
 use qinit_overseer::request::RequestSpec;
@@ -118,6 +120,12 @@ fn enter_tmpfs_root() -> Result<(), String> {
     mount_move(Path::new("."), Path::new("/")).map_err(|x| format!("move the new root: {x}"))?;
     chroot(Path::new(".")).map_err(|x| format!("chroot: {x}"))?;
     std::env::set_current_dir("/").map_err(|x| format!("chdir /: {x}"))
+}
+
+/// What a suite whose PID 1 is not the suite binary does first: the tmpfs root and the mounts
+/// (see [`queened`]).
+pub fn boot_root() -> Result<(), String> {
+    enter_tmpfs_root().and_then(|()| setup())
 }
 
 fn setup() -> Result<(), String> {
@@ -1333,7 +1341,7 @@ fn subreaper_host() -> Result<(), String> {
         .iter()
         .filter_map(|n| match *n {
             Notice::Orphan { pid, status } => Some((pid, status)),
-            Notice::Cell(..) => None,
+            Notice::Cell(..) | Notice::StatusPending(_) => None,
         })
         .collect();
     match orphans.as_slice() {

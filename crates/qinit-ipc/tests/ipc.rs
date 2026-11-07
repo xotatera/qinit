@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use qinit_ipc::{
-    Errno, MAX_FDS, accept, connect_seqpacket, listen_seqpacket, peer_cred, peer_pidfd, recv, send,
-    send_nowait, seqpacket_pair,
+    Errno, MAX_FDS, accept, connect_seqpacket, listen_seqpacket, peer_cred, peer_pidfd,
+    poll_writable, recv, send, send_nowait, seqpacket_pair,
 };
 use std::ffi::CString;
 use std::io::{Read, Write};
@@ -206,4 +206,42 @@ fn four_descriptors_travel_and_five_do_not() {
     let got = qinit_ipc::recv(b.as_fd(), &mut buf).unwrap();
     assert_eq!((got.fds.len(), got.ctrunc), (4, false));
     assert!(qinit_ipc::send(a.as_fd(), b"x", &fds).is_err());
+}
+
+#[test]
+fn a_socket_with_room_is_writable_and_a_full_one_is_not() {
+    let (a, _b) = seqpacket_pair().unwrap();
+    assert!(poll_writable(a.as_fd(), 0).unwrap());
+    let mut sent = 0;
+    while send_nowait(a.as_fd(), &[0u8; 16], &[]).is_ok() {
+        sent += 1;
+        assert!(sent < 1_000_000, "the socket never filled");
+    }
+    assert!(!poll_writable(a.as_fd(), 0).unwrap());
+}
+
+#[test]
+fn read_all_keeps_no_more_memory_than_the_file_needs() {
+    use qinit_ipc::memfd::{read_all, sealed};
+    use std::os::fd::AsFd;
+    // The limit is a ceiling, not a reservation: colony reads its state entries with 256 MiB
+    // and keeps what comes back, and a buffer that size makes every fork of colony copy a
+    // 256 MiB mapping (and fail with ENOMEM on a small machine).
+    let fd = sealed(c"state", b"hello").unwrap();
+    let bytes = read_all(fd.as_fd(), 256 * 1024 * 1024).unwrap();
+    assert_eq!(bytes, b"hello");
+    assert!(
+        bytes.capacity() <= 64 * 1024,
+        "capacity {}",
+        bytes.capacity()
+    );
+    // A file larger than the first buffer is read whole, and one past the ceiling is refused.
+    let big = vec![7u8; 100_000];
+    let fd = sealed(c"big", &big).unwrap();
+    assert_eq!(read_all(fd.as_fd(), 1 << 20).unwrap(), big);
+    assert_eq!(
+        read_all(fd.as_fd(), 99_999).unwrap_err(),
+        qinit_ipc::Errno(libc::EFBIG)
+    );
+    assert_eq!(read_all(fd.as_fd(), 100_000).unwrap(), big);
 }

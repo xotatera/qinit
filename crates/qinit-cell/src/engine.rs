@@ -29,7 +29,13 @@ pub struct CellId(pub u16);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Notice {
     Cell(CellId, Report),
-    Orphan { pid: libc::pid_t, status: i32 },
+    Orphan {
+        pid: libc::pid_t,
+        status: i32,
+    },
+    /// A handed-over main exited and no status is recorded yet: its parent has not reaped it.
+    /// The caller waits for the reap and calls [`Engine::settle_status`].
+    StatusPending(CellId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +44,7 @@ pub enum Error {
     Full,
     BadName(String),
     NoSuchCell(u16),
-    /// The running kernel is below the floor (Linux 6.13).
+    /// The running kernel is below the floor (Linux 6.15).
     Floor(String),
     Sys(Errno),
 }
@@ -78,6 +84,8 @@ struct Entry {
     pending_main: Option<Handle>,
     /// Readiness and main exits observed before exec settles, in arrival order.
     pending_events: VecDeque<Event>,
+    /// The handed-over main has exited, and its status is awaited (`StatusPending` was given).
+    status_pending: bool,
 }
 
 impl Entry {
@@ -91,6 +99,7 @@ impl Entry {
             command: None,
             pending_main: None,
             pending_events: VecDeque::new(),
+            status_pending: false,
         })
     }
 }
@@ -104,6 +113,8 @@ pub struct Engine<E: Effects> {
     /// Exactly [`CAPACITY`] long, so `first_free` finds no slot in a full table.
     slots: Vec<Option<Entry>>,
     notices: Vec<Notice>,
+    /// A handed-over main whose status is not recorded is awaited, not reported as unknown.
+    wait_status: bool,
 }
 
 impl<E: Effects> Engine<E> {
@@ -112,7 +123,15 @@ impl<E: Effects> Engine<E> {
             effects,
             slots: (0..CAPACITY).map(|_| None).collect(),
             notices: Vec::new(),
+            wait_status: false,
         }
+    }
+
+    /// From now on a handed-over main that exited with no status recorded is reported as
+    /// [`Notice::StatusPending`] and waits for [`Engine::settle_status`], instead of being
+    /// reported at once with an unknown status. For a caller whose parent reaps its mains.
+    pub fn wait_for_status(&mut self) {
+        self.wait_status = true;
     }
 
     fn entry(&mut self, slot: u16) -> Result<&mut Entry, Error> {
@@ -190,6 +209,11 @@ impl<E: Effects> Engine<E> {
     ) -> Result<CellId, Error> {
         let slot = self.place(name)?;
         self.entry(slot)?.expected_id = expected_id;
+        self.finish_adopt(slot, main)
+    }
+
+    /// Hands the main over, if any, and delivers the adoption.
+    fn finish_adopt(&mut self, slot: u16, main: Option<OwnedFd>) -> Result<CellId, Error> {
         let handle = match main.map(|fd| self.effects.adopt_main(slot, fd)) {
             Some(Ok(h)) => Some(h),
             Some(Err(e)) => {
@@ -200,6 +224,56 @@ impl<E: Effects> Engine<E> {
         };
         self.deliver(slot, Event::Request(Request::Adopt(handle)))?;
         Ok(CellId(slot))
+    }
+
+    /// As [`Engine::adopt`], with the cell's directory handed over too: it is used instead of
+    /// opening the cell by name, and the cgroup id is still compared with `expected_id`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::adopt`].
+    pub fn adopt_held(
+        &mut self,
+        name: &str,
+        expected_id: u64,
+        dir: OwnedFd,
+        main: Option<OwnedFd>,
+    ) -> Result<CellId, Error> {
+        let slot = self.place(name)?;
+        self.entry(slot)?.expected_id = expected_id;
+        self.effects.hand_dir(slot, dir);
+        self.finish_adopt(slot, main)
+    }
+
+    /// A duplicate of the cell's directory descriptor, to be held by queen.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchCell`]; [`Error::Sys`] when no directory is open.
+    pub fn dir_fd(&mut self, id: CellId) -> Result<OwnedFd, Error> {
+        self.entry(id.0)?;
+        Ok(self.effects.dup_dir(id.0)?)
+    }
+
+    /// Settles a [`Notice::StatusPending`] cell: delivers the status if the kernel records one
+    /// now (`Ok(true)`), or, with `give_up`, delivers an unknown one. `Ok(false)` while the
+    /// status is still awaited, and for a cell that awaits none.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Sys`] when delivering the exit fails.
+    pub fn settle_status(&mut self, id: CellId, give_up: bool) -> Result<bool, Error> {
+        if !self.entry(id.0).is_ok_and(|e| e.status_pending) {
+            return Ok(false);
+        }
+        let status = self.effects.main_status(id.0);
+        if status.is_none() && !give_up {
+            return Ok(false);
+        }
+        self.entry(id.0)?.status_pending = false;
+        self.effects.close(id.0, Source::Main);
+        self.main_exited(id.0, status)?;
+        Ok(true)
     }
 
     /// Sets the cell's memory and pid limits (0 leaves one unset). Only before the spawn: the
@@ -354,8 +428,17 @@ impl<E: Effects> Engine<E> {
                 Some((slot, Source::ExecError)) if self.has(slot) => self.on_exec(slot)?,
                 // A handed-over main is watched without reaping: readable once it exits.
                 Some((slot, Source::Main)) if self.has(slot) => {
-                    self.effects.close(slot, Source::Main);
-                    self.main_exited(slot, None)?;
+                    let status = self.effects.main_status(slot);
+                    if status.is_none() && self.wait_status {
+                        // Exited, but its parent has not reaped it: the kernel records the status
+                        // at the reap. Out of the loop, pidfd kept, until the caller settles it.
+                        self.effects.unwatch_main(slot);
+                        self.entry(slot)?.status_pending = true;
+                        self.notices.push(Notice::StatusPending(CellId(slot)));
+                    } else {
+                        self.effects.close(slot, Source::Main);
+                        self.main_exited(slot, status)?;
+                    }
                 }
                 _ => {}
             },

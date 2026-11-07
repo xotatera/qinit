@@ -4,8 +4,9 @@
 //! The text the runtime reads: `cgroup.events`, `cgroup.procs`, a pidfd's fdinfo, the kernel
 //! release, cell names and the readiness pipe. Pure functions.
 
-/// The kernel floor, Linux 6.13: the first with `PIDFD_GET_INFO`.
-pub const FLOOR: (u32, u32) = (6, 13);
+/// The kernel floor, Linux 6.15: the first with `PIDFD_INFO_EXIT`, which keeps a reaped
+/// process's exit status on its pidfd.
+pub const FLOOR: (u32, u32) = (6, 15);
 
 /// `(populated, frozen)` from `cgroup.events`; `None` unless both keys are there.
 #[must_use]
@@ -58,7 +59,7 @@ pub fn kernel_supported(release: &str) -> Result<(), String> {
     match (major, minor) {
         (Some(a), Some(b)) if (a, b) >= FLOOR => Ok(()),
         (Some(_), Some(_)) => Err(format!(
-            "Linux {release} is older than qinit's floor {}.{} (PIDFD_GET_INFO)",
+            "Linux {release} is older than qinit's floor {}.{} (PIDFD_INFO_EXIT)",
             FLOOR.0, FLOOR.1
         )),
         _ => Err(format!(

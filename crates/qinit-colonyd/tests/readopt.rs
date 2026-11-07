@@ -4,69 +4,104 @@
 mod common;
 
 use common::*;
-use qinit_cell::{CellId, Failure, Phase};
 use qinit_colony::{Counters, Reason, Restored, SavedTerminal};
-use qinit_colonyd::readopt::{Procs, plan};
+use qinit_colonyd::readopt::{Held, MainNow, Plan, Procs, plan};
 use qinit_colonyd::state::{CellLine, NodeLine};
 use qinit_db::{Model, Ready, Route};
-use std::collections::HashMap;
-use std::os::fd::OwnedFd;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::os::fd::{AsRawFd, OwnedFd};
 
-/// Processes as the test describes them: `pid → (start time, cgroup id)`.
+/// The descriptors queen holds, by key; each is a `/dev/null` the test gives a meaning to.
 #[derive(Default)]
-struct Fake {
-    procs: HashMap<i32, (u64, u64)>,
+struct Hold {
+    fds: BTreeMap<u64, OwnedFd>,
 }
 
-impl Fake {
-    fn pidfd(&self, pid: i32) -> Option<OwnedFd> {
-        self.procs.contains_key(&pid).then_some(())?;
-        std::fs::File::open("/dev/null").map(OwnedFd::from).ok()
-    }
-
-    fn start_time(&self, pid: i32) -> Option<u64> {
-        self.procs.get(&pid).map(|p| p.0)
+impl Held for Hold {
+    fn take(&mut self, key: u64) -> Option<OwnedFd> {
+        self.fds.remove(&key)
     }
 }
 
-/// The fake process table: the cgroup answer is the one of the pid whose pidfd was opened last.
-struct ByPid {
-    inner: Fake,
-    ids: std::cell::RefCell<Vec<u64>>,
+/// What each main's pidfd says: `raw descriptor → (what it says next, cgroup id)`; the last
+/// answer is repeated.
+#[derive(Default)]
+struct Table {
+    mains: RefCell<HashMap<i32, (VecDeque<MainNow>, u64)>>,
 }
 
-impl Procs for ByPid {
-    fn pidfd(&self, pid: i32) -> Option<OwnedFd> {
-        let fd = self.inner.pidfd(pid)?;
-        self.ids.borrow_mut().push(self.inner.procs[&pid].1);
-        Some(fd)
+impl Procs for Table {
+    fn main_now(&self, fd: &OwnedFd) -> MainNow {
+        let mut m = self.mains.borrow_mut();
+        let (seq, _) = m
+            .get_mut(&fd.as_raw_fd())
+            .expect("a main the test described");
+        if seq.len() > 1 {
+            seq.pop_front().unwrap()
+        } else {
+            *seq.front().unwrap()
+        }
     }
 
-    fn start_time(&self, pid: i32) -> Option<u64> {
-        self.inner.start_time(pid)
-    }
-
-    fn cgroup_id(&self, _fd: &OwnedFd) -> Option<u64> {
-        self.ids.borrow().last().copied()
-    }
-}
-
-fn procs(list: &[(i32, u64, u64)]) -> ByPid {
-    ByPid {
-        inner: Fake {
-            procs: list.iter().map(|&(p, t, c)| (p, (t, c))).collect(),
-        },
-        ids: std::cell::RefCell::default(),
+    fn cgroup_id(&self, fd: &OwnedFd) -> Option<u64> {
+        self.mains.borrow().get(&fd.as_raw_fd()).map(|m| m.1)
     }
 }
 
-fn cell(name: &str, id: u64, ready: bool, pid: i32, start: u64) -> CellLine {
+/// What queen holds and what the pidfds say.
+#[derive(Default)]
+struct Scene {
+    hold: Hold,
+    procs: Table,
+}
+
+impl Scene {
+    fn dir(&mut self, key: u64) -> &mut Scene {
+        let fd: OwnedFd = std::fs::File::open("/dev/null").unwrap().into();
+        self.hold.fds.insert(key, fd);
+        self
+    }
+
+    fn main(&mut self, key: u64, nows: &[MainNow], cgroup: u64) -> &mut Scene {
+        let fd: OwnedFd = std::fs::File::open("/dev/null").unwrap().into();
+        self.procs
+            .mains
+            .borrow_mut()
+            .insert(fd.as_raw_fd(), (nows.iter().copied().collect(), cgroup));
+        self.hold.fds.insert(key, fd);
+        self
+    }
+}
+
+fn run(
+    s: &mut Scene,
+    cells: &[CellLine],
+    nodes: Option<&[NodeLine]>,
+    pipes: &[&str],
+    model: &Model,
+    ops: &mut FakeCells,
+) -> Plan {
+    let pipes: BTreeSet<String> = pipes.iter().map(|p| (*p).to_owned()).collect();
+    plan(
+        cells,
+        nodes,
+        &pipes,
+        model,
+        &mut s.hold,
+        ops,
+        &s.procs,
+        1_000,
+    )
+}
+
+fn cell(name: &str, id: u64, ready: bool, dir_key: u64, main_key: u64) -> CellLine {
     CellLine {
         name: name.into(),
         cgroup_id: id,
         ready,
-        pid,
-        start_time: start,
+        dir_key,
+        main_key,
     }
 }
 
@@ -86,13 +121,15 @@ fn two() -> Model {
 #[test]
 fn a_ready_cell_with_its_main_is_adopted_ready() {
     let mut ops = FakeCells::default();
-    let p = plan(
-        &[cell("a", 11, true, 300, 777)],
+    let mut s = Scene::default();
+    s.dir(16).main(17, &[MainNow::Alive(300)], 11);
+    let p = run(
+        &mut s,
+        &[cell("a", 11, true, 16, 17)],
         None,
+        &[],
         &two(),
         &mut ops,
-        &procs(&[(300, 777, 11)]),
-        1_000,
     );
     assert_eq!(ops.calls, [Call::Adopt("a".into(), 11, true)]);
     assert_eq!(p.restored.len(), 1);
@@ -106,62 +143,163 @@ fn a_ready_cell_with_its_main_is_adopted_ready() {
     );
     assert!(p.restart.is_empty() && p.exited.is_empty() && p.clear.is_empty());
     assert_eq!(p.adopted.len(), 1);
+    assert_eq!((p.adopted[0].dir_key, p.adopted[0].main_key), (16, 17));
+    assert!(p.dropped.is_empty());
 }
 
 #[test]
-fn a_reused_pid_is_not_taken_for_the_main() {
-    // The pid is alive, but it is another process: its start time is not the recorded one.
+fn an_alive_main_keeps_its_pid() {
     let mut ops = FakeCells::default();
-    let p = plan(
-        &[cell("a", 11, true, 300, 777)],
+    let mut s = Scene::default();
+    s.dir(16).main(17, &[MainNow::Alive(300)], 11);
+    let p = run(
+        &mut s,
+        &[cell("a", 11, true, 16, 17)],
         None,
+        &[],
         &two(),
         &mut ops,
-        &procs(&[(300, 778, 11)]),
-        1_000,
+    );
+    assert_eq!(p.restored[0].pid, Some(300));
+}
+
+#[test]
+fn a_main_that_exited_while_away_carries_its_status() {
+    let mut ops = FakeCells::default();
+    let mut s = Scene::default();
+    s.dir(16).main(17, &[MainNow::Exited(9)], 11);
+    let p = run(
+        &mut s,
+        &[cell("a", 11, true, 16, 17)],
+        None,
+        &[],
+        &two(),
+        &mut ops,
     );
     assert_eq!(
         ops.calls,
         [Call::Adopt("a".into(), 11, false)],
         "adopted without a main"
     );
-    assert_eq!(p.exited, [0], "the main is taken to have exited");
-    // And the same pid with the right start time but another cgroup is not it either.
+    assert_eq!(p.exited, [(0, Some(9))]);
+    assert_eq!(p.restored[0].pid, None);
+    assert_eq!(p.dropped, [17], "queen holds a pidfd nothing names now");
+    assert_eq!((p.adopted[0].dir_key, p.adopted[0].main_key), (16, 0));
+}
+
+#[test]
+fn a_lost_main_counts_as_unknown() {
+    // Gone altogether.
     let mut ops = FakeCells::default();
-    let p = plan(
-        &[cell("a", 11, true, 300, 777)],
+    let mut s = Scene::default();
+    s.dir(16).main(17, &[MainNow::Gone], 11);
+    let p = run(
+        &mut s,
+        &[cell("a", 11, true, 16, 17)],
         None,
+        &[],
         &two(),
         &mut ops,
-        &procs(&[(300, 777, 99)]),
-        1_000,
     );
     assert_eq!(ops.calls, [Call::Adopt("a".into(), 11, false)]);
-    assert_eq!(p.exited, [0]);
-    // A pid that is gone altogether.
+    assert_eq!(p.exited, [(0, None)]);
+    // Alive, but not in the recorded cgroup: some other process.
     let mut ops = FakeCells::default();
-    let p = plan(
-        &[cell("a", 11, true, 300, 777)],
+    let mut s = Scene::default();
+    s.dir(16).main(17, &[MainNow::Alive(300)], 99);
+    let p = run(
+        &mut s,
+        &[cell("a", 11, true, 16, 17)],
         None,
+        &[],
         &two(),
         &mut ops,
-        &procs(&[]),
-        1,
     );
     assert_eq!(ops.calls, [Call::Adopt("a".into(), 11, false)]);
-    assert_eq!(p.exited, [0]);
+    assert_eq!(p.exited, [(0, None)]);
+    // No main key, or a key queen no longer holds.
+    for main_key in [0, 55] {
+        let mut ops = FakeCells::default();
+        let mut s = Scene::default();
+        s.dir(16);
+        let p = run(
+            &mut s,
+            &[cell("a", 11, true, 16, main_key)],
+            None,
+            &[],
+            &two(),
+            &mut ops,
+        );
+        assert_eq!(ops.calls, [Call::Adopt("a".into(), 11, false)]);
+        assert_eq!(p.exited, [(0, None)], "main key {main_key}");
+    }
+}
+
+#[test]
+fn a_main_reaped_during_adoption_is_an_exit() {
+    let mut ops = FakeCells::default();
+    ops.adopt_script.insert(
+        "a".into(),
+        Adopt {
+            main_gone: true,
+            ..Adopt::default()
+        },
+    );
+    let mut s = Scene::default();
+    // Alive when looked at, reaped by the time the hand-over is tried, and then it says why.
+    s.dir(16)
+        .main(17, &[MainNow::Alive(300), MainNow::Exited(7)], 11);
+    let p = run(
+        &mut s,
+        &[cell("a", 11, true, 16, 17)],
+        None,
+        &[],
+        &two(),
+        &mut ops,
+    );
+    assert_eq!(
+        ops.calls,
+        [
+            Call::Adopt("a".into(), 11, true),
+            Call::Adopt("a".into(), 11, false)
+        ]
+    );
+    assert_eq!(p.exited, [(0, Some(7))]);
+}
+
+#[test]
+fn a_one_shot_that_finished_while_away_is_not_restarted() {
+    let mut oneshot = worker("a");
+    oneshot.ready = Ready::Exit;
+    let m = model(vec![oneshot, worker("b")]);
+    let mut ops = FakeCells::default();
+    let mut s = Scene::default();
+    s.dir(16).main(17, &[MainNow::Exited(0)], 11);
+    let p = run(
+        &mut s,
+        &[cell("a", 11, false, 16, 17)],
+        None,
+        &[],
+        &m,
+        &mut ops,
+    );
+    assert!(p.restart.is_empty(), "it finished: nothing to start again");
+    assert_eq!(p.exited, [(0, Some(0))]);
+    assert_eq!(p.restored[0].phase, Restored::Starting);
 }
 
 #[test]
 fn a_pipe_ready_cell_still_starting_is_restarted() {
     let mut ops = FakeCells::default();
-    let p = plan(
-        &[cell("a", 11, false, 300, 777)],
+    let mut s = Scene::default();
+    s.dir(16).main(17, &[MainNow::Alive(300)], 11);
+    let p = run(
+        &mut s,
+        &[cell("a", 11, false, 16, 17)],
         None,
+        &[],
         &two(),
         &mut ops,
-        &procs(&[(300, 777, 11)]),
-        1,
     );
     assert_eq!(p.restored[0].phase, Restored::Starting);
     assert_eq!(
@@ -178,13 +316,15 @@ fn an_exit_ready_cell_still_running_runs_on() {
     oneshot.ready = Ready::Exit;
     let m = model(vec![oneshot, worker("b")]);
     let mut ops = FakeCells::default();
-    let p = plan(
-        &[cell("a", 11, false, 300, 777)],
+    let mut s = Scene::default();
+    s.dir(16).main(17, &[MainNow::Alive(300)], 11);
+    let p = run(
+        &mut s,
+        &[cell("a", 11, false, 16, 17)],
         None,
+        &[],
         &m,
         &mut ops,
-        &procs(&[(300, 777, 11)]),
-        1,
     );
     assert_eq!(p.restored[0].phase, Restored::Starting);
     assert!(
@@ -193,37 +333,47 @@ fn an_exit_ready_cell_still_running_runs_on() {
     );
     // Without its main there is nothing left to wait for: started again.
     let mut ops = FakeCells::default();
-    let p = plan(
-        &[cell("a", 11, false, 300, 777)],
+    let mut s = Scene::default();
+    s.dir(16);
+    let p = run(
+        &mut s,
+        &[cell("a", 11, false, 16, 0)],
         None,
+        &[],
         &m,
         &mut ops,
-        &procs(&[]),
-        1,
     );
     assert_eq!(p.restart, [0]);
 }
 
-#[test]
-fn a_logger_and_its_producers_are_restarted() {
+fn logger_model() -> Model {
     let mut web = worker("web");
     web.output = Some(0);
     let mut m = model(vec![worker("logd"), web, worker("plain")]);
     m.routes = vec![Route::Pipe(0)];
+    m
+}
+
+fn logger_scene() -> (Scene, [CellLine; 3]) {
+    let mut s = Scene::default();
+    s.dir(16).main(17, &[MainNow::Alive(10)], 1);
+    s.dir(18).main(19, &[MainNow::Alive(11)], 2);
+    s.dir(20).main(21, &[MainNow::Alive(12)], 3);
+    (
+        s,
+        [
+            cell("logd", 1, true, 16, 17),
+            cell("web", 2, true, 18, 19),
+            cell("plain", 3, true, 20, 21),
+        ],
+    )
+}
+
+#[test]
+fn a_producer_whose_pipe_is_not_held_is_restarted() {
+    let (mut s, cells) = logger_scene();
     let mut ops = FakeCells::default();
-    let cells = [
-        cell("logd", 1, true, 10, 1),
-        cell("web", 2, true, 11, 1),
-        cell("plain", 3, true, 12, 1),
-    ];
-    let p = plan(
-        &cells,
-        None,
-        &m,
-        &mut ops,
-        &procs(&[(10, 1, 1), (11, 1, 2), (12, 1, 3)]),
-        1,
-    );
+    let p = run(&mut s, &cells, None, &[], &logger_model(), &mut ops);
     let mut restart = p.restart.clone();
     restart.sort_unstable();
     assert_eq!(
@@ -235,14 +385,28 @@ fn a_logger_and_its_producers_are_restarted() {
 }
 
 #[test]
+fn a_producer_with_a_held_pipe_is_not_restarted() {
+    let (mut s, cells) = logger_scene();
+    let mut ops = FakeCells::default();
+    let p = run(&mut s, &cells, None, &["logd"], &logger_model(), &mut ops);
+    assert!(p.restart.is_empty(), "{:?}", p.restart);
+    assert!(p.restored.iter().all(|r| r.phase == Restored::Ready));
+}
+
+#[test]
 fn an_instance_cell_is_cleared_and_ids_move_past_it() {
     let mut ops = FakeCells::default();
+    let mut s = Scene::default();
+    s.dir(16)
+        .dir(17)
+        .dir(18)
+        .main(19, &[MainNow::Alive(300)], 7);
     let cells = [
-        cell("backup#3", 5, false, 0, 0),
-        cell("~job#9", 6, false, 0, 0),
-        cell("a", 7, true, 300, 1),
+        cell("backup#3", 5, false, 16, 0),
+        cell("~job#9", 6, false, 17, 0),
+        cell("a", 7, true, 18, 19),
     ];
-    let p = plan(&cells, None, &two(), &mut ops, &procs(&[(300, 1, 7)]), 1);
+    let p = run(&mut s, &cells, None, &[], &two(), &mut ops);
     assert_eq!(p.clear.len(), 2);
     assert_eq!(p.next_instance, 10, "past the highest id seen");
     assert!(
@@ -251,22 +415,51 @@ fn an_instance_cell_is_cleared_and_ids_move_past_it() {
         "adopted without a main, to be stopped and removed"
     );
     assert_eq!(p.restored.len(), 1, "only the node is restored");
+    assert!(
+        p.dropped.contains(&16) && p.dropped.contains(&17),
+        "{:?}",
+        p.dropped
+    );
 }
 
 #[test]
 fn a_cell_of_a_removed_node_is_cleared() {
     let mut ops = FakeCells::default();
-    let p = plan(
-        &[cell("gone", 5, true, 1, 1)],
+    let mut s = Scene::default();
+    s.dir(16);
+    let p = run(
+        &mut s,
+        &[cell("gone", 5, true, 16, 0)],
         None,
+        &[],
         &two(),
         &mut ops,
-        &procs(&[]),
-        1,
     );
     assert_eq!(p.clear.len(), 1);
     assert!(p.restored.is_empty());
     assert_eq!(p.next_instance, 1, "a node cell has no instance id");
+}
+
+#[test]
+fn a_cell_whose_directory_is_not_held_is_dropped() {
+    let mut ops = FakeCells::default();
+    let mut s = Scene::default();
+    s.main(17, &[MainNow::Alive(300)], 11);
+    let p = run(
+        &mut s,
+        &[cell("a", 11, true, 16, 17)],
+        None,
+        &[],
+        &two(),
+        &mut ops,
+    );
+    assert!(ops.calls.is_empty(), "nothing to adopt it from");
+    assert!(p.restored.is_empty() && p.adopted.is_empty());
+    assert!(
+        p.notes.iter().any(|(_, t)| t.contains("directory")),
+        "{:?}",
+        p.notes
+    );
 }
 
 #[test]
@@ -276,16 +469,18 @@ fn a_mismatched_cgroup_id_is_left_alone() {
         "a".into(),
         Adopt {
             mismatch: true,
-            populated: true,
+            ..Adopt::default()
         },
     );
-    let p = plan(
-        &[cell("a", 11, true, 300, 777)],
+    let mut s = Scene::default();
+    s.dir(16).main(17, &[MainNow::Alive(300)], 11);
+    let p = run(
+        &mut s,
+        &[cell("a", 11, true, 16, 17)],
         None,
+        &[],
         &two(),
         &mut ops,
-        &procs(&[(300, 777, 11)]),
-        1,
     );
     assert!(p.restored.is_empty() && p.restart.is_empty() && p.exited.is_empty());
     assert!(
@@ -303,12 +498,12 @@ fn a_mismatched_cgroup_id_is_left_alone() {
         "{:?}",
         p.notes
     );
-    let _ = (Phase::Absent, Failure::Create, CellId(0));
 }
 
 #[test]
 fn node_state_is_restored_for_nodes_without_cells() {
     let mut ops = FakeCells::default();
+    let mut s = Scene::default();
     let lines = [
         node("a", false, None),
         node(
@@ -317,7 +512,7 @@ fn node_state_is_restored_for_nodes_without_cells() {
             Some(SavedTerminal::Quarantined(Reason::StartTimeout)),
         ),
     ];
-    let p = plan(&[], Some(&lines), &two(), &mut ops, &procs(&[]), 1);
+    let p = run(&mut s, &[], Some(&lines), &[], &two(), &mut ops);
     assert_eq!(p.restored.len(), 2);
     assert_eq!(
         (
@@ -331,30 +526,32 @@ fn node_state_is_restored_for_nodes_without_cells() {
         p.restored[1].phase,
         Restored::Quarantined(Reason::StartTimeout)
     );
-    // A node of the file that the database no longer has is skipped.
-    let p = plan(
+    // A node of the entry that the database no longer has is skipped.
+    let p = run(
+        &mut s,
         &[],
         Some(&[node("zzz", true, None)]),
+        &[],
         &two(),
         &mut ops,
-        &procs(&[]),
-        1,
     );
     assert!(p.restored.is_empty());
 }
 
 #[test]
-fn an_adopted_node_takes_its_wanted_flag_and_counters_from_the_file() {
+fn an_adopted_node_takes_its_wanted_flag_and_counters_from_the_entry() {
     let mut ops = FakeCells::default();
+    let mut s = Scene::default();
+    s.dir(16).main(17, &[MainNow::Alive(300)], 11);
     let mut line = node("a", false, None);
     line.counters.burst_count = 2;
-    let p = plan(
-        &[cell("a", 11, true, 300, 777)],
+    let p = run(
+        &mut s,
+        &[cell("a", 11, true, 16, 17)],
         Some(&[line]),
+        &[],
         &two(),
         &mut ops,
-        &procs(&[(300, 777, 11)]),
-        1,
     );
     assert_eq!(p.restored.len(), 1, "one entry per node");
     assert!(
@@ -363,22 +560,4 @@ fn an_adopted_node_takes_its_wanted_flag_and_counters_from_the_file() {
     );
     assert_eq!(p.restored[0].counters.burst_count, 2);
     assert_eq!(p.restored[0].phase, Restored::Ready);
-}
-
-#[test]
-fn a_recovered_main_keeps_its_pid_and_a_lost_one_has_none() {
-    let cells = [cell("a", 7, true, 41, 500), cell("b", 8, true, 42, 600)];
-    let mut ops = FakeCells::default();
-    // Only `a`'s main is still there.
-    let p = plan(
-        &cells,
-        None,
-        &two(),
-        &mut ops,
-        &procs(&[(41, 500, 7)]),
-        1_000,
-    );
-    let pid = |node: u32| p.restored.iter().find(|r| r.node == node).unwrap().pid;
-    assert_eq!(pid(0), Some(41));
-    assert_eq!(pid(1), None);
 }

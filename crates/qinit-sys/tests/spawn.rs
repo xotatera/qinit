@@ -165,3 +165,27 @@ fn prepared_refuses_bad_targets() {
     let many: Vec<_> = (0..=count).map(|n| (w.as_fd(), n)).collect();
     assert_eq!(bad(&many), Some(Errno(libc::EINVAL)), "too many routes");
 }
+
+#[test]
+fn session_new_makes_a_session_leader() {
+    let (r, w) = fd::pipe(libc::O_CLOEXEC).unwrap();
+    let mut p = spawn::Prepared::new(
+        Path::new("/bin/sh"),
+        &sh("echo $$; cut -d' ' -f6 /proc/$$/stat"),
+        &[],
+        &[(w.as_fd(), 1)],
+    )
+    .unwrap();
+    p.session(spawn::Session::New);
+    let (err_r, err_w) = fd::pipe(libc::O_CLOEXEC).unwrap();
+    let (_pid, pidfd) = spawn::spawn(&p, None, err_w.as_fd()).unwrap();
+    drop((err_w, w));
+    let mut bytes = Vec::new();
+    std::fs::File::from(err_r).read_to_end(&mut bytes).unwrap();
+    assert!(bytes.is_empty(), "exec succeeded");
+    proc::wait_pidfd(&pidfd).unwrap();
+    let out = read_all(r);
+    let mut lines = out.lines();
+    let (pid, session) = (lines.next().unwrap(), lines.next().unwrap());
+    assert_eq!(pid, session, "the child leads its own session");
+}

@@ -120,6 +120,8 @@ pub struct Colony<E: Effects> {
     pub(crate) waits: Vec<crate::handle::WaitRec>,
     /// The mode of the shutdown in progress, if any.
     pub(crate) shutdown_mode: Option<crate::handle::ShutdownMode>,
+    /// The mode last announced to the effects.
+    announced: Option<crate::handle::ShutdownMode>,
     /// The nodes the last refresh restarts or signals, by name.
     pub(crate) refresh_set: Vec<String>,
     /// The watchers (D37): not state to keep across a restart, as their connections go with it.
@@ -248,6 +250,7 @@ impl<E: Effects> Colony<E> {
             starts: vec![0; n],
             waits: Vec::new(),
             shutdown_mode: None,
+            announced: None,
             refresh_set: Vec::new(),
             watchers: Vec::new(),
         }
@@ -278,7 +281,29 @@ impl<E: Effects> Colony<E> {
     /// Starts the ordered shutdown of the whole graph: the instances first (nothing depends on
     /// them), then the nodes in reverse dependency order. Whoever asks, a protocol request or a
     /// signal, the instances stop.
+    ///
+    /// The mode is the one recorded (halt when none): see [`Colony::shutdown_as`].
     pub fn shutdown(&mut self, now_ms: u64) -> Outcome {
+        self.shutdown_as(
+            self.shutdown_mode
+                .unwrap_or(crate::handle::ShutdownMode::Halt),
+            now_ms,
+        )
+    }
+
+    /// Tells the effects the shutdown ends in `mode`, unless they were told that already: before
+    /// anything is stopped, and again when a later request changes the mode.
+    pub(crate) fn announce(&mut self, mode: crate::handle::ShutdownMode) {
+        if self.announced != Some(mode) {
+            self.announced = Some(mode);
+            self.effects.shutting_down(mode);
+        }
+    }
+
+    /// As [`Colony::shutdown`], ending in `mode`, which is announced before the first stop.
+    pub fn shutdown_as(&mut self, mode: crate::handle::ShutdownMode, now_ms: u64) -> Outcome {
+        self.shutdown_mode = Some(mode);
+        self.announce(mode);
         // A swap still stopping nodes is abandoned: the shutdown stops the old graph.
         self.swap = None;
         let mut out = Outcome::default();
