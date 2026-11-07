@@ -19,6 +19,7 @@ fn table(old: &Colony<Sim>, adopt: &[(&str, Restored)]) -> Vec<RestoredNode> {
     old.saved()
         .into_iter()
         .map(|(name, wanted, end, counters)| RestoredNode {
+            pid: None,
             node: idx(old, &name),
             wanted,
             phase: adopt.iter().find(|(n, _)| *n == name).map_or_else(
@@ -118,6 +119,7 @@ fn breaker_counts_carry_over() {
     let (probe, _) = boot("crashy.toml", &["crashy"], Sim::new());
     let n = idx(&probe, "crashy");
     let saved = [RestoredNode {
+        pid: None,
         node: n,
         wanted: true,
         phase: Restored::Off,
@@ -144,6 +146,7 @@ fn a_restored_table_that_breaks_the_invariant_is_refused() {
     let (probe, _) = boot("crashy.toml", &["crashy"], Sim::new());
     let n = idx(&probe, "crashy");
     let saved = [RestoredNode {
+        pid: None,
         node: n,
         wanted: true,
         phase: Restored::Quarantined(Reason::Breaker),
@@ -152,6 +155,7 @@ fn a_restored_table_that_breaks_the_invariant_is_refused() {
     let err = Colony::restore(database("crashy.toml", &["crashy"]), &saved, Sim::new(), 0).err();
     assert_eq!(err, Some(Error::Restore));
     let outside = [RestoredNode {
+        pid: None,
         node: 99,
         wanted: true,
         phase: Restored::Off,
@@ -188,6 +192,7 @@ fn an_adopted_exit_without_status_counts_as_a_failure() {
     let (probe, _) = boot("crashy.toml", &["crashy"], Sim::new());
     let n = idx(&probe, "crashy");
     let saved = [RestoredNode {
+        pid: None,
         node: n,
         wanted: true,
         phase: Restored::Ready,
@@ -235,6 +240,7 @@ fn validate_restore_agrees_with_restore_and_consumes_nothing() {
     let (probe, _) = boot("crashy.toml", &["crashy"], Sim::new());
     let n = idx(&probe, "crashy");
     let bad = [RestoredNode {
+        pid: None,
         node: n,
         wanted: true,
         phase: Restored::Quarantined(Reason::Breaker),
@@ -246,6 +252,7 @@ fn validate_restore_agrees_with_restore_and_consumes_nothing() {
         Err(Error::Restore)
     );
     let good = [RestoredNode {
+        pid: None,
         node: n,
         wanted: true,
         phase: Restored::Off,
@@ -256,4 +263,20 @@ fn validate_restore_agrees_with_restore_and_consumes_nothing() {
         Colony::<Sim>::validate_restore(&bytes, &[RestoredNode { node: 9, ..good[0] }], 0),
         Err(Error::UnknownNode(9))
     );
+}
+
+#[test]
+fn an_adopted_node_shows_the_pid_of_its_recovered_main() {
+    let bytes = database(SOLO, &["solo"]);
+    let (probe, _) = boot(SOLO, &["solo"], Sim::new());
+    let n = idx(&probe, "solo");
+    let saved = [RestoredNode {
+        node: n,
+        wanted: true,
+        phase: Restored::Ready,
+        pid: Some(4321),
+        counters: Counters::default(),
+    }];
+    let (c, _) = Colony::restore(bytes, &saved, Sim::new(), 0).expect("restores");
+    assert_eq!(c.pid(n), Some(4321));
 }

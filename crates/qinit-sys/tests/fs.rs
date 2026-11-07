@@ -7,14 +7,31 @@ use qinit_sys::fs::{Kind, create_file, lstat_kind, mkdir_all, readlink, symlink}
 use qinit_sys::timer::{arm_alarm_at, now_monotonic_ns};
 use qinit_sys::{Errno, fd, proc};
 use std::os::unix::process::ExitStatusExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
-fn scratch(name: &str) -> PathBuf {
+/// A directory removed when it goes out of scope.
+struct Scratch(PathBuf);
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn scratch(name: &str) -> Scratch {
     let p = std::env::temp_dir().join(format!("qinit-sys-fs-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).unwrap();
-    p
+    Scratch(p)
 }
 
 fn child_status(role: &str) -> ExitStatus {

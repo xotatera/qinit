@@ -3,8 +3,10 @@
 
 //! qinit's binary preserves proof declaration errors and treats no proofs as a no-op.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn xtask(arguments: &[&str]) -> Output {
@@ -14,17 +16,26 @@ fn xtask(arguments: &[&str]) -> Output {
         .expect("spawn qinit-xtask")
 }
 
+/// A directory name no other fixture has: tests run in parallel, and the clock alone repeats, so
+/// one fixture's `Drop` would remove another's root. The clock keeps a reused pid from meeting a
+/// directory a killed run left behind.
+fn unique_root() -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let (pid, n) = (std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
+    std::env::temp_dir().join(format!("qinit-xtask-cli-{pid}-{n}-{nonce}"))
+}
+
 struct Fixture {
     root: PathBuf,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("qinit-xtask-cli-{nonce}"));
+        let root = unique_root();
         std::fs::create_dir_all(&root).unwrap();
         // The tracked files on disk, not a commit: while a merge is being
         // concluded HEAD is the old main, and worktree-clean.sh guarantees the
@@ -98,6 +109,19 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+#[test]
+fn fixture_roots_never_repeat() {
+    let threads: Vec<_> = (0..8)
+        .map(|_| std::thread::spawn(|| (0..50_000).map(|_| unique_root()).collect::<Vec<_>>()))
+        .collect();
+    let roots: Vec<PathBuf> = threads
+        .into_iter()
+        .flat_map(|t| t.join().unwrap())
+        .collect();
+    let distinct: HashSet<&PathBuf> = roots.iter().collect();
+    assert_eq!(distinct.len(), roots.len());
 }
 
 #[test]

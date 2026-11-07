@@ -8,6 +8,7 @@ use qinit_ipc::{
 use std::ffi::CString;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::path::PathBuf;
 
 fn pipe() -> (OwnedFd, OwnedFd) {
     let mut fds = [0; 2];
@@ -20,10 +21,20 @@ fn pipe() -> (OwnedFd, OwnedFd) {
     (read, write)
 }
 
-fn socket_path(test: &str) -> CString {
+/// A directory removed when it goes out of scope.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn socket_path(test: &str) -> (Scratch, CString) {
     let dir = std::env::temp_dir().join(format!("qinit-ipc-{}-{test}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    CString::new(dir.join("s").to_str().unwrap()).unwrap()
+    let path = CString::new(dir.join("s").to_str().unwrap()).unwrap();
+    (Scratch(dir), path)
 }
 
 #[test]
@@ -76,7 +87,7 @@ fn send_refuses_more_than_max_fds() {
 
 #[test]
 fn peer_cred_names_this_process() {
-    let path = socket_path("cred");
+    let (_dir, path) = socket_path("cred");
     let listener = listen_seqpacket(&path, 4).unwrap();
     let client = connect_seqpacket(&path).unwrap();
     let server = accept(listener.as_fd()).unwrap();
@@ -91,7 +102,7 @@ fn peer_cred_names_this_process() {
 
 #[test]
 fn peer_pidfd_is_a_pidfd_of_this_process() {
-    let path = socket_path("pidfd");
+    let (_dir, path) = socket_path("pidfd");
     let listener = listen_seqpacket(&path, 4).unwrap();
     let client = connect_seqpacket(&path).unwrap();
     let server = accept(listener.as_fd()).unwrap();

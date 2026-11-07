@@ -112,15 +112,15 @@ fn recover_main(line: &CellLine, procs: &impl Procs) -> Option<OwnedFd> {
 fn restored_entries(
     saved: &BTreeMap<&str, &NodeLine>,
     by_name: &BTreeMap<&str, u32>,
-    cell_of: &BTreeMap<u32, Restored>,
+    cell_of: &BTreeMap<u32, (Restored, Option<i32>)>,
 ) -> Vec<RestoredNode> {
     let mut entries: BTreeMap<u32, RestoredNode> = BTreeMap::new();
     for (name, line) in saved {
         if let Some(&ix) = by_name.get(name) {
-            let phase = cell_of.get(&ix).copied().unwrap_or(match line.terminal {
-                None => Restored::Off,
-                Some(SavedTerminal::Done) => Restored::Done,
-                Some(SavedTerminal::Quarantined(r)) => Restored::Quarantined(r),
+            let (phase, pid) = cell_of.get(&ix).copied().unwrap_or(match line.terminal {
+                None => (Restored::Off, None),
+                Some(SavedTerminal::Done) => (Restored::Done, None),
+                Some(SavedTerminal::Quarantined(r)) => (Restored::Quarantined(r), None),
             });
             entries.insert(
                 ix,
@@ -128,16 +128,18 @@ fn restored_entries(
                     node: ix,
                     wanted: line.wanted,
                     phase,
+                    pid,
                     counters: line.counters,
                 },
             );
         }
     }
-    for (&ix, &phase) in cell_of {
+    for (&ix, &(phase, pid)) in cell_of {
         entries.entry(ix).or_insert(RestoredNode {
             node: ix,
             wanted: true,
             phase,
+            pid,
             counters: Counters::default(),
         });
     }
@@ -170,7 +172,7 @@ pub fn plan(
         next_instance: 1,
         ..Plan::default()
     };
-    let mut cell_of: BTreeMap<u32, Restored> = BTreeMap::new();
+    let mut cell_of: BTreeMap<u32, (Restored, Option<i32>)> = BTreeMap::new();
 
     for line in cells {
         if let Some(id) = instance_id(&line.name) {
@@ -239,7 +241,7 @@ pub fn plan(
         if exited {
             out.exited.push(ix);
         }
-        cell_of.insert(ix, phase);
+        cell_of.insert(ix, (phase, had_main.then_some(line.pid)));
     }
 
     out.restored = restored_entries(&saved, &by_name, &cell_of);

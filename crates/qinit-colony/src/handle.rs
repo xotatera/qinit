@@ -562,7 +562,7 @@ impl<E: Effects> Colony<E> {
             // A wait with no deadline would be unbounded: it ends now, as if the time were up.
             h.outcome.errors.push(Error::Effect(0, e));
             let expired = self.on_wait_deadline(id, 0);
-            h.outcome.replies.extend(expired.replies);
+            h.outcome.absorb(expired);
             return;
         }
         h.waiting = true;
@@ -634,10 +634,7 @@ impl<E: Effects> Colony<E> {
         let refused = out.notices.contains(&Notice::Node(node, Report::Refused));
         let gave_up = self.nodes[node as usize].state == State::Off;
         let ended = out.notices.iter().any(|n| ends_up(n, node, gave_up));
-        h.outcome.notices.extend(out.notices);
-        h.outcome.stream.extend(out.stream);
-        h.outcome.errors.extend(out.errors);
-        h.outcome.replies.extend(out.replies);
+        h.outcome.absorb(out);
         let state = self.nodes[node as usize].state;
         if refused {
             self.restore_waits(taken);
@@ -695,9 +692,7 @@ impl<E: Effects> Colony<E> {
         };
         match self.stop_instance(view.id, now) {
             Ok(out) => {
-                h.outcome.notices.extend(out.notices);
-                h.outcome.stream.extend(out.stream);
-                h.outcome.errors.extend(out.errors);
+                h.outcome.absorb(out);
                 h.reply = OwnedRep::Accepted;
                 if let Some(ms) = wait_ms {
                     self.park(wait, What::Instance(view.id), ms, h);
@@ -735,9 +730,7 @@ impl<E: Effects> Colony<E> {
         };
         match self.launch(args, now) {
             Ok((id, out)) => {
-                h.outcome.notices.extend(out.notices);
-                h.outcome.stream.extend(out.stream);
-                h.outcome.errors.extend(out.errors);
+                h.outcome.absorb(out);
                 h.reply = OwnedRep::Launched { id };
                 if pidfd
                     && let Some(slot) = slot_of(&self.slots, id)
@@ -812,9 +805,7 @@ impl<E: Effects> Colony<E> {
         };
         match self.run_request(args, now) {
             Ok((id, out)) => {
-                h.outcome.notices.extend(out.notices);
-                h.outcome.stream.extend(out.stream);
-                h.outcome.errors.extend(out.errors);
+                h.outcome.absorb(out);
                 h.reply = OwnedRep::Launched { id };
                 if w.pidfd
                     && let Some(slot) = slot_of(&self.slots, id)
@@ -866,10 +857,7 @@ impl<E: Effects> Colony<E> {
         match self.refresh(db, now) {
             Ok(out) => {
                 let swapped = out.notices.contains(&Notice::Swapped);
-                h.outcome.notices.extend(out.notices);
-                h.outcome.stream.extend(out.stream);
-                h.outcome.errors.extend(out.errors);
-                h.outcome.replies.extend(out.replies);
+                h.outcome.absorb(out);
                 h.reply = OwnedRep::Accepted;
                 if let Some(ms) = wait_ms {
                     let names = self.refresh_set.clone();
@@ -918,10 +906,7 @@ impl<E: Effects> Colony<E> {
             }
             // Instances first, then the nodes: `shutdown` does both.
             let out = self.shutdown(now);
-            h.outcome.notices.extend(out.notices);
-            h.outcome.stream.extend(out.stream);
-            h.outcome.errors.extend(out.errors);
-            h.outcome.replies.extend(out.replies);
+            h.outcome.absorb(out);
         }
         h.reply = OwnedRep::Accepted;
         if let Some(ms) = wait_ms {

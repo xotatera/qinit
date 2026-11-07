@@ -158,8 +158,10 @@ batch (`qinit-event`, `Loop::wait`: `Ready::Exited` before the rest), so the
 cell engine handles the main exit (`qinit-cell`, `main_exited`) before the
 readable ready pipe and the machine goes to Empty without a `Ready` report.
 Accepted as is: a service that is already gone when readiness is read cannot
-be supervised as ready. The maintainer decided to revisit this in the colony
-sub-project (sub-project 4), which owns service state.
+be supervised as ready. The colony sub-project (sub-project 4), which owns
+service state, revisited it and kept it: a `ready = pipe` worker whose exit
+arrives before its ready line has exited before ready, a failure; `ready =
+exit` is unaffected.
 
 ### D19 — Validator worst-case cost · `RESOLVED`
 
@@ -444,13 +446,14 @@ as an instance directly, is deferred.
 `show` and `fill` act on frames and the policy. The enable list (`enable.toml`) has neither an
 effective view nor written-back defaults.
 
-### D56 — Outcome merges that drop parked replies · `OPEN`
+### D56 — Outcome merges that drop parked replies · `RESOLVED`
 
-Several places in colony merge the `Outcome` of an inner call into their own and carry the
-notices, the stream and the errors but not `replies`: `change_instance`, `launch_request` and
-`run_handler` in `handle.rs` and the phase merges of a refresh in `swap.rs`. A parked wait that
-an inner call resolves would lose its reply, and its client would wait until its deadline. No
-test reaches it today; the merges should go through one helper that moves every field.
+Several places in colony merged the `Outcome` of an inner call into their own and carried the
+notices, the stream and the errors but not `replies`. A refresh reached it: a stop or a start in
+either phase that failed at once settled a parked wait inside the inner call, which removed the
+wait and cancelled its deadline, and the reply was dropped, so the client was never answered. Every
+merge now goes through `Outcome::absorb`, which names each field, so a new field does not compile
+until it is merged. `tests/handle.rs` covers both phases of a refresh.
 
 ### D57 — `Client::watch` spends the client on a refusal · `OPEN`
 
@@ -466,15 +469,17 @@ Two defaults have no TOML spelling in the frame schema: no start timeout (`start
 show` and `qctl fill` print them as comments instead of keys, since a written key would not
 compile; a schema word for each would let them be written.
 
-### D59 — Intermittent failures of the xtask CLI tests · `OPEN`
+### D59 — Intermittent failures of the xtask CLI tests · `RESOLVED`
 
 In one full gate run two tests of `xtask/runner/tests/cli.rs` failed,
 `empty_proofs_are_a_successful_no_op` (exit 2) and
 `full_gate_names_the_malformed_repository_proof_declaration` (`cannot run cargo metadata: No such
-file or directory`); they passed alone and in the next gate runs. `Fixture::new` names its
-temporary root by `SystemTime` nanoseconds only. The hypothesis, unproven: two tests running in
-parallel get the same root and one's `Drop` removes it under the other. The candidate fix is the
-process id and an atomic counter in the name.
+file or directory`); they passed alone and in the next gate runs. `Fixture::new` named its
+temporary root by `SystemTime` nanoseconds only, so two parallel tests could get the same root and
+one's `Drop` could remove it under the other. The names do repeat (eight threads drew 4,941
+duplicates in 400,000), though that one failure was never reproduced. The name now has the process
+id and an atomic counter as well, and `fixture_roots_never_repeat` pins it. If these failures come
+back, the cause is something else.
 
 ### D60 — `qctl fill` renames its files one by one · `OPEN`
 
@@ -485,12 +490,11 @@ first leaves the earlier files filled and the rest not. Each file is still whole
 `fill` completes the rest, but the files of one run are not replaced as one. Directories made
 for a new file are not removed when a later file fails.
 
-### D61 — Test directories left in `/tmp` by other crates · `OPEN`
+### D61 — Test directories left in `/tmp` by other crates · `RESOLVED`
 
-Runs of `cargo test` leave directories in `/tmp`: `qinit-sys-fs-*`, `qinit-ipc-*` and
-`qinit-sys-det-*` are each in the hundreds on the maintainer's host. Their test harnesses
-predate this branch and were not examined; each needs a guard that removes its directory when
-dropped, as the qctl, client and protocol tests now have.
+Runs of `cargo test` left directories in `/tmp`: `qinit-sys-fs-*`, `qinit-ipc-*` and
+`qinit-sys-det-*`, twelve per run. Each of the three harnesses now holds its directory in a guard
+that removes it when dropped, as the qctl, client and protocol tests do.
 
 ### D62 — Pre-opened sockets · `OPEN`
 
@@ -520,11 +524,12 @@ unknown: colony counts the exit as a failure (`Report::Failed(None)`, as `MainEx
 everywhere), and a one-shot that exited 0 after the restart is not told apart from a crash. Queen,
 as the parent through which the status can be passed, ends this (SP8).
 
-### D66 — A re-adopted node has no pid in `Status` · `OPEN`
+### D66 — A re-adopted node has no pid in `Status` · `RESOLVED`
 
-`Colony::pid` is the pid the effects layer reported when it started the node, so a node colony
-adopted shows no pid in `Status` until it is started again. The `cells` file has the pid of the
-main (and `Cells::main_pid` has it after adoption); passing it to `restore` would fill the field.
+`Colony::pid` was the pid the effects layer reported when it started the node, so a node colony
+adopted showed no pid in `Status` until it was started again. The adoption plan now passes the pid
+of a recovered main to `restore` (`RestoredNode::pid`; none when the main is gone), and the
+`readopt` VM suite reads it back from `Status`.
 
 ### D67 — A request's replies come before the state files are rewritten · `OPEN`
 

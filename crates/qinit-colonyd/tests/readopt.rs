@@ -364,3 +364,21 @@ fn an_adopted_node_takes_its_wanted_flag_and_counters_from_the_file() {
     assert_eq!(p.restored[0].counters.burst_count, 2);
     assert_eq!(p.restored[0].phase, Restored::Ready);
 }
+
+#[test]
+fn a_recovered_main_keeps_its_pid_and_a_lost_one_has_none() {
+    let cells = [cell("a", 7, true, 41, 500), cell("b", 8, true, 42, 600)];
+    let mut ops = FakeCells::default();
+    // Only `a`'s main is still there.
+    let p = plan(
+        &cells,
+        None,
+        &two(),
+        &mut ops,
+        &procs(&[(41, 500, 7)]),
+        1_000,
+    );
+    let pid = |node: u32| p.restored.iter().find(|r| r.node == node).unwrap().pid;
+    assert_eq!(pid(0), Some(41));
+    assert_eq!(pid(1), None);
+}

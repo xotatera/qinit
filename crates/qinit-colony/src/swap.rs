@@ -182,9 +182,7 @@ impl<E: Effects> Colony<E> {
                 },
                 now,
             );
-            out.notices.extend(o.notices);
-            out.stream.extend(o.stream);
-            out.errors.extend(o.errors);
+            out.absorb(o);
         }
         for id in sw.instances.clone() {
             if let Some(slot) = slot_of(&self.slots, id) {
@@ -354,9 +352,7 @@ impl<E: Effects> Colony<E> {
         }
         for (node, req) in asks {
             let o = self.input(node, Input::Request { node, req }, now);
-            out.notices.extend(o.notices);
-            out.stream.extend(o.stream);
-            out.errors.extend(o.errors);
+            out.absorb(o);
         }
         self.emit(out, Notice::Swapped);
     }

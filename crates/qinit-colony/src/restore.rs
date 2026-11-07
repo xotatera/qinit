@@ -40,6 +40,8 @@ pub struct RestoredNode {
     pub node: u32,
     pub wanted: bool,
     pub phase: Restored,
+    /// The pid of the main process of an adopted node, if it was recovered.
+    pub pid: Option<i32>,
     pub counters: Counters,
 }
 
@@ -132,6 +134,11 @@ impl<E: Effects> Colony<E> {
         let model = open(&bytes).map_err(Error::Db)?.decode();
         let (table, live) = table_of(&bytes, model.nodes.len(), nodes, now_ms)?;
         let mut c = Self::assemble(bytes, model, table, live, effects);
+        for r in nodes {
+            if c.live[r.node as usize] {
+                c.pids[r.node as usize] = r.pid;
+            }
+        }
         let mut out = Outcome::default();
         let converged = core_restore(
             &c.db,

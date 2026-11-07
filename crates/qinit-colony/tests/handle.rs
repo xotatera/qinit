@@ -324,6 +324,61 @@ fn another_stop_supersedes_a_parked_start() {
     assert!(replies(&out).iter().all(|(w, _)| *w != 1));
 }
 
+/// A worker still starting, with a parked `start --wait` as wait 9, and the database that
+/// changes its program.
+fn parked_on_a_changed_worker() -> (Colony<Sim>, u32, Vec<u8>) {
+    let frames = |bin: &str| {
+        format!("[worker.slow]\ncredentials = {{ uid = \"svc\" }}\nexec = [\"{bin}\"]\n")
+    };
+    let (probe, _) = boot(&frames("/bin/slow"), &[], Sim::new());
+    let slow = idx(&probe, "slow");
+    let mut sim = Sim::new();
+    sim.scripts.insert(slow, script(None, None));
+    let (mut c, _) = boot(&frames("/bin/slow"), &[], sim);
+    let h = handle(
+        &mut c,
+        ROOT,
+        &change("slow", Action::Start, true, 60_000),
+        9,
+    );
+    assert!(h.waiting);
+    (c, slow, database(&frames("/bin/slower"), &[]))
+}
+
+fn refresh_to(c: &mut Colony<Sim>, db: Vec<u8>) -> Vec<(u64, OwnedRep)> {
+    let now = c.effects.now();
+    let attached = Attached {
+        fds: Vec::new(),
+        database: Some(Ok(db)),
+        ..Attached::default()
+    };
+    let refresh = Req::Refresh {
+        settled: false,
+        wait_ms: 0,
+    };
+    let h = c.handle(ROOT, &refresh, attached, WaitId(10), now);
+    assert_eq!(h.reply, OwnedRep::Accepted);
+    let mut all = replies(&h.outcome);
+    all.extend(replies(&run(c, 120_000)));
+    all
+}
+
+#[test]
+fn a_wait_a_phase_2_start_settles_gets_its_reply() {
+    let (mut c, slow, db) = parked_on_a_changed_worker();
+    c.effects.fail_start.insert(slow);
+    let all = refresh_to(&mut c, db);
+    assert!(all.iter().any(|(w, _)| *w == 9), "{all:?}");
+}
+
+#[test]
+fn a_wait_a_phase_1_stop_settles_gets_its_reply() {
+    let (mut c, slow, db) = parked_on_a_changed_worker();
+    c.effects.fail_stop.insert(slow);
+    let all = refresh_to(&mut c, db);
+    assert!(all.iter().any(|(w, _)| *w == 9), "{all:?}");
+}
+
 #[test]
 fn a_refresh_that_removes_the_node_supersedes_its_wait() {
     let (probe, _) = boot(&frames(), &[], Sim::new());
