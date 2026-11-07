@@ -55,6 +55,10 @@ fn a_second_colony_adopts_without_restarting_and_stops_through_the_main() -> Res
     if (a_before.clone(), b_before) != (a_after, b_after) {
         return Err("the workers' processes changed: they were started again".into());
     }
+    match e(c.status("a"))? {
+        qinit_client::Status::Node(n) if n.pid.is_some_and(|p| a_before.contains(&p)) => {}
+        other => return Err(format!("the adopted worker's status is {other:?}")),
+    }
     // The main was recovered, so a stop goes to it by its pidfd: the helper notes the TERM.
     match e(c.change("a", Action::Stop, Wait::Settled(HANG_GUARD)))? {
         qinit_client::Outcome::Settled(w) if w.state == 0 => {}

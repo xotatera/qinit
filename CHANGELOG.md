@@ -303,6 +303,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `Status` shows the pid of an adopted node's main after a colony restart, not only after the next
+  start (D66).
 - A wait that a refresh settles gets its reply. A stop or a start that failed at once during a
   refresh dropped the reply and cancelled the deadline, so the client was never answered (D56).
 - `Colony::shutdown` stops the instances too. Only the protocol's `Shutdown` request did, so a

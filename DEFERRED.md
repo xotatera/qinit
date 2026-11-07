@@ -521,11 +521,12 @@ unknown: colony counts the exit as a failure (`Report::Failed(None)`, as `MainEx
 everywhere), and a one-shot that exited 0 after the restart is not told apart from a crash. Queen,
 as the parent through which the status can be passed, ends this (SP8).
 
-### D66 — A re-adopted node has no pid in `Status` · `OPEN`
+### D66 — A re-adopted node has no pid in `Status` · `RESOLVED`
 
-`Colony::pid` is the pid the effects layer reported when it started the node, so a node colony
-adopted shows no pid in `Status` until it is started again. The `cells` file has the pid of the
-main (and `Cells::main_pid` has it after adoption); passing it to `restore` would fill the field.
+`Colony::pid` was the pid the effects layer reported when it started the node, so a node colony
+adopted showed no pid in `Status` until it was started again. The adoption plan now passes the pid
+of a recovered main to `restore` (`RestoredNode::pid`; none when the main is gone), and the
+`readopt` VM suite reads it back from `Status`.
 
 ### D67 — A request's replies come before the state files are rewritten · `OPEN`
 
