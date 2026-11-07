@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The launch request (QLR1) as a value and its encoder. The layout is `qinit_proto_core::launch`;
 //! `qinit_overseer_core::decode` is the judge of what the encoder produces.
+//! [`RequestSpec::check`] is what a client checks before it sends one: `qctl` and the C builder.
 use qinit_proto_core::launch::{
     FLAG_DIE_WITH_PARENT, HEADER_WORDS, LAUNCH_MAGIC, LAUNCH_VERSION, MAX_REQUEST, Q_ARGV_LEN,
     Q_ARGV_OFF, Q_CAPS_HI, Q_CAPS_LO, Q_CWD_LEN, Q_CWD_OFF, Q_DEADLINE_MS, Q_ENV_LEN, Q_ENV_OFF,
@@ -11,6 +12,7 @@ use qinit_proto_core::launch::{
     Q_STDOUT_A, Q_STDOUT_B, Q_STDOUT_KIND, Q_UMASK, Q_USER_LEN, Q_USER_MAP, Q_USER_OFF, READY_NONE,
     READY_PIPE, REQ_WORDS, STREAM_FD, STREAM_PATH, STREAM_SAME,
 };
+use std::fmt;
 
 /// The seccomp policy of a request.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,6 +117,45 @@ pub enum EncodeError {
     BadStream,
 }
 
+/// Why a client does not send a request: what [`RequestSpec::check`] refuses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CheckError {
+    /// `cwd` is not an absolute path (the value).
+    Cwd(String),
+    /// `deadline_ms` is 0.
+    Deadline,
+    /// `umask` is over `0o777` (the value).
+    Umask(u32),
+    /// The request is longer than `MAX_REQUEST` once laid out.
+    TooLarge,
+    /// Standard input or output was [`Stream::Same`].
+    BadStream,
+}
+
+impl From<EncodeError> for CheckError {
+    fn from(e: EncodeError) -> Self {
+        match e {
+            EncodeError::TooLarge => CheckError::TooLarge,
+            EncodeError::BadStream => CheckError::BadStream,
+        }
+    }
+}
+
+impl fmt::Display for CheckError {
+    /// The words `qctl` reports, each naming the field it is about.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CheckError::Cwd(cwd) => write!(f, "cwd: `{cwd}` is not an absolute path"),
+            CheckError::Deadline => f.write_str("deadline_ms: must be at least 1"),
+            CheckError::Umask(umask) => write!(f, "umask: {umask:#o} is over 0o777"),
+            CheckError::TooLarge => f.write_str("the request is over 64 KiB once laid out"),
+            CheckError::BadStream => f.write_str("stdin and stdout cannot be \"same\""),
+        }
+    }
+}
+
+impl std::error::Error for CheckError {}
+
 /// The pool under construction.
 struct Pool(Vec<u8>);
 
@@ -132,6 +173,26 @@ impl Pool {
 }
 
 impl RequestSpec {
+    /// The bytes of a request a client may send: `cwd` absolute, `deadline_ms` at least 1 and
+    /// `umask` at most `0o777`, checked in that order, then laid out by [`RequestSpec::bytes`].
+    /// The overseer refuses each of these too; checking them here means a bad request is never
+    /// sent. Everything else is still `decode`'s to judge.
+    ///
+    /// # Errors
+    /// The first check that fails, as a [`CheckError`].
+    pub fn check(&self) -> Result<Vec<u8>, CheckError> {
+        if !self.cwd.starts_with('/') {
+            return Err(CheckError::Cwd(self.cwd.clone()));
+        }
+        if self.deadline_ms == 0 {
+            return Err(CheckError::Deadline);
+        }
+        if self.umask > 0o777 {
+            return Err(CheckError::Umask(self.umask));
+        }
+        Ok(self.bytes()?)
+    }
+
     /// Lays the request out: header, record and pool.
     ///
     /// # Errors

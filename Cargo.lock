@@ -257,6 +257,7 @@ dependencies = [
  "qinit-colony-core",
  "qinit-frames",
  "qinit-ipc",
+ "qinit-launch",
  "qinit-proto",
  "qinit-sys",
 ]

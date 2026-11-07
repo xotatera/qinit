@@ -49,6 +49,66 @@ last three (every other call is `QINIT_E_ARGUMENT`).
 `qinit_status` is both a function and a structure: write `struct qinit_status` for the
 structure. Every other structure also has a typedef of its own name.
 
+## Building a launch request
+
+`qinit_run_begin` takes a launch request as QLR1 bytes (`docs/launch-request.md`). The builder
+makes them: `qinit_request_new` returns a request with the document's defaults, one setter per
+field fills it, and `qinit_request_bytes` checks it and lays it out.
+
+| Field | Setter |
+| --- | --- |
+| argv, env, paths | `qinit_request_add_arg`, `_add_env` (`KEY=value`), `_add_path` (`ro:/usr`, …), one element per call |
+| seccomp | `_set_seccomp` (`QINIT_SECCOMP_*`), with `_add_syscall` (a number) for a deny or allow list |
+| cwd, user | `_set_cwd`, `_set_user` |
+| umask, caps, namespaces, deadline | `_set_umask`, `_set_caps` (bit `n` for capability `n`), `_set_namespaces` (`QINIT_NS_*`), `_set_deadline_ms` |
+| resource limits | `_set_rlimit(r, resource, value)`: the kernel's `RLIMIT_*` number, `UINT64_MAX` for infinity |
+| securebits, user map | `_set_securebits` (`QINIT_SECUREBITS_*`), `_set_user_map` (`QINIT_USER_MAP_*`) |
+| `no_new_privs`, `die_with_parent` | `_set_nnp`, `_set_die_with_parent`: 0 or 1 |
+| inside ids | `_set_inside_ids(r, uid, gid)` |
+| streams | `_set_stdin_path`, `_set_stdin_fd`, and the same for stdout and stderr; `_set_stderr_same` |
+| readiness pipe | `_set_ready_fd`: a routed number, -1 for none |
+
+The setters return 0 or `QINIT_E_ARGUMENT` (a NULL request or string, a string that is empty or
+not UTF-8, a word out of range), and a refused call changes nothing. `qinit_request_bytes(r,
+&ptr, &len)` runs the check `qctl run` makes on a request file (`cwd` absolute, `deadline_ms` at
+least 1, `umask` at most `0o777`, at most 64 KiB laid out; a syscall list needs a deny or allow
+filter). A request that fails it is `QINIT_E_ARGUMENT` with `ptr` NULL and `len` 0, so it is never
+sent. Colony still judges the rest when the request arrives (`QINIT_E_SERVER`). A request has no
+client, so `qinit_last_error` does not see its failures: `qinit_request_error(r)` gives the reason
+of the last failed call on `r`, in `qctl`'s words (``cwd: `work` is not an absolute path``), or an
+empty string after a success.
+
+Ownership: the request is the caller's to free with `qinit_request_free`. Every string a setter
+takes is copied. The bytes and the reason belong to the request: they stay valid until the next
+call on it (other than `qinit_request_error`) or until it is freed. A request is used from one
+thread at a time.
+
+Under `qinit_run_begin` a stream given as a descriptor arrives by its role: stdin as 5, stdout as
+6 and stderr as 7 (`docs/control-protocol.md`, `Run`). Name that number in the request:
+`qinit_request_set_stdout_fd(r, 6)` with `stdout_fd` set in `qinit_run_args`. A readiness pipe
+needs a routed number that no stream uses, such as 8, and `wait_ready` set.
+
+```c
+qinit_request *r = qinit_request_new();
+const uint8_t *bytes;
+size_t len;
+qinit_request_add_arg(r, "/usr/bin/job");
+qinit_request_set_user(r, "svc");
+qinit_request_set_stdout_fd(r, 6);
+if (qinit_request_bytes(r, &bytes, &len) != 0) {
+    fprintf(stderr, "request: %s\n", qinit_request_error(r));
+} else {
+    qinit_run_args a = {.request = bytes, .request_len = len, .stdin_fd = -1,
+                        .stdout_fd = out_fd, .stderr_fd = -1, .stop_mode = QINIT_STOP_MAIN,
+                        .stop_grace_ms = 1000};
+    struct qinit_begun b;
+    qinit_run_begin(c, "job", &a, 5000, &b);
+}
+qinit_request_free(r);
+```
+
+`tests/c/builder.c` builds a request and runs it to its exit against a test server.
+
 ## Example
 
 ```c

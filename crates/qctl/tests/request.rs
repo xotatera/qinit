@@ -150,6 +150,32 @@ fn a_value_the_overseer_would_refuse_is_refused_before_sending() {
 }
 
 #[test]
+fn the_checks_are_the_launch_crates() {
+    // `parse` reports what `RequestSpec::check` says, word for word: one validator for qctl
+    // and the C builder.
+    let base = "argv = [\"/bin/x\"]\n";
+    let spec = |f: fn(&mut RequestSpec)| {
+        let mut s = RequestSpec {
+            argv: vec!["/bin/x".into()],
+            ..RequestSpec::default()
+        };
+        f(&mut s);
+        s.check().unwrap_err().to_string()
+    };
+    for (body, want) in [
+        ("cwd = \"work\"", spec(|s| s.cwd = "work".into())),
+        ("deadline_ms = 0", spec(|s| s.deadline_ms = 0)),
+        ("umask = 0o1000", spec(|s| s.umask = 0o1000)),
+        (
+            &format!("env = [\"K={}\"]", "v".repeat(70_000)),
+            spec(|s| s.env = vec![format!("K={}", "v".repeat(70_000))]),
+        ),
+    ] {
+        assert_eq!(parse(&format!("{base}{body}\n")).unwrap_err(), want);
+    }
+}
+
+#[test]
 fn qctl_run_names_the_file_and_sends_nothing_for_a_bad_value() {
     let dir = TempDir::new("request-bad");
     let file = dir.join("r.toml");

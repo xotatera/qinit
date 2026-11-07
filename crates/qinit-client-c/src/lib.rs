@@ -13,12 +13,17 @@
 //! negated kind. Strings in are NUL-terminated UTF-8; names out are copied into
 //! `QINIT_NAME_MAX + 1` bytes, NUL-terminated. Descriptors in are borrowed for the call; a pidfd
 //! out is the caller's to close. A client is used from one thread at a time.
+//!
+//! The request builder (`qinit_request_*`, `request.rs`) keeps the same return words, with its
+//! reason in `qinit_request_error`: a request has no client to hold a `qinit_last_error`.
 
 mod error;
+mod request;
 mod types;
 mod watch;
 
 pub use error::*;
+pub use request::*;
 pub use types::*;
 pub use watch::*;
 

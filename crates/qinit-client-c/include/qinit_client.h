@@ -20,6 +20,7 @@ typedef struct qinit_run_args qinit_run_args;
 typedef struct qinit_begun qinit_begun;
 typedef struct qinit_finish qinit_finish;
 typedef struct qinit_event qinit_event;
+typedef struct qinit_request qinit_request;
 
 /**
  * A system call failed; `code` is the errno.
@@ -48,6 +49,50 @@ typedef struct qinit_event qinit_event;
  * three after a watch that lost the connection). Nothing was sent.
  */
 #define QINIT_E_ARGUMENT 5
+
+/**
+ * Seccomp modes of `qinit_request_set_seccomp`: none, the default filter, or a filter that
+ * denies or allows only the syscalls `qinit_request_add_syscall` lists.
+ */
+#define QINIT_SECCOMP_NONE 0
+
+#define QINIT_SECCOMP_DEFAULT 1
+
+#define QINIT_SECCOMP_DENY 2
+
+#define QINIT_SECCOMP_ALLOW 3
+
+/**
+ * Securebits of `qinit_request_set_securebits`.
+ */
+#define QINIT_SECUREBITS_NONE 0
+
+#define QINIT_SECUREBITS_NOROOT 1
+
+#define QINIT_SECUREBITS_NOROOT_LOCKED 2
+
+/**
+ * User maps of `qinit_request_set_user_map`: the service's own ids, or its subordinate range
+ * too (only with `QINIT_NS_USER`).
+ */
+#define QINIT_USER_MAP_OWN 0
+
+#define QINIT_USER_MAP_RANGE 1
+
+/**
+ * Namespace bits of `qinit_request_set_namespaces`.
+ */
+#define QINIT_NS_MOUNT 1
+
+#define QINIT_NS_PID 2
+
+#define QINIT_NS_IPC 4
+
+#define QINIT_NS_UTS 8
+
+#define QINIT_NS_NET 16
+
+#define QINIT_NS_USER 32
 
 /**
  * The version of this interface; `qinit_abi_version()` returns it at run time.
@@ -270,6 +315,13 @@ typedef struct qinit_event qinit_event;
  * A connection to colony, opaque to C: a client until `qinit_watch` turns it into a watcher.
  */
 struct qinit_client;
+
+/**
+ * A launch request under construction, opaque to C. `qinit_request_new` makes one and
+ * `qinit_request_free` frees it; the strings a setter takes are copied, and the bytes and the
+ * reason it hands out are its own.
+ */
+struct qinit_request;
 
 /**
  * The failure of the last call on a client: `kind` 0 for none, else a `QINIT_E_*`.
@@ -598,6 +650,260 @@ int qinit_launch_finish(struct qinit_client *c, struct qinit_finish *out);
  * `pidfd` is an open descriptor; `status` NULL or writable for an `int32_t`.
  */
 int qinit_pidfd_exit(int pidfd, int32_t *status);
+
+/**
+ * A new request with the defaults of `docs/launch-request.md`: no argv, environment or paths,
+ * `cwd` `/`, `umask` 0o027, no resource limits, no user, no capabilities, securebits none,
+ * `no_new_privs` on, no namespaces, the own user map, inside ids 0, seccomp none, standard
+ * input and output `/dev/null`, standard error the same as standard output, no readiness
+ * pipe, `die_with_parent` off, and a deadline of 30000 ms. A request needs at least one argv
+ * element and a user. The caller frees it with `qinit_request_free`; NULL only when it could
+ * not be made.
+ *
+ * # Safety
+ * None: it reads nothing. It is `unsafe` as every exported function is.
+ */
+struct qinit_request *qinit_request_new(void);
+
+/**
+ * Frees the request, with its bytes and its reason; NULL is ignored.
+ *
+ * # Safety
+ * `r` is NULL or a request from `qinit_request_new` not yet freed and not in use.
+ */
+void qinit_request_free(struct qinit_request *r);
+
+/**
+ * Why the last call on `r` failed, NUL-terminated: the field and what is wrong with it (for
+ * `qinit_request_bytes`, the words `qctl` uses). Empty when it succeeded, and for a NULL `r`.
+ * The text is the request's, valid until the next call on it other than this one.
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+const char *qinit_request_error(const struct qinit_request *r);
+
+/**
+ * Checks the request and lays it out: on success `*ptr` and `*len` give its bytes (QLR1) for
+ * `qinit_run_args.request`. The bytes are the request's, valid until the next call on it
+ * other than `qinit_request_error`, or until it is freed. The check is the one `qctl` makes
+ * (`cwd` absolute, `deadline_ms` at least 1, `umask` at most 0o777, at most
+ * `QINIT_REQUEST_MAX` bytes), and also refuses syscalls listed with seccomp none or default.
+ * A request that fails it is `QINIT_E_ARGUMENT`, with `*ptr` NULL, `*len` 0 and the reason in
+ * `qinit_request_error`; nothing else is checked here, so colony may still refuse the request
+ * (`QINIT_E_SERVER` from `qinit_run_begin`).
+ *
+ * # Safety
+ * `r` is NULL or a live request; `ptr` NULL or writable for a pointer; `len` NULL or writable
+ * for a `size_t`.
+ */
+int qinit_request_bytes(struct qinit_request *r, const uint8_t **ptr, size_t *len);
+
+/**
+ * Appends an argv element; the first is the program.
+ *
+ * # Safety
+ * `r` is NULL or a live request; `arg` NULL or a NUL-terminated string.
+ */
+int qinit_request_add_arg(struct qinit_request *r, const char *arg);
+
+/**
+ * Appends an environment entry, `KEY=value`.
+ *
+ * # Safety
+ * `r` is NULL or a live request; `entry` NULL or a NUL-terminated string.
+ */
+int qinit_request_add_env(struct qinit_request *r, const char *entry);
+
+/**
+ * Appends an entry of the service's view (`ro:/usr`, `rw:/var/lib/x`, ...).
+ *
+ * # Safety
+ * `r` is NULL or a live request; `entry` NULL or a NUL-terminated string.
+ */
+int qinit_request_add_path(struct qinit_request *r, const char *entry);
+
+/**
+ * Appends a syscall, by number, to the list of a `QINIT_SECCOMP_DENY` or
+ * `QINIT_SECCOMP_ALLOW` filter.
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_add_syscall(struct qinit_request *r, uint32_t nr);
+
+/**
+ * Sets the working directory, an absolute path.
+ *
+ * # Safety
+ * `r` is NULL or a live request; `path` NULL or a NUL-terminated string.
+ */
+int qinit_request_set_cwd(struct qinit_request *r, const char *path);
+
+/**
+ * Sets the umask, at most 0o777.
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_set_umask(struct qinit_request *r, uint32_t umask);
+
+/**
+ * Sets resource limit `resource` (the kernel's number, 0 to 15: `RLIMIT_*`) to `value`, soft
+ * and hard; `UINT64_MAX` is infinity.
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_set_rlimit(struct qinit_request *r, uint32_t resource, uint64_t value);
+
+/**
+ * Sets the user the service runs as, a name or a number.
+ *
+ * # Safety
+ * `r` is NULL or a live request; `user` NULL or a NUL-terminated string.
+ */
+int qinit_request_set_user(struct qinit_request *r, const char *user);
+
+/**
+ * Sets the capabilities to keep, bit `n` for capability number `n`.
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_set_caps(struct qinit_request *r, uint64_t caps);
+
+/**
+ * Sets the securebits, a `QINIT_SECUREBITS_*`.
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_set_securebits(struct qinit_request *r, uint32_t bits);
+
+/**
+ * Sets `no_new_privs`, 0 or 1.
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_set_nnp(struct qinit_request *r, int enabled);
+
+/**
+ * Sets the namespaces, an or of `QINIT_NS_*`.
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_set_namespaces(struct qinit_request *r, uint32_t ns);
+
+/**
+ * Sets the user map, a `QINIT_USER_MAP_*`.
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_set_user_map(struct qinit_request *r, uint32_t map);
+
+/**
+ * Sets the ids the service runs as inside its user namespace (non-zero only with
+ * `QINIT_NS_USER`, at most 4294967294).
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_set_inside_ids(struct qinit_request *r, uint32_t uid, uint32_t gid);
+
+/**
+ * Sets the seccomp mode, a `QINIT_SECCOMP_*`; the list is `qinit_request_add_syscall`'s.
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_set_seccomp(struct qinit_request *r, uint32_t mode);
+
+/**
+ * Standard input from a path, opened by its file type.
+ *
+ * # Safety
+ * `r` is NULL or a live request; `path` NULL or a NUL-terminated string.
+ */
+int qinit_request_set_stdin_path(struct qinit_request *r, const char *path);
+
+/**
+ * Standard input from routed descriptor `n`. Under `qinit_run_begin` a stream sent as a
+ * descriptor arrives by its role, standard input as 5 (`docs/control-protocol.md`, `Run`).
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_set_stdin_fd(struct qinit_request *r, uint32_t n);
+
+/**
+ * Standard output to a path, opened by its file type.
+ *
+ * # Safety
+ * `r` is NULL or a live request; `path` NULL or a NUL-terminated string.
+ */
+int qinit_request_set_stdout_path(struct qinit_request *r, const char *path);
+
+/**
+ * Standard output to routed descriptor `n`; under `qinit_run_begin`, 6.
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_set_stdout_fd(struct qinit_request *r, uint32_t n);
+
+/**
+ * Standard error to a path, opened by its file type.
+ *
+ * # Safety
+ * `r` is NULL or a live request; `path` NULL or a NUL-terminated string.
+ */
+int qinit_request_set_stderr_path(struct qinit_request *r, const char *path);
+
+/**
+ * Standard error to routed descriptor `n`; under `qinit_run_begin`, 7.
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_set_stderr_fd(struct qinit_request *r, uint32_t n);
+
+/**
+ * Standard error to wherever standard output goes (the default).
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_set_stderr_same(struct qinit_request *r);
+
+/**
+ * Routes a readiness pipe to descriptor `fd`, or none with -1 (the default). It is a routed
+ * number from 5 to 37 that no stream uses; under `qinit_run_begin`, whose streams take 5 to 7,
+ * 8 is free, and the pipe needs `wait_ready` (`docs/control-protocol.md`, `Run`).
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_set_ready_fd(struct qinit_request *r, int fd);
+
+/**
+ * Sets `die_with_parent`, 0 or 1: the service gets `SIGKILL` when its parent thread exits.
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_set_die_with_parent(struct qinit_request *r, int enabled);
+
+/**
+ * Sets the deadline of the launch in milliseconds, at least 1.
+ *
+ * # Safety
+ * `r` is NULL or a live request.
+ */
+int qinit_request_set_deadline_ms(struct qinit_request *r, uint32_t ms);
 
 /**
  * Turns the connection into a stream of state notices: everything (`all` 1, `target` NULL or
