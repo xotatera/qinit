@@ -9,8 +9,9 @@ SPDX-License-Identifier: CC-BY-4.0
 [colony](colony.md), restarts it under a limit, holds what must outlive it, runs a rescue program
 when colony cannot be kept up, and hands the machine to zero at the end. The state machine is
 `qinit-queen-core` (Verus: `proof:qinit-queen-core`); `qinit-queen` is the thin shell that turns
-epoll wake-ups into inputs and the machine's actions into calls. It is built static (musl) and
-logs only to `/dev/kmsg`.
+epoll wake-ups into inputs and the machine's actions into calls. It links with no
+dependency beyond libc, and the guest images build it static (musl). It logs to `/dev/kmsg`, and
+to the console when that does not open; a log write never blocks.
 
 Queen does not mount anything, supervise services, read a database or speak the control protocol.
 It assumes what zero makes before it starts: `/proc`, `/sys`, the cgroup2 mount, `/dev` and `/run`.
@@ -20,7 +21,9 @@ It assumes what zero makes before it starts: `/proc`, `/sys`, the cgroup2 mount,
 In this order, before anything that can fail: every signal but the five fault signals is blocked
 and a handler for those, on an alternate stack, parks (see below); a process that is not PID 1
 prints a line and exits 2; Ctrl-Alt-Del is switched off, so it arrives as `SIGINT`; the working
-directory is `/` (queen pins no mount); `/dev/kmsg` is opened; `RLIMIT_NOFILE` is raised to 65536
+directory is `/` (queen pins no mount); the log is opened (`/dev/kmsg`, else `/dev/console`, else
+`/dev/null`, each on a description of its own, non-blocking, so a console stopped by flow control
+costs a line and not PID 1); `RLIMIT_NOFILE` is raised to 65536
 so queen can hold the whole store; the signalfd, timerfd and epoll instance are made; colony is
 started. A failure from the Ctrl-Alt-Del step on logs what failed and parks.
 
@@ -28,7 +31,8 @@ started. A failure from the Ctrl-Alt-Del step on logs what failed and parks.
 
 Queen has at most one colony and one rescue program. Every wake-up on `SIGCHLD` drains
 `waitpid(-1, WNOHANG)`, so coalesced signals lose nothing; a pid that is neither is an orphan,
-counted and logged as one line per drain. Colony runs as `/usr/lib/qinit/colony --queen-fd 3`
+counted and logged as one line a minute: the first drain at once, and then the next one after a
+minute, which carries the count of every orphan since the last line. Colony runs as `/usr/lib/qinit/colony --queen-fd 3`
 with the console on 0, 1 and 2, in a session of its own.
 
 | Colony's exit | Before a shutdown | During a shutdown |
@@ -63,7 +67,8 @@ A later `Shutdown` changes the mode and leaves the timer. If the timer fires, co
 5-second timer armed; colony's reap or that timer leads to zero with the recorded mode. Colony's
 exit code beats the recorded mode. Zero is `/usr/lib/qinit/zero final <halt|poweroff|reboot>`; a
 failed exec is logged and runs rescue, then the hold. Queen never calls `reboot(2)` to halt, power
-off or restart. Every other signal is logged (once a minute each) and ignored.
+off or restart. Every other signal, the real-time ones (up to 64) included, is logged (once a minute
+each) and ignored: queen reads every signal it can catch and leaves none pending.
 
 ## Parking
 
@@ -87,17 +92,25 @@ needs.
 | colony → queen | `Shutdown{mode}` (3) | A shutdown began; mode 0 halt, 1 poweroff, 2 reboot |
 | queen → colony | `Held{key}` + fd (65) | One per entry, sent at the start |
 | queen → colony | `HeldEnd{count}` (66) | The hand-over is complete |
-| queen → colony | `Reaped` (67) | Queen reaped something: statuses may be readable now |
+| queen → colony | `Reaped` (67) | Queen reaped an orphan (neither colony nor rescue): a status colony waits for may be readable now |
 | queen → colony | `Request{mode}` (68) | Start this shutdown |
 | queen → colony | `Refused{key}` (69) | The store is full; the descriptor was closed |
 
-Queen never blocks on colony: it sends with `MSG_DONTWAIT` and waits for the socket to be writable.
-Records colony queued before it died are read before the reap restarts it. Every held descriptor
+Queen never blocks on colony: it sends with `MSG_DONTWAIT` and waits for the socket to be writable;
+a send that fails for good drops the channel. A turn reads at most 128 records from the channel (a
+colony that floods it does not hold the signals, the reap and the timer back: the rest waits in the
+socket, which keeps epoll awake), except that the records a dying colony queued are all read
+before the reap restarts it. A `Put` scans the table, which costs under 12 µs in a full one
+(measured), so a turn's 128 take about a millisecond at worst. A record that does not decode kills
+colony and closes the channel: nothing queued behind it is read. Every held descriptor
 is close-on-exec, so a successful exec of zero drops the store and a failed one keeps it.
 
 Colony keeps three fixed keys: 1 the cell table, 2 the node state and the logger pipes, 3 the
 database it runs. Everything else is a cell's directory, a main's pidfd or a pipe end, under keys
-colony allocates from 16. Colony puts a descriptor before it saves the state that names it and
+colony allocates from 16. When the machine leaves rescue (a clean exit) or the hold (Ctrl-Alt-Del),
+queen drops key 3 first: the administrator has had the machine, and the new colony reads the
+database file they repaired and not the copy that was in force when colony failed. The cells and
+the nodes stay, and are adopted. Colony puts a descriptor before it saves the state that names it and
 forgets a key after it saved the state that stopped naming it. See [colony.md](colony.md) for what
 survives a restart.
 

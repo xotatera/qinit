@@ -50,9 +50,9 @@ debug level.
 
 1. The kernel must be Linux 6.15 or later (`PIDFD_INFO_EXIT`).
 2. Colony is not inside the comb.
-3. The database is read and validated (the proved validator).
-4. With `--queen-fd`, queen's hand-over is read (each wait bounded by 10 s). The database queen
-   held, if it loads, replaces `--db`; exit 3 is for when there is neither. The run directory is made.
+3. With `--queen-fd`, queen's hand-over is read (each wait bounded by 10 s).
+4. The database is chosen and validated (the proved validator): the copy queen held, if it loads,
+   replaces `--db`; exit 3 is for when there is neither. The run directory is made.
 5. The comb is opened, and `+memory +pids` is written to its `cgroup.subtree_control`: a node with a
    limit does not start without the controller. The comb's parent must offer both.
 6. The loop is built: signals, the one timer, the cells' own descriptor, the path watcher.

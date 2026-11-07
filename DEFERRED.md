@@ -568,11 +568,15 @@ finds in the comb alone (one log line each) and fails the create of a node whose
 Queen raises `RLIMIT_NOFILE` to 65536 to hold the whole store and colony inherits it, so services
 whose frame sets no `nofile` start with that limit and not the kernel's default.
 
-### D73 — `readopt` VM case `a_pipe_worker_still_starting_is_restarted` fails about one run in thirteen · `OPEN`
+### D73 — `readopt` VM case `a_pipe_worker_still_starting_is_restarted` fails about one run in thirteen · `RESOLVED`
 
-Under queen, in rare runs the adopted `slow` node is restarted, its old main exits, and colony logs
-`slow: failed (status unknown)` and does not start it again: the node ends off, so the case waits
-its hang guard for a second start. The adopted exit then reaches the machine as a failure and not as
-the result of the requested stop. The cause is not found: the guess is an ordering of the pidfd
-becoming readable, queen's `Reaped` wake and the restart request. The other cases of the suite did
-not show it in more than forty runs.
+Under queen, in rare runs the adopted `slow` node was restarted, its old main exited, and colony
+logged `slow: failed (status unknown)`: the node ended off and was not started again. The cause was
+`qinit_ipc::memfd::read_all`, which allocated its whole ceiling (256 MiB for a state entry) and
+returned it untrimmed, so a colony that had read its saved state held 256 MiB or more of mapped
+memory. The restart's `clone3` copies colony's address space and, on the 500 MB guest, sometimes
+failed with `ENOMEM` (errno 12, found by logging the spawn); the start failed and the node ended
+off. The ceiling is now only a ceiling: the buffer grows from 4 KiB and is trimmed to the file's
+size. An in-VM loop of the case failed within 6 to 38 iterations in five runs before the fix and
+passed all 250 iterations after it. Any consumer of `read_all` with a large ceiling had the same
+cost.

@@ -18,8 +18,9 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `/etc/qinit/rescue` (then holds) when colony cannot be kept up, takes Ctrl-Alt-Del and `SIGPWR`
   as requests for an ordered shutdown, hands the machine to zero with the mode colony announced,
   reaps every orphan, and parks on a panic or fault instead of exiting. Colony's channel is
-  `--queen-fd`. Four VM suites run it as a real PID 1: `queen`, `queen_panic`, `queen_fault` and
-  `readopt`.
+  `--queen-fd`. Leaving rescue or the hold, queen drops the database copy it held, so the next
+  colony reads the file the administrator repaired. Four VM suites run it as a real PID 1: `queen`,
+  `queen_panic`, `queen_fault` and `readopt`.
 
 - Sub-project 7, the colony daemon (D27, D29, D31), `docs/colony.md`: `colony` (`qinit-colonyd`,
   GPL-3.0-or-later) loads a compiled database and runs every node and instance in a real cgroup
