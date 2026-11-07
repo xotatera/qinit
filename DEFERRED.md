@@ -444,13 +444,14 @@ as an instance directly, is deferred.
 `show` and `fill` act on frames and the policy. The enable list (`enable.toml`) has neither an
 effective view nor written-back defaults.
 
-### D56 — Outcome merges that drop parked replies · `OPEN`
+### D56 — Outcome merges that drop parked replies · `RESOLVED`
 
-Several places in colony merge the `Outcome` of an inner call into their own and carry the
-notices, the stream and the errors but not `replies`: `change_instance`, `launch_request` and
-`run_handler` in `handle.rs` and the phase merges of a refresh in `swap.rs`. A parked wait that
-an inner call resolves would lose its reply, and its client would wait until its deadline. No
-test reaches it today; the merges should go through one helper that moves every field.
+Several places in colony merged the `Outcome` of an inner call into their own and carried the
+notices, the stream and the errors but not `replies`. A refresh reached it: a stop or a start in
+either phase that failed at once settled a parked wait inside the inner call, which removed the
+wait and cancelled its deadline, and the reply was dropped, so the client was never answered. Every
+merge now goes through `Outcome::absorb`, which names each field, so a new field does not compile
+until it is merged. `tests/handle.rs` covers both phases of a refresh.
 
 ### D57 — `Client::watch` spends the client on a refusal · `OPEN`
 

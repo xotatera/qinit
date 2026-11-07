@@ -90,6 +90,8 @@ pub struct Sim {
     pub paths: HashSet<String>,
     /// Starts of these nodes fail with ENOENT before spawning.
     pub fail_start: HashSet<u32>,
+    /// Stops of these nodes fail with EIO: the cell is reported failed at once.
+    pub fail_stop: HashSet<u32>,
     /// `arm_wait` fails with errno 11: the effects layer cannot give a wait a deadline.
     pub fail_arm_wait: bool,
     /// What every instance does once started; a test sets it before it launches.
@@ -277,6 +279,9 @@ impl Effects for Sim {
 
     fn stop(&mut self, node: u32, mode: StopMode, grace_ms: u32) -> Result<(), Errno> {
         self.calls.push(Call::Stop(node, mode, grace_ms));
+        if self.fail_stop.contains(&node) {
+            return Err(Errno(5));
+        }
         if !self.cells.contains(&node) {
             return Ok(());
         }
@@ -346,6 +351,7 @@ impl Effects for Sim {
         let rekey = |n: &u32| new_of.get(n).copied();
         self.cells = self.cells.iter().filter_map(rekey).collect();
         self.fail_start = self.fail_start.iter().filter_map(rekey).collect();
+        self.fail_stop = self.fail_stop.iter().filter_map(rekey).collect();
         self.scripts = self
             .scripts
             .drain()
@@ -425,10 +431,7 @@ pub fn advance_outcome(colony: &mut Colony<Sim>, ms: u64) -> Outcome {
     let target = colony.effects.now + ms;
     let mut all = Outcome::default();
     while let Some(out) = deliver_next(colony, target) {
-        all.notices.extend(out.notices);
-        all.stream.extend(out.stream);
-        all.errors.extend(out.errors);
-        all.replies.extend(out.replies);
+        all.absorb(out);
     }
     colony.effects.now = target;
     all

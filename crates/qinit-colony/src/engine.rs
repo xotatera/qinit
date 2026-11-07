@@ -52,6 +52,23 @@ pub struct Outcome {
     pub stream: Vec<Stream>,
 }
 
+impl Outcome {
+    /// Moves all of `other` into this outcome. The pattern names every field, so a new one does
+    /// not compile until it is merged here too.
+    pub(crate) fn absorb(&mut self, other: Outcome) {
+        let Outcome {
+            notices,
+            errors,
+            replies,
+            stream,
+        } = other;
+        self.notices.extend(notices);
+        self.errors.extend(errors);
+        self.replies.extend(replies);
+        self.stream.extend(stream);
+    }
+}
+
 /// One reply on a watcher's stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stream {
