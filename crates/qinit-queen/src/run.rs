@@ -156,6 +156,9 @@ impl<I: Io> Queen<I> {
             lim,
         };
         q.perform(&a);
+        // Colony waits for the hand-over before it does anything: it must not wait for the
+        // first wake-up to get it.
+        q.send_pending();
         q
     }
 

@@ -42,7 +42,17 @@ fn the_guest_build_includes_the_executor_and_the_colony_program() {
         .collect();
     assert_eq!(
         packages,
-        ["qinit-vm-guests", "qinit-overseer", "qinit-colonyd"],
-        "the initrd carries the overseer and the colony program beside the suite"
+        [
+            "qinit-vm-guests",
+            "qinit-overseer",
+            "qinit-colonyd",
+            "qinit-queen"
+        ],
+        "the initrd carries the overseer, the colony program and queen beside the suite"
+    );
+    assert!(
+        args.windows(2)
+            .any(|w| w[0] == "--features" && w[1] == "qinit-queen/testing"),
+        "queen is built for the guests with its testing feature: {args:?}"
     );
 }

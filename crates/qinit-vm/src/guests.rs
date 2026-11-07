@@ -96,6 +96,10 @@ pub fn cargo_command(root: &Path) -> Command {
             "qinit-overseer",
             "-p",
             "qinit-colonyd",
+            "-p",
+            "qinit-queen",
+            "--features",
+            "qinit-queen/testing",
             "--bins",
         ])
         .args(["--message-format", "json-render-diagnostics"]);

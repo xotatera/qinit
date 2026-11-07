@@ -382,3 +382,25 @@ fn a_colony_that_cannot_be_spawned_is_counted_until_rescue() {
     assert!(q.io().events.contains(&Ev::SpawnRescue));
     assert_eq!(q.state().phase, Phase::Rescue);
 }
+
+#[test]
+fn the_first_colony_is_handed_over_before_any_wake_up() {
+    let mut q = Queen::new(Fake::default(), LIMITS);
+    let sent: Vec<_> = q
+        .io()
+        .events
+        .iter()
+        .filter_map(|e| {
+            if let Ev::Send(r, true) = e {
+                Some(*r)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [Some(ToColony::HeldEnd { count: 0 })],
+        "an empty store, and nothing to wait for"
+    );
+}
