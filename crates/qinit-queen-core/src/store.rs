@@ -158,6 +158,7 @@ pub fn put(table: &mut [Entry], key: u64, fd: i32) -> (r: Put)
         }
         i += 1;
     }
+    #[allow(clippy::single_match_else)]  // both arms carry proofs
     match free {
         Some(f) => {
             table[f] = Entry { key, fd };
@@ -258,6 +259,7 @@ pub fn take(table: &mut [Entry], key: u64) -> (r: Option<i32>)
 }
 
 /// How many slots are used.
+#[must_use]
 pub fn count(table: &[Entry]) -> (c: u32)
     requires
         table@.len() <= 0xFFFF_FFFF,
@@ -285,6 +287,7 @@ pub fn count(table: &[Entry]) -> (c: u32)
 }
 
 /// The first used slot at or after `cursor`, with its index.
+#[must_use]
 pub fn next_held(table: &[Entry], cursor: usize) -> (r: Option<(usize, Entry)>)
     ensures
         match r {

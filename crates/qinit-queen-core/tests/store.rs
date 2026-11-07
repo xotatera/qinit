@@ -71,12 +71,11 @@ fn each_key_is_held_once() {
     for _ in 0..200 {
         let mut t = table(8);
         let mut model: HashMap<u64, i32> = HashMap::new();
-        for step in 0..300 {
+        for fd in 0..300_i32 {
             let key = next() % 12 + 1;
             if next() % 3 == 0 {
                 assert_eq!(take(&mut t, key), model.remove(&key), "take {key}");
             } else {
-                let fd = i32::try_from(step).unwrap();
                 match put(&mut t, key, fd) {
                     Put::Stored => assert!(model.insert(key, fd).is_none()),
                     Put::Replaced(old) => assert_eq!(model.insert(key, fd), Some(old)),
