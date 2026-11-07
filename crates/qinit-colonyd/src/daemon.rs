@@ -273,6 +273,26 @@ impl<C: CellOps> Daemon<C> {
             .map_err(|e| refuse(&mut log, exit::STARTUP, format!("loop: {e}")))?;
         let now = now_ms();
         effects.now_ms = now;
+        if effects.store.link().is_none() {
+            // Without queen nothing is held to re-adopt a cell from: what an earlier colony left
+            // in the comb stays, one line each.
+            if let Ok(dir) = std::fs::read_dir(&args.comb) {
+                let mut names: Vec<String> = dir
+                    .flatten()
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect();
+                names.sort();
+                for name in names {
+                    log.log(
+                        Sev::Info,
+                        &format!(
+                            "the cell {name} was found in the comb: left alone (without queen nothing is re-adopted)"
+                        ),
+                    );
+                }
+            }
+        }
 
         let mut plan = Plan::default();
         let (colony, first) = if let Some(lines) = &left {

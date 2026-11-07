@@ -1281,3 +1281,60 @@ fn a_request_read_at_boot_starts_the_shutdown() {
     }
     assert_eq!(d.turn(Vec::new()), Some(exit::REBOOT));
 }
+
+#[test]
+fn cells_left_in_the_comb_are_logged_and_left_alone() {
+    let tmp = Tmp::new("leftalone");
+    let run = tmp.0.join("run");
+    std::fs::create_dir_all(&run).unwrap();
+    let comb = tmp.0.join("comb");
+    std::fs::create_dir_all(comb.join("old-a")).unwrap();
+    std::fs::create_dir_all(comb.join("old-b")).unwrap();
+    std::fs::write(comb.join("cgroup.procs"), b"").unwrap();
+    for f in ["console", "kmsg"] {
+        std::fs::write(tmp.0.join(f), b"").unwrap();
+    }
+    let log = UnixDatagram::bind(tmp.0.join("log")).unwrap();
+    let args = Args {
+        db: tmp.0.join("colony.db"),
+        comb,
+        socket: run.join("colony"),
+        overseer: "/o".into(),
+        syslog: tmp.0.join("log"),
+        console: tmp.0.join("console"),
+        run,
+        queen_fd: None,
+    };
+    let bytes = database(WORKER, &["db"]);
+    let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
+    let d = Daemon::boot(
+        FakeCells::default(),
+        &args,
+        &bytes,
+        Store::standalone(),
+        syslog,
+    )
+    .expect("boots");
+    let said = lines_of(&log);
+    for name in ["old-a", "old-b"] {
+        let n = said
+            .iter()
+            .filter(|l| l.contains(&format!("the cell {name} was found in the comb")))
+            .count();
+        assert_eq!(n, 1, "{name}: {said:?}");
+    }
+    assert!(
+        !said.iter().any(|l| l.contains("cgroup.procs")),
+        "only directories are cells"
+    );
+    assert!(
+        !d.colony
+            .effects
+            .cells
+            .calls
+            .iter()
+            .any(|c| matches!(c, Call::Adopt(..))),
+        "nothing is re-adopted"
+    );
+    assert!(args.comb.join("old-a").exists(), "and nothing is removed");
+}
