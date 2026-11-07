@@ -17,9 +17,9 @@ launch request of `docs/launch-request.md`.
 qctl [--socket PATH] [--json] <command> ...
 
 qctl compile [--layer NAME=DIR]... [--policy FILE | --no-policy] [--output FILE] [--dump FILE]
-qctl show    [--layer NAME=DIR]... [--policy FILE | --no-policy] <kind>.<name>... | policy
+qctl show    [--layer NAME=DIR]... [--policy FILE | --no-policy] <kind>.<name>... | enable | policy
 qctl fill    [--layer NAME=DIR]... [--policy FILE | --no-policy] [--dry-run]
-             <kind>.<name>... | policy | all
+             <kind>.<name>... | enable | policy | all
 qctl status <target>
 qctl list [all | workers | foragers | broods]
 qctl start | stop | restart | clear <node> [--wait MS]
@@ -60,7 +60,8 @@ exits 0.
 | `--all` | watch | Every node and instance. |
 
 `show` and `fill` take a target `<kind>.<name>` where kind is `worker`, `forager`, `brood` or
-`template`; `show` also takes `policy`, and `fill` takes `policy` and `all`. An instance name
+`template`; both also take `enable` (the `enable.toml` lists), `show` also takes `policy`, and
+`fill` takes `policy` and `all`. An instance name
 (`worker.getty@tty1`) is accepted and means its frame.
 
 ## Defaults
@@ -171,6 +172,11 @@ stops it with exit 1) and prints each target in the order given, separated by a 
 - `show policy` prints the policy with every rule and every key, a default marked `# default` and
   a value from the file marked `# policy`. It needs a policy file: with `--no-policy` or without a
   file it exits 1.
+- `show enable` prints the merged `enable` and `syslog` lists of the layers' `enable.toml` files,
+  one line each, `<key> = [...]  # <origin>`: the origin is the layer that set the key last (an
+  `append` or `remove` counts as setting it) and `default` for a list no layer set, which prints
+  as `[]`. A layer without an `enable.toml` is skipped, as the compiler skips it, so no file is
+  an error here. The output is a valid `enable.toml` and gives the compiler the same lists.
 
 Example, from a vendor layer and an `etc` layer (excerpt):
 
@@ -210,6 +216,14 @@ layer, created when absent (as root only below directories that pass the ownersh
 goes into the file of that layer that already has a table for the frame; when there is none, into a
 file of the same base name as the file that declared the frame, with a new `[<kind>.<name>]`
 header. The policy is written in place. A target that is an instance fills its frame.
+
+**enable.toml.** `fill enable` writes `enable = []` and `syslog = []`, whichever no layer
+set, into `enable.toml` of the last layer, in the same `# default, filled by qctl` form and the
+same commit as the frames. A list a lower layer set is left alone: a plain array over an existing
+list is a compile error, and the list already has a value. An absent `enable.toml` in the last
+layer is created like an absent layer directory; a file that exists keeps its content and the
+key is added after its keys (comments only: after them). The database is unchanged, since an
+unset list is empty. `fill all` includes `enable`.
 
 **Templates.** A key goes into the template's table, once, when the frame takes the field from
 the template (it does not set that field itself) and every frame using the template that does

@@ -372,6 +372,17 @@ fn string_list(t: &Table, key: &str, prov: &Paths, errs: &mut Vec<Error>) -> Vec
 /// # Errors
 /// Every I/O, parse, unknown-key, list-op and bad-value error found in all layers.
 pub fn load_enable(layers: &[LayerInput]) -> Result<Enable, Vec<Error>> {
+    load_enable_origins(layers).map(|(e, _)| e)
+}
+
+/// [`load_enable`], and for each of the keys `enable` and `syslog` that a layer set, the layer
+/// and file that set it last. A key no layer set has no entry.
+///
+/// # Errors
+/// As [`load_enable`].
+pub fn load_enable_origins(
+    layers: &[LayerInput],
+) -> Result<(Enable, BTreeMap<String, Origin>), Vec<Error>> {
     let (mut table, mut prov, mut errs) = (Table::new(), Paths::new(), Vec::new());
     for layer in layers.iter().filter(|l| l.only.is_none()) {
         let file = layer.dir.join(ENABLE_FILE);
@@ -401,7 +412,11 @@ pub fn load_enable(layers: &[LayerInput]) -> Result<Enable, Vec<Error>> {
     let roots = string_list(&table, "enable", &prov, &mut errs);
     let syslog = string_list(&table, "syslog", &prov, &mut errs);
     if errs.is_empty() {
-        Ok(Enable { roots, syslog })
+        let origins = prov
+            .into_iter()
+            .filter_map(|(mut p, o)| (p.len() == 1).then(|| (p.remove(0), o)))
+            .collect();
+        Ok((Enable { roots, syslog }, origins))
     } else {
         Err(errs)
     }

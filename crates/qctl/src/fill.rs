@@ -16,8 +16,9 @@ use crate::show::{KINDS, kind_word, merged_frame};
 use crate::{owner, report};
 use qinit_frames::compile::{Compiled, compile};
 use qinit_frames::dump;
-use qinit_frames::layers::LayerInput;
-use qinit_frames::provenance::{FrameKey, Provenance};
+use qinit_frames::layers::{LayerInput, load_enable_origins};
+use qinit_frames::provenance::{FrameKey, Origin, Provenance};
+use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs::{File, Metadata, OpenOptions};
@@ -88,7 +89,13 @@ pub struct Targets<'a> {
     pub frames: Frames,
     /// The policy file and its table, when the policy is filled.
     pub policy: Option<(&'a Path, &'a toml::Table)>,
+    /// The `enable.toml` keys that some layer set, when `enable.toml` is filled; a key not in
+    /// it gets an empty list in the last layer.
+    pub enable: Option<&'a BTreeMap<String, Origin>>,
 }
+
+/// The keys of `enable.toml`: the lists a layer may leave out.
+pub const ENABLE_KEYS: [&str; 2] = ["enable", "syslog"];
 
 fn fillable(key: &str) -> bool {
     FILL_KEYS.iter().any(|f| {
@@ -250,6 +257,17 @@ pub fn plan(c: &Compiled, targets: &Targets) -> Result<Vec<Edit>, String> {
             });
         }
     }
+    // A key some layer set is left alone: a plain array over an existing list is a compile error.
+    for key in targets.enable.into_iter().flat_map(|_| ENABLE_KEYS) {
+        if targets.enable.is_some_and(|set| !set.contains_key(key)) {
+            push(Edit {
+                file: targets.last.dir.join("enable.toml"),
+                table: Vec::new(),
+                key: key.into(),
+                value: "[]".into(),
+            });
+        }
+    }
     if let Some((path, raw)) = targets.policy {
         let rules = raw.get("rule").and_then(TomlValue::as_array);
         for (i, rule) in rules.into_iter().flatten().enumerate() {
@@ -383,7 +401,7 @@ fn insert_inline(t: &mut InlineTable, key: &str, mut value: Value) {
 
 /// Insert the dotted `segs` = `value` into `slot`: into a nested table that exists (standard,
 /// dotted or inline), else as a dotted key. Returns `false` when the key is already there.
-fn put(slot: Slot, segs: &[&str], value: Value) -> Result<bool, String> {
+fn put(slot: Slot, segs: &[&str], value: Value, indent: &str) -> Result<bool, String> {
     let (first, rest) = segs.split_first().ok_or("an empty key")?;
     match slot {
         Slot::Std(t) => {
@@ -394,7 +412,7 @@ fn put(slot: Slot, segs: &[&str], value: Value) -> Result<bool, String> {
                 let mut value = value;
                 value.decor_mut().set_prefix(" ");
                 value.decor_mut().set_suffix(COMMENT);
-                let key = Key::new(*first).with_leaf_decor(Decor::new(INDENT, " "));
+                let key = Key::new(*first).with_leaf_decor(Decor::new(indent, " "));
                 t.insert_formatted(&key, Item::Value(value));
                 return Ok(true);
             }
@@ -404,8 +422,10 @@ fn put(slot: Slot, segs: &[&str], value: Value) -> Result<bool, String> {
                 t.insert(first, Item::Table(dotted));
             }
             match t.get_mut(first) {
-                Some(Item::Table(sub)) => put(Slot::Std(sub), rest, value),
-                Some(Item::Value(Value::InlineTable(sub))) => put(Slot::Inline(sub), rest, value),
+                Some(Item::Table(sub)) => put(Slot::Std(sub), rest, value, indent),
+                Some(Item::Value(Value::InlineTable(sub))) => {
+                    put(Slot::Inline(sub), rest, value, indent)
+                }
                 _ => Err(format!("{first}: not a table")),
             }
         }
@@ -421,7 +441,7 @@ fn put(slot: Slot, segs: &[&str], value: Value) -> Result<bool, String> {
                 insert_inline(t, first, Value::InlineTable(InlineTable::new()));
             }
             match t.get_mut(first) {
-                Some(Value::InlineTable(sub)) => put(Slot::Inline(sub), rest, value),
+                Some(Value::InlineTable(sub)) => put(Slot::Inline(sub), rest, value, indent),
                 _ => Err(format!("{first}: not a table")),
             }
         }
@@ -463,6 +483,15 @@ fn rewrite(path: &Path, edits: &[&Edit]) -> io::Result<Rewrite> {
             "toml_edit cannot write this file back byte for byte ({why}); fill it by hand"
         )));
     }
+    // A file of comments only holds them as trailing text, which toml_edit prints after what is
+    // inserted; keep them first, as the file has them.
+    let lead = if doc.as_table().is_empty() {
+        let lead = doc.trailing().as_str().unwrap_or_default().to_owned();
+        doc.set_trailing("");
+        lead
+    } else {
+        String::new()
+    };
     let mut next = max_position(doc.as_table());
     let mut keys = 0;
     for e in edits {
@@ -472,13 +501,15 @@ fn rewrite(path: &Path, edits: &[&Edit]) -> io::Result<Rewrite> {
             .map_err(|err| ctx(format!("{}: {err}", e.key)))?;
         let slot = table_at(doc.as_table_mut(), &e.table, &mut next).map_err(ctx)?;
         let segs: Vec<&str> = e.key.split('.').collect();
-        if put(slot, &segs, value).map_err(ctx)? {
+        // A key at the top of a file (`enable.toml`) is not indented; one below a header is.
+        let indent = if e.table.is_empty() { "" } else { INDENT };
+        if put(slot, &segs, value, indent).map_err(ctx)? {
             keys += 1;
         }
     }
     Ok(Rewrite {
         path: path.to_path_buf(),
-        new: doc.to_string(),
+        new: format!("{lead}{doc}"),
         old,
         meta,
         keys,
@@ -964,6 +995,7 @@ fn diff(path: &Path, existed: bool, old: &str, new: &str) -> String {
 /// One target of the command line.
 enum Target {
     All,
+    Enable,
     Policy,
     Frame(String, String),
 }
@@ -972,6 +1004,7 @@ fn target(t: &str) -> Option<Target> {
     match t {
         "all" => return Some(Target::All),
         "policy" => return Some(Target::Policy),
+        "enable" => return Some(Target::Enable),
         _ => {}
     }
     let (kind, name) = t.split_once('.')?;
@@ -1020,18 +1053,43 @@ fn last_layer(
     Ok(last)
 }
 
+/// The keys of `enable.toml` some layer set, when `wanted`.
+///
+/// # Errors
+/// The exit code, 1, once the errors are on `err`.
+fn enable_origins(
+    wanted: bool,
+    layers: &[LayerInput],
+    err: &mut dyn Write,
+) -> Result<Option<BTreeMap<String, Origin>>, i32> {
+    if !wanted {
+        return Ok(None);
+    }
+    match load_enable_origins(layers) {
+        Ok((_, set)) => Ok(Some(set)),
+        Err(errors) => {
+            for e in &errors {
+                let _ = writeln!(err, "{}", report::error_line(e));
+            }
+            Err(1)
+        }
+    }
+}
+
 /// Run `qctl fill`; returns the exit code.
 pub fn run(opts: &FillOpts, defaults: &Defaults, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
-    let (mut all, mut policy_wanted, mut named) = (false, false, Vec::new());
+    let (mut all, mut policy_wanted, mut enable_wanted, mut named) =
+        (false, false, false, Vec::new());
     for t in &opts.targets {
         match target(t) {
             Some(Target::All) => all = true,
             Some(Target::Policy) => policy_wanted = true,
+            Some(Target::Enable) => enable_wanted = true,
             Some(Target::Frame(k, n)) => named.push((k, n)),
             None => {
                 let _ = writeln!(
                     err,
-                    "qctl: fill: '{t}' is not <kind>.<name>, policy or all\nTry 'qctl --help'."
+                    "qctl: fill: '{t}' is not <kind>.<name>, enable, policy or all\nTry 'qctl --help'."
                 );
                 return 2;
             }
@@ -1078,6 +1136,10 @@ pub fn run(opts: &FillOpts, defaults: &Defaults, out: &mut dyn Write, err: &mut 
         }
         _ => None,
     };
+    let enable = match enable_origins(enable_wanted || all, &input.layers, err) {
+        Ok(e) => e,
+        Err(code) => return code,
+    };
     let targets = Targets {
         last: &last,
         frames: if all {
@@ -1086,6 +1148,7 @@ pub fn run(opts: &FillOpts, defaults: &Defaults, out: &mut dyn Write, err: &mut 
             Frames::Some(named)
         },
         policy: raw.as_ref().map(|(p, t)| (*p, t)),
+        enable: enable.as_ref(),
     };
     let edits = match plan(&compiled, &targets) {
         Ok(e) => e,

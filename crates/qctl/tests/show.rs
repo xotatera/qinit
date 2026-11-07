@@ -275,3 +275,75 @@ fn show_prints_the_two_defaults_as_keys_not_comments() {
         );
     }
 }
+
+/// Two layers with an `enable.toml` each: vendor sets both lists, etc appends to `enable`.
+fn enable_layers(tag: &str, vendor: Option<&str>, etc: Option<&str>) -> (TempDir, Vec<String>) {
+    let tmp = TempDir::new(tag);
+    let mut args = Vec::new();
+    for (name, text) in [("vendor", vendor), ("etc", etc)] {
+        let dir = tmp.0.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Some(text) = text {
+            std::fs::write(dir.join("enable.toml"), text).unwrap();
+        }
+        args.push("--layer".to_owned());
+        args.push(format!("{name}={}", dir.display()));
+    }
+    (tmp, args)
+}
+
+fn show_enable(layers: &[String]) -> (i32, String, String) {
+    let mut args: Vec<&str> = vec!["show", "--no-policy"];
+    args.extend(layers.iter().map(String::as_str));
+    args.push("enable");
+    qctl(&args)
+}
+
+#[test]
+fn show_enable_prints_both_lists_with_origins() {
+    let (_t, layers) = enable_layers(
+        "enable-origins",
+        Some("enable = [\"a\", \"b\"]\nsyslog = [\"s\"]\n"),
+        Some("enable = { append = [\"c\"] }\n"),
+    );
+    let (code, out, err) = show_enable(&layers);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out,
+        "enable = [\"a\", \"b\", \"c\"]  # etc\nsyslog = [\"s\"]  # vendor\n"
+    );
+}
+
+#[test]
+fn show_enable_of_an_unset_list_is_empty_and_a_default() {
+    let (_t, layers) = enable_layers("enable-unset", None, None);
+    let (code, out, err) = show_enable(&layers);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out, "enable = []  # default\nsyslog = []  # default\n");
+}
+
+#[test]
+fn show_enable_is_accepted_unchanged_by_the_compiler() {
+    let (t, layers) = enable_layers(
+        "enable-round",
+        Some("enable = [\"a\", \"b\"]\nsyslog = [\"s\"]\n"),
+        Some("enable = { remove = [\"a\"] }\n"),
+    );
+    let (_, out, _) = show_enable(&layers);
+    let shown = t.0.join("shown");
+    std::fs::create_dir_all(&shown).unwrap();
+    std::fs::write(shown.join("enable.toml"), &out).unwrap();
+    let layer = |name: &str, dir: PathBuf| LayerInput {
+        name: name.into(),
+        dir,
+        only: None,
+    };
+    let want = qinit_frames::layers::load_enable(&[
+        layer("vendor", t.0.join("vendor")),
+        layer("etc", t.0.join("etc")),
+    ])
+    .expect("loads");
+    let got = qinit_frames::layers::load_enable(&[layer("shown", shown)]).expect("loads");
+    assert_eq!(got, want);
+    assert_eq!(got.roots, ["b"]);
+}

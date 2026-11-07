@@ -17,6 +17,7 @@ use crate::{report, toml_text};
 use qinit_db::{RLIMIT_KEYS, Userns};
 use qinit_frames::compile::{Compiled, compile};
 use qinit_frames::dump::{self, Line};
+use qinit_frames::layers::load_enable_origins;
 use qinit_frames::policy;
 use qinit_frames::provenance::{Provenance, Seg, parse_path, set_by};
 use std::fmt::Write as _;
@@ -30,12 +31,15 @@ pub(crate) const KINDS: [&str; 4] = ["worker", "forager", "brood", "template"];
 /// One target of the command line.
 enum Target<'a> {
     Policy,
+    Enable,
     Frame { kind: &'a str, name: &'a str },
 }
 
 fn target(t: &str) -> Option<Target<'_>> {
-    if t == "policy" {
-        return Some(Target::Policy);
+    match t {
+        "policy" => return Some(Target::Policy),
+        "enable" => return Some(Target::Enable),
+        _ => {}
     }
     let (kind, name) = t.split_once('.')?;
     (KINDS.contains(&kind) && !name.is_empty()).then_some(Target::Frame { kind, name })
@@ -48,7 +52,7 @@ pub fn run(opts: &ShowOpts, defaults: &Defaults, out: &mut dyn Write, err: &mut 
         let Some(parsed) = target(t) else {
             let _ = writeln!(
                 err,
-                "qctl: show: '{t}' is not <kind>.<name> or policy\nTry 'qctl --help'."
+                "qctl: show: '{t}' is not <kind>.<name>, enable or policy\nTry 'qctl --help'."
             );
             return 2;
         };
@@ -81,6 +85,7 @@ pub fn run(opts: &ShowOpts, defaults: &Defaults, out: &mut dyn Write, err: &mut 
         let shown = match (t, &compiled) {
             (Target::Frame { kind, name }, Some(c)) => frame(c, kind, name),
             (Target::Frame { .. }, None) => Err("show: the frames were not compiled".into()),
+            (Target::Enable, _) => show_enable(&input.layers),
             (Target::Policy, _) => match (&input.policy, &opts.policy) {
                 (Some(p), _) => show_policy(p),
                 (None, PolicyChoice::None) => Err("show policy: --no-policy was given".into()),
@@ -97,6 +102,29 @@ pub fn run(opts: &ShowOpts, defaults: &Defaults, out: &mut dyn Write, err: &mut 
     }
     let _ = out.write_all(text.join("\n").as_bytes());
     0
+}
+
+/// The merged `enable` and `syslog` lists as an `enable.toml`, each with the layer that set it
+/// last (`default` when none did, then the list is empty). A layer given as one file has no
+/// `enable.toml`, as for the compiler.
+fn show_enable(layers: &[qinit_frames::layers::LayerInput]) -> Result<String, String> {
+    let (list, origins) = load_enable_origins(layers).map_err(|errs| {
+        errs.iter()
+            .map(report::error_line)
+            .collect::<Vec<_>>()
+            .join("\nqctl: ")
+    })?;
+    let mut text = String::new();
+    for (key, items) in [("enable", list.roots), ("syslog", list.syslog)] {
+        let items: Vec<Value> = items.into_iter().map(Value::String).collect();
+        let origin = dump::label(origins.get(key));
+        let _ = writeln!(
+            text,
+            "{key} = {}  # {origin}",
+            toml_text::value(&Value::Array(items))
+        );
+    }
+    Ok(text)
 }
 
 /// The table at `kind.name` of the merged frames.

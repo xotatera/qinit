@@ -18,9 +18,9 @@ pub const HELP: &str = "\
 usage: qctl [--socket PATH] [--json] <command> ...   (default socket /run/qinit/colony)
 
   qctl compile [--layer NAME=DIR]... [--policy FILE | --no-policy] [--output FILE] [--dump FILE]
-  qctl show    [--layer NAME=DIR]... [--policy FILE | --no-policy] <kind>.<name>... | policy
+  qctl show    [--layer NAME=DIR]... [--policy FILE | --no-policy] <kind>.<name>... | enable | policy
   qctl fill    [--layer NAME=DIR]... [--policy FILE | --no-policy] [--dry-run]
-               <kind>.<name>... | policy | all
+               <kind>.<name>... | enable | policy | all
   qctl status <target>
   qctl list [all | workers | foragers | broods]
   qctl start | stop | restart | clear <node> [--wait MS]
