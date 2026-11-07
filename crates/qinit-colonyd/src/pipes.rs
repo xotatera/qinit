@@ -47,6 +47,19 @@ impl Pipes {
         Ok(())
     }
 
+    /// Takes over a pipe a restart left: the ends queen held, by the logger's name. Called before
+    /// [`Pipes::rebuild`], which keeps it when the logger is still one and closes it otherwise.
+    pub fn seed(&mut self, name: &str, read: OwnedFd, write: OwnedFd) {
+        self.by_name.insert(name.to_owned(), (read, write));
+    }
+
+    /// Every pipe colony holds: the logger's name and both ends.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, BorrowedFd<'_>, BorrowedFd<'_>)> {
+        self.by_name
+            .iter()
+            .map(|(name, (r, w))| (name.as_str(), r.as_fd(), w.as_fd()))
+    }
+
     fn ends(&self, logger: u32) -> Option<&(OwnedFd, OwnedFd)> {
         self.by_name.get(self.names.get(&logger)?)
     }

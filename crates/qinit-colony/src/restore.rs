@@ -211,9 +211,10 @@ impl<E: Effects> Colony<E> {
         self.next_id = self.next_id.max(next);
     }
 
-    /// The main process of an adopted node is gone and its status is unknown (it was not this
-    /// process's child): counts as a failure, as `MainExited(None)` does everywhere.
-    pub fn adopted_exit(&mut self, node: u32, now_ms: u64) -> Outcome {
-        self.on_cell(node, qinit_cell_core::Report::MainExited(None), now_ms)
+    /// The main process of an adopted node is gone: `status` is its wait status when queen
+    /// reaped it and the kernel recorded it, `None` when it is unknown, which counts as a
+    /// failure, as `MainExited(None)` does everywhere.
+    pub fn adopted_exit(&mut self, node: u32, status: Option<i32>, now_ms: u64) -> Outcome {
+        self.on_cell(node, qinit_cell_core::Report::MainExited(status), now_ms)
     }
 }

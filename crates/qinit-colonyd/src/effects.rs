@@ -10,6 +10,8 @@
 use crate::deadlines::{Deadlines, Key};
 use crate::pipes::Pipes;
 use crate::route::{Owner, Routes};
+use crate::state::{CellLine, PipeLine};
+use crate::store::Store;
 use crate::watch::{Want, Watcher};
 use qinit_cell::effects::Command;
 use qinit_cell::{CellId, Error as CellError, Notice, Phase, Polite, ReadyMode, Report};
@@ -110,6 +112,20 @@ pub trait CellOps {
         expected_id: u64,
         main: Option<OwnedFd>,
     ) -> Result<CellId, CellError>;
+    /// As `adopt`, with the cell's directory handed over: queen held it.
+    fn adopt_held(
+        &mut self,
+        name: &str,
+        expected_id: u64,
+        dir: OwnedFd,
+        main: Option<OwnedFd>,
+    ) -> Result<CellId, CellError>;
+    /// A duplicate of the cell's directory descriptor, for queen to hold.
+    fn dir_fd(&mut self, id: CellId) -> Result<OwnedFd, CellError>;
+    /// A handed-over main that exited with no status recorded is waited for (queen reaps it).
+    fn wait_for_status(&mut self);
+    /// Delivers a waited-for status, or, with `give_up`, an unknown one.
+    fn settle_status(&mut self, id: CellId, give_up: bool) -> Result<bool, CellError>;
     fn poll(&mut self) -> Result<Vec<Notice>, CellError>;
     /// A descriptor that is readable while [`CellOps::poll`] has something to do, for a loop to
     /// wait on; `None` for a layer with no descriptor of its own.
@@ -165,6 +181,24 @@ impl CellOps for qinit_cell::Cells {
         main: Option<OwnedFd>,
     ) -> Result<CellId, CellError> {
         qinit_cell::Cells::adopt(self, name, expected_id, main)
+    }
+    fn adopt_held(
+        &mut self,
+        name: &str,
+        expected_id: u64,
+        dir: OwnedFd,
+        main: Option<OwnedFd>,
+    ) -> Result<CellId, CellError> {
+        qinit_cell::Cells::adopt_held(self, name, expected_id, dir, main)
+    }
+    fn dir_fd(&mut self, id: CellId) -> Result<OwnedFd, CellError> {
+        qinit_cell::Cells::dir_fd(self, id)
+    }
+    fn wait_for_status(&mut self) {
+        qinit_cell::Cells::wait_for_status(self);
+    }
+    fn settle_status(&mut self, id: CellId, give_up: bool) -> Result<bool, CellError> {
+        qinit_cell::Cells::settle_status(self, id, give_up)
     }
     fn poll(&mut self) -> Result<Vec<Notice>, CellError> {
         qinit_cell::Cells::poll(self)
@@ -253,8 +287,16 @@ pub struct RealEffects<C: CellOps> {
     clearing: std::collections::BTreeSet<CellId>,
     path_ids: BTreeMap<String, u64>,
     path_names: BTreeMap<u64, String>,
-    /// The name of each live cell, for the state file.
+    /// The name of each live cell, for the state entry.
     names: BTreeMap<CellId, String>,
+    /// Queen's store: what survives a restart of colony.
+    pub store: Store,
+    /// The store keys of each cell's directory and main pidfd (0 for no main).
+    keys: BTreeMap<CellId, (u64, u64)>,
+    /// The store keys of each logger pipe's ends, by the logger's name.
+    pipe_keys: BTreeMap<String, (u64, u64)>,
+    /// Keys no state names any more: queen forgets them once the state that dropped them is saved.
+    retired: Vec<u64>,
 }
 
 impl<C: CellOps> RealEffects<C> {
@@ -292,6 +334,10 @@ impl<C: CellOps> RealEffects<C> {
             path_ids: BTreeMap::new(),
             path_names: BTreeMap::new(),
             names: BTreeMap::new(),
+            store: Store::standalone(),
+            keys: BTreeMap::new(),
+            pipe_keys: BTreeMap::new(),
+            retired: Vec::new(),
         })
     }
 
@@ -398,31 +444,131 @@ impl<C: CellOps> RealEffects<C> {
         }
     }
 
-    /// One line of the `cells` state file for every cell the effects own: its name, its cgroup
-    /// id, whether `ready` holds its owner, and its main process (pid and start time) if tracked.
+    /// One line of the `cells` entry for every cell the effects own: its name, its cgroup id,
+    /// whether `ready` holds its owner, and the store keys of its directory and main.
     #[must_use]
-    pub fn cell_lines(&self) -> Vec<crate::state::CellLine> {
+    pub fn cell_lines(&self) -> Vec<CellLine> {
         self.routes
             .cells()
             .filter_map(|(id, owner)| {
                 let name = self.names.get(&id)?.clone();
-                let pid = self.cells.main_pid(id);
-                Some(crate::state::CellLine {
+                let &(dir_key, main_key) = self.keys.get(&id)?;
+                Some(CellLine {
                     name,
                     cgroup_id: self.cells.cgroup_id(id)?,
                     ready: self.ready.contains(&owner),
-                    pid: pid.unwrap_or(0),
-                    start_time: pid.and_then(crate::state::start_time).unwrap_or(0),
+                    dir_key,
+                    main_key,
                 })
             })
             .collect()
     }
 
-    /// A cell found in the comb belongs to `owner` from now on (re-adoption).
-    pub fn adopt_cell(&mut self, id: CellId, owner: Owner, name: &str) {
+    /// One `pipe` line for every logger pipe colony holds a key for.
+    #[must_use]
+    pub fn pipe_lines(&self) -> Vec<PipeLine> {
+        self.pipe_keys
+            .iter()
+            .map(|(logger, &(read, write))| PipeLine {
+                logger: logger.clone(),
+                read,
+                write,
+            })
+            .collect()
+    }
+
+    /// A cell found in the comb belongs to `owner` from now on (re-adoption), with the store
+    /// keys it was held under (`main_key` 0 when its main was not adopted).
+    pub fn adopt_cell(&mut self, id: CellId, owner: Owner, name: &str, keys: (u64, u64)) {
         self.routes.bind(id, owner);
         self.names.insert(id, name.to_owned());
+        self.keys.insert(id, keys);
         self.dirty = true;
+    }
+
+    /// Hands queen every descriptor the state names that it does not hold yet: cell
+    /// directories, main pidfds and logger pipe ends. Keys of cells, mains and pipes that are
+    /// gone are retired, to be forgotten after the state that stopped naming them is saved.
+    pub fn sync_store(&mut self) {
+        let live: BTreeMap<CellId, Owner> = self.routes.cells().collect();
+        let gone: Vec<CellId> = self
+            .keys
+            .keys()
+            .filter(|id| !live.contains_key(id))
+            .copied()
+            .collect();
+        for id in gone {
+            if let Some((dir, main)) = self.keys.remove(&id) {
+                self.retired
+                    .extend([dir, main].into_iter().filter(|k| *k != 0));
+            }
+        }
+        for &id in live.keys() {
+            if !self.names.contains_key(&id) {
+                continue;
+            }
+            let (mut dir, mut main) = self.keys.get(&id).copied().unwrap_or((0, 0));
+            if dir == 0
+                && let Ok(fd) = self.cells.dir_fd(id)
+            {
+                dir = self.store.allocate();
+                self.store.put(dir, fd.as_fd());
+            }
+            let has_main = self.cells.main_pid(id).is_some();
+            if main != 0 && !has_main {
+                self.retired.push(main);
+                main = 0;
+            }
+            if main == 0
+                && has_main
+                && let Ok(fd) = self.cells.main_pidfd(id)
+            {
+                main = self.store.allocate();
+                self.store.put(main, fd.as_fd());
+            }
+            if dir != 0 {
+                self.keys.insert(id, (dir, main));
+            }
+        }
+        let names: Vec<String> = self.pipes.entries().map(|(n, _, _)| n.to_owned()).collect();
+        let stale: Vec<String> = self
+            .pipe_keys
+            .keys()
+            .filter(|n| !names.contains(n))
+            .cloned()
+            .collect();
+        for n in stale {
+            if let Some((r, w)) = self.pipe_keys.remove(&n) {
+                self.retired.extend([r, w]);
+            }
+        }
+        for (name, r, w) in self.pipes.entries() {
+            if !self.pipe_keys.contains_key(name) {
+                let (rk, wk) = (self.store.allocate(), self.store.allocate());
+                self.store.put(rk, r);
+                self.store.put(wk, w);
+                self.pipe_keys.insert(name.to_owned(), (rk, wk));
+            }
+        }
+    }
+
+    /// Tells queen to forget the keys retired since the last call.
+    pub fn forget_retired(&mut self) {
+        for k in std::mem::take(&mut self.retired) {
+            self.store.forget(k);
+        }
+    }
+
+    /// A logger pipe found held belongs to colony again, under these keys.
+    pub fn adopt_pipe(&mut self, name: &str, keys: (u64, u64)) {
+        self.pipe_keys.insert(name.to_owned(), keys);
+    }
+
+    /// Forgets a key that was handed over but is not used: a main that is no longer adopted.
+    pub fn retire(&mut self, key: u64) {
+        if key != 0 {
+            self.retired.push(key);
+        }
     }
 
     /// Stops a re-adopted cell that belongs to nothing: every member is asked to go, then killed

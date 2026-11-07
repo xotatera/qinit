@@ -5,7 +5,7 @@
 use crate::args::Args;
 use crate::daemon::{Daemon, KMSG, inside_comb};
 use crate::exit;
-use crate::state::State;
+use crate::store::{KEY_DB, Store};
 use crate::syslog::{Sev, Syslog};
 use qinit_cell::Cells;
 use std::io::Write;
@@ -25,6 +25,27 @@ fn enable_controllers(comb: &Path) -> std::io::Result<()> {
         .write(true)
         .open(comb.join("cgroup.subtree_control"))?;
     f.write_all(b"+memory +pids")
+}
+
+/// The database to run: the copy queen held if it loads, else the one `--db` names. Exit 3
+/// is for when there is neither.
+fn database(args: &Args, store: &mut Store) -> Result<Vec<u8>, (u8, String)> {
+    if let Some(held) = store.load(KEY_DB).filter(|b| qinit_db::open(b).is_ok()) {
+        return Ok(held);
+    }
+    let bytes = std::fs::read(&args.db).map_err(|e| {
+        (
+            exit::DATABASE,
+            format!("cannot read the database {}: {e}", args.db.display()),
+        )
+    })?;
+    qinit_db::open(&bytes).map_err(|e| {
+        (
+            exit::DATABASE,
+            format!("the database {} is refused: {e:?}", args.db.display()),
+        )
+    })?;
+    Ok(bytes)
 }
 
 /// Starts colony and serves until the graph is down or the loop fails.
@@ -61,21 +82,27 @@ pub fn run(args: &Args) -> u8 {
             ),
         );
     }
-    let bytes = match std::fs::read(&args.db) {
-        Ok(b) => b,
-        Err(e) => {
-            return refuse(
-                exit::DATABASE,
-                format!("cannot read the database {}: {e}", args.db.display()),
-            );
-        }
+    // Queen's hand-over comes first: the database it held beats `--db`, and exit 3 is for when
+    // there is neither.
+    let mut store = match args.queen_fd {
+        None => Store::standalone(),
+        Some(n) => match qinit_sys::fd::inherit(n) {
+            Ok(link) => match Store::attach(link) {
+                Ok(s) => s,
+                Err(why) => return refuse(exit::STARTUP, format!("queen's hand-over: {why}")),
+            },
+            Err(e) => {
+                return refuse(
+                    exit::STARTUP,
+                    format!("--queen-fd {n} is not an open descriptor: {e}"),
+                );
+            }
+        },
     };
-    if let Err(e) = qinit_db::open(&bytes) {
-        return refuse(
-            exit::DATABASE,
-            format!("the database {} is refused: {e:?}", args.db.display()),
-        );
-    }
+    let bytes = match database(args, &mut store) {
+        Ok(b) => b,
+        Err((code, why)) => return refuse(code, why),
+    };
     if let Err(e) = std::fs::create_dir_all(&args.run).and_then(|()| {
         std::fs::set_permissions(
             &args.run,
@@ -87,18 +114,6 @@ pub fn run(args: &Args) -> u8 {
             format!("cannot make the run directory {}: {e}", args.run.display()),
         );
     }
-    let state = match State::open(&args.run) {
-        Ok(s) => s,
-        Err(e) => {
-            return refuse(
-                exit::STARTUP,
-                format!(
-                    "cannot open the state directory in {}: {e}",
-                    args.run.display()
-                ),
-            );
-        }
-    };
     let mut cells = match Cells::open(&args.comb) {
         Ok(c) => c,
         Err(e) => {
@@ -121,7 +136,7 @@ pub fn run(args: &Args) -> u8 {
         return refuse(exit::STARTUP, format!("cannot become a subreaper: {e}"));
     }
     let syslog = Syslog::new(&args.syslog, &args.console, Path::new(KMSG));
-    match Daemon::boot(cells, args, &bytes, state, syslog) {
+    match Daemon::boot(cells, args, &bytes, store, syslog) {
         Ok(d) => d.serve(),
         Err(code) => code,
     }

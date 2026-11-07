@@ -217,6 +217,17 @@ impl Store {
         }
     }
 
+    /// Forgets every entry queen handed over that nothing took: no state names it (a leftover of
+    /// an earlier colony's work). The three state entries stay.
+    pub fn forget_unclaimed(&mut self) {
+        let keys: Vec<u64> = self.held.keys().copied().collect();
+        for key in keys {
+            if ![KEY_CELLS, KEY_NODES, KEY_DB].contains(&key) {
+                self.forget(key);
+            }
+        }
+    }
+
     /// Drops every key colony knows queen holds: the shutdown is complete, nothing is left to
     /// re-adopt.
     pub fn clear(&mut self) {

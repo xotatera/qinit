@@ -206,7 +206,7 @@ fn an_adopted_exit_without_status_counts_as_a_failure() {
     )
     .expect("restores");
     assert_eq!(c.state(n), Some(State::Ready));
-    let mut out = c.adopted_exit(n, 200);
+    let mut out = c.adopted_exit(n, None, 200);
     out.notices
         .extend(c.on_cell(n, CellPhase::Empty, 201).notices);
     assert!(
@@ -279,4 +279,37 @@ fn an_adopted_node_shows_the_pid_of_its_recovered_main() {
     }];
     let (c, _) = Colony::restore(bytes, &saved, Sim::new(), 0).expect("restores");
     assert_eq!(c.pid(n), Some(4321));
+}
+
+#[test]
+fn an_adopted_exit_with_status_zero_is_clean() {
+    let (probe, _) = boot("crashy.toml", &["crashy"], Sim::new());
+    let n = idx(&probe, "crashy");
+    let saved = [RestoredNode {
+        pid: None,
+        node: n,
+        wanted: true,
+        phase: Restored::Ready,
+        counters: Counters::default(),
+    }];
+    let (mut c, _) = Colony::restore(
+        database("crashy.toml", &["crashy"]),
+        &saved,
+        Sim::new(),
+        100,
+    )
+    .expect("restores");
+    let mut out = c.adopted_exit(n, Some(0), 200);
+    out.notices
+        .extend(c.on_cell(n, CellPhase::Empty, 201).notices);
+    assert!(
+        !out.notices.contains(&Notice::Node(n, Report::Failed(None))),
+        "a known status is not an unknown one: {:?}",
+        out.notices
+    );
+    pass(&mut c, 5_000);
+    assert!(
+        start_order(&c).is_empty(),
+        "a clean exit is not restarted on failure"
+    );
 }

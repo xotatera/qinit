@@ -11,7 +11,8 @@ use qinit_colonyd::args::Args;
 use qinit_colonyd::daemon::{Daemon, inside_comb};
 use qinit_colonyd::deadlines::Key;
 use qinit_colonyd::exit;
-use qinit_colonyd::state::State as Saved;
+use qinit_colonyd::state::{parse_cells, parse_nodes};
+use qinit_colonyd::store::{KEY_CELLS, KEY_DB, KEY_NODES, Store};
 use qinit_colonyd::syslog::Syslog;
 use qinit_ipc::{connect_seqpacket, recv, send};
 use qinit_proto_core::MAX_MESSAGE;
@@ -142,6 +143,8 @@ struct Rig {
     tmp: Tmp,
     log: UnixDatagram,
     bytes: Vec<u8>,
+    /// Queen, holding what the daemon puts.
+    queen: FakeQueen,
 }
 
 impl Rig {
@@ -161,12 +164,13 @@ impl Rig {
 
 fn boot(frames: &str, enable: &[&str], tag: &str) -> Rig {
     let bytes = database(frames, enable);
-    let (d, tmp, log) = try_boot(&bytes, tag, FakeCells::default(), |_| {});
+    let (d, tmp, log, queen) = try_boot(&bytes, tag, FakeCells::default(), |_, _| {});
     Rig {
         d: d.expect("boots"),
         tmp,
         log,
         bytes,
+        queen,
     }
 }
 
@@ -175,8 +179,8 @@ fn try_boot(
     bytes: &[u8],
     tag: &str,
     cells: FakeCells,
-    prep: impl FnOnce(&mut Args),
-) -> (Result<Daemon<FakeCells>, u8>, Tmp, UnixDatagram) {
+    prep: impl FnOnce(&mut Args, &mut FakeQueen),
+) -> (Result<Daemon<FakeCells>, u8>, Tmp, UnixDatagram, FakeQueen) {
     let tmp = Tmp::new(tag);
     let run = tmp.0.join("run");
     std::fs::create_dir_all(&run).unwrap();
@@ -195,11 +199,12 @@ fn try_boot(
         run: run.clone(),
         queen_fd: None,
     };
-    prep(&mut args);
+    let (mut queen, _link) = FakeQueen::new();
+    prep(&mut args, &mut queen);
     let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
-    let state = Saved::open(&run).unwrap();
-    let d = Daemon::boot(cells, &args, bytes, state, syslog);
-    (d, tmp, log)
+    let store = queen.reattach();
+    let d = Daemon::boot(cells, &args, bytes, store, syslog);
+    (d, tmp, log, queen)
 }
 
 fn lines_of(log: &UnixDatagram) -> Vec<String> {
@@ -253,7 +258,7 @@ fn answer<R>(client: &OwnedFd, f: impl FnOnce(Rep<'_>) -> R) -> Option<R> {
 
 #[test]
 fn boot_starts_the_enabled_nodes_and_saves_what_a_restart_needs() {
-    let r = boot(WORKER, &["db"], "boot");
+    let mut r = boot(WORKER, &["db"], "boot");
     assert!(
         r.d.colony
             .effects
@@ -263,19 +268,30 @@ fn boot_starts_the_enabled_nodes_and_saves_what_a_restart_needs() {
             .any(|c| matches!(c, Call::Create(n) if n == "db")),
         "the enabled node was started"
     );
-    let saved = Saved::open(&r.run()).unwrap();
     assert_eq!(
-        saved.read_db().unwrap().as_deref(),
+        r.queen.bytes(KEY_DB).as_deref(),
         Some(&r.bytes[..]),
         "the database in force"
     );
-    let cells = saved.read_cells().unwrap().unwrap();
+    let cells = parse_cells(&r.queen.text(KEY_CELLS).unwrap()).unwrap();
     assert_eq!(cells.len(), 1);
     assert_eq!(
         (cells[0].name.as_str(), cells[0].cgroup_id, cells[0].ready),
         ("db", 900, false)
     );
-    let nodes = saved.read_nodes().unwrap().unwrap();
+    assert!(
+        cells[0].dir_key >= 16 && cells[0].main_key >= 16,
+        "{cells:?}"
+    );
+    assert!(
+        r.queen.held.contains_key(&cells[0].dir_key),
+        "the directory is held"
+    );
+    assert!(
+        r.queen.held.contains_key(&cells[0].main_key),
+        "the main is held"
+    );
+    let (nodes, _) = parse_nodes(&r.queen.text(KEY_NODES).unwrap()).unwrap();
     assert!(
         nodes.iter().any(|n| n.name == "db" && n.wanted),
         "{nodes:?}"
@@ -303,11 +319,8 @@ fn a_cell_report_reaches_its_node_the_log_and_the_cells_file() {
         logged.iter().any(|l| l.ends_with("db: ready")),
         "{logged:?}"
     );
-    let saved = Saved::open(&r.run()).unwrap();
-    assert!(
-        saved.read_cells().unwrap().unwrap()[0].ready,
-        "the ready flag is saved"
-    );
+    let cells = parse_cells(&r.queen.text(KEY_CELLS).unwrap()).unwrap();
+    assert!(cells[0].ready, "the ready flag is saved");
 }
 
 #[test]
@@ -357,12 +370,15 @@ fn sigterm_runs_the_ordered_shutdown_and_exits_0() {
         .pending
         .push(Notice::Cell(CellId(0), Report::Empty));
     assert_eq!(r.d.turn(Vec::new()), Some(exit::HALT));
-    let (socket, run) = (r.socket(), r.run());
+    let socket = r.socket();
     assert_eq!(r.d.finish(exit::HALT), exit::HALT);
     assert!(!socket.exists(), "the socket file is removed");
-    let saved = Saved::open(&run).unwrap();
-    assert_eq!(saved.read_cells(), Ok(None), "nothing is left to re-adopt");
-    assert_eq!(saved.read_db(), Ok(None));
+    r.queen.pump();
+    assert!(
+        r.queen.held.is_empty(),
+        "nothing is left to re-adopt: {:?}",
+        r.queen.held.keys().collect::<Vec<_>>()
+    );
     qinit_sys::signal::unblock_all().unwrap();
 }
 
@@ -408,9 +424,8 @@ fn a_refresh_that_completes_inside_the_request_writes_colony_db() {
         &[fd.as_fd()],
     );
     assert_eq!(r.d.pump(), None);
-    let saved = Saved::open(&r.run()).unwrap();
     assert_eq!(
-        saved.read_db().unwrap().as_deref(),
+        r.queen.bytes(KEY_DB).as_deref(),
         Some(&new[..]),
         "the new database is the saved one"
     );
@@ -501,8 +516,7 @@ fn a_failed_start_shows_as_a_spawn_failure_not_a_crash() {
     };
     let bytes = database(frames, &["db"]);
     let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
-    let state = Saved::open(&run).unwrap();
-    let mut d = Daemon::boot(cells, &args, &bytes, state, syslog).expect("boots");
+    let mut d = Daemon::boot(cells, &args, &bytes, Store::standalone(), syslog).expect("boots");
     assert_eq!(
         d.colony.state(0),
         Some(State::Off),
@@ -779,8 +793,7 @@ fn a_refresh_that_renumbers_nodes_keeps_the_ready_flags_with_their_cells() {
     );
     assert_eq!(r.d.pump(), None);
     assert_eq!(r.d.colony.model().nodes[0].name, "a", "the swap happened");
-    let saved = Saved::open(&r.run()).unwrap();
-    let lines = saved.read_cells().unwrap().unwrap();
+    let lines = parse_cells(&r.queen.text(KEY_CELLS).unwrap()).unwrap();
     let ready = |name: &str| lines.iter().find(|l| l.name == name).map(|l| l.ready);
     assert_eq!(ready("b"), Some(true), "b is still ready: {lines:?}");
     assert_eq!(ready("c"), Some(false), "c never was: {lines:?}");
@@ -853,15 +866,16 @@ fn a_listener_that_cannot_accept_is_paused_and_comes_back() {
 
 #[test]
 fn what_boot_noticed_is_logged_even_when_it_then_refuses() {
-    let (d, _tmp, log) = try_boot(
+    let (d, _tmp, log, _queen) = try_boot(
         b"not a database",
         "refusenotes",
         FakeCells::default(),
-        |a| {
+        |_, q| {
             // An earlier colony's cell map that does not parse, and a database that is refused.
-            let state = Saved::open(&a.run).unwrap();
-            drop(state);
-            std::fs::write(a.run.join("state/cells"), b"garbage\n").unwrap();
+            q.held.insert(
+                KEY_CELLS,
+                qinit_ipc::memfd::sealed(c"cells", b"garbage\n").unwrap(),
+            );
         },
     );
     assert_eq!(d.err(), Some(exit::DATABASE));
@@ -881,12 +895,112 @@ fn a_socket_that_cannot_be_bound_stops_boot_before_any_service_starts() {
     let mut cells = FakeCells::default();
     cells.on_spawn = Some(Box::new(move || seen.set(true)));
     let bytes = database(WORKER, &["db"]);
-    let (d, _tmp, _log) = try_boot(&bytes, "nobind", cells, |a| {
+    let (d, _tmp, _log, _queen) = try_boot(&bytes, "nobind", cells, |a, _| {
         a.socket = a.run.join("no-such-dir/colony");
     });
     assert_eq!(d.err(), Some(exit::STARTUP));
     assert!(
         !started.get(),
         "a service was started that no colony will track"
+    );
+}
+
+#[test]
+fn a_new_cell_puts_its_descriptors_before_the_state_that_names_them() {
+    let mut r = boot(WORKER, &["db"], "putorder");
+    r.queen.pump();
+    let cells = parse_cells(&r.queen.text(KEY_CELLS).unwrap()).unwrap();
+    let (dir, main) = (cells[0].dir_key, cells[0].main_key);
+    let at = |e: Sent| {
+        r.queen
+            .events
+            .iter()
+            .position(|x| *x == e)
+            .unwrap_or_else(|| panic!("{e:?} in {:?}", r.queen.events))
+    };
+    assert!(
+        at(Sent::Put(dir)) < at(Sent::Put(KEY_CELLS)),
+        "the directory first"
+    );
+    assert!(
+        at(Sent::Put(main)) < at(Sent::Put(KEY_CELLS)),
+        "the main first"
+    );
+    assert!(at(Sent::Put(KEY_DB)) < at(Sent::Put(KEY_CELLS)));
+}
+
+#[test]
+fn a_removed_cell_is_forgotten_after_the_state_that_dropped_it() {
+    let mut r = boot(WORKER, &["db"], "forgetorder");
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::Ready));
+    assert_eq!(r.d.turn(Vec::new()), None);
+    let cells = parse_cells(&r.queen.text(KEY_CELLS).unwrap()).unwrap();
+    let (dir, main) = (cells[0].dir_key, cells[0].main_key);
+    // The node stops: the main exits and the cell empties and is removed.
+    let out = r.d.colony.request(0, qinit_colony::Request::Stop, 0);
+    assert!(out.errors.is_empty());
+    for report in [Report::MainExited(Some(0)), Report::Empty, Report::Removed] {
+        r.d.colony
+            .effects
+            .cells
+            .pending
+            .push(Notice::Cell(CellId(0), report));
+    }
+    assert_eq!(r.d.turn(Vec::new()), None);
+    let _ = r.queen.text(KEY_CELLS);
+    let events = r.queen.events.clone();
+    let last_cells = events
+        .iter()
+        .rposition(|e| *e == Sent::Put(KEY_CELLS))
+        .unwrap();
+    for key in [dir, main] {
+        let at = events.iter().position(|e| *e == Sent::Drop(key));
+        let at = at.unwrap_or_else(|| panic!("{key} was not forgotten: {events:?}"));
+        assert!(
+            at > last_cells,
+            "{key} forgotten before the state stopped naming it: {events:?}"
+        );
+    }
+    assert!(!r.queen.held.contains_key(&dir));
+}
+
+#[test]
+fn without_a_queen_nothing_is_saved() {
+    let tmp = Tmp::new("noqueen");
+    let run = tmp.0.join("run");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::create_dir_all(tmp.0.join("comb")).unwrap();
+    for f in ["console", "kmsg"] {
+        std::fs::write(tmp.0.join(f), b"").unwrap();
+    }
+    let args = Args {
+        db: tmp.0.join("colony.db"),
+        comb: tmp.0.join("comb"),
+        socket: run.join("colony"),
+        overseer: "/o".into(),
+        syslog: tmp.0.join("nolog"),
+        console: tmp.0.join("console"),
+        run: run.clone(),
+        queen_fd: None,
+    };
+    let bytes = database(WORKER, &["db"]);
+    let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
+    let mut d = Daemon::boot(
+        FakeCells::default(),
+        &args,
+        &bytes,
+        Store::standalone(),
+        syslog,
+    )
+    .expect("boots");
+    assert_eq!(d.turn(Vec::new()), None);
+    assert!(d.colony.effects.store.link().is_none());
+    assert!(
+        !run.join("state").exists(),
+        "no state directory is made any more"
     );
 }

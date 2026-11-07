@@ -1,45 +1,26 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Colony's own memory across a restart: the `cells`, `nodes` and `colony.db` files.
+//! The text colony keeps in queen's store: what a line says, and that one bad line refuses all.
 use qinit_colony::{Counters, Reason, SavedTerminal};
-use qinit_colonyd::state::{CellLine, NodeLine, State};
-use std::io::Read;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::path::PathBuf;
-
-/// A temporary run directory removed when it goes out of scope.
-struct Run(PathBuf);
-
-impl Run {
-    fn new(tag: &str) -> Run {
-        let d = std::env::temp_dir().join(format!("qinit-state-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        Run(d)
-    }
-}
-
-impl Drop for Run {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+use qinit_colonyd::state::{
+    CellLine, NodeLine, PipeLine, format_cells, format_nodes, parse_cells, parse_nodes,
+};
 
 fn cells() -> Vec<CellLine> {
     vec![
         CellLine {
             name: "db".into(),
-            cgroup_id: 4_242,
+            cgroup_id: 901,
             ready: true,
-            pid: 311,
-            start_time: 9_001,
+            dir_key: 16,
+            main_key: 17,
         },
         CellLine {
-            name: "getty@tty1".into(),
+            name: "job#4".into(),
             cgroup_id: 77,
             ready: false,
-            pid: 0,
-            start_time: 0,
+            dir_key: 18,
+            main_key: 0,
         },
     ]
 }
@@ -71,39 +52,42 @@ fn nodes() -> Vec<NodeLine> {
             terminal: Some(SavedTerminal::Done),
             counters: Counters::default(),
         },
-        NodeLine {
-            name: "x".into(),
-            wanted: false,
-            terminal: Some(SavedTerminal::Quarantined(Reason::StopFailed)),
-            counters,
+    ]
+}
+
+fn pipes() -> Vec<PipeLine> {
+    vec![
+        PipeLine {
+            logger: "syslogger".into(),
+            read: 20,
+            write: 21,
+        },
+        PipeLine {
+            logger: "other".into(),
+            read: 22,
+            write: 23,
         },
     ]
 }
 
 #[test]
-fn cells_and_nodes_round_trip() {
-    let run = Run::new("round");
-    let s = State::open(&run.0).unwrap();
-    assert_eq!(s.read_cells(), Ok(None), "absent is not an error");
-    s.write_cells(&cells()).unwrap();
-    s.write_nodes(&nodes()).unwrap();
-    s.write_db(b"database bytes\0\xff").unwrap();
-    assert_eq!(s.read_cells(), Ok(Some(cells())));
-    assert_eq!(s.read_nodes(), Ok(Some(nodes())));
-    assert_eq!(
-        s.read_db().unwrap().as_deref(),
-        Some(&b"database bytes\0\xff"[..])
-    );
-    s.clear();
-    assert_eq!(s.read_cells(), Ok(None));
-    assert_eq!(s.read_nodes(), Ok(None));
-    assert_eq!(s.read_db(), Ok(None));
+fn cells_round_trip() {
+    let text = format_cells(&cells());
+    assert_eq!(text, "db 901 1 16 17\njob#4 77 0 18 0\n");
+    assert_eq!(parse_cells(&text), Ok(cells()));
+    assert_eq!(parse_cells(""), Ok(Vec::new()));
 }
 
 #[test]
-fn every_reason_word_round_trips() {
-    let run = Run::new("reasons");
-    let s = State::open(&run.0).unwrap();
+fn nodes_and_pipes_round_trip() {
+    let text = format_nodes(&nodes(), &pipes());
+    assert_eq!(parse_nodes(&text), Ok((nodes(), pipes())));
+    assert!(text.contains("\npipe syslogger 20 21\n"), "{text}");
+    assert_eq!(parse_nodes(""), Ok((Vec::new(), Vec::new())));
+}
+
+#[test]
+fn every_quarantine_reason_round_trips() {
     let lines: Vec<NodeLine> = [
         Reason::Breaker,
         Reason::Cascade,
@@ -119,129 +103,56 @@ fn every_reason_word_round_trips() {
         counters: Counters::default(),
     })
     .collect();
-    s.write_nodes(&lines).unwrap();
-    assert_eq!(s.read_nodes(), Ok(Some(lines)));
-}
-
-#[test]
-fn a_malformed_line_refuses_the_file() {
-    let run = Run::new("bad");
-    let s = State::open(&run.0).unwrap();
-    let dir = run.0.join("state");
-    std::fs::write(dir.join("cells"), "db 1 1 2 3\nbroken line\n").unwrap();
-    let err = s.read_cells().unwrap_err();
-    assert!(err.contains("line 2"), "{err}");
-    std::fs::write(dir.join("cells"), "db 1 2 3 4\n").unwrap();
-    assert!(
-        s.read_cells().unwrap_err().contains("line 1"),
-        "ready must be 0 or 1"
-    );
-    std::fs::write(
-        dir.join("nodes"),
-        "a 1 off 0 0 0 0 0\nb 1 sleeping 0 0 0 0 0\n",
-    )
-    .unwrap();
-    assert!(s.read_nodes().unwrap_err().contains("line 2"));
-    std::fs::write(dir.join("nodes"), "a 1 quarantined:wat 0 0 0 0 0\n").unwrap();
-    assert!(s.read_nodes().unwrap_err().contains("line 1"));
-    std::fs::write(dir.join("nodes"), "a 1 off 0 0 0 0 -5\n").unwrap();
-    assert!(
-        s.read_nodes().unwrap_err().contains("line 1"),
-        "a negative time"
-    );
-}
-
-#[test]
-fn files_are_0600_and_the_directory_0700() {
-    let run = Run::new("modes");
-    let s = State::open(&run.0).unwrap();
-    s.write_cells(&cells()).unwrap();
-    s.write_nodes(&nodes()).unwrap();
-    s.write_db(b"x").unwrap();
-    let dir = run.0.join("state");
     assert_eq!(
-        std::fs::metadata(&dir).unwrap().permissions().mode() & 0o7777,
-        0o700
+        parse_nodes(&format_nodes(&lines, &[])),
+        Ok((lines, Vec::new()))
     );
-    for f in ["cells", "nodes", "colony.db"] {
-        let m = std::fs::metadata(dir.join(f)).unwrap();
-        assert_eq!(m.permissions().mode() & 0o7777, 0o600, "{f}");
-        assert_eq!(m.uid(), unsafe_free_uid(), "{f} belongs to the writer");
+}
+
+#[test]
+fn a_bad_line_refuses_the_whole_text() {
+    for bad in [
+        "db 901 1 16\n",
+        "db x 1 16 17\n",
+        "db 901 2 16 17\n",
+        "db 901 1 0 17\n",
+        "db 901 1 16 17 18\n",
+        "db 901 1 16 -1\n",
+    ] {
+        let text = format!("good 1 0 5 0\n{bad}");
+        let e = parse_cells(&text).unwrap_err();
+        assert!(e.contains("line 2"), "{bad:?}: {e}");
     }
-    // No temporary file is left behind.
-    let mut left: Vec<_> = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().into_string().unwrap())
-        .collect();
-    left.sort();
-    assert_eq!(left, ["cells", "colony.db", "nodes"]);
-}
-
-/// The uid of the running process, read from a file it just made.
-fn unsafe_free_uid() -> u32 {
-    let probe = std::env::temp_dir().join(format!("qinit-uid-{}", std::process::id()));
-    std::fs::write(&probe, b"").unwrap();
-    let uid = std::fs::metadata(&probe).unwrap().uid();
-    std::fs::remove_file(&probe).unwrap();
-    uid
-}
-
-#[test]
-fn a_write_is_a_rename_not_a_truncate() {
-    let run = Run::new("rename");
-    let s = State::open(&run.0).unwrap();
-    s.write_nodes(&nodes()).unwrap();
-    let mut old = std::fs::File::open(run.0.join("state/nodes")).unwrap();
-    s.write_nodes(&nodes()[..1]).unwrap();
-    let mut text = String::new();
-    old.read_to_string(&mut text).unwrap();
-    assert_eq!(
-        text.lines().count(),
-        4,
-        "a reader holding the old file still reads all of it"
-    );
-    assert_eq!(s.read_nodes().unwrap().unwrap().len(), 1);
-}
-
-#[test]
-fn a_state_directory_that_is_a_symlink_or_a_file_is_refused() {
-    let run = Run::new("link");
-    let elsewhere = run.0.join("elsewhere");
-    std::fs::create_dir(&elsewhere).unwrap();
-    std::os::unix::fs::symlink(&elsewhere, run.0.join("state")).unwrap();
-    assert!(State::open(&run.0).is_err(), "a symlink named state");
-    std::fs::remove_file(run.0.join("state")).unwrap();
-    std::fs::write(run.0.join("state"), b"").unwrap();
-    assert!(State::open(&run.0).is_err(), "a file named state");
-}
-
-#[test]
-fn an_existing_state_directory_is_kept_and_made_private() {
-    let run = Run::new("reopen");
-    let dir = run.0.join("state");
-    std::fs::create_dir(&dir).unwrap();
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::fs::write(dir.join("cells"), "db 1 1 2 3\n").unwrap();
-    let s = State::open(&run.0).unwrap();
-    assert_eq!(
-        std::fs::metadata(&dir).unwrap().permissions().mode() & 0o7777,
-        0o700
-    );
-    assert_eq!(
-        s.read_cells().unwrap().unwrap().len(),
-        1,
-        "what was there is still there"
+    for bad in [
+        "a 1 off 0 0 0 0\n",
+        "a 2 off 0 0 0 0 0\n",
+        "a 1 quarantined:nope 0 0 0 0 0\n",
+        "a 1 sleeping 0 0 0 0 0\n",
+        "pipe l 0 5\n",
+        "pipe l 5 0\n",
+        "pipe l x 5\n",
+        "pipe l 5\n",
+    ] {
+        let text = format!("fine 1 off 0 0 0 0 0\n{bad}");
+        let e = parse_nodes(&text).unwrap_err();
+        assert!(e.contains("line 2"), "{bad:?}: {e}");
+    }
+    assert!(
+        parse_nodes("fine 1 off 0 0 0 0 0\n\n  \n").is_ok(),
+        "blank lines are skipped"
     );
 }
 
 #[test]
-fn the_start_time_is_field_22_even_when_the_command_name_holds_spaces_and_brackets() {
-    use qinit_colonyd::state::parse_start_time;
-    let line = "311 (my (odd) name) S 1 311 311 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000 10 \
-                18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 3 0 0 0 0 0";
-    assert_eq!(parse_start_time(line), Some(987_654));
-    assert_eq!(parse_start_time("garbage"), None);
-    assert_eq!(parse_start_time("1 (x) S 1 2"), None, "a short line");
-    // And for a real process.
-    assert!(qinit_colonyd::state::start_time(i32::try_from(std::process::id()).unwrap()).is_some());
+fn a_node_named_pipe_is_not_a_pipe_line() {
+    let n = NodeLine {
+        name: "pipe".into(),
+        wanted: true,
+        terminal: None,
+        counters: Counters::default(),
+    };
+    let text = format_nodes(std::slice::from_ref(&n), &pipes());
+    let (nodes, got) = parse_nodes(&text).unwrap();
+    assert_eq!(nodes, [n]);
+    assert_eq!(got, pipes());
 }
