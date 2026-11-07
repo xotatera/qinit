@@ -117,8 +117,8 @@ fn idmapped(e: &str) -> bool {
 /// The `user` bit of `Cred::ns`.
 const USER_BIT: u32 = 1 << 5;
 
-/// The id map of a user namespace: `own` (the default) or `range`; either word needs the
-/// `user` namespace.
+/// The id map of a user namespace: `own` (the default) or `range`; only `range` needs the
+/// `user` namespace (`own` is the default, so it can be written anywhere).
 fn user_map(cx: &mut Cx, base: &str, word: Option<&str>, ns: u32) -> UserMap {
     let key = format!("{base}.sandbox.user_map");
     let map = match word {
@@ -129,7 +129,7 @@ fn user_map(cx: &mut Cx, base: &str, word: Option<&str>, ns: u32) -> UserMap {
             UserMap::Own
         }
     };
-    if word.is_some() && ns & USER_BIT == 0 {
+    if map == UserMap::Range && ns & USER_BIT == 0 {
         cx.bad(&key, "user_map needs \"user\" in namespaces");
     }
     map

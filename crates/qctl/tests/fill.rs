@@ -164,16 +164,18 @@ fn fill_writes_into_the_etc_layer_never_vendor() {
     assert!(!t.0.join("etc/getty.toml").exists());
     let tty = t.read("etc/tty-login.toml");
     assert!(tty.starts_with("[template.tty-login]\n"), "{tty}");
-    // The forager's start_timeout "none" has no word: it is not written.
+    // The forager's start_timeout "none" is written like any default.
     let mount = t.read("etc/mount-var.toml");
     assert!(
         mount.contains(&format!("  ready = \"exit\"{FILLED}\n")),
         "{mount}"
     );
-    assert!(!mount.contains("start_timeout"), "{mount}");
-    // Without a user namespace sandbox.user_map has no word either; errors is derived.
+    assert!(
+        mount.contains(&format!("  start_timeout = \"none\"{FILLED}\n")),
+        "{mount}"
+    );
+    // sandbox.user_map "own" is written too; errors is derived.
     for text in [&sshd, &syslog, &tty, &mount] {
-        assert!(!text.contains("user_map"), "{text}");
         assert!(!text.contains("errors"), "{text}");
         assert!(!text.contains("instance"), "{text}");
     }
@@ -634,9 +636,11 @@ fn a_default_the_template_users_disagree_on_stays_in_each_frame() {
     assert!(!tt.contains("ready"), "{tt}");
     assert!(w.contains(&format!("  ready = \"pipe\"{FILLED}\n")), "{w}");
     assert!(f.contains(&format!("  ready = \"exit\"{FILLED}\n")), "{f}");
-    // The forager's start_timeout has no word, so the worker's goes into the worker.
-    assert!(w.contains("start_timeout"), "{w}");
-    assert!(!tt.contains("start_timeout") && !f.contains("start_timeout"));
+    // The forager's start_timeout is "none", the worker's 90000ms: they disagree, so each frame
+    // gets its own.
+    assert!(w.contains("start_timeout = \"90000ms\""), "{w}");
+    assert!(f.contains("start_timeout = \"none\""), "{f}");
+    assert!(!tt.contains("start_timeout"), "{tt}");
     // What they agree on is written once, in the template.
     assert!(tt.contains(&format!("  cwd = \"/\"{FILLED}\n")), "{tt}");
     assert!(!w.contains("cwd") && !f.contains("cwd"));
@@ -666,4 +670,27 @@ fn a_root_fill_refuses_a_tree_that_is_not_roots() {
     assert!(err.contains("owned by uid"), "{err}");
     assert!(out.is_empty());
     assert!(t.snapshot() == before, "a file changed");
+}
+
+#[test]
+fn fill_writes_both_defaults_and_the_database_is_unchanged() {
+    let t = TempDir::new("d58");
+    t.write(
+        "vendor/x.toml",
+        "[worker.x]\nexec = [\"/bin/x\"]\ncredentials = { uid = \"root\" }\n\
+         [forager.m]\nexec = [\"/bin/m\"]\ncredentials = { uid = \"root\" }\nready = \"exit\"\n",
+    );
+    let before = t.db(None);
+    let (code, _out, err) = t.fill(&["all"]);
+    assert_eq!(code, 0, "{err}");
+    let text = t.read("etc/x.toml");
+    assert!(
+        text.contains(&format!("  start_timeout = \"none\"{FILLED}\n")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("  sandbox.user_map = \"own\"{FILLED}\n")),
+        "{text}"
+    );
+    assert!(t.db(None) == before, "the database changed:\n{text}");
 }

@@ -385,3 +385,55 @@ credentials = { uid = "svc" }
             .all(|g| g.edges[0].stop_parallel)
     );
 }
+
+#[test]
+fn start_timeout_none_compiles_to_zero() {
+    let r = ok(r#"
+        [worker.w]
+        exec = ["/w"]
+        credentials = { uid = "svc" }
+        start_timeout = "none"
+        [forager.f]
+        exec = ["/f"]
+        credentials = { uid = "svc" }
+        ready = "exit"
+        start_timeout = "none"
+        [worker.d]
+        exec = ["/d"]
+        credentials = { uid = "svc" }
+    "#);
+    assert_eq!(node(&r.model, "w").start_timeout_ms, 0);
+    assert_eq!(node(&r.model, "f").start_timeout_ms, 0);
+    assert_eq!(node(&r.model, "d").start_timeout_ms, 90_000);
+}
+
+#[test]
+fn user_map_own_needs_no_user_namespace() {
+    let r = ok(r#"
+        [worker.a]
+        exec = ["/a"]
+        credentials = { uid = "svc" }
+        sandbox = { user_map = "own" }
+    "#);
+    let cred = node(&r.model, "a").cred.expect("cred");
+    assert!(r.model.creds[cred as usize].user_map == qinit_db::UserMap::Own);
+}
+
+#[test]
+fn user_map_range_still_needs_one() {
+    let es = errs(
+        r#"
+        [worker.a]
+        exec = ["/a"]
+        credentials = { uid = "svc" }
+        sandbox = { user_map = "range" }
+    "#,
+    );
+    assert_eq!(es.len(), 1, "{es:?}");
+    assert_eq!(es[0].code, Code::BadValue);
+    assert_eq!(es[0].key, "worker.a.sandbox.user_map");
+    assert!(
+        es[0].detail.contains("needs \"user\" in namespaces"),
+        "{es:?}"
+    );
+}

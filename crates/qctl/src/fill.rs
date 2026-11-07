@@ -5,13 +5,13 @@
 //!
 //! [`plan`] decides, from the compiled tree alone, which key goes into which table of which
 //! file: only keys whose origin is `default` and whose default is a schema constant
-//! ([`FILL_KEYS`], [`POLICY_KEYS`]), never a default the schema has no word for, and never into
+//! ([`FILL_KEYS`], [`POLICY_KEYS`]), and never into
 //! a layer below the last. [`apply`] makes the edits with `toml_edit`, as inserted lines (or
 //! keys inserted inside an inline table) and nothing else, and writes each file through a
 //! temporary file and a rename, keeping its mode and owner; a dry run prints the diff instead.
 use crate::args::{FillOpts, PolicyChoice};
 use crate::compile::{Defaults, checked_input};
-use crate::show::{KINDS, kind_word, merged_frame, unwritable_default, user_ns};
+use crate::show::{KINDS, kind_word, merged_frame};
 use crate::{owner, report};
 use qinit_frames::compile::{Compiled, compile};
 use qinit_frames::dump;
@@ -134,11 +134,9 @@ fn frames(c: &Compiled) -> Vec<FrameDefaults<'_>> {
         let Some(table) = merged_frame(c, kind, name) else {
             continue;
         };
-        let ns = user_ns(model, node);
         let keys = lines
             .iter()
             .filter(|l| l.node == i && l.origin == "default" && fillable(&l.key))
-            .filter(|l| !unwritable_default(&l.key, &l.value, ns))
             .map(|l| (l.key.clone(), l.value.clone()))
             .collect();
         out.push(FrameDefaults {
