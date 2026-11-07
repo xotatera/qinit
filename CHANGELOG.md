@@ -12,6 +12,28 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `qctl --json` (D51), `docs/qctl.md`: one JSON object per line for `status`, `list`, the change
+  commands, `launch`, `run` and `watch`, built from the same values as the text lines, with a
+  state split into `state` and `detail` and an absent optional field left out. A usage error on
+  `compile`, `show` and `fill`; errors stay text on standard error with the same exit codes.
+
+- A C builder for launch requests (D53), `crates/qinit-client-c/README.md`: `qinit_request_new`,
+  one setter per field, `qinit_request_bytes` (the QLR1 bytes for `qinit_run_begin`),
+  `qinit_request_error` and `qinit_request_free`. The bytes pass `RequestSpec::check`
+  (`qinit-launch`), the check `qctl run` now makes on a request file too, so a request that fails
+  it is never sent. Both C test programs are built with the undefined-behaviour sanitizer in trap
+  mode.
+
+- `qctl run --frame FILE` (D54), `docs/qctl.md`: one frame compiled as one more layer over the
+  default layers and the policy and run as the instance `~NAME#<id>`, its request built as colony
+  builds one for an instance of a frame. The cell ceilings and the stop mode and grace are the
+  frame's unless an option is given; `ready = "pipe"` waits for readiness. What a `Run` cannot do
+  is refused before anything is sent, naming the key and the file and line that set it.
+
+- `qctl show enable` and `qctl fill enable` (D55): the merged `enable` and `syslog` lists with
+  the layer that set each, and `enable = []` and `syslog = []` written into the last layer's
+  `enable.toml` for a list no layer set; `fill all` includes them.
+
 - Words for the two defaults that had none (D58): `start_timeout = "none"` (no start timeout, on
   any node) and `sandbox.user_map = "own"` without a user namespace (`"range"` still needs one).
   Each compiles to the database its default gives, so `qctl show` prints them as keys, not
