@@ -1338,3 +1338,33 @@ fn cells_left_in_the_comb_are_logged_and_left_alone() {
     );
     assert!(args.comb.join("old-a").exists(), "and nothing is removed");
 }
+
+#[test]
+fn a_second_shutdown_request_on_one_connection_is_accepted_and_changes_the_mode() {
+    let mut r = boot(WORKER, &["db"], "twoshut");
+    ready(&mut r);
+    let client = connect_root(&mut r);
+    for mode in [Mode::Poweroff, Mode::Reboot] {
+        ask(
+            &client,
+            Req::Shutdown {
+                mode,
+                settled: false,
+                wait_ms: 0,
+            },
+            &[],
+        );
+        assert_eq!(r.d.pump(), None, "the node is still stopping");
+        assert_eq!(
+            answer(&client, |rep| matches!(rep, Rep::Accepted)),
+            Some(true),
+            "{mode:?} was accepted on the same connection"
+        );
+    }
+    assert_eq!(
+        r.d.colony.shutdown_mode(),
+        Some(qinit_colony::ShutdownMode::Reboot),
+        "the last request wins"
+    );
+    qinit_sys::signal::unblock_all().unwrap();
+}

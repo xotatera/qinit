@@ -46,16 +46,25 @@ fn await_rescue_lines(n: usize) -> Result<Vec<String>, String> {
     })
 }
 
+/// Kills colony once its worker is up and its state has reached queen (a request and its reply
+/// come after the state of the one before is saved). A colony killed between making a cell and
+/// putting its directory in queen's store leaves a cell nobody can adopt, so every kill waits.
+fn kill_when_saved(c: &mut qinit_client::Client) -> Result<i32, String> {
+    settled(c, "w")?;
+    e(c.status("w"))?;
+    kill_colony()
+}
+
 /// Kills colony until the sixth exit in a minute trips the limit and rescue runs with `role`.
 fn trip_limit(role: &str) -> Result<usize, String> {
     rescue_role(role)?;
-    let _ = fresh(&basic())?;
+    let mut c = fresh(&basic())?;
     let before = rescue_lines().len();
     for _ in 0..5 {
-        let old = kill_colony()?;
-        let _ = await_colony_restart(old)?;
+        let old = kill_when_saved(&mut c)?;
+        c = await_colony_restart(old)?;
     }
-    kill_colony()?;
+    kill_when_saved(&mut c)?;
     await_rescue_lines(before + 1)?;
     Ok(before)
 }
@@ -153,12 +162,12 @@ fn a_missing_rescue_holds() -> Result<(), String> {
     e(std::fs::rename(RESCUE, &away))?;
     let r = (|| {
         rescue_role("fail")?;
-        let _ = fresh(&basic())?;
+        let mut c = fresh(&basic())?;
         for _ in 0..5 {
-            let old = kill_colony()?;
-            let _ = await_colony_restart(old)?;
+            let old = kill_when_saved(&mut c)?;
+            c = await_colony_restart(old)?;
         }
-        kill_colony()?;
+        kill_when_saved(&mut c)?;
         await_kmsg("nothing runs, holding", holds + 1)
     })();
     e(std::fs::rename(&away, RESCUE))?;
@@ -214,15 +223,49 @@ fn qctl_reboot_poweroff_and_halt_reach_zero() -> Result<(), String> {
 }
 
 fn a_reboot_during_a_poweroff_reaches_zero_as_reboot() -> Result<(), String> {
+    reboot_during_poweroff().map_err(|why| {
+        let queen: Vec<String> = queened::kmsg()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|l| l.starts_with("queen:"))
+            .collect();
+        let from = queen.len().saturating_sub(14);
+        format!(
+            "{why}; colony said {:?}; queen said {:?}",
+            queened::log_tail(6),
+            &queen[from..]
+        )
+    })
+}
+
+fn reboot_during_poweroff() -> Result<(), String> {
     let mut c = fresh(&holding(2_000))?;
-    settled(&mut c, "w")?;
+    let state = settled(&mut c, "w")?;
     let before = zero_lines().len();
-    e(c.shutdown(Mode::Poweroff, Wait::Now))?;
-    e(c.shutdown(Mode::Reboot, Wait::Now))?;
+    let t0 = std::time::Instant::now();
+    e(c.shutdown(Mode::Poweroff, Wait::Now)).map_err(|x| format!("the poweroff request: {x}"))?;
+    let t1 = t0.elapsed();
+    // The second request comes on a connection of its own, as a second `qctl` would.
+    let mut second = client()?;
+    let t2 = t0.elapsed();
+    e(second.shutdown(Mode::Reboot, Wait::Now)).map_err(|x| {
+        format!("the reboot request: {x} (w was in state {state}; first request {t1:?}, connected {t2:?}, colony runs: {:?})", colony_pid())
+    })?;
     drop(c);
     let lines = await_zero_lines(before + 1)?;
     if lines.last().map(String::as_str) != Some("final reboot") {
-        return Err(format!("zero was run as {:?}", lines.last()));
+        return Err(format!(
+            "zero was run as {:?} (w was in state {state}; first request {t1:?}, connected {t2:?}, now {:?}); comb {:?}; colony said {:?}",
+            lines.last(),
+            t0.elapsed(),
+            std::fs::read_dir(COMB)
+                .map(|d| d
+                    .flatten()
+                    .map(|x| x.file_name().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>())
+                .unwrap_or_default(),
+            queened::log_tail(14)
+        ));
     }
     let _ = client()?;
     Ok(())
@@ -283,6 +326,11 @@ fn sigterm_is_ignored_and_logged() -> Result<(), String> {
 }
 
 fn a_colony_killed_during_a_shutdown_is_not_restarted() -> Result<(), String> {
+    killed_during_a_shutdown()
+        .map_err(|why| format!("{why}; colony said {:?}", queened::log_tail(15)))
+}
+
+fn killed_during_a_shutdown() -> Result<(), String> {
     let mut c = fresh(&holding(60_000))?;
     settled(&mut c, "w")?;
     let before = zero_lines().len();

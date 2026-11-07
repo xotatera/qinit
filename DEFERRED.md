@@ -536,6 +536,10 @@ unknown to the next colony, which leaves its cell running. Instances are transie
 is microseconds, so it is accepted; closing it would make the server hand a request's reply back
 to the daemon instead of sending it.
 
+The same window has a second face under queen: a colony killed after it made a cell and before it
+put the cell's directory in queen's store leaves a cell nobody holds. The next colony cannot adopt
+it and a later start of the same node fails to create its cell. The `queen` suite's kills wait for
+the state to reach queen for this reason.
 ### D68 — A configurable shutdown bound · `OPEN`
 
 Queen's shutdown bound is five minutes, then a kill and five seconds more (M12). A deployment that

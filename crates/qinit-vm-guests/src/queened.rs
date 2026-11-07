@@ -181,6 +181,8 @@ pub fn spin_until<T>(what: &str, mut check: impl FnMut() -> Option<T>) -> Result
 
 /// Colony's client: waits for its socket to take a connection.
 pub fn client() -> Result<Client, String> {
+    // Colony's log queue is only as long as its datagram buffer: drain it as the cases go.
+    let _ = log_history();
     e(std::fs::create_dir_all("/run/qinit"))?;
     wait_until("colony's socket", &["/run/qinit"], || {
         Client::connect(Path::new(SOCKET)).ok()
@@ -203,6 +205,21 @@ pub fn await_zero_lines(n: usize) -> Result<Vec<String>, String> {
         let l = zero_lines();
         (l.len() >= n).then_some(l)
     })
+    .map_err(|why| {
+        let said: Vec<String> = kmsg_timed()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|l| l.contains("queen:"))
+            .collect();
+        let tail = said.len().saturating_sub(12);
+        let up = std::fs::read_to_string("/proc/uptime").unwrap_or_default();
+        format!(
+            "{why}; zero ran {} times; uptime {}; queen said {:?}",
+            zero_lines().len(),
+            up.trim(),
+            &said[tail..]
+        )
+    })
 }
 
 /// A new colony on `model`: it is asked to halt (the stand-in zero starts queen over), and the
@@ -220,6 +237,36 @@ pub fn fresh(model: &Model) -> Result<Client, String> {
 /// The kernel log's messages, one string per record.
 pub fn kmsg() -> Result<Vec<String>, String> {
     crate::colonyd::kmsg()
+}
+
+/// The kernel log's records as `<seconds since boot>: <text>`.
+fn kmsg_timed() -> Result<Vec<String>, String> {
+    let mut f = e(std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open("/dev/kmsg"))?;
+    let mut out = Vec::new();
+    let mut buf = vec![0u8; 8192];
+    while let Ok(n) = f.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        let rec = String::from_utf8_lossy(&buf[..n]).into_owned();
+        if let Some((head, text)) = rec.split_once(';') {
+            let ts: u64 = head
+                .split(',')
+                .nth(2)
+                .and_then(|t| t.parse().ok())
+                .unwrap_or(0);
+            out.push(format!(
+                "{}.{:03}: {}",
+                ts / 1_000_000,
+                ts / 1000 % 1000,
+                text.trim_end()
+            ));
+        }
+    }
+    Ok(out)
 }
 
 /// How many kernel log messages contain `text`.
@@ -356,4 +403,12 @@ pub fn await_log(text: &str, n: usize) -> Result<Vec<String>, String> {
             return Err(format!("colony never logged {text:?} {n} times"));
         }
     }
+}
+
+/// The last `n` lines colony logged, to say what happened when a case fails.
+#[must_use]
+pub fn log_tail(n: usize) -> Vec<String> {
+    let lines = log_history();
+    let from = lines.len().saturating_sub(n);
+    lines[from..].to_vec()
 }

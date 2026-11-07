@@ -20,7 +20,7 @@ pub const NOFILE: usize = 65_536;
 
 /// What `Io::recv` found on colony's channel.
 pub enum Recv {
-    /// Nothing more for now.
+    /// Nothing more until colony sends again.
     Empty,
     /// Colony's end is gone. Reported once; `recv` says `Empty` after.
     Closed,
