@@ -17,6 +17,12 @@ Contributions are accepted under the license of the part they change (inbound = 
 Every new file needs SPDX headers (`SPDX-FileCopyrightText` and `SPDX-License-Identifier`), and
 `reuse lint` must pass.
 
+## Tests
+
+In `qinit-colonyd`, only `tests/binary.rs` may start a process. A forked child holds a copy of every
+descriptor until its `exec`, which breaks the hang-up checks of the other tests in the same test
+binary.
+
 ## Pull requests
 
 - **Sign-off.** Every commit in a pull request carries a `Signed-off-by` line certifying the

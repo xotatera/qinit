@@ -319,9 +319,6 @@ fn an_instance_cell_is_cleared_and_ids_move_past_it() -> Result<(), String> {
         return Err(format!("the first instance is {first}"));
     }
     let cell = format!("job#{first}");
-    // The server's own reply to the launch comes before the state is saved (D67): a round trip
-    // makes sure the next colony can know the cell.
-    e(queened::client()?.list(0))?;
     let old = pidfds(&cell)?;
     drop(c);
     let mut c = kill_and_follow()?;

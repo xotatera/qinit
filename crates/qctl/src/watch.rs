@@ -23,7 +23,7 @@ pub fn run(
     };
     // An instance's stream speaks the instance's state words.
     let instance = !all && target.contains('#');
-    match Client::connect(socket).and_then(|c| c.watch(scope)) {
+    match Client::connect(socket).and_then(|c| c.watch(scope).map_err(ClientError::from)) {
         Ok(w) => follow(w, instance, out, err),
         Err(e) => exit(Err(e.into()), err),
     }

@@ -78,7 +78,8 @@ struct Conn {
 pub struct Served {
     /// The connections that were closed (the event loop forgets them).
     pub closed: Vec<ConnId>,
-    /// The request's outcome; its replies were sent already.
+    /// The request's outcome, not yet delivered: the caller sends its replies with
+    /// [`Server::on_outcome`] after [`Server::flush`] sent the request's own reply.
     pub outcome: Outcome,
 }
 
@@ -99,6 +100,9 @@ pub struct Server {
     next_conn: u64,
     next_wait: u64,
     out: Box<[u8; MAX_MESSAGE]>,
+    /// The replies requests got for themselves, with their descriptors, in the order the
+    /// requests were served: sent by [`Server::flush`].
+    held: Vec<(ConnId, OwnedRep, Vec<OwnedFd>)>,
 }
 
 /// A zeroed buffer of one whole message, on the heap.
@@ -171,6 +175,7 @@ impl Server {
             next_conn: 1,
             next_wait: 1,
             out: message_buffer(),
+            held: Vec::new(),
         }
     }
 
@@ -266,8 +271,10 @@ impl Server {
         self.close(conn, colony);
     }
 
-    /// Closes a connection: its parked wait is forgotten.
+    /// Closes a connection: its parked wait is forgotten, and a reply held for it is dropped
+    /// with its descriptors.
     pub fn close<E: Effects>(&mut self, conn: ConnId, colony: &mut Colony<E>) {
+        self.held.retain(|(c, _, _)| *c != conn);
         if let Some(c) = self.conns.remove(&conn)
             && let State::Waiting(w) | State::Watching(w) = c.state
         {
@@ -277,9 +284,12 @@ impl Server {
     }
 
     /// The connection has something to read: serves one request. Returns the connections that
-    /// were closed (the event loop forgets them) and the outcome of the request: the replies in
-    /// it are already sent, but a caller with its own work to do for a notice (writing state
-    /// when a refresh swapped the database, exiting when a shutdown completed) needs to see it.
+    /// were closed (the event loop forgets them) and the outcome of the request.
+    ///
+    /// Nothing is sent but the error of a request that is refused (which changes no state): the
+    /// request's own reply is held for [`Server::flush`], and the replies its outcome owes are
+    /// the caller's to send with [`Server::on_outcome`], after the flush. A caller saves the
+    /// state the request changed first, so that a client that has its reply can rely on it.
     pub fn on_readable<E: Effects>(
         &mut self,
         conn: ConnId,
@@ -408,9 +418,8 @@ impl Server {
         let wait = WaitId(self.next_wait);
         self.next_wait += 1;
         let handled = colony.handle(peer, req, attached, wait, now);
-        let sent = self.reply(conn, &handled.reply, &handled.reply_fds);
         // A second reply is owed when the wait was parked, or when the same call already
-        // settled it (it then goes out with the outcome below).
+        // settled it (it then goes out with the outcome, after the flush).
         let owed = handled.waiting || handled.outcome.replies.iter().any(|(w, _)| *w == wait);
         let watching = matches!(req, Req::Watch { .. }) && handled.reply == OwnedRep::Accepted;
         if (owed || watching)
@@ -423,21 +432,31 @@ impl Server {
             };
             self.waits.insert(wait, conn);
         }
-        // A client that cannot be answered is closed, which also forgets its parked wait.
-        let mut closed = Vec::new();
-        if !sent {
-            self.close(conn, colony);
-            closed.push(conn);
-        }
-        closed.extend(self.on_outcome(&handled.outcome, colony));
+        self.held.push((conn, handled.reply, handled.reply_fds));
         Served {
-            closed,
+            closed: Vec::new(),
             outcome: handled.outcome,
         }
     }
 
-    /// Sends the replies colony owes to parked waits, and returns the connections that could
-    /// not be written to (they are closed).
+    /// Sends the replies requests got for themselves since the last flush, in the order the
+    /// requests were served, each with its descriptors. A connection closed meanwhile lost its
+    /// reply already; one that cannot be written to is closed, which also forgets its parked
+    /// wait. Returns the connections closed here (the event loop forgets them).
+    pub fn flush<E: Effects>(&mut self, colony: &mut Colony<E>) -> Vec<ConnId> {
+        let mut closed = Vec::new();
+        for (conn, rep, fds) in std::mem::take(&mut self.held) {
+            if self.conns.contains_key(&conn) && !self.reply(conn, &rep, &fds) {
+                self.close(conn, colony);
+                closed.push(conn);
+            }
+        }
+        closed
+    }
+
+    /// Sends the replies colony owes to parked waits and the notices it owes watchers, and
+    /// returns the connections that could not be written to (they are closed). After
+    /// [`Server::flush`], so that a request's own reply comes before a second one.
     pub fn on_outcome<E: Effects>(&mut self, out: &Outcome, colony: &mut Colony<E>) -> Vec<ConnId> {
         let mut closed = Vec::new();
         for (wait, rep) in &out.replies {

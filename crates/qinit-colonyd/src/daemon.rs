@@ -405,16 +405,16 @@ impl<C: CellOps> Daemon<C> {
                 plan.adopted.len()
             ),
         );
-        d.settle(first, true);
+        d.settle(first);
         // The exits and restarts adoption calls for come after the table is restored and before
         // the notices the adoption held are delivered: an exit, then the empty cell it leaves.
         for (node, status) in &plan.exited {
             let out = d.colony.adopted_exit(*node, *status, now);
-            d.settle(out, true);
+            d.settle(out);
         }
         for node in &plan.restart {
             let out = d.colony.request(*node, Request::Restart, now);
-            d.settle(out, true);
+            d.settle(out);
         }
         if plan.next_instance > 1 {
             d.colony.seed_instance_ids(plan.next_instance);
@@ -478,6 +478,13 @@ impl<C: CellOps> Daemon<C> {
         self.admit(admitted);
     }
 
+    /// The connections the server has open.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn connections(&self) -> usize {
+        self.server.connections()
+    }
+
     fn admit(&mut self, admitted: Result<ConnId, qinit_proto::Full>) {
         if let Ok(id) = admitted
             && let Some(fd) = self.server.fd(id)
@@ -496,12 +503,14 @@ impl<C: CellOps> Daemon<C> {
     }
 
     /// What an outcome of colony means for everyone: notices to syslog, errors to syslog, the work
-    /// a swap or a completed shutdown calls for, and, when `deliver` (a request's own outcome has
-    /// been delivered by the server already), the replies it owes parked waits and watchers.
+    /// a swap or a completed shutdown calls for, and the replies it owes parked waits and
+    /// watchers.
     ///
     /// The replies are held until the end of the wake-up, after the log and the state files: a
     /// client that has seen a change can rely on its log line and on the saved state being there.
-    fn settle(&mut self, out: Outcome, deliver: bool) {
+    /// A request's outcome is no different, and the request's own reply is held by the server
+    /// until then too (see [`Daemon::flush_replies`]).
+    fn settle(&mut self, out: Outcome) {
         for e in &out.errors {
             self.say(Sev::Err, &describe_error(e));
         }
@@ -524,9 +533,7 @@ impl<C: CellOps> Daemon<C> {
                 _ => {}
             }
         }
-        if deliver {
-            self.owed.push(out);
-        }
+        self.owed.push(out);
     }
 
     /// A refresh finished: the database now in force is the one a restart must start from, and
@@ -632,7 +639,7 @@ impl<C: CellOps> Daemon<C> {
                 Owner::Node(n) => self.colony.on_cell(n, report, self.now_ms),
                 Owner::Instance(slot) => self.colony.on_instance(slot, report, self.now_ms),
             };
-            self.settle(out, true);
+            self.settle(out);
         }
     }
 
@@ -654,7 +661,7 @@ impl<C: CellOps> Daemon<C> {
                     continue;
                 }
             };
-            self.settle(out, true);
+            self.settle(out);
         }
     }
 
@@ -694,7 +701,7 @@ impl<C: CellOps> Daemon<C> {
                     let out = self
                         .colony
                         .request_shutdown(shutdown_mode(mode), self.now_ms);
-                    self.settle(out, true);
+                    self.settle(out);
                 }
                 Ok(Some(_)) => {}
                 Err(why) => {
@@ -712,7 +719,7 @@ impl<C: CellOps> Daemon<C> {
             libc::SIGTERM | libc::SIGINT => {
                 self.say(Sev::Info, "shutting down on a signal");
                 let out = self.colony.shutdown(self.now_ms);
-                self.settle(out, true);
+                self.settle(out);
             }
             _ => self.say(
                 Sev::Info,
@@ -726,7 +733,7 @@ impl<C: CellOps> Daemon<C> {
             match ev {
                 PathEvent::Path(p) => {
                     let out = self.colony.on_path(&p, self.now_ms);
-                    self.settle(out, true);
+                    self.settle(out);
                 }
                 PathEvent::Ready(owner) => self.mark_ready(owner),
             }
@@ -757,7 +764,7 @@ impl<C: CellOps> Daemon<C> {
                     .server
                     .on_readable(ConnId(t), &mut self.colony, self.now_ms);
                 self.forget(&served.closed);
-                self.settle(served.outcome, false);
+                self.settle(served.outcome);
             }
             Ready::Hangup(t) if t < BASE => {
                 self.server.close(ConnId(t), &mut self.colony);
@@ -909,8 +916,13 @@ impl<C: CellOps> Daemon<C> {
         self.exit
     }
 
-    /// Delivers the replies held during this wake-up.
+    /// Delivers the replies held during this wake-up, after `persist` returned: first the ones
+    /// requests got for themselves, then the ones the outcomes owe, so that a request's own reply
+    /// comes before its second one. A save queen did not take in time is tried again at the next
+    /// wake-up, and the replies do not wait for it (`DEFERRED.md`, D67).
     fn flush_replies(&mut self) {
+        let closed = self.server.flush(&mut self.colony);
+        self.forget(&closed);
         for out in std::mem::take(&mut self.owed) {
             let closed = self.server.on_outcome(&out, &mut self.colony);
             self.forget(&closed);

@@ -152,7 +152,8 @@ A day is the ceiling because a timer holds no more; 8 s is the floor because col
 
 Queen's other bounds are constants: five exits in 60 s, 10 s for rescue, 5 s after the kill of a
 shutdown. Queen raises its own `RLIMIT_NOFILE` and gives colony, rescue and zero the limit it
-started with (a failed exec of zero raises it again).
+started with (a failed exec of zero raises it again). Colony raises its own again before it reads
+the hand-over, and gives its services the limit queen started with.
 
 ## Tests
 

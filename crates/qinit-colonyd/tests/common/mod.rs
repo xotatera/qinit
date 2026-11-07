@@ -10,9 +10,70 @@ use qinit_db::{
     Cred, Kind, Model, Node, Ready, Restart, RestartPolicy, Seccomp, Securebits, Stop, StopMode,
     UserMap,
 };
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::os::fd::{OwnedFd, RawFd};
+use std::os::unix::net::UnixDatagram;
+use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::Duration;
+
+/// How many tests of one test binary may hold inotify instances at once. A booted daemon and a
+/// `RealEffects` each take one for the path watcher, a test at most three, and a user has few
+/// (`fs.inotify.max_user_instances`, 128 by default) shared with every program of the session.
+/// Without a bound the harness's threads (one per core) can take what is left and make a boot
+/// fail with `EMFILE`. Cargo runs the test binaries one after the other, so this bounds the
+/// tests' share of the host's instances. The bound covers only colonyd's own tests: other crates'
+/// tests (for example `watch.rs`) and other programs draw from the same per-user pool
+/// (`/proc/sys/fs/inotify/max_user_instances`, 128), so an `EMFILE` at boot in a test points there.
+pub const INOTIFY_SLOTS: usize = 8;
+
+static INOTIFY_USED: Mutex<usize> = Mutex::new(0);
+static INOTIFY_FREED: Condvar = Condvar::new();
+
+/// One of the [`INOTIFY_SLOTS`], given back when dropped.
+struct InotifySlot;
+
+impl Drop for InotifySlot {
+    fn drop(&mut self) {
+        *INOTIFY_USED.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+        INOTIFY_FREED.notify_one();
+    }
+}
+
+thread_local! {
+    static SLOT: RefCell<Option<InotifySlot>> = const { RefCell::new(None) };
+}
+
+/// Waits until this test may take inotify instances: call it before making anything that takes
+/// one. A test holds its slot until its thread ends (the harness runs every test on a thread of
+/// its own), after everything the test made is dropped; a second call in the same test is free.
+pub fn inotify_slot() {
+    SLOT.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_some() {
+            return;
+        }
+        let mut used = INOTIFY_USED.lock().unwrap_or_else(PoisonError::into_inner);
+        while *used >= INOTIFY_SLOTS {
+            used = INOTIFY_FREED
+                .wait(used)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *used += 1;
+        *slot = Some(InotifySlot);
+    });
+}
+
+/// What colony has logged to `log` so far, one datagram per line.
+pub fn lines_of(log: &UnixDatagram) -> Vec<String> {
+    log.set_nonblocking(true).unwrap();
+    let mut out = Vec::new();
+    let mut buf = [0u8; 512];
+    while let Ok(n) = log.recv(&mut buf) {
+        out.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+    }
+    out
+}
 
 /// What the effects asked of the cells, in order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,6 +136,9 @@ pub struct FakeCells {
     pub on_spawn: Option<Box<dyn FnMut()>>,
     /// Runs inside `stop`, before it returns, the first time (once taken).
     pub on_stop: Option<Box<dyn FnOnce()>>,
+    /// Runs inside `dir_fd`, before it returns: the moment a new cell's directory is about to be
+    /// put in queen's store, before the state that names it is saved.
+    pub on_dir_fd: Option<Box<dyn FnMut()>>,
     /// `wait_for_status` was called.
     pub waits: bool,
     /// Slots whose status the next `settle_status` delivers.
@@ -228,6 +292,9 @@ impl CellOps for FakeCells {
     fn dir_fd(&mut self, id: CellId) -> Result<OwnedFd, Error> {
         if !self.phases.contains_key(&id.0) {
             return Err(Error::NoSuchCell(id.0));
+        }
+        if let Some(f) = self.on_dir_fd.as_mut() {
+            f();
         }
         std::fs::File::open("/dev/null")
             .map(OwnedFd::from)

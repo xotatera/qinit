@@ -251,3 +251,25 @@ fn deps_list_the_templates_groups_then_the_frames_own() {
         "{out}"
     );
 }
+
+#[test]
+fn show_prints_the_two_defaults_as_keys_not_comments() {
+    let mount = show(&["forager.mount-var"]);
+    assert!(
+        mount.contains("\nstart_timeout = \"none\"  # default\n"),
+        "{mount}"
+    );
+    let sshd = show(&["worker.sshd"]);
+    assert!(
+        sshd.contains("\nsandbox.user_map = \"own\"  # default\n"),
+        "{sshd}"
+    );
+    for text in [&mount, &sshd] {
+        assert!(
+            !text
+                .lines()
+                .any(|l| l.starts_with("# ") && l.contains(" = ")),
+            "{text}"
+        );
+    }
+}

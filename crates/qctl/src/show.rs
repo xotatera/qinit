@@ -7,10 +7,10 @@
 //! dump, in the dump's order. A key a layer set keeps the value as the layer wrote it (so `%i`
 //! and units stay as written), taken from the frame's merged table or, for a key it inherits,
 //! from its template's. A key no layer set prints the resolved default. Keys that are derived
-//! (`errors` following `output`, the implicit logger group) are left out, and a default the
-//! schema has no word for (`start_timeout` "none", `sandbox.user_map` without a user namespace)
-//! prints as a comment, so the output compiles back to the same nodes. The template is resolved
-//! into the frame: its name is a comment and the keys it gives are marked `# template <name>`.
+//! (`errors` following `output`, the implicit logger group) are left out. Every default prints
+//! as a key (`start_timeout` "none" and `sandbox.user_map` "own" have words), so the output
+//! compiles back to the same nodes. The template is resolved into the frame: its name is a
+//! comment and the keys it gives are marked `# template <name>`.
 use crate::args::{PolicyChoice, ShowOpts};
 use crate::compile::{Defaults, checked_input};
 use crate::{report, toml_text};
@@ -26,9 +26,6 @@ use toml::{Table, Value};
 
 /// The kind words a frame target may start with.
 pub(crate) const KINDS: [&str; 4] = ["worker", "forager", "brood", "template"];
-
-/// The `user` bit of `Cred::ns`.
-const USER_NS: u32 = 1 << 5;
 
 /// One target of the command line.
 enum Target<'a> {
@@ -165,27 +162,12 @@ fn frame(c: &Compiled, kind: &str, name: &str) -> Result<String, String> {
             toml_text::string(t)
         );
     }
-    let user_ns = user_ns(model, node);
     let lines = dump::lines(&c.resolved, &c.provenance);
     for l in lines.iter().filter(|l| l.node == index) {
-        f.line(&mut text, l, user_ns);
+        f.line(&mut text, l);
     }
     f.deps(&mut text);
     Ok(text)
-}
-
-/// Whether the default `value` of `key` is one the schema has no word for, so writing it would
-/// fail to compile: `start_timeout` "none" (a node ready on exit) and `sandbox.user_map`
-/// without a user namespace. `show` prints such a default as a comment and `fill` skips it.
-pub(crate) fn unwritable_default(key: &str, value: &str, user_ns: bool) -> bool {
-    (key == "start_timeout" && value == "\"none\"") || (key == "sandbox.user_map" && !user_ns)
-}
-
-/// Whether node `n` runs in a user namespace of its own.
-pub(crate) fn user_ns(model: &qinit_db::Model, n: &qinit_db::Node) -> bool {
-    n.cred
-        .and_then(|i| model.creds.get(i as usize))
-        .is_some_and(|cr| cr.ns & USER_NS != 0)
 }
 
 /// The node's kind word.
@@ -227,7 +209,7 @@ impl Frame<'_> {
         at(table, path)
     }
 
-    fn line(&self, text: &mut String, l: &Line, user_ns: bool) {
+    fn line(&self, text: &mut String, l: &Line) {
         if l.key.starts_with("deps[") || (l.key == "errors" && l.origin == "default") {
             return;
         }
@@ -243,9 +225,7 @@ impl Frame<'_> {
             Some(v) => toml_text::value(v),
             None => l.value.clone(),
         };
-        let unwritable = written.is_none() && unwritable_default(key, &value, user_ns);
-        let hash = if unwritable { "# " } else { "" };
-        let _ = writeln!(text, "{hash}{key} = {value}  # {origin}");
+        let _ = writeln!(text, "{key} = {value}  # {origin}");
     }
 
     /// `deps` as the frame gets it: the template's groups, then the frame's own, one per line.

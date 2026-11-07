@@ -476,7 +476,7 @@ fn userns(uid: &str, sandbox: &str) -> String {
 #[test]
 fn user_map_without_user_is_refused() {
     for sb in [
-        "user_map = \"own\"",
+        "user_map = \"range\"",
         "namespaces = [\"net\"], user_map = \"range\"",
     ] {
         assert_eq!(

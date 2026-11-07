@@ -316,16 +316,17 @@ fn stop(cx: &mut Cx, base: &str, f: &Frame) -> Stop {
     Stop { mode, grace_ms }
 }
 
-/// The start timeout: 90 s by default, none for a node that is ready when it exits (its start
-/// is its whole run).
+/// The start timeout: 90 s by default, none (0) for a node that is ready when it exits (its
+/// start is its whole run) or that says `"none"`.
 fn start_timeout(cx: &mut Cx, base: &str, f: &Frame, ready: &Ready) -> u32 {
     match f.start_timeout.as_deref() {
         None if *ready == Ready::Exit => 0,
         None => 90_000,
+        Some("none") => 0,
         Some(t) => duration_ms(t).unwrap_or_else(|| {
             cx.bad(
                 format!("{base}.start_timeout"),
-                format!("`{t}` is not a duration like 90s"),
+                format!("`{t}` is not a duration like 90s or none"),
             );
             90_000
         }),

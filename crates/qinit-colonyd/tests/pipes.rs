@@ -119,6 +119,7 @@ fn remap_moves_the_index_not_the_pipe() {
 }
 
 fn rig(m: &Model, tmp: &Tmp) -> RealEffects<FakeCells> {
+    inotify_slot();
     let events = qinit_event::Loop::new().unwrap();
     let mut fx = RealEffects::new(
         FakeCells::default(),
@@ -178,6 +179,7 @@ fn the_logger_reads_its_pipe_as_standard_input() {
 fn a_producer_without_its_loggers_pipe_does_not_start() {
     let tmp = Tmp::new("missing");
     let m = with_logger();
+    inotify_slot();
     let events = qinit_event::Loop::new().unwrap();
     let mut fx =
         RealEffects::new(FakeCells::default(), "/o".into(), tmp.0.clone(), events, 9).unwrap();

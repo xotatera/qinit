@@ -15,6 +15,7 @@ use std::os::fd::AsFd;
 use std::time::Duration;
 
 fn rig(cells: FakeCells, comb: &std::path::Path) -> RealEffects<FakeCells> {
+    inotify_slot();
     let events = qinit_event::Loop::new().unwrap();
     RealEffects::new(
         cells,

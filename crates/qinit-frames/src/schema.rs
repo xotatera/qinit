@@ -477,12 +477,12 @@ fn check_values(f: &Frame, base: &str) -> Result<(), Error> {
     if let Some(t) = f
         .start_timeout
         .as_deref()
-        .filter(|t| duration_ms(t).is_none())
+        .filter(|t| *t != "none" && duration_ms(t).is_none())
     {
         return Err(bad(
             base,
             "start_timeout",
-            format!("`{t}` is not a duration like 90s"),
+            format!("`{t}` is not a duration like 90s or none"),
         ));
     }
     let mem = f.cell.as_ref().and_then(|c| c.memory_max.as_deref());

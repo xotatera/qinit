@@ -55,6 +55,7 @@ impl Driver {
                 Ready::Readable(token) => {
                     let served = self.server.on_readable(ConnId(token), colony, now);
                     self.forget(&served.closed)?;
+                    self.deliver(&served.outcome, colony)?;
                 }
                 Ready::Hangup(token) => {
                     self.server.close(ConnId(token), colony);
@@ -93,7 +94,8 @@ impl Driver {
         Ok(())
     }
 
-    /// Delivers the replies in `out` (from a timer or a cell event) to their connections.
+    /// Sends the replies requests hold, then the ones in `out` (a request's outcome, or a timer's
+    /// or a cell event's) to their connections. The driver has no state to save first.
     ///
     /// # Errors
     /// The event loop's error.
@@ -102,6 +104,8 @@ impl Driver {
         out: &Outcome,
         colony: &mut Colony<E>,
     ) -> Result<(), qinit_event::Error> {
+        let held = self.server.flush(colony);
+        self.forget(&held)?;
         let closed = self.server.on_outcome(out, colony);
         self.forget(&closed)
     }

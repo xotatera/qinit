@@ -6,7 +6,7 @@
 //! one guest runs boot after boot. Each case starts on a colony of its own: the one before it is
 //! asked to halt, which ends in zero, which starts queen again over the database the case wrote.
 use qinit_client::{Mode, Wait};
-use qinit_db::Model;
+use qinit_db::{Model, Node, Route};
 use qinit_vm_guests::colonyd::{model, settled, worker};
 use qinit_vm_guests::orphan;
 use qinit_vm_guests::queened::{
@@ -15,6 +15,7 @@ use qinit_vm_guests::queened::{
     signal_queen, spin_until, wait_until, write_db, zero_lines,
 };
 use qinit_vm_guests::{e, queened};
+use std::collections::BTreeSet;
 
 /// Limits every case but the bound cases runs under: the rescue minimum is short enough to wait
 /// out (the 400 ms of a `late` rescue is above it, a `now` one below).
@@ -188,7 +189,12 @@ fn rescue_is_a_session_leader_on_the_console() -> Result<(), String> {
     hold_then_back(holds)
 }
 
-/// Queen raises its own descriptor limit to hold the store; what it starts does not inherit that.
+/// The limit the guest's first process starts with, the kernel's `INR_OPEN_CUR` and
+/// `INR_OPEN_MAX`: queen is that process.
+const KERNEL_NOFILE: (u64, u64) = (1024, 4096);
+
+/// Queen and colony raise their own descriptor limits to hold the store; what they start keeps
+/// the limit queen started with.
 fn children_do_not_inherit_the_raised_descriptor_limit() -> Result<(), String> {
     let holds = kmsg_count("nothing runs, holding")?;
     let queen = queened::open_files_soft(1).ok_or("no limit for queen")?;
@@ -196,9 +202,26 @@ fn children_do_not_inherit_the_raised_descriptor_limit() -> Result<(), String> {
         return Err(format!("queen's own soft limit is {queen}"));
     }
     let colony = colony_pid().ok_or("no colony")?;
-    let colony_limit = queened::open_files_soft(colony).ok_or("no limit for colony")?;
-    if colony_limit >= queen {
-        return Err(format!("colony inherited {colony_limit} (queen {queen})"));
+    let colony_limit = queened::open_files(colony).ok_or("no limit for colony")?;
+    if colony_limit != (65_536, 65_536) {
+        return Err(format!(
+            "colony's limit is {colony_limit:?}, not 65536 soft and hard"
+        ));
+    }
+    let mut c = client()?;
+    settled(&mut c, "w")?;
+    drop(c);
+    let workers = qinit_vm_guests::colonyd::procs_of_in(COMB, "w")?;
+    if workers.is_empty() {
+        return Err("the worker's cell holds no process".into());
+    }
+    for pid in workers {
+        let worker = queened::open_files(pid).ok_or("no limit for the worker")?;
+        if worker != KERNEL_NOFILE {
+            return Err(format!(
+                "the worker (pid {pid}) has {worker:?}, not queen's {KERNEL_NOFILE:?}"
+            ));
+        }
     }
     trip_limit("now")?;
     let line = rescue_lines().pop().ok_or("rescue logged nothing")?;
@@ -207,10 +230,72 @@ fn children_do_not_inherit_the_raised_descriptor_limit() -> Result<(), String> {
         .nth(3)
         .and_then(|w| w.parse().ok())
         .ok_or_else(|| format!("rescue's line: {line:?}"))?;
-    if rescue >= queen {
-        return Err(format!("rescue inherited {rescue} (queen {queen})"));
+    if rescue != KERNEL_NOFILE.0 {
+        return Err(format!("rescue has {rescue} (queen {queen})"));
     }
     hold_then_back(holds)
+}
+
+/// Loggers enough that their pipes alone, two ends each, put more than the kernel's 1024
+/// descriptors in queen's store.
+const LOGGERS: u32 = 520;
+
+/// `LOGGERS` loggers that never run and one worker `w`, the one root.
+fn loggers() -> Model {
+    let mut nodes: Vec<Node> = (0..LOGGERS)
+        .map(|i| worker(&format!("l{i:04}"), "ready", &[]))
+        .collect();
+    nodes.push(worker("w", "ready", &[]));
+    let mut m = model(nodes, &[LOGGERS]);
+    m.routes = (0..LOGGERS).map(Route::Pipe).collect();
+    m
+}
+
+/// The pipes process `pid` holds, as `/proc/<pid>/fd` names them (`pipe:[<inode>]`).
+fn pipes_of(pid: i32) -> Result<BTreeSet<String>, String> {
+    let mut out = BTreeSet::new();
+    for entry in e(std::fs::read_dir(format!("/proc/{pid}/fd")))?.flatten() {
+        if let Ok(target) = std::fs::read_link(entry.path()) {
+            let target = target.to_string_lossy().into_owned();
+            if target.starts_with("pipe:") {
+                out.insert(target);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// A colony killed with more in queen's store than the kernel's limit takes every entry back:
+/// the logger pipes after the restart are the ones before it.
+fn a_colony_takes_back_a_store_over_its_old_limit() -> Result<(), String> {
+    let lost = queened::log_count("did not fit");
+    let mut c = fresh(&loggers())?;
+    settled(&mut c, "w")?;
+    e(c.status("w"))?;
+    drop(c);
+    let old = colony_pid().ok_or("no colony runs")?;
+    let before = pipes_of(old)?;
+    if before.len() < LOGGERS as usize {
+        return Err(format!("colony holds {} pipes", before.len()));
+    }
+    kill_colony()?;
+    let mut c = await_colony_restart(old)?;
+    settled(&mut c, "w")?;
+    drop(c);
+    let new = colony_pid().ok_or("no colony runs")?;
+    let after = pipes_of(new)?;
+    let kept = before.intersection(&after).count();
+    if kept < LOGGERS as usize {
+        return Err(format!(
+            "{kept} of colony's {} pipes came back; colony said {:?}",
+            before.len(),
+            queened::log_tail(6)
+        ));
+    }
+    if queened::log_count("did not fit") != lost {
+        return Err("a hand-over record did not fit".into());
+    }
+    fresh(&basic()).map(drop)
 }
 
 fn rescue_exiting_zero_late_brings_colony_back() -> Result<(), String> {
@@ -574,6 +659,10 @@ fn main() {
             (
                 "a_missing_zero_runs_rescue_then_holds",
                 a_missing_zero_runs_rescue_then_holds,
+            ),
+            (
+                "a_colony_takes_back_a_store_over_its_old_limit",
+                a_colony_takes_back_a_store_over_its_old_limit,
             ),
         ],
         "queen",

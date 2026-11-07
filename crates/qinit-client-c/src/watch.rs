@@ -63,8 +63,9 @@ fn event(e: Event) -> qinit_event {
 /// Turns the connection into a stream of state notices: everything (`all` 1, `target` NULL or
 /// empty) or one node or instance (`all` 0, `target` its name or `<frame>#<id>`). From then on
 /// the client accepts only `qinit_watch_next`, `qinit_fd`, `qinit_last_error` and `qinit_close`.
-/// A refused watch (an unknown target, say) leaves the client without a connection: every call
-/// on it but `qinit_fd` (-1), `qinit_last_error` and `qinit_close` is then `QINIT_E_ARGUMENT`.
+/// A watch colony refuses (an unknown target, say) leaves the client as it was, and it
+/// goes on asking. Only a lost connection ends it: then `qinit_fd` is -1 and every call but
+/// `qinit_last_error` and `qinit_close` is `QINIT_E_ARGUMENT`.
 ///
 /// # Safety
 /// `c` is NULL or a live client; `target` NULL or a NUL-terminated string.
@@ -89,8 +90,18 @@ pub unsafe extern "C" fn qinit_watch(
         let Inner::Client(client) = std::mem::replace(&mut cl.inner, Inner::Spent) else {
             return Err(Fail::UNEXPECTED);
         };
-        cl.inner = Inner::Watching(client.watch(scope)?);
-        Ok(0)
+        match client.watch(scope) {
+            Ok(w) => {
+                cl.inner = Inner::Watching(w);
+                Ok(0)
+            }
+            Err(refused) => {
+                if let Some(client) = refused.client {
+                    cl.inner = Inner::Client(client);
+                }
+                Err(refused.error.into())
+            }
+        }
     };
     // SAFETY: the contract of `enter` is this function's.
     unsafe { enter(c, body) }.unwrap_or_else(|kind| kind)

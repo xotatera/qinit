@@ -120,14 +120,18 @@ fn late() -> i32 {
 /// The soft `Max open files` of process `pid`, from `/proc/<pid>/limits`.
 #[must_use]
 pub fn open_files_soft(pid: i32) -> Option<u64> {
-    std::fs::read_to_string(format!("/proc/{pid}/limits"))
-        .ok()?
+    open_files(pid).map(|(soft, _)| soft)
+}
+
+/// The soft and hard `Max open files` of process `pid`, from `/proc/<pid>/limits`.
+#[must_use]
+pub fn open_files(pid: i32) -> Option<(u64, u64)> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/limits")).ok()?;
+    let mut w = text
         .lines()
         .find_map(|l| l.strip_prefix("Max open files"))?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()
+        .split_whitespace();
+    Some((w.next()?.parse().ok()?, w.next()?.parse().ok()?))
 }
 
 /// The rescue program: logs its session, pid, controlling terminal and soft descriptor limit, then does what

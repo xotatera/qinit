@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! The loop, on the host: start-up refusals through the real binary, and the whole daemon over a
-//! fake cell layer (the real cgroups are the VM suites').
+//! The loop, on the host: the whole daemon over a fake cell layer (the real cgroups are the VM
+//! suites'). No test here starts a process: a fork holds a copy of every descriptor until its
+//! exec, so a test closing one end of a socket would not see the hang-up it waits for. The tests
+//! that start the colony binary are in `binary.rs`.
 mod common;
 
 use common::*;
@@ -22,67 +24,10 @@ use std::ffi::CString;
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixDatagram;
 use std::path::PathBuf;
-use std::process::Command;
 
 const WORKER: &str = "[worker.db]\ncredentials = { uid = \"svc\" }\nexec = [\"/bin/db\"]\n";
 
-fn colony_bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_colony"))
-}
-
-// ---- start-up refusals, through the binary ----
-
-#[test]
-fn usage_errors_exit_2() {
-    let out = colony_bin().arg("--bogus").output().unwrap();
-    assert_eq!(out.status.code(), Some(i32::from(exit::USAGE)));
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("--bogus") && err.contains("usage"), "{err}");
-    for flag in [
-        "--db",
-        "--comb",
-        "--socket",
-        "--overseer",
-        "--syslog",
-        "--console",
-        "--run",
-        "--queen-fd",
-    ] {
-        assert!(
-            err.contains(flag),
-            "the usage line leaves out {flag}: {err}"
-        );
-    }
-    assert_eq!(
-        colony_bin().args(["--db"]).output().unwrap().status.code(),
-        Some(i32::from(exit::USAGE))
-    );
-}
-
-fn own_cgroup() -> Option<String> {
-    let text = std::fs::read_to_string("/proc/self/cgroup").ok()?;
-    text.lines()
-        .find_map(|l| l.strip_prefix("0::"))
-        .map(str::to_owned)
-}
-
-#[test]
-fn colony_inside_the_comb_refuses_to_start() {
-    let Some(own) = own_cgroup() else {
-        eprintln!("skipped: no cgroup v2 line in /proc/self/cgroup");
-        return;
-    };
-    let tmp = Tmp::new("inside");
-    let comb = format!("/sys/fs/cgroup{own}");
-    let out = colony_bin()
-        .args(["--comb", &comb, "--run"])
-        .arg(&tmp.0)
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(i32::from(exit::STARTUP)), "{out:?}");
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("inside the comb"), "{err}");
-}
+// ---- the cgroup check ----
 
 #[test]
 fn inside_comb_compares_whole_path_components() {
@@ -110,45 +55,6 @@ fn inside_comb_compares_whole_path_components() {
     assert!(
         !inside_comb(own, "/elsewhere".as_ref()),
         "not a cgroup path we know"
-    );
-}
-
-#[test]
-fn a_refused_database_exits_3_before_anything_else_is_touched() {
-    let tmp = Tmp::new("baddb");
-    let db = tmp.0.join("colony.db");
-    std::fs::write(&db, b"not a database").unwrap();
-    let comb = tmp.0.join("comb");
-    let out = colony_bin()
-        .arg("--db")
-        .arg(&db)
-        .arg("--run")
-        .arg(tmp.0.join("run"))
-        .arg("--comb")
-        .arg(&comb)
-        .arg("--syslog")
-        .arg(tmp.0.join("nolog"))
-        .arg("--console")
-        .arg(tmp.0.join("console"))
-        .output()
-        .unwrap();
-    assert_eq!(
-        out.status.code(),
-        Some(i32::from(exit::DATABASE)),
-        "{out:?}"
-    );
-    assert!(!comb.exists(), "the comb was not touched");
-    let missing = colony_bin()
-        .arg("--db")
-        .arg(tmp.0.join("absent.db"))
-        .arg("--run")
-        .arg(tmp.0.join("run"))
-        .output()
-        .unwrap();
-    assert_eq!(
-        missing.status.code(),
-        Some(i32::from(exit::DATABASE)),
-        "{missing:?}"
     );
 }
 
@@ -219,18 +125,9 @@ fn try_boot(
     prep(&mut args, &mut queen);
     let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
     let store = queen.reattach();
+    inotify_slot();
     let d = Daemon::boot(cells, &args, bytes, store, syslog);
     (d, tmp, log, queen)
-}
-
-fn lines_of(log: &UnixDatagram) -> Vec<String> {
-    log.set_nonblocking(true).unwrap();
-    let mut out = Vec::new();
-    let mut buf = [0u8; 512];
-    while let Ok(n) = log.recv(&mut buf) {
-        out.push(String::from_utf8_lossy(&buf[..n]).into_owned());
-    }
-    out
 }
 
 fn root() -> Peer {
@@ -532,6 +429,7 @@ fn a_failed_start_shows_as_a_spawn_failure_not_a_crash() {
     };
     let bytes = database(frames, &["db"]);
     let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
+    inotify_slot();
     let mut d = Daemon::boot(cells, &args, &bytes, Store::standalone(), syslog).expect("boots");
     assert_eq!(
         d.colony.state(0),
@@ -656,9 +554,8 @@ fn a_successful_launch_closes_its_status_pipe_quietly() {
     // The overseer's exec closes fd 4: the fake spawn's copy stands in for it.
     let fds = std::mem::take(&mut r.d.colony.effects.cells.spawned[0].fds);
     drop(fds);
-    // The end of file arrives when the last copy of the write end is closed. Another test's
-    // `fork` may hold a copy for the moment before its `exec`, so this waits for the event (with
-    // a guard) instead of looking once.
+    // The end of file arrives when the last copy of the write end is closed. That can lag the
+    // `drop` slightly, so this waits for the event (with a guard) instead of looking once.
     r.d.colony
         .effects
         .events
@@ -984,6 +881,110 @@ fn a_removed_cell_is_forgotten_after_the_state_that_dropped_it() {
     assert!(!r.queen.held.contains_key(&dir));
 }
 
+// ---- a request's replies follow the state they report (D67) ----
+
+/// Whether a message waits on `fd` (the daemon keeps its end open), left where it is.
+fn has_message(fd: &OwnedFd) -> bool {
+    qinit_ipc::poll_readable(fd.as_fd(), 0).unwrap()
+}
+
+fn launch_backup() -> Req<'static> {
+    Req::Launch {
+        frame: "backup",
+        argv_tail: qinit_wire::StrList::new(b""),
+        env_add: qinit_wire::StrList::new(b""),
+        fd_roles: 0,
+        wait_ms: 60_000,
+        flags: 0,
+    }
+}
+
+#[test]
+fn the_save_is_on_the_channel_before_a_launch_is_answered() {
+    let mut r = boot(FORAGER, &[], "replyorder");
+    let client = connect_root(&mut r);
+    // The client's socket, looked at the moment the instance's cell is first put in queen's
+    // store, before the `cells` text that names it is saved. That moment is the start of
+    // `persist` (its `sync_store`), not the save of `cells` itself: it shows the reply was not
+    // sent before the saves began. That it goes after them is the order of `after_wakeup`
+    // (`persist`, then `flush_replies`); with the two swapped this test fails.
+    let probe = client.try_clone().unwrap();
+    let early = std::rc::Rc::new(std::cell::Cell::new(None));
+    let seen = early.clone();
+    r.d.colony.effects.cells.on_dir_fd = Some(Box::new(move || {
+        if seen.get().is_none() {
+            seen.set(Some(has_message(&probe)));
+        }
+    }));
+    ask(&client, launch_backup(), &[]);
+    assert_eq!(r.d.pump(), None);
+    assert_eq!(
+        early.get(),
+        Some(false),
+        "the client could read its reply before the instance's state went to queen"
+    );
+    // The client's socket first: once it has the reply, the channel names the instance.
+    let id = answer(&client, |rep| match rep {
+        Rep::Launched { id } => id,
+        other => panic!("{other:?}"),
+    })
+    .expect("the launch is answered");
+    let cells = parse_cells(&r.queen.text(KEY_CELLS).unwrap()).unwrap();
+    let name = format!("backup#{id}");
+    assert!(
+        cells.iter().any(|c| c.name == name),
+        "{name} is not in the cells entry: {cells:?}"
+    );
+}
+
+#[test]
+fn a_client_gone_before_the_flush_costs_nothing() {
+    let frames = format!("{WORKER}{FORAGER}");
+    let mut r = boot(&frames, &["db"], "replygone");
+    let gone = connect_root(&mut r);
+    let other = connect_root(&mut r);
+    ask(&gone, launch_backup(), &[]);
+    ask(&other, Req::Status { target: "db" }, &[]);
+    // The launching client closes after its request was served and before its reply is sent:
+    // while the instance's state is being saved.
+    let held = std::rc::Rc::new(std::cell::RefCell::new(Some(gone)));
+    let closer = held.clone();
+    r.d.colony.effects.cells.on_dir_fd = Some(Box::new(move || {
+        closer.borrow_mut().take();
+    }));
+    assert_eq!(r.d.connections(), 2);
+    // One wake-up serves both requests; its flush finds the launching client gone and closes
+    // the connection, before any later wake-up could see it hang up.
+    let ready = r.d.colony.effects.events.poll().unwrap();
+    assert_eq!(r.d.turn(ready), None);
+    assert!(
+        held.borrow().is_none(),
+        "the client closed during the wake-up"
+    );
+    assert_eq!(
+        r.d.connections(),
+        1,
+        "the gone client's connection stays open"
+    );
+    // The state of what its request did is saved all the same.
+    let cells = parse_cells(&r.queen.text(KEY_CELLS).unwrap()).unwrap();
+    assert!(
+        cells.iter().any(|c| c.name == "backup#1"),
+        "the instance is in the cells entry: {cells:?}"
+    );
+    // The other connection is answered and stays usable.
+    assert_eq!(
+        answer(&other, |rep| matches!(rep, Rep::NodeStatus(_))),
+        Some(true)
+    );
+    ask(&other, Req::Status { target: "db" }, &[]);
+    assert_eq!(r.d.pump(), None);
+    assert_eq!(
+        answer(&other, |rep| matches!(rep, Rep::NodeStatus(_))),
+        Some(true)
+    );
+}
+
 #[test]
 fn without_a_queen_nothing_is_saved() {
     let tmp = Tmp::new("noqueen");
@@ -1005,6 +1006,7 @@ fn without_a_queen_nothing_is_saved() {
     };
     let bytes = database(WORKER, &["db"]);
     let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
+    inotify_slot();
     let mut d = Daemon::boot(
         FakeCells::default(),
         &args,
@@ -1071,6 +1073,7 @@ fn a_daemon_with_a_queen_waits_for_statuses() {
             queen_fd: None,
         };
         let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
+        inotify_slot();
         let d = Daemon::boot(
             FakeCells::default(),
             &args,
@@ -1343,6 +1346,7 @@ fn cells_left_in_the_comb_are_logged_and_left_alone() {
     };
     let bytes = database(WORKER, &["db"]);
     let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
+    inotify_slot();
     let d = Daemon::boot(
         FakeCells::default(),
         &args,

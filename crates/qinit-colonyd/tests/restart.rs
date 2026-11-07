@@ -99,6 +99,7 @@ impl Site {
             &self.tmp.0.join("kmsg"),
         );
         let store = self.queen.borrow_mut().reattach();
+        inotify_slot();
         Daemon::boot_with(cells, &self.args, bytes, store, log, procs)
     }
 
@@ -547,6 +548,7 @@ fn no_store_and_a_broken_file_is_exit_three() {
         &site.args.console,
         &site.tmp.0.join("kmsg"),
     );
+    inotify_slot();
     let r = Daemon::boot_with(
         FakeCells::default(),
         &site.args,

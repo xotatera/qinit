@@ -956,6 +956,58 @@ fn direct(
     (server, conn, client, colony)
 }
 
+/// Serves one readable connection as the daemon does: the request, then the replies it holds,
+/// then the ones its outcome owes, in that order.
+fn served(
+    server: &mut qinit_proto::Server,
+    conn: qinit_proto::ConnId,
+    colony: &mut Colony<Sim>,
+) -> qinit_proto::Served {
+    let now = colony.effects.now();
+    let mut result = server.on_readable(conn, colony, now);
+    result.closed.extend(server.flush(colony));
+    result
+        .closed
+        .extend(server.on_outcome(&result.outcome, colony));
+    result
+}
+
+#[test]
+fn a_held_reply_goes_before_the_second_reply_of_the_same_request() {
+    let (mut server, conn, client, mut colony) = direct(&["db"]);
+    qinit_sys::fd::set_nonblocking(&client).unwrap();
+    let _ = advance_outcome(&mut colony, 5);
+    // The node is ready already: the request settles its own wait inside the call.
+    send_msg(
+        &client,
+        &Msg::Req(Req::Change {
+            target: "db",
+            action: Action::Start,
+            settled: true,
+            wait_ms: 5000,
+        }),
+        &[],
+    );
+    let now = colony.effects.now();
+    let result = server.on_readable(conn, &mut colony, now);
+    assert!(result.closed.is_empty());
+    assert!(
+        read(&client, |rep| format!("{rep:?}")).is_none(),
+        "nothing is sent before the flush"
+    );
+    assert!(server.flush(&mut colony).is_empty());
+    assert!(server.on_outcome(&result.outcome, &mut colony).is_empty());
+    assert!(read(&client, |rep| matches!(rep, Rep::Accepted)).unwrap());
+    assert!(
+        read(
+            &client,
+            |rep| matches!(rep, Rep::Settled(w) if w.state == 3)
+        )
+        .unwrap()
+    );
+    assert!(read(&client, |_| ()).is_none());
+}
+
 #[test]
 fn on_readable_returns_the_outcome_of_a_refresh_that_completes_at_once() {
     // Nothing runs, so the refresh has nothing to stop: it swaps inside the request.
@@ -970,7 +1022,7 @@ fn on_readable_returns_the_outcome_of_a_refresh_that_completes_at_once() {
         }),
         &[fd.as_fd()],
     );
-    let result = server.on_readable(conn, &mut colony, 0);
+    let result = served(&mut server, conn, &mut colony);
     assert!(result.closed.is_empty());
     assert!(
         result
@@ -995,7 +1047,7 @@ fn on_readable_returns_a_shutdown_that_completes_at_once() {
         }),
         &[],
     );
-    let result = server.on_readable(conn, &mut colony, 0);
+    let result = served(&mut server, conn, &mut colony);
     let done = result.outcome.notices.iter().any(|n| {
         matches!(
             n,
@@ -1009,7 +1061,7 @@ fn on_readable_returns_a_shutdown_that_completes_at_once() {
 fn a_refused_request_returns_an_empty_outcome() {
     let (mut server, conn, client, mut colony) = direct(&[]);
     send_unchecked(client.as_fd(), &[0u8; 3], &[]).unwrap();
-    let result = server.on_readable(conn, &mut colony, 0);
+    let result = served(&mut server, conn, &mut colony);
     assert_eq!(result.outcome, qinit_colony::Outcome::default());
     assert_eq!(result.closed, [conn], "the malformed request closed it");
 }

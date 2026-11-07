@@ -50,15 +50,22 @@ debug level.
 
 1. The kernel must be Linux 6.15 or later (`PIDFD_INFO_EXIT`).
 2. Colony is not inside the comb.
-3. With `--queen-fd`, queen's hand-over is read (each wait bounded by 10 s).
-4. The database is chosen and validated (the proved validator): the copy queen held, if it loads,
+3. Colony raises its own `RLIMIT_NOFILE` to 65536, soft and hard (it lowers neither), so it can hold
+   its cells, pipes and status descriptors and take back all that queen's store holds for it. The
+   services start with the limit colony started with; a frame's own `nofile` is set in the
+   overseer. A colony that may not raise its hard limit (not root, with a hard limit below 65536)
+   raises its soft limit to the hard one instead, logs one error, and its services still get the
+   limit it started with. When even that changes nothing, colony and its services keep the limit
+   colony has.
+4. With `--queen-fd`, queen's hand-over is read (each wait bounded by 10 s).
+5. The database is chosen and validated (the proved validator): the copy queen held, if it loads,
    replaces `--db`; exit 3 is for when there is neither. The run directory is made.
-5. The comb is opened, and `+memory +pids` is written to its `cgroup.subtree_control`: a node with a
+6. The comb is opened, and `+memory +pids` is written to its `cgroup.subtree_control`: a node with a
    limit does not start without the controller. The comb's parent must offer both.
-6. The loop is built: signals, the one timer, the cells' own descriptor, the path watcher.
-7. The control socket is bound; a stale socket file is removed first, since the path is colony's.
+7. The loop is built: signals, the one timer, the cells' own descriptor, the path watcher.
+8. The control socket is bound; a stale socket file is removed first, since the path is colony's.
    A client that connects before the graph is up waits in the socket's backlog.
-8. Logger pipes are made (below), then the graph is started or re-adopted (below).
+9. Logger pipes are made (below), then the graph is started or re-adopted (below).
 
 If the control socket cannot accept (out of descriptors), colony logs one error, takes the listener
 out of the loop for 100 ms and tries again, rather than spinning. A path or readiness watch the
@@ -191,6 +198,14 @@ Nothing is read back, and a send never blocks.
 Colony's memory is in [queen's store](queen.md): colony *puts* a descriptor under a key it
 allocates, saves text that names the keys, and forgets a key once no saved text names it. It puts
 before it saves and forgets after, so a state never names a key queen does not hold.
+
+Every reply to a served request waits for the state it reports. A wake-up's replies, a request's
+own included (`Launched`, `Accepted`, a wait already met), are sent after the state is saved: a
+client that has its answer can kill colony, and the next colony knows what the request did. A
+refused request, which changes nothing, is answered at once. A save that waits more than a second
+for a queen that does not read is dropped, logged and tried again at the next wake-up, and so is a
+put of a descriptor (the state names a cell, its main or a pipe only once its descriptor went); the
+replies do not wait for either, so colony keeps answering under a parked queen.
 
 * **Descriptors:** each cell's directory, each main's pidfd and both ends of each logger pipe.
 * **`cells`** (key 1), one line per cell colony made and has not removed:
