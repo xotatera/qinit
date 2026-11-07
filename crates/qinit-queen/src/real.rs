@@ -6,6 +6,7 @@ use crate::run::{Io, Message, Recv, Sent};
 use crate::spawn;
 use qinit_ipc::{recv, send_nowait, seqpacket_pair};
 use qinit_queen_core::Mode;
+use qinit_sys::limits::{RLIMIT_NOFILE, get_rlimit, set_rlimit};
 use qinit_sys::spawn::{Session, exec_in_place};
 use qinit_sys::{Errno, event, fd, proc, signal, timer};
 use std::ffi::{CStr, CString, OsStr, OsString};
@@ -47,6 +48,9 @@ pub struct RealIo {
     channel: Option<OwnedFd>,
     writable: bool,
     env: Vec<OsString>,
+    /// The `RLIMIT_NOFILE` (soft, hard) queen started with: what its children get, not the
+    /// raised figure it holds the store under.
+    child_nofile: Option<(u64, u64)>,
 }
 
 impl RealIo {
@@ -75,7 +79,13 @@ impl RealIo {
             channel: None,
             writable: false,
             env,
+            child_nofile: None,
         }
+    }
+
+    /// Children (colony, rescue and zero) run with `(soft, hard)` as their descriptor limit.
+    pub fn child_nofile(&mut self, limit: (u64, u64)) {
+        self.child_nofile = Some(limit);
     }
 
     /// The raw descriptor of colony's channel, for the loop's wake-up flags.
@@ -135,6 +145,7 @@ impl Io for RealIo {
             self.console.as_fd(),
             Some(theirs.as_fd()),
             Session::New,
+            self.child_nofile,
         );
         if started.is_err() {
             self.drop_channel();
@@ -151,6 +162,7 @@ impl Io for RealIo {
             self.console.as_fd(),
             None,
             Session::Console,
+            self.child_nofile,
         )
     }
 
@@ -172,7 +184,15 @@ impl Io for RealIo {
         let env: Vec<&std::ffi::CStr> = env.iter().map(CString::as_c_str).collect();
         // Zero starts with every signal unblocked; a failed exec blocks them again.
         let _ = signal::unblock_all();
+        let raised = get_rlimit(RLIMIT_NOFILE).ok();
+        if let Some((cur, max)) = self.child_nofile {
+            let _ = set_rlimit(RLIMIT_NOFILE, cur, max);
+        }
         let e = exec_in_place(&path, &argv, &env);
+        // A failed exec keeps the store, which needs the raised limit again.
+        if let Some((cur, max)) = raised {
+            let _ = set_rlimit(RLIMIT_NOFILE, cur, max);
+        }
         let _ = signal::block_all_but_fatal();
         e
     }

@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The three programs queen runs, at their fixed paths, and how a child is started: console on
-//! 0, 1 and 2, the channel (for colony) on 3, a fresh signal state, everything else closed.
+//! 0, 1 and 2, the channel (for colony) on 3, a fresh signal state, the descriptor limit queen was started
+//! with (not the raised one it holds the store under), everything else closed.
 use qinit_queen_core::Mode;
 use qinit_sys::spawn::{Prepared, Session, spawn};
 use qinit_sys::{Errno, fd};
@@ -39,8 +40,8 @@ pub fn zero_argv(mode: Mode) -> [&'static str; 3] {
     ["zero", "final", mode_word(mode)]
 }
 
-/// Starts `path` with `argv` and `env`, in session `session`: the console on 0, 1 and 2 and
-/// `channel` on 3 when given. Returns the pid. The exec-error pipe is made and dropped
+/// Starts `path` with `argv` and `env`, in session `session`: the console on 0, 1 and 2,
+/// `channel` on 3 when given, and `RLIMIT_NOFILE` set to `nofile` when given. Returns the pid. The exec-error pipe is made and dropped
 /// unread: an exec failure shows up as the child's exit (127).
 ///
 /// # Errors
@@ -52,6 +53,7 @@ pub fn start(
     console: BorrowedFd<'_>,
     channel: Option<BorrowedFd<'_>>,
     session: Session,
+    nofile: Option<(u64, u64)>,
 ) -> Result<i32, Errno> {
     let argv: Vec<&OsStr> = argv.iter().map(OsStr::new).collect();
     let mut routes = vec![(console, 0), (console, 1), (console, 2)];
@@ -60,6 +62,9 @@ pub fn start(
     }
     let mut p = Prepared::new(Path::new(path), &argv, env, &routes)?;
     p.session(session);
+    if let Some((cur, max)) = nofile {
+        p.nofile(cur, max);
+    }
     let (err_r, err_w) = fd::pipe(libc::O_CLOEXEC)?;
     let (pid, _pidfd) = spawn(&p, None, err_w.as_fd())?;
     drop((err_r, err_w));

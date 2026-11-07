@@ -4,7 +4,7 @@
 //! Colony's client of queen's store, against a fake queen over a real socket pair.
 mod common;
 
-use common::FakeQueen;
+use common::{FakeQueen, Sent};
 use qinit_colony::ShutdownMode;
 use qinit_colonyd::store::{KEY_CELLS, KEY_DB, KEY_NODES, Store};
 use qinit_ipc::memfd::{ALL_SEALS, read_all, sealed, seals};
@@ -193,6 +193,7 @@ fn standalone_does_nothing() {
     s.put(20, memfd("y").as_fd());
     s.forget(20);
     s.announce(ShutdownMode::Halt);
+    s.alive();
     s.clear();
     assert!(s.link().is_none());
     assert_eq!(s.next(), Ok(None));
@@ -259,4 +260,40 @@ fn a_failed_send_leaves_the_descriptor_open_for_the_loop_to_let_go_of() {
         "still open"
     );
     assert!(store.take_lost().is_none(), "handed back once");
+}
+
+#[test]
+fn alive_tells_queen_colony_is_turning() {
+    let (mut q, _link) = FakeQueen::new();
+    let mut store = q.reattach();
+    store.alive();
+    store.alive();
+    q.pump();
+    assert_eq!(q.events, [Sent::Alive, Sent::Alive]);
+}
+
+#[test]
+fn alive_does_not_wait_for_a_queen_that_does_not_read() {
+    let (mut q, _link) = FakeQueen::new();
+    let mut store = q.reattach();
+    let mut puts = 0;
+    while store.warnings_pending() == 0 {
+        store.save(KEY_CELLS, b"state");
+        puts += 1;
+        assert!(puts < 100_000, "the socket never filled");
+    }
+    while store.warnings().is_some() {}
+    let t = Instant::now();
+    store.alive();
+    assert!(
+        t.elapsed() < Duration::from_millis(100),
+        "alive waited {:?}",
+        t.elapsed()
+    );
+    assert_eq!(
+        store.warnings(),
+        None,
+        "a missed heartbeat is not a warning"
+    );
+    assert!(store.link().is_some(), "the link is kept");
 }

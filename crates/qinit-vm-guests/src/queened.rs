@@ -102,22 +102,35 @@ pub fn write_db(model: &Model) -> Result<(), String> {
     e(std::fs::write(DB, bytes))
 }
 
-/// Waits 400 ms, then exits 0: a rescue that ran long enough to count.
-fn late() -> i32 {
-    let Ok(t) = qinit_sys::event::timer(std::time::Duration::from_millis(400)) else {
-        return 2;
-    };
-    let Ok(mut l) = Loop::new() else { return 2 };
-    if l.add_fd(t.as_fd(), 1).is_err() {
-        return 2;
-    }
-    match l.wait() {
-        Ok(_) => 0,
-        Err(_) => 2,
-    }
+/// Lets `ms` milliseconds pass, waiting on a timer and not spinning.
+pub fn pause(ms: u64) -> Result<(), String> {
+    let t = e(qinit_sys::event::timer(std::time::Duration::from_millis(
+        ms,
+    )))?;
+    let mut l = e(Loop::new())?;
+    e(l.add_fd(t.as_fd(), 1))?;
+    e(l.wait()).map(drop)
 }
 
-/// The rescue program: logs its session, pid and controlling terminal, then does what
+/// Waits 400 ms, then exits 0: a rescue that ran long enough to count.
+fn late() -> i32 {
+    if pause(400).is_ok() { 0 } else { 2 }
+}
+
+/// The soft `Max open files` of process `pid`, from `/proc/<pid>/limits`.
+#[must_use]
+pub fn open_files_soft(pid: i32) -> Option<u64> {
+    std::fs::read_to_string(format!("/proc/{pid}/limits"))
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("Max open files"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// The rescue program: logs its session, pid, controlling terminal and soft descriptor limit, then does what
 /// `/tmp/rescue-role` says: `late` (waits 400 ms, exits 0), `repair` (copies `REPAIRED` over the database, then as `late`),
 /// `now` (exits 0) or `fail` (exits 3).
 fn rescue() -> i32 {
@@ -126,10 +139,11 @@ fn rescue() -> i32 {
     let f: Vec<&str> = rest.split_whitespace().collect();
     // After the `)`: state(0) ppid(1) pgrp(2) session(3) tty_nr(4).
     let line = format!(
-        "{} {} {}\n",
+        "{} {} {} {}\n",
         f.get(3).copied().unwrap_or("?"),
         std::process::id(),
-        f.get(4).copied().unwrap_or("?")
+        f.get(4).copied().unwrap_or("?"),
+        open_files_soft(std::process::id().try_into().unwrap_or(0)).unwrap_or(0)
     );
     let _ = std::fs::OpenOptions::new()
         .append(true)

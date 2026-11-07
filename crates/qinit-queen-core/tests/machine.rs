@@ -3,7 +3,7 @@
 
 //! The machine, one test per row of the transition table, and the named cases of the spec.
 use qinit_queen_core::machine::{
-    Action, Actions, Event, Input, LIMITS, MAX_EXITS, Phase, State, exit_code, initial,
+    Action, Actions, Event, Input, LIMITS, Limits, MAX_EXITS, Phase, State, exit_code, initial,
     next_record, orphan_reaped, record_sent, step,
 };
 use qinit_queen_core::store::{CAPACITY, DB_KEY, Entry, FREE};
@@ -767,4 +767,78 @@ fn an_ordinary_restart_keeps_the_held_database() {
     assert!(has(&v, Action::SpawnColony));
     assert!(!has(&v, Action::Close(9)));
     assert!(r.holds(DB_KEY));
+}
+
+#[test]
+fn a_new_colony_arms_the_heartbeat() {
+    let (s, _) = initial();
+    let mut r = Rig {
+        s,
+        t: vec![FREE; 8],
+        now: 1_000,
+    };
+    let v = r.feed(Input::ColonySpawned(COLONY));
+    assert!(has(&v, Action::ArmTimer(LIMITS.heartbeat_ms)), "{v:?}");
+}
+
+#[test]
+fn a_colony_silent_for_a_whole_period_is_killed() {
+    let mut r = Rig::running();
+    r.now += LIMITS.heartbeat_ms;
+    let v = r.feed(Input::Timer);
+    assert_eq!(v, [Action::Log(Event::ColonySilent), Action::Kill(COLONY)]);
+    // Killed, it is reaped and counted like any crash.
+    let v = r.colony_exits(KILLED);
+    assert!(has(&v, Action::SpawnColony), "{v:?}");
+}
+
+#[test]
+fn a_colony_that_spoke_is_given_another_period() {
+    let mut r = Rig::running();
+    r.now += LIMITS.heartbeat_ms / 2;
+    assert!(r.feed(Input::Record(FromColony::Alive, -1)).is_empty());
+    r.now += LIMITS.heartbeat_ms / 2;
+    assert_eq!(
+        r.feed(Input::Timer),
+        [Action::ArmTimer(LIMITS.heartbeat_ms)]
+    );
+    // The next whole period passes in silence.
+    r.now += LIMITS.heartbeat_ms;
+    let v = r.feed(Input::Timer);
+    assert!(has(&v, Action::Kill(COLONY)), "{v:?}");
+}
+
+#[test]
+fn a_timer_a_restart_overtook_kills_nothing() {
+    let mut r = Rig::running();
+    r.now += LIMITS.heartbeat_ms;
+    // The reap restarts colony in the same turn the stale timer is read.
+    r.colony_exits(KILLED);
+    r.feed(Input::ColonySpawned(COLONY + 1));
+    assert!(r.feed(Input::Timer).is_empty());
+}
+
+#[test]
+fn a_heartbeat_of_zero_is_off() {
+    let lim = Limits {
+        heartbeat_ms: 0,
+        ..LIMITS
+    };
+    let (s, _) = initial();
+    let (mut s, mut t) = (s, vec![FREE; 8]);
+    let a = step(&mut s, &mut t, &lim, Input::ColonySpawned(COLONY), 1_000);
+    assert!(acts(&a).iter().all(|x| !matches!(x, Action::ArmTimer(_))));
+    let a = step(&mut s, &mut t, &lim, Input::Timer, 1_000_000);
+    assert!(acts(&a).is_empty());
+}
+
+#[test]
+fn a_shutdown_takes_the_timer_from_the_heartbeat() {
+    let mut r = Rig::running();
+    let v = r.feed(Input::Cad);
+    assert!(has(&v, Action::ArmTimer(LIMITS.shutdown_ms)), "{v:?}");
+    // Past a heartbeat period, still in the shutdown's: a late Alive or a timer kill nothing
+    // beyond the shutdown's own bound.
+    r.now += LIMITS.heartbeat_ms;
+    assert!(r.feed(Input::Record(FromColony::Alive, -1)).is_empty());
 }

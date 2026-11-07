@@ -5,7 +5,7 @@
 //! nothing in this file returns or exits except the exec of zero.
 use qinit_queen::real::{CHANNEL, RealIo, SIGNALS, TIMER, open_log};
 use qinit_queen::run::{NOFILE, Queen, Wake};
-use qinit_sys::limits::{RLIMIT_NOFILE, chdir, set_rlimit};
+use qinit_sys::limits::{RLIMIT_NOFILE, chdir, get_rlimit, set_rlimit};
 use qinit_sys::{event, fd, proc, signal};
 use std::ffi::CStr;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
@@ -53,6 +53,7 @@ fn main() {
     signal::set_park_fd(log_fd.as_fd());
     // 5. The whole store plus queen's own descriptors.
     let nofile = u64::try_from(NOFILE).unwrap_or(65_536);
+    let started_with = get_rlimit(RLIMIT_NOFILE).ok();
     if set_rlimit(RLIMIT_NOFILE, nofile, nofile).is_err() {
         die("cannot raise the descriptor limit");
     }
@@ -72,10 +73,18 @@ fn main() {
         die("cannot watch the signalfd and timerfd");
     }
     // 7. Colony.
-    let mut queen = Queen::new(
-        RealIo::new(ep, sigfd, timerfd, log_fd, console),
-        qinit_queen::limits(),
-    );
+    let mut io = RealIo::new(ep, sigfd, timerfd, log_fd, console);
+    if let Some(limit) = started_with {
+        io.child_nofile(limit);
+    }
+    let (lim, refused) = qinit_queen::limits();
+    for why in &refused {
+        let _ = fd::write_all(
+            io.log_fd.as_fd(),
+            format!("<4>queen: ignoring {why}\n").as_bytes(),
+        );
+    }
+    let mut queen = Queen::new(io, lim);
     loop {
         wait_and_turn(&mut queen);
     }

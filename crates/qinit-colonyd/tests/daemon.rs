@@ -1460,3 +1460,27 @@ fn saves_dropped_while_queen_did_not_read_are_sent_again_and_never_name_a_missin
         );
     }
 }
+
+#[test]
+fn colony_tells_queen_it_is_turning_every_alive_period() {
+    use common::Sent;
+    use qinit_colonyd::daemon::ALIVE_MS;
+    let mut r = boot(WORKER, &["db"], "alive");
+    r.queen.pump();
+    let alives = |q: &common::FakeQueen| q.events.iter().filter(|e| **e == Sent::Alive).count();
+    assert_eq!(alives(&r.queen), 1, "the first heartbeat is at boot");
+    let t = u64::MAX / 4;
+    assert!(r.d.beat(t), "a period later");
+    assert!(!r.d.beat(t + ALIVE_MS - 1), "not before the period is over");
+    assert!(r.d.beat(t + ALIVE_MS));
+    r.queen.pump();
+    assert_eq!(alives(&r.queen), 3);
+}
+
+#[test]
+fn without_queen_there_is_no_heartbeat() {
+    use qinit_colonyd::daemon::ALIVE_MS;
+    let mut r = boot(WORKER, &["db"], "no-heartbeat");
+    r.d.colony.effects.store.detach();
+    assert!(!r.d.beat(u64::MAX / 4 + ALIVE_MS));
+}
