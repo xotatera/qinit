@@ -60,6 +60,7 @@ impl Site {
             syslog: tmp.0.join("log"),
             console: tmp.0.join("console"),
             run,
+            queen_fd: None,
         };
         Site { tmp, log, args }
     }

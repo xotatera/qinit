@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use qinit_ipc::{
-    Errno, MAX_FDS, accept, connect_seqpacket, listen_seqpacket, peer_cred, peer_pidfd, recv, send,
-    send_nowait, seqpacket_pair,
+    Errno, MAX_FDS, accept, connect_seqpacket, listen_seqpacket, peer_cred, peer_pidfd,
+    poll_writable, recv, send, send_nowait, seqpacket_pair,
 };
 use std::ffi::CString;
 use std::io::{Read, Write};
@@ -206,4 +206,16 @@ fn four_descriptors_travel_and_five_do_not() {
     let got = qinit_ipc::recv(b.as_fd(), &mut buf).unwrap();
     assert_eq!((got.fds.len(), got.ctrunc), (4, false));
     assert!(qinit_ipc::send(a.as_fd(), b"x", &fds).is_err());
+}
+
+#[test]
+fn a_socket_with_room_is_writable_and_a_full_one_is_not() {
+    let (a, _b) = seqpacket_pair().unwrap();
+    assert!(poll_writable(a.as_fd(), 0).unwrap());
+    let mut sent = 0;
+    while send_nowait(a.as_fd(), &[0u8; 16], &[]).is_ok() {
+        sent += 1;
+        assert!(sent < 1_000_000, "the socket never filled");
+    }
+    assert!(!poll_writable(a.as_fd(), 0).unwrap());
 }

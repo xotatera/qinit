@@ -193,6 +193,7 @@ fn try_boot(
         syslog: tmp.0.join("log"),
         console: tmp.0.join("console"),
         run: run.clone(),
+        queen_fd: None,
     };
     prep(&mut args);
     let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
@@ -496,6 +497,7 @@ fn a_failed_start_shows_as_a_spawn_failure_not_a_crash() {
         syslog: tmp.0.join("nolog"),
         console: tmp.0.join("console"),
         run: run.clone(),
+        queen_fd: None,
     };
     let bytes = database(frames, &["db"]);
     let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));

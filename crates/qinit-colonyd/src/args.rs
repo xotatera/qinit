@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Xota Tera
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! The command line: seven path flags, each at most once, as `--flag value` or `--flag=value`.
+//! The command line: seven path flags and `--queen-fd`, each at most once, as `--flag value` or
+//! `--flag=value`.
 use std::ffi::OsString;
+use std::os::fd::RawFd;
 use std::path::PathBuf;
 
 /// Where colony finds and puts things.
@@ -21,6 +23,8 @@ pub struct Args {
     pub console: PathBuf,
     /// The runtime directory: the socket's parent and `state/`.
     pub run: PathBuf,
+    /// The descriptor number of queen's channel, when queen started colony.
+    pub queen_fd: Option<RawFd>,
 }
 
 impl Default for Args {
@@ -33,6 +37,7 @@ impl Default for Args {
             syslog: "/dev/log".into(),
             console: "/dev/console".into(),
             run: "/run/qinit".into(),
+            queen_fd: None,
         }
     }
 }
@@ -55,6 +60,29 @@ pub fn parse(argv: &[OsString]) -> Result<Args, String> {
             Some((n, v)) => (n, Some(OsString::from(v))),
             None => (flag, None),
         };
+        if name == "queen-fd" {
+            if seen.contains(&"--queen-fd") {
+                return Err("--queen-fd is repeated".into());
+            }
+            let value = inline.or_else(|| words.next().cloned());
+            let n = value
+                .as_ref()
+                .and_then(|v| v.to_str())
+                .and_then(|v| v.parse::<RawFd>().ok())
+                .filter(|n| *n >= 0);
+            match (value, n) {
+                (None, _) => return Err("--queen-fd needs a value".into()),
+                (Some(v), None) => {
+                    return Err(format!(
+                        "--queen-fd needs a descriptor number, not {:?}",
+                        v.to_string_lossy()
+                    ));
+                }
+                (Some(_), Some(n)) => out.queen_fd = Some(n),
+            }
+            seen.push("--queen-fd");
+            continue;
+        }
         let field = match name {
             "db" => ("--db", &mut out.db),
             "comb" => ("--comb", &mut out.comb),

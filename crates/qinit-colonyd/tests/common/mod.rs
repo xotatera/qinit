@@ -10,7 +10,7 @@ use qinit_db::{
     Cred, Kind, Model, Node, Ready, Restart, RestartPolicy, Seccomp, Securebits, Stop, StopMode,
     UserMap,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::os::fd::{OwnedFd, RawFd};
 use std::time::Duration;
 
@@ -325,4 +325,87 @@ pub fn database(frames: &str, enable: &[&str]) -> Vec<u8> {
         policy: None,
     };
     compile(&input).expect("the frames compile").bytes
+}
+
+/// Queen's side of the channel, for the tests: it holds what colony puts, as queen would, and
+/// hands it to a new colony.
+pub struct FakeQueen {
+    pub peer: OwnedFd,
+    pub held: BTreeMap<u64, OwnedFd>,
+    /// The modes colony announced.
+    pub shutdowns: Vec<qinit_queen_core::Mode>,
+}
+
+impl FakeQueen {
+    /// A queen and the colony end of its channel.
+    pub fn new() -> (FakeQueen, OwnedFd) {
+        let (peer, link) = qinit_ipc::seqpacket_pair().unwrap();
+        qinit_sys::fd::set_nonblocking(&peer).unwrap();
+        (
+            FakeQueen {
+                peer,
+                held: BTreeMap::new(),
+                shutdowns: Vec::new(),
+            },
+            link,
+        )
+    }
+
+    /// Sends colony `rec`, with `fd` when given.
+    pub fn send(&self, rec: qinit_queen_core::ToColony, fd: Option<std::os::fd::BorrowedFd<'_>>) {
+        let bytes = qinit_queen_core::encode_to_colony(rec);
+        let fds: Vec<_> = fd.into_iter().collect();
+        qinit_ipc::send(std::os::fd::AsFd::as_fd(&self.peer), &bytes, &fds).unwrap();
+    }
+
+    /// Applies everything colony has sent so far.
+    pub fn pump(&mut self) {
+        use qinit_queen_core::{FromColony, decode_from_colony};
+        loop {
+            let mut buf = [0u8; 32];
+            let r = match qinit_ipc::recv(std::os::fd::AsFd::as_fd(&self.peer), &mut buf) {
+                Ok(r) => r,
+                Err(qinit_ipc::Errno(libc::EAGAIN)) => return,
+                Err(e) => panic!("{e:?}"),
+            };
+            if r.len == 0 && r.fds.is_empty() {
+                return;
+            }
+            let mut fds = r.fds;
+            match decode_from_colony(&buf[..r.len], fds.len()).expect("a well-formed record") {
+                FromColony::Put { key } => {
+                    self.held.insert(key, fds.pop().unwrap());
+                }
+                FromColony::Drop { key } => {
+                    self.held.remove(&key);
+                }
+                FromColony::Shutdown { mode } => self.shutdowns.push(mode),
+            }
+        }
+    }
+
+    /// A new colony's end: queen sends what it holds, then `HeldEnd`, as it does at a spawn.
+    pub fn reattach(&mut self) -> qinit_colonyd::store::Store {
+        use qinit_queen_core::ToColony;
+        self.pump();
+        let (peer, link) = qinit_ipc::seqpacket_pair().unwrap();
+        qinit_sys::fd::set_nonblocking(&peer).unwrap();
+        self.peer = peer;
+        for (&key, fd) in &self.held {
+            let bytes = qinit_queen_core::encode_to_colony(ToColony::Held { key });
+            qinit_ipc::send(
+                std::os::fd::AsFd::as_fd(&self.peer),
+                &bytes,
+                &[std::os::fd::AsFd::as_fd(fd)],
+            )
+            .unwrap();
+        }
+        self.send(
+            ToColony::HeldEnd {
+                count: u32::try_from(self.held.len()).unwrap(),
+            },
+            None,
+        );
+        qinit_colonyd::store::Store::attach(link).unwrap()
+    }
 }

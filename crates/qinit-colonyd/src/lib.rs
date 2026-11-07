@@ -14,6 +14,7 @@ pub mod readopt;
 pub mod route;
 pub mod start;
 pub mod state;
+pub mod store;
 pub mod syslog;
 pub mod watch;
 
