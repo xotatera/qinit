@@ -301,6 +301,26 @@ fn begin_shutdown(s: &mut State, a: &mut Actions, lim: &Limits, mode: Mode)
     push(a, Action::ArmTimer(lim.shutdown_ms));
 }
 
+/// Forgets the held `colony.db` and closes its descriptor, if one is held: the administrator has
+/// had the machine in rescue, and the next colony must read the file they repaired, not the copy
+/// that was in force when colony failed.
+fn drop_held_db(table: &mut [Entry], a: &mut Actions)
+    requires
+        unique(old(table)@),
+        old(a).len <= MAX_ACTIONS,
+    ensures
+        final(table)@.len() == old(table)@.len(),
+        unique(final(table)@),
+        final(a).len <= old(a).len + 1,
+        final(a).spawn_colony == old(a).spawn_colony,
+        final(a).exec_zero == old(a).exec_zero,
+{
+    #[allow(clippy::collapsible_if)]  // Verus has no let chains
+    if let Some(f) = take(table, DB_KEY) {
+        push(a, Action::Close(f));
+    }
+}
+
 /// Runs the rescue program, unless one already runs.
 fn spawn_rescue(s: &State, a: &mut Actions)
     requires
@@ -406,6 +426,7 @@ pub fn step(s: &mut State, table: &mut [Entry], lim: &Limits, input: Input, now:
         (input is Timer && old(s).phase == Phase::Killed) ==> a.exec_zero,
         (input is Timer && old(s).phase == Phase::Stopping && old(s).colony != 0) ==> final(s).phase
             == Phase::Killed && !a.exec_zero,
+        (input is Timer && old(s).phase == Phase::Stopping && old(s).colony == 0) ==> a.exec_zero,
         (input is ExecFailed) ==> final(s).phase == Phase::Rescue,
         match input {
             Input::Child { pid, .. } => (pid != 0 && pid == old(s).colony && (old(s).phase
@@ -434,6 +455,7 @@ pub fn step(s: &mut State, table: &mut [Entry], lim: &Limits, input: Input, now:
                     } else {
                         s.nexits = 0;
                         s.phase = Phase::Running;
+                        drop_held_db(table, &mut a);
                         push(&mut a, Action::SpawnColony);
                     }
                 },
@@ -497,6 +519,7 @@ pub fn step(s: &mut State, table: &mut [Entry], lim: &Limits, input: Input, now:
                     if clean {
                         s.nexits = 0;
                         s.phase = Phase::Running;
+                        drop_held_db(table, &mut a);
                         push(&mut a, Action::SpawnColony);
                     } else {
                         s.phase = Phase::Hold;
@@ -563,6 +586,10 @@ pub fn step(s: &mut State, table: &mut [Entry], lim: &Limits, input: Input, now:
                         s.phase = Phase::Killed;
                         push(&mut a, Action::Kill(s.colony));
                         push(&mut a, Action::ArmTimer(lim.kill_wait_ms));
+                    } else {
+                        // Nothing is left to kill or to wait for: the bound ends the shutdown.
+                        let mode = s.mode;
+                        exec_zero(s, &mut a, mode);
                     }
                 },
                 Phase::Killed => {

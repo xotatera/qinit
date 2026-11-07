@@ -11,6 +11,10 @@ verus! {
 /// 4096 logger pipes, and the three fixed entries.
 pub const CAPACITY: usize = 4352 * 2 + 4096 * 2 + 3;
 
+/// The key colony holds its database under (`colony.db`). Queen drops it when the administrator
+/// has had the machine in rescue, so the next colony reads the file that was repaired.
+pub const DB_KEY: u64 = 3;
+
 /// One slot: `key` 0 is a free slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Entry {

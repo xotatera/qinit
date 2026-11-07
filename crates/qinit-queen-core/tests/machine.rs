@@ -6,7 +6,7 @@ use qinit_queen_core::machine::{
     Action, Actions, Event, Input, LIMITS, MAX_EXITS, Phase, State, exit_code, initial,
     next_record, orphan_reaped, record_sent, step,
 };
-use qinit_queen_core::store::{CAPACITY, Entry, FREE};
+use qinit_queen_core::store::{CAPACITY, DB_KEY, Entry, FREE};
 use qinit_queen_core::{FromColony, Mode, ToColony};
 
 const COLONY: i32 = 100;
@@ -694,4 +694,77 @@ fn the_capacity_table_works_at_full_size() {
     );
     let v = r.feed(Input::Record(FromColony::Put { key: 77 }, 5));
     assert_eq!(v, [Action::Close(3)], "an old key is still replaced");
+}
+
+#[test]
+fn a_timer_in_stopping_with_no_colony_goes_to_zero() {
+    let mut r = Rig::running();
+    r.feed(Input::Pwr);
+    // Colony is gone and nothing will reap it: the bound still ends the shutdown.
+    r.s.colony = 0;
+    let v = r.feed(Input::Timer);
+    assert!(
+        v.iter()
+            .any(|a| matches!(a, Action::ExecZero(Mode::Poweroff))),
+        "{v:?}"
+    );
+}
+
+impl Rig {
+    fn put(&mut self, key: u64, fd: i32) {
+        self.feed(Input::Record(FromColony::Put { key }, fd));
+    }
+
+    fn holds(&self, key: u64) -> bool {
+        self.t.iter().any(|e| e.key == key)
+    }
+}
+
+#[test]
+fn a_clean_rescue_drops_the_held_database_so_the_fixed_file_is_read() {
+    let mut r = Rig::running();
+    r.put(1, 7);
+    r.put(DB_KEY, 9);
+    r.colony_exits(exited(3));
+    r.feed(Input::RescueSpawned(RESCUE));
+    r.now += LIMITS.rescue_min_ms;
+    let v = r.feed(Input::Child {
+        pid: RESCUE,
+        status: exited(0),
+    });
+    assert!(has(&v, Action::SpawnColony), "{v:?}");
+    assert!(
+        has(&v, Action::Close(9)),
+        "the database's descriptor is closed: {v:?}"
+    );
+    assert!(!r.holds(DB_KEY));
+    assert!(r.holds(1), "the cells stay: they are adopted, not rebuilt");
+}
+
+#[test]
+fn leaving_the_hold_with_ctrl_alt_del_drops_the_held_database() {
+    let mut r = Rig::running();
+    r.put(DB_KEY, 9);
+    r.colony_exits(exited(3));
+    r.feed(Input::RescueSpawned(RESCUE));
+    r.feed(Input::Child {
+        pid: RESCUE,
+        status: exited(1),
+    });
+    assert_eq!(r.s.phase, Phase::Hold);
+    assert!(r.holds(DB_KEY), "a failed rescue changed nothing");
+    let v = r.feed(Input::Cad);
+    assert!(has(&v, Action::SpawnColony));
+    assert!(has(&v, Action::Close(9)), "{v:?}");
+    assert!(!r.holds(DB_KEY));
+}
+
+#[test]
+fn an_ordinary_restart_keeps_the_held_database() {
+    let mut r = Rig::running();
+    r.put(DB_KEY, 9);
+    let v = r.colony_exits(KILLED);
+    assert!(has(&v, Action::SpawnColony));
+    assert!(!has(&v, Action::Close(9)));
+    assert!(r.holds(DB_KEY));
 }
