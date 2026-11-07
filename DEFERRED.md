@@ -158,8 +158,10 @@ batch (`qinit-event`, `Loop::wait`: `Ready::Exited` before the rest), so the
 cell engine handles the main exit (`qinit-cell`, `main_exited`) before the
 readable ready pipe and the machine goes to Empty without a `Ready` report.
 Accepted as is: a service that is already gone when readiness is read cannot
-be supervised as ready. The maintainer decided to revisit this in the colony
-sub-project (sub-project 4), which owns service state.
+be supervised as ready. The colony sub-project (sub-project 4), which owns
+service state, revisited it and kept it: a `ready = pipe` worker whose exit
+arrives before its ready line has exited before ready, a failure; `ready =
+exit` is unaffected.
 
 ### D19 — Validator worst-case cost · `RESOLVED`
 
