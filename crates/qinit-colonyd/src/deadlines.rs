@@ -13,6 +13,8 @@ pub enum Key {
     Wait(u64),
     /// The retry of the control socket's listener, paused after it could not accept.
     Listener,
+    /// How long a handed-over main's status is waited for after queen is told it exited.
+    Status(qinit_cell::CellId),
 }
 
 /// Pending deadlines, at most one per key.
@@ -29,6 +31,12 @@ impl Deadlines {
         self.cancel(key);
         self.seq += 1;
         self.entries.push((key, at_ms, self.seq));
+    }
+
+    /// Whether `key` has a deadline pending.
+    #[must_use]
+    pub fn is_armed(&self, key: Key) -> bool {
+        self.entries.iter().any(|(k, ..)| *k == key)
     }
 
     /// Forgets `key`'s deadline, if any.

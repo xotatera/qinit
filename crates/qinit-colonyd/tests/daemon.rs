@@ -16,6 +16,7 @@ use qinit_colonyd::store::{KEY_CELLS, KEY_DB, KEY_NODES, Store};
 use qinit_colonyd::syslog::Syslog;
 use qinit_ipc::{connect_seqpacket, recv, send};
 use qinit_proto_core::MAX_MESSAGE;
+use qinit_queen_core::ToColony;
 use qinit_wire::{Mode, Msg, Rep, Req, decode, encode};
 use std::ffi::CString;
 use std::os::fd::{AsFd, OwnedFd};
@@ -1003,4 +1004,148 @@ fn without_a_queen_nothing_is_saved() {
         !run.join("state").exists(),
         "no state directory is made any more"
     );
+}
+
+fn status_pending(r: &mut Rig) {
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::Running));
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::StatusPending(CellId(0)));
+    assert_eq!(r.d.turn(Vec::new()), None);
+}
+
+fn settles(r: &Rig) -> Vec<Call> {
+    r.d.colony
+        .effects
+        .cells
+        .calls
+        .iter()
+        .filter(|c| matches!(c, Call::Settle(..)))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_daemon_with_a_queen_waits_for_statuses() {
+    let r = boot(WORKER, &["db"], "waits");
+    assert!(
+        r.d.colony.effects.cells.waits,
+        "the cell layer was told to wait for a reap"
+    );
+    let standalone = {
+        let tmp = Tmp::new("nowait");
+        std::fs::create_dir_all(tmp.0.join("run")).unwrap();
+        std::fs::create_dir_all(tmp.0.join("comb")).unwrap();
+        for f in ["console", "kmsg"] {
+            std::fs::write(tmp.0.join(f), b"").unwrap();
+        }
+        let args = Args {
+            db: tmp.0.join("colony.db"),
+            comb: tmp.0.join("comb"),
+            socket: tmp.0.join("run/colony"),
+            overseer: "/o".into(),
+            syslog: tmp.0.join("nolog"),
+            console: tmp.0.join("console"),
+            run: tmp.0.join("run"),
+            queen_fd: None,
+        };
+        let syslog = Syslog::new(&args.syslog, &args.console, &tmp.0.join("kmsg"));
+        let d = Daemon::boot(
+            FakeCells::default(),
+            &args,
+            &database(WORKER, &["db"]),
+            Store::standalone(),
+            syslog,
+        )
+        .expect("boots");
+        d.colony.effects.cells.waits
+    };
+    assert!(!standalone, "without queen nothing waits for a reap");
+}
+
+#[test]
+fn a_reaped_wake_delivers_a_pending_status() {
+    let mut r = boot(WORKER, &["db"], "reaped");
+    status_pending(&mut r);
+    assert!(
+        r.d.colony
+            .effects
+            .deadlines
+            .is_armed(Key::Status(CellId(0)))
+    );
+    r.d.colony.effects.cells.settled.insert(0);
+    r.queen.send(ToColony::Reaped, None);
+    assert_eq!(r.d.pump(), None);
+    assert_eq!(settles(&r), [Call::Settle(0, false)]);
+    assert!(
+        !r.d.colony
+            .effects
+            .deadlines
+            .is_armed(Key::Status(CellId(0))),
+        "a settled status needs no deadline"
+    );
+}
+
+#[test]
+fn a_wake_before_the_status_is_there_keeps_waiting() {
+    let mut r = boot(WORKER, &["db"], "early");
+    status_pending(&mut r);
+    r.queen.send(ToColony::Reaped, None);
+    assert_eq!(r.d.pump(), None);
+    assert_eq!(settles(&r), [Call::Settle(0, false)]);
+    assert!(
+        r.d.colony
+            .effects
+            .deadlines
+            .is_armed(Key::Status(CellId(0)))
+    );
+}
+
+#[test]
+fn a_status_that_never_comes_is_given_up_after_a_second() {
+    let mut r = boot(WORKER, &["db"], "giveup");
+    status_pending(&mut r);
+    r.d.colony.effects.cells.settled.insert(0);
+    r.d.colony.effects.deadlines.arm(Key::Status(CellId(0)), 0);
+    assert_eq!(r.d.turn(Vec::new()), None);
+    assert_eq!(settles(&r), [Call::Settle(0, true)]);
+    assert!(
+        !r.d.colony
+            .effects
+            .deadlines
+            .is_armed(Key::Status(CellId(0)))
+    );
+}
+
+#[test]
+fn a_wake_with_nothing_pending_does_nothing() {
+    let mut r = boot(WORKER, &["db"], "nothing");
+    r.queen.send(ToColony::Reaped, None);
+    assert_eq!(r.d.pump(), None);
+    assert!(settles(&r).is_empty());
+}
+
+#[test]
+fn queen_going_away_does_not_stop_colony() {
+    let mut r = boot(WORKER, &["db"], "gone");
+    let queen = std::mem::replace(&mut r.queen, FakeQueen::new().0);
+    drop(queen);
+    assert_eq!(r.d.pump(), None);
+    assert!(r.d.colony.effects.store.link().is_none());
+    let said = r.logged().iter().filter(|l| l.contains("queen")).count();
+    assert_eq!(said, 1, "logged once: {:?}", r.logged());
+    // Colony serves on: a report still reaches its node.
+    r.d.colony
+        .effects
+        .cells
+        .pending
+        .push(Notice::Cell(CellId(0), Report::Ready));
+    assert_eq!(r.d.turn(Vec::new()), None);
+    assert_eq!(r.d.colony.state(0), Some(State::Ready));
 }

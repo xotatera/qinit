@@ -178,6 +178,11 @@ impl Store {
         );
     }
 
+    /// Lets go of the channel: queen is gone, and colony carries on without saving.
+    pub fn detach(&mut self) {
+        self.link = None;
+    }
+
     /// The channel, for the loop to watch.
     #[must_use]
     pub fn link(&self) -> Option<BorrowedFd<'_>> {

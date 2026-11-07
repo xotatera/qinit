@@ -6,6 +6,7 @@
 //! refresh swapped the database or a shutdown completed, to the work that follows. See
 //! `docs/colony.md`.
 use crate::args::Args;
+use crate::deadlines::Key;
 use crate::effects::{CellOps, Heard, PathEvent, RealEffects, WatchLoss, status_owner};
 use crate::exit;
 use crate::notes::describe;
@@ -16,13 +17,14 @@ use crate::state::{
 };
 use crate::store::{KEY_CELLS, KEY_DB, KEY_NODES, Store};
 use crate::syslog::{Sev, Syslog};
-use qinit_cell::Report as CellReport;
+use qinit_cell::{CellId, Report as CellReport};
 use qinit_colony::{
     Colony, Error, Notice, Outcome, Report, Request, Restored, ShutdownMode, TimerKind, WaitId,
 };
 use qinit_event::{Loop, Ready, Token};
 use qinit_ipc::{accept, listen_seqpacket};
 use qinit_proto::{ConnId, Limits, Server};
+use qinit_queen_core::ToColony;
 use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::os::fd::{AsFd, OwnedFd};
@@ -43,6 +45,11 @@ const TIMER: Token = BASE | 1;
 const SIGNALS: Token = BASE | 2;
 /// The path watcher's inotify set.
 const INOTIFY: Token = BASE | 3;
+/// The channel to queen.
+const QUEEN: Token = BASE | 4;
+
+/// How long a handed-over main's status is waited for after it exited.
+pub const STATUS_WAIT_MS: u64 = 1_000;
 
 /// How long a leftover cell is given to stop before it is killed.
 const CLEAR_GRACE: Duration = Duration::from_secs(5);
@@ -94,6 +101,8 @@ pub struct Daemon<C: CellOps> {
     exit_after: Option<u8>,
     /// Outcomes whose replies are not yet delivered (see [`Daemon::settle`]).
     owed: Vec<Outcome>,
+    /// Cells whose handed-over main exited and whose status is awaited.
+    status_pending: BTreeSet<CellId>,
 }
 
 impl<C: CellOps> Daemon<C> {
@@ -192,6 +201,14 @@ impl<C: CellOps> Daemon<C> {
         )
         .map_err(|e| refuse(&mut log, exit::STARTUP, format!("path watcher: {e}")))?;
         effects.store = store;
+        if let Some(link) = effects.store.link() {
+            // Queen reaps a handed-over main's parent's orphans: its status is awaited.
+            effects
+                .events
+                .add_fd(link, QUEEN)
+                .map_err(|e| refuse(&mut log, exit::STARTUP, format!("loop: {e}")))?;
+            effects.cells.wait_for_status();
+        }
         // The node state and the logger pipes the earlier colony left, if its database is the
         // one in force.
         let (saved_nodes, saved_pipes) = if from_state {
@@ -325,6 +342,7 @@ impl<C: CellOps> Daemon<C> {
             shutdown_done: false,
             exit_after: None,
             owed: Vec::new(),
+            status_pending: BTreeSet::new(),
         };
         d.colony.effects.ready = plan
             .restored
@@ -489,7 +507,11 @@ impl<C: CellOps> Daemon<C> {
                     return;
                 }
             };
-            if heard.cells.is_empty() && heard.orphans.is_empty() && heard.strays.is_empty() {
+            if heard.cells.is_empty()
+                && heard.orphans.is_empty()
+                && heard.strays.is_empty()
+                && heard.status_pending.is_empty()
+            {
                 return;
             }
             self.on_heard(heard);
@@ -509,6 +531,13 @@ impl<C: CellOps> Daemon<C> {
     }
 
     fn on_heard(&mut self, heard: Heard) {
+        for id in heard.status_pending {
+            self.status_pending.insert(id);
+            self.colony
+                .effects
+                .deadlines
+                .arm(Key::Status(id), self.now_ms + STATUS_WAIT_MS);
+        }
         for (id, report) in heard.strays {
             match report {
                 CellReport::Empty => self.colony.effects.remove_cleared(id),
@@ -569,8 +598,51 @@ impl<C: CellOps> Daemon<C> {
                     self.resume_listener();
                     continue;
                 }
+                crate::deadlines::Key::Status(id) => {
+                    self.settle_status(id, true);
+                    continue;
+                }
             };
             self.settle(out, true);
+        }
+    }
+
+    /// Asks the cell layer for the status of a pending main; a delivered one ends the wait.
+    fn settle_status(&mut self, id: CellId, give_up: bool) {
+        match self.colony.effects.cells.settle_status(id, give_up) {
+            Ok(true) => {
+                self.status_pending.remove(&id);
+                self.colony.effects.deadlines.cancel(Key::Status(id));
+            }
+            Ok(false) => {}
+            Err(e) => self.say(Sev::Err, &format!("a main's status: {e}")),
+        }
+    }
+
+    /// Queen has something for colony: a reap (statuses may be readable now), a refusal, a
+    /// request. A channel that fails is dropped, and colony serves on without queen.
+    fn on_queen(&mut self) {
+        loop {
+            match self.colony.effects.store.next() {
+                Ok(None) => return,
+                Ok(Some(ToColony::Reaped)) => {
+                    let pending: Vec<CellId> = self.status_pending.iter().copied().collect();
+                    for id in pending {
+                        self.settle_status(id, false);
+                    }
+                }
+                Ok(Some(ToColony::Refused { key })) => self.say(
+                    Sev::Err,
+                    &format!("queen's store is full: the descriptor for key {key} was refused"),
+                ),
+                Ok(Some(_)) => {}
+                Err(why) => {
+                    self.say(Sev::Err, &format!("{why}: state is no longer saved"));
+                    let _ = self.colony.effects.events.remove(QUEEN);
+                    self.colony.effects.store.detach();
+                    return;
+                }
+            }
         }
     }
 
@@ -635,6 +707,7 @@ impl<C: CellOps> Daemon<C> {
                     self.on_status(owner);
                 }
             }
+            Ready::Readable(QUEEN) | Ready::Hangup(QUEEN) => self.on_queen(),
             Ready::Signal(SIGNALS, signo) => self.on_signal(signo),
             Ready::InotifySet(INOTIFY, evs) => self.on_inotify(&evs),
             _ => {}
