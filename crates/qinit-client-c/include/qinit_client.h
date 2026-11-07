@@ -45,7 +45,7 @@ typedef struct qinit_event qinit_event;
  * A null pointer where one is required, a string over its length limit or not UTF-8, an enum
  * word out of range, or a call the client cannot make now (anything but `qinit_watch_next`,
  * `qinit_fd`, `qinit_last_error` and `qinit_close` after `qinit_watch`, and anything but the last
- * three after a refused one). Nothing was sent.
+ * three after a watch that lost the connection). Nothing was sent.
  */
 #define QINIT_E_ARGUMENT 5
 

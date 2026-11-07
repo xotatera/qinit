@@ -55,7 +55,7 @@ impl qinit_client {
     fn client(&mut self) -> Result<&mut Client, Fail> {
         match &mut self.inner {
             Inner::Client(c) => Ok(c),
-            // Not a call this client can make now, whether it watches or its watch was refused.
+            // Not a call this client can make now: it watches, or its watch lost the connection.
             Inner::Watching(_) | Inner::Spent => Err(Fail::ARGUMENT),
         }
     }

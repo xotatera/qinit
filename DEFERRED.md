@@ -493,11 +493,12 @@ is hard-linked to a backup name beside it, `.<name>.qctl-old-<pid>` (a name alre
 run with nothing changed and stays as it is); then each file is replaced, an existing one by a
 rename and a new one by a hard link and the removal of its temporary name. A step that fails is
 undone in reverse order: a replaced file gets its backup renamed back (the same inode: bytes, mode
-and owner), new files and the directories made for them are removed, and no temporary or backup
-name stays; when undoing fails too, the error names each old text left at its backup name. A crash
-part way is not undone (a second `fill` completes the rest), nor is a failure after the last file
-was replaced (removing a backup, syncing a directory): every file is filled then, and the error
-says so. `tests/fill.rs` fails each step of a commit in turn.
+and owner), new files and the directories made for them are removed (one something else was put
+in meanwhile stays, and is named), and no temporary or backup name stays; when undoing fails
+too, the error names each old text left at its backup name. A crash part way is not undone (a
+second `fill` completes the rest), nor is a failure after the last file was replaced (removing a
+backup, syncing a directory): every file is filled then, and the error says so. `tests/fill.rs`
+fails each step of a commit in turn, the links of the backups included.
 
 ### D61 — Test directories left in `/tmp` by other crates · `RESOLVED`
 
@@ -552,14 +553,17 @@ the state to reach queen for this reason.
 
 The server now holds a request's own reply, with the descriptors that travel with it
 (`Server::flush`), and the daemon sends it at the end of the wake-up after the state is saved,
-before the replies the request's outcome owes; the `readopt` suite no longer makes a round trip
-before a kill. `tests/daemon.rs` reads the channel to queen and the client's socket after one
-wake-up: the client has nothing until the `cells` entry naming its instance was saved. One case is
-left: the replies go out once the saves were tried, whether or not they went. A save that waits
-more than a second for a queen that does not read is dropped, logged and tried again at the next
-wake-up, and a reply sent meanwhile comes before the state it reports. Holding the replies until
-the save goes would stop colony answering under a parked queen, which D69 says colony keeps
-serving.
+before the replies the request's outcome owes; the `readopt` suite's instance case no longer makes
+a round trip before its kill. `tests/daemon.rs` looks at the client's socket when the wake-up
+starts saving and finds nothing there, and then at the `cells` entry, which names the instance.
+Two cases are left, both of a queen that does not read. The replies go out once the saves were
+tried, whether or not they went: a save that waits more than a second is dropped, logged and tried
+again at the next wake-up, and a reply sent meanwhile comes before the state it reports. A put of a
+descriptor is dropped the same way (`Store::put`: a cell's directory, a main's pidfd, a logger
+pipe's ends), and until a later wake-up puts it the saved state leaves that cell, its main or that
+pipe out (`sync_store` names a key only once it went), so a reply sent meanwhile comes before the
+record of what it reports. Holding the replies until both go would stop colony answering under a
+parked queen, which D69 says colony keeps serving.
 
 ### D68 — A configurable shutdown bound · `RESOLVED`
 
@@ -619,9 +623,10 @@ logger pipe and must take back up to 16,899 entries from queen's store at once. 
 its own `RLIMIT_NOFILE` to 65536, soft and hard (lowering neither), before it reads the hand-over,
 and its cells spawn their mains with the limit it started with (`Cells::child_nofile`, through
 `Prepared::nofile`); a frame's own `nofile` still applies in the overseer. A colony that may not
-raise it logs one error and changes nothing. Before the fix the `queen` suite's new case, 520
-loggers whose pipes put 1040 descriptors in the store, never reached the store: each colony failed
-to make its logger pipes (`EMFILE`), queen's crash limit ran rescue and the machine held. No held
-descriptor was lost, since a colony at 1024 cannot put more than it holds itself; on the host a
-colony at 1024 handed 1100 held descriptors refused the hand-over (`MSG_CTRUNC`, "did not fit"),
-and with the fix took them all. After it the guest case takes all 520 pipes back across a kill.
+raise its hard limit (not root, a hard limit below 65536) raises its soft one to the hard one and
+logs one error. Before the fix the `queen` suite's new case, 520 loggers whose pipes put 1040
+descriptors in the store, never reached the store: each colony failed to make its logger pipes
+(`EMFILE`), queen's crash limit ran rescue and the machine held. No held descriptor was lost, since
+a colony at 1024 cannot put more than it holds itself; on the host a colony at 1024 handed 1100
+held descriptors refused the hand-over (`MSG_CTRUNC`, "did not fit"), and with the fix took them
+all. After it the guest case takes all 520 pipes back across a kill.

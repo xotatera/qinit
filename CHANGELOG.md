@@ -338,7 +338,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A booted colony no longer runs at the kernel's descriptor limit (D74): since D72 it started at
   1024 soft, 4096 hard, and a hand-over of more held descriptors than that did not fit. Colony
   raises its own `RLIMIT_NOFILE` to 65536, soft and hard, before it reads queen's hand-over, and
-  starts its services with the limit it started with; a frame's own `nofile` still applies.
+  starts its services with the limit it started with; a frame's own `nofile` still applies. A
+  colony that may not raise its hard limit raises its soft one to it.
 - A request's replies follow the state they report (D67): the server holds a request's own reply
   (`Server::flush`) until the daemon has saved the wake-up's state, so a colony killed the moment
   a client has its answer still leaves the record of what the request did, a launched instance

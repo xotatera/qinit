@@ -408,6 +408,27 @@ fn start_timeout_none_compiles_to_zero() {
 }
 
 #[test]
+fn a_start_timeout_word_other_than_none_is_refused() {
+    let es = errs(
+        r#"
+        [worker.w]
+        exec = ["/w"]
+        credentials = { uid = "svc" }
+        start_timeout = "abc"
+    "#,
+    );
+    assert_eq!(es.len(), 1, "{es:?}");
+    assert_eq!(es[0].code, Code::BadValue);
+    assert_eq!(es[0].key, "worker.w.start_timeout");
+    assert!(
+        es[0]
+            .detail
+            .contains("`abc` is not a duration like 90s or none"),
+        "{es:?}"
+    );
+}
+
+#[test]
 fn user_map_own_needs_no_user_namespace() {
     let r = ok(r#"
         [worker.a]
@@ -416,7 +437,10 @@ fn user_map_own_needs_no_user_namespace() {
         sandbox = { user_map = "own" }
     "#);
     let cred = node(&r.model, "a").cred.expect("cred");
-    assert!(r.model.creds[cred as usize].user_map == qinit_db::UserMap::Own);
+    assert_eq!(
+        r.model.creds[cred as usize].user_map,
+        qinit_db::UserMap::Own
+    );
 }
 
 #[test]

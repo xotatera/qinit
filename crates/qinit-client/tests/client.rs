@@ -417,6 +417,9 @@ fn a_refused_watch_returns_the_client() {
         refused.error,
         ClientError::Server(ErrorCode::UnknownNode, 0)
     );
+    // An error like any other, whose source is colony's answer.
+    let source = std::error::Error::source(&refused).map(ToString::to_string);
+    assert_eq!(source, Some(refused.error.to_string()));
     let mut c = refused.client.expect("the connection is still good");
     assert!(matches!(c.status("db"), Ok(Status::Node(_))));
 }
@@ -424,17 +427,25 @@ fn a_refused_watch_returns_the_client() {
 #[test]
 fn a_lost_connection_returns_no_client() {
     let s = Served::start(&["db"], true, instant(None));
-    let c = s.client();
+    let mut c = s.client();
+    // A round trip first: the server has accepted the connection, so closing it is a plain
+    // close of a socket with nothing left to read, not the reset of one never accepted.
+    assert!(matches!(c.status("db"), Ok(Status::Node(_))));
     // Colony goes away, and its end of the connection with it.
     drop(s.finish());
     let Err(refused) = c.watch(Scope::All) else {
         panic!("a closed connection cannot watch");
     };
     assert!(refused.client.is_none());
-    assert!(matches!(
-        ClientError::from(refused),
-        ClientError::Unexpected | ClientError::Io(_)
-    ));
+    // The request cannot be sent: the error is the send's, not a reply that does not fit.
+    match ClientError::from(refused) {
+        ClientError::Io(e) => assert_eq!(
+            std::io::Error::from_raw_os_error(e).kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "errno {e}"
+        ),
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]

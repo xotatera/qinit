@@ -7,10 +7,10 @@
 //! dump, in the dump's order. A key a layer set keeps the value as the layer wrote it (so `%i`
 //! and units stay as written), taken from the frame's merged table or, for a key it inherits,
 //! from its template's. A key no layer set prints the resolved default. Keys that are derived
-//! (`errors` following `output`, the implicit logger group) are left out. Every default
-//! prints as a key (`start_timeout` "none" and `sandbox.user_map` "own" have words), so the output
-//! compiles back to the same nodes. The template is resolved
-//! into the frame: its name is a comment and the keys it gives are marked `# template <name>`.
+//! (`errors` following `output`, the implicit logger group) are left out. Every default prints
+//! as a key (`start_timeout` "none" and `sandbox.user_map` "own" have words), so the output
+//! compiles back to the same nodes. The template is resolved into the frame: its name is a
+//! comment and the keys it gives are marked `# template <name>`.
 use crate::args::{PolicyChoice, ShowOpts};
 use crate::compile::{Defaults, checked_input};
 use crate::{report, toml_text};

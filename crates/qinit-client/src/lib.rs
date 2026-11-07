@@ -437,6 +437,12 @@ impl std::fmt::Display for WatchRefused {
     }
 }
 
+impl std::error::Error for WatchRefused {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 impl From<WatchRefused> for ClientError {
     fn from(r: WatchRefused) -> ClientError {
         r.error

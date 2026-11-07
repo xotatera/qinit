@@ -478,6 +478,13 @@ impl<C: CellOps> Daemon<C> {
         self.admit(admitted);
     }
 
+    /// The connections the server has open.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn connections(&self) -> usize {
+        self.server.connections()
+    }
+
     fn admit(&mut self, admitted: Result<ConnId, qinit_proto::Full>) {
         if let Ok(id) = admitted
             && let Some(fd) = self.server.fd(id)

@@ -5,11 +5,11 @@
 //!
 //! [`plan`] decides, from the compiled tree alone, which key goes into which table of which
 //! file: only keys whose origin is `default` and whose default is a schema constant
-//! ([`FILL_KEYS`], [`POLICY_KEYS`]), and never into
-//! a layer below the last. [`apply`] makes the edits with `toml_edit`, as inserted lines (or
-//! keys inserted inside an inline table) and nothing else, and writes each file through a
-//! temporary file and a rename, keeping its mode and owner; a step that fails undoes every file
-//! of the run from hard-linked backups. A dry run prints the diff instead.
+//! ([`FILL_KEYS`], [`POLICY_KEYS`]), and never into a layer below the last. [`apply`] makes the
+//! edits with `toml_edit`, as inserted lines (or keys inserted inside an inline table) and nothing
+//! else, and writes each file through a temporary file and a rename, keeping its mode and owner;
+//! a step that fails undoes every file of the run from hard-linked backups. A dry run prints the
+//! diff instead.
 use crate::args::{FillOpts, PolicyChoice};
 use crate::compile::{Defaults, checked_input};
 use crate::show::{KINDS, kind_word, merged_frame};
@@ -510,14 +510,17 @@ pub struct Applied {
 /// A file that is a symbolic link, does not parse, would not keep its bytes, or fails to
 /// write; a backup name that is taken (an earlier `fill` that stopped part way may have left
 /// it; it stays as it is); a step of the commit that fails. When undoing fails too, the error
-/// says so and names each file whose old text stays at its backup name.
+/// says so and names each file whose old text stays at its backup name. A backup that cannot be
+/// removed or a directory that cannot be synced, once the last file is replaced, is not undone:
+/// the error says every file is filled, and names what failed.
 pub fn apply(edits: &[Edit], dry_run: bool, out: &mut dyn Write) -> io::Result<Applied> {
     apply_with(edits, dry_run, out, &mut |_| Ok(()))
 }
 
-/// [`apply`], with `fault(n)` called before the `n`-th step (from 0) of replacing the files: an
-/// error it returns fails that step. An existing file takes one step (its rename), a new file
-/// two (its link, then the removal of its temporary name). Tests fail each step in turn.
+/// [`apply`], with `fault(n)` called before the `n`-th step (from 0) of the commit: an error it
+/// returns fails that step. First each existing file takes one step (the link of its backup);
+/// then, in the order of the files, an existing file takes one (its rename) and a new file two
+/// (its link, then the removal of its temporary name). Tests fail each step in turn.
 ///
 /// # Errors
 /// As [`apply`].
@@ -626,10 +629,11 @@ fn commit(
     created: &[PathBuf],
     fault: &mut dyn FnMut(usize) -> io::Result<()>,
 ) -> io::Result<()> {
+    let mut n = 0;
     // Pass 1: a backup of every existing file. Nothing has changed yet.
     let failed = staged.iter_mut().find_map(|s| {
         let backup = s.backup.as_ref()?;
-        match std::fs::hard_link(&s.path, backup) {
+        match step(&mut n, fault, || std::fs::hard_link(&s.path, backup)) {
             Ok(()) => {
                 s.state = State::Backed;
                 None
@@ -656,7 +660,6 @@ fn commit(
         return Err(undo(&e, staged, created));
     }
     // Pass 2: replace the files one by one.
-    let mut n = 0;
     let failed = staged
         .iter_mut()
         .find_map(|s| replace(s, &mut n, fault).err().map(|e| named(&s.path, &e)));
@@ -665,8 +668,12 @@ fn commit(
     }
     let mut left = Vec::new();
     for b in staged.iter().filter_map(|s| s.backup.as_ref()) {
-        if let Err(e) = std::fs::remove_file(b) {
-            left.push(format!("{}: cannot remove this backup: {e}", b.display()));
+        // A backup already gone is what this step is for, as when undoing.
+        match std::fs::remove_file(b) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => {
+                left.push(format!("{}: cannot remove this backup: {e}", b.display()));
+            }
+            _ => {}
         }
     }
     for d in dirs(staged) {
@@ -699,7 +706,8 @@ fn dirs(staged: &[Staged]) -> Vec<&Path> {
 /// backup renamed back, a new file is removed, and every temporary file and other backup goes;
 /// then the directories in `created` are removed in reverse order (those left empty) and the
 /// directories synced. Returns `e`, and what could not be undone when anything could not: each
-/// old text that stays at its backup name, each name that stays.
+/// old text that stays at its backup name, each name that stays. A directory in `created` that
+/// something else was put in meanwhile stays, and is named too.
 fn undo(e: &io::Error, staged: &[Staged], created: &[PathBuf]) -> io::Error {
     fn remove(p: &Path, what: &str, failed: &mut Vec<String>) {
         match std::fs::remove_file(p) {
@@ -734,14 +742,16 @@ fn undo(e: &io::Error, staged: &[Staged], created: &[PathBuf]) -> io::Error {
             }
         }
     }
+    // The deepest directory that stays because something else is in it; its parents stay too.
+    let mut kept: Vec<&Path> = Vec::new();
     for d in created.iter().rev() {
         match std::fs::remove_dir(d) {
-            Err(e)
-                if !matches!(
-                    e.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
-                ) =>
-            {
+            Err(e) if e.kind() == io::ErrorKind::DirectoryNotEmpty => {
+                if !kept.iter().any(|k| k.starts_with(d)) {
+                    kept.push(d);
+                }
+            }
+            Err(e) if e.kind() != io::ErrorKind::NotFound => {
                 failed.push(format!(
                     "{}: cannot remove this directory: {e}",
                     d.display()
@@ -758,9 +768,24 @@ fn undo(e: &io::Error, staged: &[Staged], created: &[PathBuf]) -> io::Error {
             _ => {}
         }
     }
-    if failed.is_empty() {
+    let kept: Vec<String> = kept
+        .iter()
+        .map(|d| {
+            format!(
+                "{}: made for a new file, it stays: something else is in it",
+                d.display()
+            )
+        })
+        .collect();
+    if failed.is_empty() && kept.is_empty() {
         io::Error::new(e.kind(), format!("{e}; every file is as it was"))
+    } else if failed.is_empty() {
+        io::Error::new(
+            e.kind(),
+            format!("{e}; every file is as it was, but {}", kept.join("; ")),
+        )
     } else {
+        failed.extend(kept);
         io::Error::new(
             e.kind(),
             format!("{e}; undoing failed: {}", failed.join("; ")),

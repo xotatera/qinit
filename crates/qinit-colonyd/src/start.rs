@@ -17,22 +17,33 @@ use std::path::Path;
 const NOFILE: u64 = 65_536;
 
 /// Raises this process's `RLIMIT_NOFILE` to at least [`NOFILE`], soft and hard, lowering neither.
-/// Returns the limit it had, which the services get; when it cannot, nothing is changed and one
-/// line says why.
+/// Returns the limit it had, which the services get. A process that may not raise its hard limit
+/// (not root, a hard limit below [`NOFILE`]) raises its soft one to the hard one instead; when
+/// even that changes nothing, `None`. Either way one line says why.
 fn raise_nofile(log: &mut Syslog) -> Option<(u64, u64)> {
-    let raised = get_rlimit(RLIMIT_NOFILE)
-        .map_err(|e| format!("cannot read the descriptor limit: {e}"))
-        .and_then(|(cur, max)| {
-            set_rlimit(RLIMIT_NOFILE, cur.max(NOFILE), max.max(NOFILE))
-                .map(|()| (cur, max))
-                .map_err(|e| {
-                    format!(
-                        "cannot raise the descriptor limit from {cur} soft, {max} hard to \
-                         {NOFILE}: {e}; colony and its services keep it"
-                    )
-                })
-        });
-    raised.map_err(|why| log.log(Sev::Err, &why)).ok()
+    let (cur, max) = match get_rlimit(RLIMIT_NOFILE) {
+        Ok(limit) => limit,
+        Err(e) => {
+            log.log(Sev::Err, &format!("cannot read the descriptor limit: {e}"));
+            return None;
+        }
+    };
+    let Err(e) = set_rlimit(RLIMIT_NOFILE, cur.max(NOFILE), max.max(NOFILE)) else {
+        return Some((cur, max));
+    };
+    let to_hard = cur < max && set_rlimit(RLIMIT_NOFILE, max, max).is_ok();
+    let what = if to_hard {
+        format!("colony raises its soft limit to {max}, its services keep {cur}")
+    } else {
+        "colony and its services keep it".to_owned()
+    };
+    log.log(
+        Sev::Err,
+        &format!(
+            "cannot raise the descriptor limit from {cur} soft, {max} hard to {NOFILE}: {e}; {what}"
+        ),
+    );
+    to_hard.then_some((cur, max))
 }
 
 /// Logs `why`, prints it, and gives `code`.

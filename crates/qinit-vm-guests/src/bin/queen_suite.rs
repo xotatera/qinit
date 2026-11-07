@@ -211,7 +211,11 @@ fn children_do_not_inherit_the_raised_descriptor_limit() -> Result<(), String> {
     let mut c = client()?;
     settled(&mut c, "w")?;
     drop(c);
-    for pid in qinit_vm_guests::colonyd::procs_of_in(COMB, "w")? {
+    let workers = qinit_vm_guests::colonyd::procs_of_in(COMB, "w")?;
+    if workers.is_empty() {
+        return Err("the worker's cell holds no process".into());
+    }
+    for pid in workers {
         let worker = queened::open_files(pid).ok_or("no limit for the worker")?;
         if worker != KERNEL_NOFILE {
             return Err(format!(

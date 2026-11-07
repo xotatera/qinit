@@ -250,9 +250,12 @@ start:
 A step of 1 or 2 that fails undoes the run, in reverse order: a file already replaced gets its
 backup renamed back (the same inode: bytes, mode and owner), new files and the directories made
 for them are removed, and no temporary or backup name stays. The error names the step's file and
-ends `; every file is as it was`. When undoing fails too, it ends `; undoing failed: ...` and names
-each file whose old text stays at its backup name and each name that stays. A failure in 3, after
-the last file was replaced, is not undone: every file is filled, and `fill` exits 1 with
+ends `; every file is as it was`. A directory made for a new file that something else was put in
+meanwhile stays, and the error ends `; every file is as it was, but <directory>: made for a new
+file, it stays: something else is in it`. When undoing fails, it ends `; undoing failed: ...` and
+names each file whose old text stays at its backup name and each name that stays. A failure in 3,
+after the last file was replaced, is not undone (a backup that is already gone is no failure):
+every file is filled, and `fill` exits 1 with
 
 ```
 qctl: fill: every file is filled, but <backup>: cannot remove this backup: <error>

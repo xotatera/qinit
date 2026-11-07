@@ -212,35 +212,68 @@ fn hand_over_under(nofile: (u64, u64), held: u32, tag: &str) -> (Option<i32>, Ve
     (code, lines_of(&log))
 }
 
+/// Whether this process may raise a hard limit (`CAP_SYS_RESOURCE` in its effective set), as
+/// the colony it starts may then too.
+fn may_raise_hard_limits() -> bool {
+    const CAP_SYS_RESOURCE: u32 = 24;
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let eff = status
+        .lines()
+        .find_map(|l| l.strip_prefix("CapEff:"))
+        .and_then(|v| u64::from_str_radix(v.trim(), 16).ok())
+        .unwrap();
+    eff & (1 << CAP_SYS_RESOURCE) != 0
+}
+
 /// Queen holds more than the kernel's 1024 for colony: colony raises its own limit before it
-/// reads the hand-over, so it takes every entry back.
+/// reads the hand-over, so it takes every entry back. It needs a colony that can reach 65536: a
+/// hard limit that high already, or the right to raise it.
 #[test]
 fn colony_raises_its_descriptor_limit_before_it_takes_back_queens_store() {
     let (_, hard) = qinit_sys::limits::get_rlimit(qinit_sys::limits::RLIMIT_NOFILE).unwrap();
-    assert!(
-        hard >= 65_536,
-        "this test needs a hard RLIMIT_NOFILE of 65536 or more, not {hard}"
-    );
-    let (code, lines) = hand_over_under((1024, hard), 1100, "nofile-raise");
+    if hard < 65_536 && !may_raise_hard_limits() {
+        eprintln!("skipped: a hard RLIMIT_NOFILE of {hard}, and no CAP_SYS_RESOURCE to raise it");
+        return;
+    }
+    let (code, lines) = hand_over_under((1024, hard.max(65_536)), 1100, "nofile-raise");
     assert!(
         !lines.iter().any(|l| l.contains("did not fit")),
         "a held descriptor was lost: {lines:?}"
     );
+    assert!(
+        !lines.iter().any(|l| l.contains("descriptor limit")),
+        "{lines:?}"
+    );
     assert_eq!(code, Some(i32::from(exit::DATABASE)), "{lines:?}");
 }
 
-/// A colony that may not raise its limit (not root, a hard limit below 65536) logs that once
-/// and goes on with the limit it has.
+/// A colony that may not raise its hard limit (not root, a hard limit below 65536) raises its
+/// soft one up to the hard one, says so in one line, and takes back what fits under that. It
+/// needs a colony without the right to raise a hard limit, and a hard limit of 4096 to give it.
 #[test]
-fn a_colony_that_cannot_raise_its_limit_logs_one_line_and_goes_on() {
-    let (code, lines) = hand_over_under((1024, 4096), 0, "nofile-keep");
+fn a_colony_that_cannot_raise_its_hard_limit_raises_its_soft_one_and_logs_one_line() {
+    let (_, hard) = qinit_sys::limits::get_rlimit(qinit_sys::limits::RLIMIT_NOFILE).unwrap();
+    if may_raise_hard_limits() || hard < 4096 {
+        eprintln!("skipped: this process may raise a hard limit, or its hard limit {hard} < 4096");
+        return;
+    }
+    // More than the soft 1024, less than the hard 4096.
+    let (code, lines) = hand_over_under((1024, 4096), 2000, "nofile-keep");
+    assert!(
+        !lines.iter().any(|l| l.contains("did not fit")),
+        "a held descriptor was lost: {lines:?}"
+    );
     assert_eq!(code, Some(i32::from(exit::DATABASE)), "{lines:?}");
     let said: Vec<&String> = lines
         .iter()
         .filter(|l| l.contains("descriptor limit"))
         .collect();
     assert_eq!(said.len(), 1, "{lines:?}");
-    assert!(said[0].contains("1024"), "{said:?}");
+    assert!(
+        said[0].contains("from 1024 soft, 4096 hard")
+            && said[0].contains("raises its soft limit to 4096, its services keep 1024"),
+        "{said:?}"
+    );
 }
 
 // ---- the daemon over a fake cell layer ----
@@ -1098,7 +1131,10 @@ fn the_save_is_on_the_channel_before_a_launch_is_answered() {
     let mut r = boot(FORAGER, &[], "replyorder");
     let client = connect_root(&mut r);
     // The client's socket, looked at the moment the instance's cell is first put in queen's
-    // store, before the `cells` text that names it is saved.
+    // store, before the `cells` text that names it is saved. That moment is the start of
+    // `persist` (its `sync_store`), not the save of `cells` itself: it shows the reply was not
+    // sent before the saves began. That it goes after them is the order of `after_wakeup`
+    // (`persist`, then `flush_replies`); with the two swapped this test fails.
     let probe = client.try_clone().unwrap();
     let early = std::rc::Rc::new(std::cell::Cell::new(None));
     let seen = early.clone();
@@ -1143,10 +1179,19 @@ fn a_client_gone_before_the_flush_costs_nothing() {
     r.d.colony.effects.cells.on_dir_fd = Some(Box::new(move || {
         closer.borrow_mut().take();
     }));
-    assert_eq!(r.d.pump(), None);
+    assert_eq!(r.d.connections(), 2);
+    // One wake-up serves both requests; its flush finds the launching client gone and closes
+    // the connection, before any later wake-up could see it hang up.
+    let ready = r.d.colony.effects.events.poll().unwrap();
+    assert_eq!(r.d.turn(ready), None);
     assert!(
         held.borrow().is_none(),
         "the client closed during the wake-up"
+    );
+    assert_eq!(
+        r.d.connections(),
+        1,
+        "the gone client's connection stays open"
     );
     // The state of what its request did is saved all the same.
     let cells = parse_cells(&r.queen.text(KEY_CELLS).unwrap()).unwrap();

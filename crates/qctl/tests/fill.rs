@@ -742,8 +742,22 @@ fn umask_edit(file: PathBuf) -> qctl::fill::Edit {
     }
 }
 
+/// A group of this process other than the group a file it makes gets, if it has one: a file of
+/// that group shows whether `fill` keeps a file's group without needing root.
+fn other_group(made: &Path) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    let own = std::fs::metadata(made).unwrap().gid();
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let groups = status.lines().find_map(|l| l.strip_prefix("Groups:"))?;
+    groups
+        .split_whitespace()
+        .filter_map(|g| g.parse().ok())
+        .find(|&g| g != own)
+}
+
 /// Three existing files in two directories (modes 0600, 0640, 0604) and a new one in a new
-/// directory, second in the order of the edits.
+/// directory, second in the order of the edits. `vendor/c.toml` is in another group of this
+/// process when it has one.
 fn four_files(tag: &str) -> (TempDir, Vec<qctl::fill::Edit>) {
     let t = TempDir::new(tag);
     for (rel, text, mode) in [
@@ -753,6 +767,10 @@ fn four_files(tag: &str) -> (TempDir, Vec<qctl::fill::Edit>) {
     ] {
         t.write(rel, text);
         std::fs::set_permissions(t.0.join(rel), std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    let c = t.0.join("vendor/c.toml");
+    if let Some(g) = other_group(&c) {
+        std::os::unix::fs::chown(&c, None, Some(g)).unwrap();
     }
     let edits = vec![
         umask_edit(t.0.join("etc/a.toml")),
@@ -764,6 +782,18 @@ fn four_files(tag: &str) -> (TempDir, Vec<qctl::fill::Edit>) {
 }
 
 const OLD_FILES: [&str; 3] = ["etc/a.toml", "etc/b.toml", "vendor/c.toml"];
+
+/// The steps of committing [`four_files`]: the backups of a, b and c (0 to 2), then a's rename
+/// (3), the new file's link and the removal of its temporary name (4, 5), b's and c's renames
+/// (6, 7).
+const STEPS: usize = 8;
+
+/// `.<name>.qctl-old-<pid>` beside `rel` in `t`.
+fn backup_of(t: &TempDir, rel: &str) -> PathBuf {
+    let p = t.0.join(rel);
+    let name = p.file_name().unwrap().to_str().unwrap().to_owned();
+    p.with_file_name(format!(".{name}.qctl-old-{}", std::process::id()))
+}
 
 #[test]
 fn a_failure_at_any_commit_step_leaves_every_file_as_it_was() {
@@ -795,12 +825,16 @@ fn a_failure_at_any_commit_step_leaves_every_file_as_it_was() {
                 assert_eq!(names(&t.0.join("vendor")), ["c.toml"], "step {n}");
             }
             Ok(done) => {
-                // The fault never fired: every step ran. One step for each existing file, two
-                // for the new one, and each of them failed in its turn.
-                assert_eq!(failed, 5);
+                // The fault never fired: every step ran, and each of them failed in its turn.
+                assert_eq!(failed, STEPS);
                 assert_eq!(done, qctl::fill::Applied { keys: 4, files: 4 });
+                // A replaced file is a new inode, so its owner is what `fill` gave it. Run as a
+                // user other than root the uid cannot differ, and the gid only shows for
+                // `vendor/c.toml` in another group (see `four_files`); the undo cases above
+                // prove the owner by the inode, which is the old file's.
                 for (rel, was) in OLD_FILES.iter().zip(&before) {
                     let now = file_state(&t.0.join(rel));
+                    assert_ne!(now.ino, was.ino, "{rel} was not replaced");
                     assert_eq!(now.mode, was.mode, "{rel}");
                     assert_eq!((now.uid, now.gid), (was.uid, was.gid), "{rel}");
                     assert!(t.read(rel).contains("umask = 0o027"), "{rel}");
@@ -850,10 +884,10 @@ fn an_undo_that_fails_is_reported_and_the_old_text_stays_at_its_backup() {
         .iter()
         .map(|r| file_state(&t.0.join(r)))
         .collect();
-    // Step 1 comes after a.toml is replaced: a directory in its place makes renaming the backup
+    // Step 4 comes after a.toml is replaced: a directory in its place makes renaming the backup
     // back fail.
     let mut fault = |i: usize| {
-        if i == 1 {
+        if i == 4 {
             std::fs::remove_file(&a).unwrap();
             std::fs::create_dir(&a).unwrap();
             Err(std::io::Error::other("injected fault"))
@@ -876,4 +910,120 @@ fn an_undo_that_fails_is_reported_and_the_old_text_stays_at_its_backup() {
         names(&t.0.join("etc")),
         [backup_name.as_str(), "a.toml", "b.toml"]
     );
+}
+
+#[test]
+fn a_backup_that_cannot_be_linked_stops_the_run_with_nothing_changed() {
+    let (t, edits) = four_files("nolink");
+    let before: Vec<FileState> = OLD_FILES.iter().map(|r| file_state(&t.0.join(r))).collect();
+    // Step 1 is the link of b's backup, after a's: refused as `fs.protected_hardlinks` refuses
+    // the link of a file the caller does not own.
+    let mut fault = |i: usize| {
+        if i == 1 {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        } else {
+            Ok(())
+        }
+    };
+    let e = qctl::fill::apply_with(&edits, false, &mut Vec::new(), &mut fault).unwrap_err();
+    let msg = e.to_string();
+    let b = t.0.join("etc/b.toml");
+    assert!(
+        msg.contains(&format!("{}: cannot link its backup", b.display())),
+        "{msg}"
+    );
+    assert!(msg.ends_with("; every file is as it was"), "{msg}");
+    assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+    for (rel, was) in OLD_FILES.iter().zip(&before) {
+        assert_eq!(&file_state(&t.0.join(rel)), was, "{rel}");
+    }
+    assert!(!t.0.join("etc/new").exists(), "the new directory stays");
+    // a's backup, linked before b's failed, is gone with the temporary files.
+    assert_eq!(names(&t.0.join("etc")), ["a.toml", "b.toml"]);
+    assert_eq!(names(&t.0.join("vendor")), ["c.toml"]);
+}
+
+#[test]
+fn a_new_directory_something_else_was_put_in_stays_and_is_named() {
+    let (t, edits) = four_files("foreign");
+    let before: Vec<FileState> = OLD_FILES.iter().map(|r| file_state(&t.0.join(r))).collect();
+    let sub = t.0.join("etc/new/sub");
+    // Step 6 is b's rename, after the new file is in place: another writer puts a file of its own
+    // in the new directory, and the step fails.
+    let mut fault = |i: usize| {
+        if i == 6 {
+            std::fs::write(sub.join("other.toml"), "# other\n").unwrap();
+            Err(std::io::Error::other("injected fault"))
+        } else {
+            Ok(())
+        }
+    };
+    let e = qctl::fill::apply_with(&edits, false, &mut Vec::new(), &mut fault).unwrap_err();
+    let msg = e.to_string();
+    assert!(msg.contains("injected fault"), "{msg}");
+    assert!(!msg.contains("undoing failed"), "{msg}");
+    assert!(
+        msg.ends_with(&format!(
+            "; every file is as it was, but {}: made for a new file, it stays: something else \
+             is in it",
+            sub.display()
+        )),
+        "{msg}"
+    );
+    for (rel, was) in OLD_FILES.iter().zip(&before) {
+        assert_eq!(&file_state(&t.0.join(rel)), was, "{rel}");
+    }
+    // Only the other writer's file is left there; the new file is gone.
+    assert_eq!(names(&sub), ["other.toml"]);
+    assert_eq!(names(&t.0.join("etc")), ["a.toml", "b.toml", "new"]);
+}
+
+#[test]
+fn a_backup_already_gone_after_the_last_file_is_no_failure() {
+    let (t, edits) = four_files("gone");
+    let a_backup = backup_of(&t, "etc/a.toml");
+    // Before the last step every backup is linked; a's is removed by someone else.
+    let mut fault = |i: usize| {
+        if i == STEPS - 1 {
+            std::fs::remove_file(&a_backup).unwrap();
+        }
+        Ok(())
+    };
+    let done = qctl::fill::apply_with(&edits, false, &mut Vec::new(), &mut fault).unwrap();
+    assert_eq!(done, qctl::fill::Applied { keys: 4, files: 4 });
+    for rel in OLD_FILES {
+        assert!(t.read(rel).contains("umask = 0o027"), "{rel}");
+    }
+    assert_eq!(names(&t.0.join("etc")), ["a.toml", "b.toml", "new"]);
+    assert_eq!(names(&t.0.join("vendor")), ["c.toml"]);
+}
+
+#[test]
+fn a_failure_after_the_last_file_is_replaced_is_reported_and_not_undone() {
+    let (t, edits) = four_files("after");
+    let a_backup = backup_of(&t, "etc/a.toml");
+    // Before the last step a's backup is replaced by a directory, which no file removal takes.
+    let mut fault = |i: usize| {
+        if i == STEPS - 1 {
+            std::fs::remove_file(&a_backup).unwrap();
+            std::fs::create_dir(&a_backup).unwrap();
+        }
+        Ok(())
+    };
+    let e = qctl::fill::apply_with(&edits, false, &mut Vec::new(), &mut fault).unwrap_err();
+    let msg = e.to_string();
+    assert!(
+        msg.starts_with(&format!(
+            "every file is filled, but {}: cannot remove this backup: ",
+            a_backup.display()
+        )),
+        "{msg}"
+    );
+    for rel in OLD_FILES {
+        assert!(t.read(rel).contains("umask = 0o027"), "{rel}");
+    }
+    assert!(t.read("etc/new/sub/n.toml").contains("umask = 0o027"));
+    // The other backups are removed all the same.
+    assert!(!backup_of(&t, "etc/b.toml").exists());
+    assert!(!backup_of(&t, "vendor/c.toml").exists());
 }
