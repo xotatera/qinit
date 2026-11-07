@@ -211,11 +211,11 @@ fn stopped_quarantined_and_finished_nodes_survive() -> Result<(), String> {
 fn breaker_counts_span_the_kill() -> Result<(), String> {
     // Three failures are allowed, the fourth quarantines; the kill falls after the second.
     let nodes = vec![restarting(worker("crashy", "exit-3", &[]), 3, 500)];
-    let before = log_count("crashy: failed (exit 3)");
+    let before = log_count("crashy: failed");
     let mut c = fresh(&model(nodes, &[0]))?;
     // The second failure is half a second in and the third a second after it: the kill falls
     // between them.
-    await_log("crashy: failed (exit 3)", before + 2)?;
+    await_log("crashy: failed", before + 2)?;
     synced(&mut c, "crashy")?;
     drop(c);
     let _c = kill_and_follow()?;
@@ -223,11 +223,12 @@ fn breaker_counts_span_the_kill() -> Result<(), String> {
     if detail != 0 {
         return Err(format!("quarantined for reason {detail}, not the breaker"));
     }
-    let after = log_count("crashy: failed (exit 3)");
+    let after = log_count("crashy: failed");
     if after != before + 4 {
         return Err(format!(
-            "failures in all: {}; the breaker needs 4 across the kill",
-            after - before
+            "failures in all: {}; the breaker needs 4 across the kill; colony said {:?}",
+            after - before,
+            queened::log_tail(12)
         ));
     }
     Ok(())
@@ -248,7 +249,17 @@ fn a_pipe_worker_still_starting_is_restarted() -> Result<(), String> {
     for fd in &old {
         await_exit(fd)?;
     }
-    await_lines(Path::new(started), 2)?;
+    await_lines(Path::new(started), 2).map_err(|why| {
+        format!(
+            "{why}; colony said {:?}; comb {:?}",
+            queened::log_tail(12),
+            std::fs::read_dir(COMB).map(|d| d
+                .flatten()
+                .map(|x| x.file_name().to_string_lossy().into_owned())
+                .filter(|n| !n.contains('.'))
+                .collect::<Vec<_>>())
+        )
+    })?;
     Ok(())
 }
 

@@ -82,6 +82,12 @@ fn prepare(first: &Model) -> Result<(), String> {
     e(std::fs::create_dir_all("/etc/qinit"))?;
     // The limits the cases run under: a rescue minimum short enough to wait out.
     limits(300_000, 5_000, 300)?;
+    // A datagram socket holds ten datagrams by default: colony's lines would fall back to the
+    // console while the driver is busy, and the cases count them.
+    e(std::fs::write(
+        "/proc/sys/net/unix/max_dgram_qlen",
+        "10000\n",
+    ))?;
     let log = e(UnixDatagram::bind("/dev/log"))?;
     e(log.set_nonblocking(true))?;
     let _ = LOG.set(log);

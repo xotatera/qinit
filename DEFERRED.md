@@ -567,3 +567,12 @@ finds in the comb alone (one log line each) and fails the create of a node whose
 
 Queen raises `RLIMIT_NOFILE` to 65536 to hold the whole store and colony inherits it, so services
 whose frame sets no `nofile` start with that limit and not the kernel's default.
+
+### D73 — `readopt` VM case `a_pipe_worker_still_starting_is_restarted` fails about one run in thirteen · `OPEN`
+
+Under queen, in rare runs the adopted `slow` node is restarted, its old main exits, and colony logs
+`slow: failed (status unknown)` and does not start it again: the node ends off, so the case waits
+its hang guard for a second start. The adopted exit then reaches the machine as a failure and not as
+the result of the requested stop. The cause is not found: the guess is an ordering of the pidfd
+becoming readable, queen's `Reaped` wake and the restart request. The other cases of the suite did
+not show it in more than forty runs.
