@@ -91,6 +91,8 @@ pub struct Kernel {
     reaped: Vec<(libc::pid_t, i32)>,
     /// An error `reap_children` hit after it had reaped some children: returned next time.
     reap_error: Option<Errno>,
+    /// The `RLIMIT_NOFILE` (soft, hard) every spawned main starts with; `None`: this process's.
+    child_nofile: Option<(u64, u64)>,
     #[cfg(feature = "test-hooks")]
     pub(crate) between: Option<Box<dyn FnMut(libc::pid_t)>>,
 }
@@ -112,9 +114,16 @@ impl Kernel {
             unwatched: Vec::new(),
             reaped: Vec::new(),
             reap_error: None,
+            child_nofile: None,
             #[cfg(feature = "test-hooks")]
             between: None,
         })
+    }
+
+    /// Every main spawned from now on starts with `RLIMIT_NOFILE` `limit` (soft, hard), set
+    /// between the clone and the exec, and not with this process's.
+    pub fn child_nofile(&mut self, limit: (u64, u64)) {
+        self.child_nofile = Some(limit);
     }
 
     /// The tracked main process's pid, until it is reaped or its exit is seen.
@@ -343,7 +352,10 @@ impl Effects for Kernel {
         }
         let argv: Vec<&OsStr> = cmd.argv.iter().map(OsString::as_os_str).collect();
         let env: Vec<&OsStr> = cmd.env.iter().map(OsString::as_os_str).collect();
-        let prepared = spawn::Prepared::new(&cmd.path, &argv, &env, &routes)?;
+        let mut prepared = spawn::Prepared::new(&cmd.path, &argv, &env, &routes)?;
+        if let Some((cur, max)) = self.child_nofile {
+            prepared.nofile(cur, max);
+        }
         let (pid, pidfd) = spawn::spawn(&prepared, Some(self.dir(slot)?), err_w.as_fd())?;
         drop(prepared);
         drop(routes);

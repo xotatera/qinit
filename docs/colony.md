@@ -50,15 +50,20 @@ debug level.
 
 1. The kernel must be Linux 6.15 or later (`PIDFD_INFO_EXIT`).
 2. Colony is not inside the comb.
-3. With `--queen-fd`, queen's hand-over is read (each wait bounded by 10 s).
-4. The database is chosen and validated (the proved validator): the copy queen held, if it loads,
+3. Colony raises its own `RLIMIT_NOFILE` to 65536, soft and hard (it lowers neither), so it can hold
+   its cells, pipes and status descriptors and take back all that queen's store holds for it. The
+   services start with the limit colony started with; a frame's own `nofile` is set in the
+   overseer. A colony that may not raise it (not root, with a lower hard limit) logs one error and
+   goes on with the limit it has, which its services then get too.
+4. With `--queen-fd`, queen's hand-over is read (each wait bounded by 10 s).
+5. The database is chosen and validated (the proved validator): the copy queen held, if it loads,
    replaces `--db`; exit 3 is for when there is neither. The run directory is made.
-5. The comb is opened, and `+memory +pids` is written to its `cgroup.subtree_control`: a node with a
+6. The comb is opened, and `+memory +pids` is written to its `cgroup.subtree_control`: a node with a
    limit does not start without the controller. The comb's parent must offer both.
-6. The loop is built: signals, the one timer, the cells' own descriptor, the path watcher.
-7. The control socket is bound; a stale socket file is removed first, since the path is colony's.
+7. The loop is built: signals, the one timer, the cells' own descriptor, the path watcher.
+8. The control socket is bound; a stale socket file is removed first, since the path is colony's.
    A client that connects before the graph is up waits in the socket's backlog.
-8. Logger pipes are made (below), then the graph is started or re-adopted (below).
+9. Logger pipes are made (below), then the graph is started or re-adopted (below).
 
 If the control socket cannot accept (out of descriptors), colony logs one error, takes the listener
 out of the loop for 100 ms and tries again, rather than spinning. A path or readiness watch the

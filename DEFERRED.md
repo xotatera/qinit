@@ -581,8 +581,10 @@ finds in the comb alone (one log line each) and fails the create of a node whose
 Queen raises `RLIMIT_NOFILE` to 65536 to hold the whole store, and colony inherited it, so
 services whose frame sets no `nofile` started with that limit and not the kernel's default. Queen
 now starts colony, rescue and zero with the limit it started with (`Prepared::nofile`, set between
-the clone and the exec; a failed exec of zero raises queen's own again). The `queen` suite checks
-colony and rescue against queen's.
+the clone and the exec; a failed exec of zero raises queen's own again). Colony raises its own
+again (D74) and passes the limit queen started with on to the services, so that limit now goes to
+rescue, zero and every service whose frame sets no `nofile`, and colony runs at 65536. The `queen`
+suite checks rescue and a worker against the limit queen started with, and colony at 65536.
 
 ### D73 — `readopt` VM case `a_pipe_worker_still_starting_is_restarted` fails about one run in thirteen · `RESOLVED`
 
@@ -596,3 +598,18 @@ off. The ceiling is now only a ceiling: the buffer grows from 4 KiB and is trimm
 size. An in-VM loop of the case failed within 6 to 38 iterations in five runs before the fix and
 passed all 250 iterations after it. Any consumer of `read_all` with a large ceiling had the same
 cost.
+
+### D74 — A booted colony runs at the kernel's descriptor limit · `RESOLVED`
+
+After D72 queen started colony with the limit queen started with, the kernel's 1024 soft and 4096
+hard, and colony did not raise it, while it holds a descriptor or more for each cell, main and
+logger pipe and must take back up to 16,899 entries from queen's store at once. Colony now raises
+its own `RLIMIT_NOFILE` to 65536, soft and hard (lowering neither), before it reads the hand-over,
+and its cells spawn their mains with the limit it started with (`Cells::child_nofile`, through
+`Prepared::nofile`); a frame's own `nofile` still applies in the overseer. A colony that may not
+raise it logs one error and changes nothing. Before the fix the `queen` suite's new case, 520
+loggers whose pipes put 1040 descriptors in the store, never reached the store: each colony failed
+to make its logger pipes (`EMFILE`), queen's crash limit ran rescue and the machine held. No held
+descriptor was lost, since a colony at 1024 cannot put more than it holds itself; on the host a
+colony at 1024 handed 1100 held descriptors refused the hand-over (`MSG_CTRUNC`, "did not fit"),
+and with the fix took them all. After it the guest case takes all 520 pipes back across a kill.

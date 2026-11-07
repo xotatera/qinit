@@ -152,6 +152,97 @@ fn a_refused_database_exits_3_before_anything_else_is_touched() {
     );
 }
 
+// ---- the descriptor limit, through the binary ----
+
+/// What colony did when run with `RLIMIT_NOFILE` set to `nofile` and handed `held` descriptors
+/// by a queen: its exit code and what it logged. No database is there, so a colony that took
+/// the whole hand-over exits 3.
+fn hand_over_under(nofile: (u64, u64), held: u32, tag: &str) -> (Option<i32>, Vec<String>) {
+    use qinit_sys::spawn::{Prepared, spawn};
+    let tmp = Tmp::new(tag);
+    let log = UnixDatagram::bind(tmp.0.join("log")).unwrap();
+    let (queen, link) = qinit_ipc::seqpacket_pair().unwrap();
+    let arg = |p: &str| tmp.0.join(p).into_os_string();
+    let argv: Vec<std::ffi::OsString> = vec![
+        "colony".into(),
+        "--queen-fd".into(),
+        "3".into(),
+        "--db".into(),
+        arg("absent.db"),
+        "--run".into(),
+        arg("run"),
+        "--comb".into(),
+        arg("comb"),
+        "--syslog".into(),
+        arg("log"),
+        "--console".into(),
+        arg("console"),
+    ];
+    let argv: Vec<&std::ffi::OsStr> = argv.iter().map(std::ffi::OsString::as_os_str).collect();
+    let routes = [(link.as_fd(), 3)];
+    let mut p = Prepared::new(
+        std::path::Path::new(env!("CARGO_BIN_EXE_colony")),
+        &argv,
+        &[],
+        &routes,
+    )
+    .unwrap();
+    p.nofile(nofile.0, nofile.1);
+    let (err_r, err_w) = qinit_sys::fd::pipe(libc::O_CLOEXEC).unwrap();
+    let (_, pidfd) = spawn(&p, None, err_w.as_fd()).unwrap();
+    drop((p, routes, err_w));
+    drop(link);
+    assert_eq!(
+        qinit_sys::fd::read_byte(err_r.as_fd()).unwrap(),
+        None,
+        "colony was not executed"
+    );
+    // One descriptor, sent `held` times: each arrives in colony as a descriptor of its own.
+    let null = std::fs::File::open("/dev/null").unwrap();
+    for key in 16..16 + u64::from(held) {
+        let rec = qinit_queen_core::encode_to_colony(ToColony::Held { key });
+        if send(queen.as_fd(), &rec, &[null.as_fd()]).is_err() {
+            break;
+        }
+    }
+    let end = qinit_queen_core::encode_to_colony(ToColony::HeldEnd { count: held });
+    let _ = send(queen.as_fd(), &end, &[]);
+    let status = qinit_sys::proc::wait_pidfd(&pidfd).unwrap();
+    let code = libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status));
+    (code, lines_of(&log))
+}
+
+/// Queen holds more than the kernel's 1024 for colony: colony raises its own limit before it
+/// reads the hand-over, so it takes every entry back.
+#[test]
+fn colony_raises_its_descriptor_limit_before_it_takes_back_queens_store() {
+    let (_, hard) = qinit_sys::limits::get_rlimit(qinit_sys::limits::RLIMIT_NOFILE).unwrap();
+    assert!(
+        hard >= 65_536,
+        "this test needs a hard RLIMIT_NOFILE of 65536 or more, not {hard}"
+    );
+    let (code, lines) = hand_over_under((1024, hard), 1100, "nofile-raise");
+    assert!(
+        !lines.iter().any(|l| l.contains("did not fit")),
+        "a held descriptor was lost: {lines:?}"
+    );
+    assert_eq!(code, Some(i32::from(exit::DATABASE)), "{lines:?}");
+}
+
+/// A colony that may not raise its limit (not root, a hard limit below 65536) logs that once
+/// and goes on with the limit it has.
+#[test]
+fn a_colony_that_cannot_raise_its_limit_logs_one_line_and_goes_on() {
+    let (code, lines) = hand_over_under((1024, 4096), 0, "nofile-keep");
+    assert_eq!(code, Some(i32::from(exit::DATABASE)), "{lines:?}");
+    let said: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains("descriptor limit"))
+        .collect();
+    assert_eq!(said.len(), 1, "{lines:?}");
+    assert!(said[0].contains("1024"), "{said:?}");
+}
+
 // ---- the daemon over a fake cell layer ----
 
 struct Rig {

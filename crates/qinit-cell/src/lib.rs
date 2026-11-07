@@ -54,6 +54,12 @@ impl Cells {
         Ok(())
     }
 
+    /// Every main spawned from now on starts with `RLIMIT_NOFILE` `limit` (soft, hard), not with
+    /// this process's: for a caller that raised its own to hold more than its services should.
+    pub fn child_nofile(&mut self, limit: (u64, u64)) {
+        self.engine.effects.child_nofile(limit);
+    }
+
     /// See [`Engine::create`].
     ///
     /// # Errors
