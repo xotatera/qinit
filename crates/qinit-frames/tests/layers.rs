@@ -18,6 +18,7 @@ fn layer(root: &Path, name: &str, files: &[(&str, &str)]) -> LayerInput {
     LayerInput {
         name: name.to_string(),
         dir,
+        only: None,
     }
 }
 
@@ -348,6 +349,7 @@ fn an_io_error_names_the_file() {
     let ls = [LayerInput {
         name: "vendor".into(),
         dir: root.join("absent"),
+        only: None,
     }];
     let e = load(&ls).unwrap_err();
     assert_eq!(e[0].code, Code::Io);
@@ -373,6 +375,47 @@ fn parse_errors_from_different_files_accumulate() {
     )];
     let e = load(&ls).unwrap_err();
     assert_eq!(e.len(), 2);
+}
+
+#[test]
+fn only_reads_the_one_file_and_no_enable() {
+    // The layer's directory holds other frames, a file that does not parse and an enable list;
+    // with `only` the layer is the one file, whatever its name.
+    let root = tmp("only");
+    let mut run = layer(
+        &root,
+        "run",
+        &[
+            ("a.toml", "[worker.a]\nexec = [\"/a\"]\n"),
+            ("broken.toml", "[worker.b\n"),
+            ("enable.toml", "enable = [\"a\"]\n"),
+            ("frame.conf", "[forager.job]\nexec = [\"/job\"]\n"),
+        ],
+    );
+    let file = run.dir.join("frame.conf");
+    run.only = Some(file.clone());
+    let lower = layer(
+        &root,
+        "vendor",
+        &[("j.toml", "[forager.job]\ncwd = \"/w\"\n")],
+    );
+    let ls = [lower, run];
+    let m = load(&ls).expect("loads");
+    assert_eq!(m.table.len(), 1, "{:?}", m.table);
+    let job = m.table["forager"]["job"].as_table().expect("job");
+    assert_eq!(
+        job["cwd"].as_str(),
+        Some("/w"),
+        "the lower layer stays under it"
+    );
+    assert_eq!(
+        set_in(&m.provenance, "forager", "job", &["exec"]),
+        Some("run")
+    );
+    let origin = &m.provenance[&FrameKey::new("forager", "job", &["exec"])];
+    assert_eq!(origin.file, file);
+    let e = load_enable(&ls).expect("loads");
+    assert!(e.roots.is_empty(), "{e:?}");
 }
 
 #[test]

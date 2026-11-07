@@ -997,6 +997,7 @@ fn last_layer(
         _ if opts.layers.is_empty() => LayerInput {
             name: "etc".into(),
             dir: defaults.etc.clone(),
+            only: None,
         },
         _ => {
             let _ = writeln!(

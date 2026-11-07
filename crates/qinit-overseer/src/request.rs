@@ -27,6 +27,19 @@ impl From<EncodeError> for BuildError {
     }
 }
 
+/// The `deadline_ms` of a request for a node whose start timeout is `start_timeout_ms`: the start
+/// timeout capped at 30 s, and 30 s when the start timeout is none (0). Colony and `qctl run
+/// --frame` both go by it.
+#[must_use]
+pub fn deadline_ms(start_timeout_ms: u32) -> u32 {
+    const CAP: u32 = 30_000;
+    if start_timeout_ms == 0 {
+        CAP
+    } else {
+        start_timeout_ms.min(CAP)
+    }
+}
+
 /// The descriptor numbers the launcher routes in, by role.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Routed {

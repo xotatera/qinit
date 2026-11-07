@@ -197,6 +197,7 @@ dependencies = [
  "qinit-frames",
  "qinit-ipc",
  "qinit-launch",
+ "qinit-overseer",
  "qinit-proto",
  "qinit-sys",
  "serde",

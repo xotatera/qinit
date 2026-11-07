@@ -9,6 +9,7 @@ pub mod args;
 pub mod compile;
 pub mod control;
 pub mod fill;
+pub mod frame_run;
 pub mod json;
 pub mod launch;
 pub mod owner;
@@ -60,7 +61,7 @@ pub fn run_with(
         | Command::Refresh { .. }
         | Command::Shutdown { .. } => control::run(&command, &socket, output, out, err),
         Command::Launch(opts) => launch::launch(&opts, &socket, output, out, err),
-        Command::Run(opts) => launch::run(&opts, &socket, output, out, err),
+        Command::Run(opts) => launch::run(&opts, &socket, defaults, output, out, err),
         Command::Watch { all, target } => watch::run(all, &target, &socket, output, out, err),
     }
 }

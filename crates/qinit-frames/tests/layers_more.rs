@@ -17,6 +17,7 @@ fn layer(root: &Path, name: &str, files: &[(&str, &str)]) -> LayerInput {
     LayerInput {
         name: name.to_string(),
         dir,
+        only: None,
     }
 }
 
@@ -199,6 +200,7 @@ fn a_missing_layer_directory_is_an_io_error() {
     let ls = [LayerInput {
         name: "etc".into(),
         dir: root.join("nope"),
+        only: None,
     }];
     let e = load(&ls).unwrap_err();
     assert_eq!(e[0].code, Code::Io);

@@ -14,6 +14,7 @@ fn golden_frames() -> Vec<String> {
     let layer = |name: &str| LayerInput {
         name: name.into(),
         dir: PathBuf::from(format!("{GOLDEN}/{name}")),
+        only: None,
     };
     let input = CompileInput {
         layers: vec![layer("vendor"), layer("etc")],
@@ -88,6 +89,7 @@ fn compile_one(dir: &Path) -> Vec<u8> {
         layers: vec![LayerInput {
             name: "shown".into(),
             dir: dir.to_path_buf(),
+            only: None,
         }],
         policy: None,
     };

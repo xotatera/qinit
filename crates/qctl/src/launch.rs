@@ -3,8 +3,10 @@
 //! `qctl launch` and `qctl run` (spec 2026-11-05 §4.1, §4.6): start an instance, wait for its
 //! end, and exit with its status (the exit code, or 128 plus the signal); 0 when the wait ended
 //! first, with the instance's name printed.
-use crate::args::{Fds, LaunchOpts, RunOpts};
+use crate::args::{Fds, LaunchOpts, RunOpts, RunSource};
+use crate::compile::Defaults;
 use crate::control::{Failure, wait_ms};
+use crate::frame_run::{self, FrameRun};
 use crate::json::{self, Output};
 use crate::request;
 use qinit_client::{
@@ -78,10 +80,17 @@ pub fn launch(
     settle(result, &opts.frame, output, out, err)
 }
 
-/// `qctl run`: the request in the file `opts.request`, as `~<name>#<id>`.
+/// The defaults of a request file's `Run` (the client's `RunArgs`): no ceilings, the main
+/// process, the frames' 10 s grace.
+const REQUEST_DEFAULTS: (u32, u32, StopMode, u32) = (0, 0, StopMode::Main, 10_000);
+
+/// `qctl run`: the request in a request file, or the one frame of `--frame FILE` compiled over
+/// the layers of `defaults`, as `~<name>#<id>`. An option given takes the place of the frame's
+/// value.
 pub fn run(
     opts: &RunOpts,
     socket: &Path,
+    defaults: &Defaults,
     output: Output,
     out: &mut dyn Write,
     err: &mut dyn Write,
@@ -90,38 +99,69 @@ pub fn run(
         Ok(w) => w,
         Err(msg) => return usage(err, &msg),
     };
-    let file = opts.request.display();
-    let spec = match std::fs::read_to_string(&opts.request)
-        .map_err(|e| e.to_string())
-        .and_then(|text| request::parse(&text))
-    {
-        Ok(s) => s,
-        Err(why) => {
-            let _ = writeln!(err, "qctl: {file}: {why}");
-            return 1;
+    let run = match &opts.source {
+        RunSource::Request(file) => match std::fs::read_to_string(file)
+            .map_err(|e| e.to_string())
+            .and_then(|text| request::parse(&text))
+        {
+            Ok(spec) => {
+                let (memory_max_kib, pids_max, stop_mode, stop_grace_ms) = REQUEST_DEFAULTS;
+                FrameRun {
+                    // The parser requires `--name` with a request file.
+                    name: opts.name.clone().unwrap_or_default(),
+                    spec,
+                    memory_max_kib,
+                    pids_max,
+                    stop_mode,
+                    stop_grace_ms,
+                    wait_ready: opts.wait_ready,
+                }
+            }
+            Err(why) => {
+                let _ = writeln!(err, "qctl: {}: {why}", file.display());
+                return 1;
+            }
+        },
+        RunSource::Frame(file) => {
+            match frame_run::spec(file, defaults, frame_run::routed(opts.fds), err) {
+                Ok(r) if opts.wait_ready && !r.wait_ready => {
+                    let _ = writeln!(
+                        err,
+                        "qctl: {}: --wait-ready needs the frame's ready = \"pipe\"",
+                        file.display()
+                    );
+                    return 1;
+                }
+                Ok(r) => r,
+                Err(why) => {
+                    let _ = writeln!(err, "{why}");
+                    return 1;
+                }
+            }
         }
     };
+    let name = opts.name.as_deref().unwrap_or(&run.name);
     let streams = Streams::new();
     let [stdin, stdout, stderr] = streams.pick(opts.fds);
     let args = RunArgs {
         stdin,
         stdout,
         stderr,
-        memory_max_kib: opts.memory_max,
-        pids_max: opts.pids_max,
-        stop_mode: if opts.stop_cell {
-            StopMode::Cell
-        } else {
-            StopMode::Main
+        memory_max_kib: opts.memory_max.unwrap_or(run.memory_max_kib),
+        pids_max: opts.pids_max.unwrap_or(run.pids_max),
+        stop_mode: match opts.stop_cell {
+            Some(true) => StopMode::Cell,
+            Some(false) => StopMode::Main,
+            None => run.stop_mode,
         },
-        stop_grace_ms: opts.stop_grace,
-        wait_ready: opts.wait_ready,
+        stop_grace_ms: opts.stop_grace.unwrap_or(run.stop_grace_ms),
+        wait_ready: run.wait_ready,
     };
     let result = Client::connect(socket).and_then(|mut c| {
-        let begun = c.begin_run(&opts.name, &spec, &args, false, wait)?;
+        let begun = c.begin_run(name, &run.spec, &args, false, wait)?;
         Ok((c, begun))
     });
-    settle(result, &format!("~{}", opts.name), output, out, err)
+    settle(result, &format!("~{name}"), output, out, err)
 }
 
 /// Print the start, read the end, and return the exit code.

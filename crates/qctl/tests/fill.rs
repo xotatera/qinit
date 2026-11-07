@@ -69,6 +69,7 @@ impl TempDir {
         let layer = |name: &str| LayerInput {
             name: name.into(),
             dir: self.0.join(name),
+            only: None,
         };
         let input = CompileInput {
             layers: vec![layer("vendor"), layer("etc")],

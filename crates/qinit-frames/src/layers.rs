@@ -31,6 +31,10 @@ type Paths = BTreeMap<Vec<String>, Origin>;
 pub struct LayerInput {
     pub name: String,
     pub dir: PathBuf,
+    /// The one file the layer is, whatever its name, in place of the `*.toml` files of `dir`;
+    /// the layer then has no `enable.toml`. `qctl run --frame` compiles the caller's file so,
+    /// and its errors name that file.
+    pub only: Option<PathBuf>,
 }
 
 /// The merged `enable.toml`: root names and the workers that provide `/dev/log`.
@@ -191,8 +195,12 @@ fn read_toml(path: &Path, layer: &str) -> Result<Table, Error> {
     })
 }
 
-/// The `*.toml` files of a layer directory (minus `enable.toml`), in byte order of file name.
+/// The `*.toml` files of a layer directory (minus `enable.toml`), in byte order of file name;
+/// or the layer's one file.
 fn layer_files(layer: &LayerInput) -> Result<Vec<PathBuf>, Error> {
+    if let Some(file) = &layer.only {
+        return Ok(vec![file.clone()]);
+    }
     let io = |e: std::io::Error| {
         Error::new(Code::Io, "", e.to_string())
             .in_file(&layer.dir)
@@ -358,13 +366,14 @@ fn string_list(t: &Table, key: &str, prov: &Paths, errs: &mut Vec<Error>) -> Vec
     out
 }
 
-/// Load `enable.toml` from every layer; its `enable` and `syslog` lists merge with the list forms.
+/// Load `enable.toml` from every layer but a one-file layer; its `enable` and `syslog` lists merge
+/// with the list forms.
 ///
 /// # Errors
 /// Every I/O, parse, unknown-key, list-op and bad-value error found in all layers.
 pub fn load_enable(layers: &[LayerInput]) -> Result<Enable, Vec<Error>> {
     let (mut table, mut prov, mut errs) = (Table::new(), Paths::new(), Vec::new());
-    for layer in layers {
+    for layer in layers.iter().filter(|l| l.only.is_none()) {
         let file = layer.dir.join(ENABLE_FILE);
         let t = match read_toml(&file, &layer.name) {
             Ok(t) => t,

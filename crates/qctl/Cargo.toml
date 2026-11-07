@@ -21,6 +21,7 @@ qinit-client = { path = "../qinit-client" }
 qinit-db = { path = "../qinit-db" }
 qinit-frames = { path = "../qinit-frames" }
 qinit-launch = { path = "../qinit-launch" }
+qinit-overseer = { path = "../qinit-overseer" }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
@@ -39,4 +40,4 @@ workspace = true
 # Layer and allowed direct dependencies, checked by the `layers` gate.
 [package.metadata.disciplines]
 layer = "edge"
-allow = ["qinit-client", "qinit-db", "qinit-frames", "qinit-launch", "serde", "serde_json", "toml", "toml_edit"]
+allow = ["qinit-client", "qinit-db", "qinit-frames", "qinit-launch", "qinit-overseer", "serde", "serde_json", "toml", "toml_edit"]

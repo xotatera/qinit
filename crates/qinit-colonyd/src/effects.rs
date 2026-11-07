@@ -229,17 +229,9 @@ pub struct Heard {
     pub status_pending: Vec<CellId>,
 }
 
-/// The seconds `deadline_ms` of a launch request: the start timeout capped at 30 s, 30 s when the
-/// start timeout is none.
-#[must_use]
-pub fn deadline_ms(start_timeout_ms: u32) -> u32 {
-    const CAP: u32 = 30_000;
-    if start_timeout_ms == 0 {
-        CAP
-    } else {
-        start_timeout_ms.min(CAP)
-    }
-}
+/// The `deadline_ms` of a launch request, kept in the overseer's request builder so that `qctl`
+/// computes it the same way.
+pub use qinit_overseer::request::deadline_ms;
 
 fn errno_of(e: &CellError) -> Errno {
     Errno(match e {

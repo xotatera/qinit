@@ -26,8 +26,9 @@ qctl start | stop | restart | clear <node> [--wait MS]
 qctl refresh <db> [--wait MS]
 qctl poweroff | reboot | halt [--wait MS]
 qctl launch <frame> [--env K=V]... [--fds stdin,stdout,stderr] [--pidfd] [--wait MS] [-- ARG...]
-qctl run <request.toml> --name NAME [--fds ...] [--wait-ready] [--memory-max KIB]
-         [--pids-max N] [--stop-mode main|cell] [--stop-grace MS] [--wait MS]
+qctl run <request.toml> --name NAME | --frame FILE [--name NAME]
+         [--fds ...] [--wait-ready] [--memory-max KIB] [--pids-max N]
+         [--stop-mode main|cell] [--stop-grace MS] [--wait MS]
 qctl watch --all | <target>
 ```
 
@@ -49,12 +50,13 @@ exits 0.
 | `--env K=V` | launch | An environment entry of the instance; may repeat. |
 | `--fds ROLES` | launch, run | Pass `qctl`'s own standard streams for these roles (comma-separated `stdin`, `stdout`, `stderr`). Default none. |
 | `--pidfd` | launch | Ask for a pidfd; the outcome is read from it where the kernel can say. |
-| `--name NAME` | run | The instance's name (required). |
-| `--wait-ready` | run | End the wait when the instance reports readiness. |
-| `--memory-max KIB` | run | Memory ceiling in KiB. Default 0: none. |
-| `--pids-max N` | run | Process-count ceiling. Default 0: none. |
-| `--stop-mode main\|cell` | run | Stop the main process or the whole cell. Default `main`. |
-| `--stop-grace MS` | run | Grace before the kill. Default 10000. |
+| `--frame FILE` | run | Run the one frame in `FILE` instead of a request file; see [The frame file for run](#the-frame-file-for-run). Giving both is a usage error. |
+| `--name NAME` | run | The instance's name. Required with a request file; with `--frame` the frame's name by default. |
+| `--wait-ready` | run | End the wait when the instance reports readiness. With `--frame`, implied by `ready = "pipe"` and an error without it. |
+| `--memory-max KIB` | run | Memory ceiling in KiB. Default 0: none; with `--frame`, the frame's `cell.memory_max`. |
+| `--pids-max N` | run | Process-count ceiling. Default 0: none; with `--frame`, the frame's `cell.pids_max`. |
+| `--stop-mode main\|cell` | run | Stop the main process or the whole cell. Default `main`; with `--frame`, the frame's `stop.mode`. |
+| `--stop-grace MS` | run | Grace before the kill. Default 10000; with `--frame`, the frame's `stop.grace`. |
 | `--all` | watch | Every node and instance. |
 
 `show` and `fill` take a target `<kind>.<name>` where kind is `worker`, `forager`, `brood` or
@@ -355,6 +357,45 @@ cpu = "infinity"
 as = "64M"
 ```
 
+## The frame file for run
+
+`qctl run --frame FILE [--name NAME]` runs one frame as an instance `~NAME#<id>`, `NAME` being the
+frame's name unless `--name` is given. `FILE` holds exactly one frame, `[worker.<name>]` or
+`[forager.<name>]`, and may have any file name. It is compiled as one more layer, named `run`,
+on top of the layers and the policy `compile` uses by default (`vendor`, `etc`, and the policy
+file when it exists, with the same notices and, as root, the same ownership check of those; the
+file itself is the caller's, as a request file is). So a template, the defaults, the amend rules
+and the policy check apply as to any frame, and a frame whose name a lower layer already defines
+is amended by the file as a layer amends it: `exec = { replace = [...] }` replaces the list, a new
+`env` key joins the lower layer's. The layer has no `enable.toml`.
+
+The node the frame compiles to becomes the request as colony builds one for an instance of a
+frame (`qinit_overseer::request`), with no argv tail and no environment additions. `deadline_ms`
+is the frame's `start_timeout`, capped at 30000, and 30000 when it is `none`. The cell's
+`memory_max` and `pids_max`, and the `stop` mode and grace, are the frame's unless the matching
+option is given. With `ready = "pipe"` the request routes a readiness pipe and the run waits for
+it, as `ready_fd` with `--wait-ready` does for a request file; `--wait-ready` on a frame with any
+other readiness is an error.
+
+A stream that `--fds` sends takes the place of the frame's route for that stream, as for
+`launch`: the streams arrive as descriptors 5, 6 and 7 (stdin, stdout, stderr), and the readiness
+pipe is routed at 8. The service finds the pipe at `QINIT_READY_FD`, as any service does.
+
+Everything below is exit 1, with nothing sent to colony:
+
+| Problem | Message |
+|---|---|
+| A compile error | As `compile` prints it: `<file>:<line>: <key>: <message>`. An error in the frame file names that file and line. |
+| No frame, or more than one | `qctl: <file>: no frame; run --frame takes a file of one frame`, or `qctl: <file>: 2 frames (forager.a, forager.b); run --frame takes one`. |
+| A brood or a template | `<file>:<line>: brood.<name>: a brood has nothing to run`; a template is no node either. |
+| A frame that expands to more than one node (`instances`), or to none | `<file>:<line>: worker.<name>.instances: the frame expands to 2 nodes; run takes one`. |
+| `output` or `errors` to a logger (`{ pipe = ... }`) that `--fds` does not replace | `<file>:<line>: <kind>.<name>.output: a Run has no logger: ...`. Standard error that follows standard output needs no route of its own. |
+| `ready = { socket = ... }` or `ready = { path = ... }` | `<file>:<line>: <kind>.<name>.ready: a Run has no socket readiness; ...`. |
+| A `launch` table | `<file>:<line>: forager.<name>.launch: a frame with a launch table is for qctl launch, not run`. |
+
+The `<file>` and `<line>` of a key are where it was set: a key a lower layer set names that
+layer's file. The output, and with `--json` the objects, are those of any `run`.
+
 ## Control commands
 
 These commands connect to the colony socket. A refusal by the colony is exit 1 with
@@ -377,9 +418,9 @@ database read-only and passes the descriptor.
 
 ### launch and run
 
-`launch` starts an instance of a frame; `run` starts one from a request file. Neither
-passes a standard stream unless `--fds` names its role; the frame decides which roles it takes and
-the colony refuses the rest. Output, in order:
+`launch` starts an instance of a frame; `run` starts one from a request file or a frame file.
+Neither passes a standard stream unless `--fds` names its role; the frame decides which roles it
+takes and the colony refuses the rest. Output, in order:
 
 | Line | When |
 |---|---|
