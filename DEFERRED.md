@@ -488,12 +488,11 @@ first leaves the earlier files filled and the rest not. Each file is still whole
 `fill` completes the rest, but the files of one run are not replaced as one. Directories made
 for a new file are not removed when a later file fails.
 
-### D61 — Test directories left in `/tmp` by other crates · `OPEN`
+### D61 — Test directories left in `/tmp` by other crates · `RESOLVED`
 
-Runs of `cargo test` leave directories in `/tmp`: `qinit-sys-fs-*`, `qinit-ipc-*` and
-`qinit-sys-det-*` are each in the hundreds on the maintainer's host. Their test harnesses
-predate this branch and were not examined; each needs a guard that removes its directory when
-dropped, as the qctl, client and protocol tests now have.
+Runs of `cargo test` left directories in `/tmp`: `qinit-sys-fs-*`, `qinit-ipc-*` and
+`qinit-sys-det-*`, twelve per run. Each of the three harnesses now holds its directory in a guard
+that removes it when dropped, as the qctl, client and protocol tests do.
 
 ### D62 — Pre-opened sockets · `OPEN`
 

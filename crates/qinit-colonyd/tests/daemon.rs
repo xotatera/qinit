@@ -800,7 +800,14 @@ fn a_watch_the_kernel_refuses_is_logged_not_dropped_silently() {
         std::os::unix::fs::PermissionsExt::from_mode(0o000),
     )
     .unwrap();
-    assert_eq!(r.d.pump(), None);
+    let pumped = r.d.pump();
+    // Before any assertion: `Tmp` cannot remove a directory with no permissions.
+    std::fs::set_permissions(
+        dir.0.join("a"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+    assert_eq!(pumped, None);
     let logged = r.logged();
     assert!(
         logged
@@ -808,11 +815,6 @@ fn a_watch_the_kernel_refuses_is_logged_not_dropped_silently() {
             .any(|l| l.starts_with("<27>") && l.contains("db") && l.contains("watch")),
         "an error line names the node and the lost watch: {logged:?}"
     );
-    std::fs::set_permissions(
-        dir.0.join("a"),
-        std::os::unix::fs::PermissionsExt::from_mode(0o700),
-    )
-    .unwrap();
 }
 
 #[test]
